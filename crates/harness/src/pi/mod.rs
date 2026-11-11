@@ -383,6 +383,7 @@ impl Harness for PiHarness {
             default: false,
             id: "default".into(),
             label: "Pi default".into(),
+            provider: None,
             description: Some("Model configured in Pi".into()),
             reasoning_levels: vec![],
             options: vec![],
