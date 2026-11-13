@@ -35,6 +35,14 @@ static ALLOC: allocator::Allocator = allocator::Allocator;
 pub fn engine_config_from_env() -> zend_engine::EngineConfig {
     // Dev-mode bearer (no WorkOS): an explicit token enables sync.
     let edge_token = edge_token_from_env();
+    // The edge bearer is the engine's alone: read, then out of the
+    // environment every agent, terminal and hook it starts would inherit
+    // (every entry, headless included, builds its config here first).
+    // SAFETY: called at start, before any runtime thread reads the env.
+    unsafe {
+        std::env::remove_var("ZEND_EDGE_TOKEN");
+        std::env::remove_var("ZEND_EDGE_TOKEN_FILE");
+    }
     zend_engine::EngineConfig {
         data_dir: paths::data_dir(),
         edge_url: edge_url_from_env(),
