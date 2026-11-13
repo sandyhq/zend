@@ -349,7 +349,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             }
             // A development build: the public stable feed, beside the
             // engine's own report. zend's self-hosted builds ask nobody.
-            if std::env::var_os("ZEND_ZGX_EDGE_TOKEN_FILE").is_some() {
+            if cfg!(not(feature = "beta")) {
                 return Err("failed".to_string());
             }
             let manifest = on_tokio(async { zend_update::fetch_latest_on(zend_cli::DEFAULT_EDGE_URL, Channel::Stable).await })

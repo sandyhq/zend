@@ -17,8 +17,15 @@ pub(crate) fn configure(command: &mut Command) {
     for key in INHERITED_SESSION_MARKERS {
         command.env_remove(key);
     }
+    // The engine's own secrets never reach an agent (the engine drops them
+    // from its environment at start; this holds for embeds too).
+    for key in ENGINE_SECRETS {
+        command.env_remove(key);
+    }
     command.env("CLAUDE_CODE_ENTRYPOINT", "zend");
 }
+
+const ENGINE_SECRETS: [&str; 3] = ["ZEND_EDGE_TOKEN", "ZEND_EDGE_TOKEN_FILE", "ZEND_IPC_TOKEN"];
 
 const INHERITED_SESSION_MARKERS: [&str; 11] = [
     "CLAUDECODE",

@@ -8,7 +8,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use zend_app::{edge_url_from_env, paths, workos_client_id_from_env};
+use zend_app::{edge_token_from_env, edge_url_from_env, paths, workos_client_id_from_env};
 use zend_cli::{Engines, Launch};
 
 fn main() -> anyhow::Result<()> {
@@ -21,7 +21,17 @@ fn main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)
         }
         Launch::Window { open_url, .. } => {
-            let edge_token = std::env::var("ZEND_EDGE_TOKEN").ok();
+            // zend's window is the zgx app beside this binary, when it's there.
+            #[cfg(unix)]
+            if let Some(app) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("zend-zgx"))).filter(|app| app.exists()) {
+                use std::os::unix::process::CommandExt;
+                let mut command = std::process::Command::new(&app);
+                if let Some(url) = &open_url {
+                    command.arg(url);
+                }
+                return Err(anyhow::Error::from(command.exec()).context(format!("starting {}", app.display())));
+            }
+            let edge_token = edge_token_from_env();
             // Headed: the UI probes ZEND_IPC_PORT and connects to a running
             // daemon, or embeds the engine in-process (ARCHITECTURE §1).
             zend_ui::run_app(zend_ui::UiConfig {

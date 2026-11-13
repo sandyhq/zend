@@ -11,6 +11,15 @@ pub fn run() -> anyhow::Result<()> {
     crate::init_logging(true, "engine", false);
     crate::long_running_setup();
     let config = crate::engine_config_from_env();
+    // The edge bearer is the engine's alone: read, then out of the
+    // environment every agent, terminal and hook it starts would inherit.
+    // SAFETY: at start, before the engine's runtime spawns any thread that
+    // reads the environment.
+    unsafe {
+        std::env::remove_var("ZEND_EDGE_TOKEN");
+        std::env::remove_var("ZEND_EDGE_TOKEN_FILE");
+        std::env::remove_var("ZEND_IPC_TOKEN");
+    }
     zend_engine::desktop_notify::enable();
     let app = std::env::var_os(zend_engine::managed::APP_ENV).map(PathBuf::from);
     // Banners carry the app's name and icon (the development bundle's for

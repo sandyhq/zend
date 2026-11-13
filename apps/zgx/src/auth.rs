@@ -89,6 +89,15 @@ const STAGING: Env = Env {
     client: "client_01KWD0E9SYPV2WE4QN9TP9DP0W",
     port: 27642,
 };
+/// zend's: its own edge (resolved at run time, see [`endpoint_with`]) and
+/// its dev bearers; no sign-in client.
+#[cfg(not(feature = "beta"))]
+const ZEND: Env = Env {
+    name: "zend",
+    edge: "",
+    client: "",
+    port: 27642,
+};
 const PRODUCTION: Env = Env {
     name: "production",
     edge: "https://edge.zend.invalid",
@@ -140,17 +149,22 @@ fn endpoint_with(_var: impl Fn(&str) -> Option<String>) -> Endpoint {
 /// A development build's: staging's by default, or as the variables say.
 #[cfg(not(feature = "beta"))]
 fn endpoint_with(var: impl Fn(&str) -> Option<String>) -> Endpoint {
+    // zend's own by default: the self-hosted edge zend_cli resolves
+    // (`ZEND_EDGE_URL`, else ~/.config/zend/edge-url) with its dev bearers,
+    // no hosted sign-in client.
     let base = match var("ZEND_ZGX_ENV").as_deref() {
         Some("production" | "prod") => &PRODUCTION,
-        _ => &STAGING,
+        Some("staging") => &STAGING,
+        _ => &ZEND,
     };
     let edge = var("ZEND_ZGX_EDGE");
     let client = var("ZEND_ZGX_WORKOS_CLIENT");
     let port = var("ZEND_ZGX_CALLBACK_PORT").and_then(|p| p.parse().ok());
     let custom = edge.is_some() || client.is_some() || port.is_some();
+    let base_edge = if base.name == ZEND.name { zend_cli::edge_url_from_env() } else { base.edge.into() };
     Endpoint {
         name: if custom { "custom" } else { base.name },
-        edge: edge.unwrap_or_else(|| base.edge.into()).trim_end_matches('/').into(),
+        edge: edge.unwrap_or(base_edge).trim_end_matches('/').into(),
         client: client.unwrap_or_else(|| base.client.into()),
         port: port.unwrap_or(base.port),
     }
@@ -198,6 +212,8 @@ mod endpoint_tests {
     #[test]
     fn a_development_build_is_staging_unless_told() {
         let at = endpoint_with(|_| None);
+        assert_eq!((at.name, at.client.as_str()), ("zend", ""));
+        let at = endpoint_with(|key| (key == "ZEND_ZGX_ENV").then(|| "staging".into()));
         assert_eq!((at.name, at.edge.as_str(), at.port), ("staging", STAGING.edge, STAGING.port));
         let at = endpoint_with(|key| (key == "ZEND_ZGX_ENV").then(|| "production".into()));
         assert_eq!((at.name, at.edge.as_str(), at.port), ("production", PRODUCTION.edge, PRODUCTION.port));

@@ -55,26 +55,30 @@ use std::time::{Duration, Instant};
 
 /// The production engine's data dirs, relative to home: today's and the one
 /// it was renamed from in 0.2.0.
-const PRODUCTION_DATA: &[&str] = &[".zend", ".comet-native"];
+/// None: ~/.zend is zend's own engine's (STAGING_DATA).
+const PRODUCTION_DATA: &[&str] = &[];
 
 /// The ports the production engine serves: Zend's, and the one Zend v3's
 /// Windows install serves beside it.
-const PRODUCTION_PORTS: &[u16] = &[zend_cli::DEFAULT_IPC_PORT, 27655];
+/// zend: the ports of the app it was forked from (27654, and 27655 on
+/// Windows), which may run beside it; never attached to by accident.
+const PRODUCTION_PORTS: &[u16] = &[27654, 27655];
 
 /// The production engine's data dirs: [`PRODUCTION_DATA`] under home, and on
 /// Windows where zend_cli puts it there (%LOCALAPPDATA%\Zend, which no
 /// HOME moves).
 fn production_dirs(var: &impl Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = PRODUCTION_DATA.iter().map(|dir| home.join(dir)).collect();
-    if cfg!(windows) {
+    if cfg!(windows) && !PRODUCTION_DATA.is_empty() {
         let local = var("LOCALAPPDATA").map(PathBuf::from).or_else(|| var("USERPROFILE").map(|p| Path::new(&p).join("AppData").join("Local")));
         dirs.extend(local.map(|local| local.join("Zend")));
     }
     dirs
 }
 
-const STAGING_PORT: u16 = 27871;
-const STAGING_DATA: &str = ".zend-staging";
+/// zend's engine: its port and data (zend_cli's defaults, the CLI's too).
+const STAGING_PORT: u16 = zend_cli::DEFAULT_IPC_PORT;
+const STAGING_DATA: &str = ".zend";
 
 const BETA: bool = cfg!(feature = "beta");
 
@@ -382,16 +386,11 @@ fn spawn(config: &Config, bin: &Path) -> std::io::Result<()> {
             .env("CLAUDE_CONFIG_DIR", claude)
             .env("CODEX_HOME", codex);
     }
-    // zend: a self-hosted edge in dev-mode auth. The bearer (`u-…@org`, the
-    // edge's DEV_USERS) is read from a file so it never sits in this app's
-    // environment; the engine gets it and no WorkOS client (dev mode).
+    // The edge bearer (`u-…@org`, the edge's DEV_USERS) stays in its file:
+    // the engine reads it there itself (`ZEND_EDGE_TOKEN_FILE`, else
+    // ~/.config/zend/edge-token), so it is in no environment.
     if let Some(path) = std::env::var_os("ZEND_ZGX_EDGE_TOKEN_FILE") {
-        let token = std::fs::read_to_string(&path)?;
-        let token = token.trim();
-        if token.is_empty() {
-            return Err(std::io::Error::other("ZEND_ZGX_EDGE_TOKEN_FILE is empty"));
-        }
-        command.env("ZEND_EDGE_TOKEN", token).env("ZEND_WORKOS_CLIENT_ID", "");
+        command.env("ZEND_EDGE_TOKEN_FILE", path);
     }
     #[cfg(unix)]
     {
@@ -452,21 +451,12 @@ mod tests {
         let home = Path::new("/Users/someone");
         let edge = "https://staging.zend.invalid";
         assert!(config_of(&[("ZEND_ZGX_ENGINE_PORT", "27654")], home, None, edge).is_err());
-        assert!(config_of(&[("ZEND_ZGX_ENGINE_DATA", "~/.zend")], home, None, edge).is_err());
-        assert!(config_of(&[("ZEND_ZGX_ENGINE_DATA", "~/.comet-native")], home, None, edge).is_err());
         assert!(config_of(&[("ZEND_ZGX_ENGINE_PORT", "27655")], home, None, edge).is_err());
         // Asked for by name, it's allowed.
-        let production = config_of(&[("ZEND_ZGX_ENGINE_PORT", "27655"), ("ZEND_ZGX_ENGINE_DATA", "~/.zend"), ("ZEND_ZGX_ENGINE_PRODUCTION", "1")], home, None, edge).unwrap();
-        assert_eq!((production.port, production.data_dir.clone()), (27655, home.join(".zend")));
-        // Windows' own place for it, which no HOME moves.
-        if cfg!(windows) {
-            let local = [("LOCALAPPDATA", r"C:\Users\someone\AppData\Local"), ("ZEND_ZGX_ENGINE_DATA", r"C:\Users\someone\AppData\Local\Zend")];
-            assert!(config_of(&local, home, None, edge).is_err());
-            let profile = [("USERPROFILE", r"C:\Users\someone"), ("ZEND_ZGX_ENGINE_DATA", r"C:\Users\someone\AppData\Local\Zend")];
-            assert!(config_of(&profile, home, None, edge).is_err());
-        }
+        let production = config_of(&[("ZEND_ZGX_ENGINE_PORT", "27655"), ("ZEND_ZGX_ENGINE_PRODUCTION", "1")], home, None, edge).unwrap();
+        assert_eq!(production.port, 27655);
         let staging = config_of(&[], home, None, edge).unwrap();
-        assert_eq!((staging.port, staging.data_dir.clone()), (STAGING_PORT, home.join(STAGING_DATA)));
+        assert_eq!((staging.port, staging.data_dir.clone()), (27871, home.join(".zend")));
         assert!(!staging.follows_bundle());
     }
 

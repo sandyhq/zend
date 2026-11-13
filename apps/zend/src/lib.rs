@@ -13,7 +13,7 @@ pub mod ipc_cli;
 pub mod plugin_cli;
 
 pub use zend_cli::{
-    DEFAULT_EDGE_URL, DEFAULT_WORKOS_CLIENT_ID, edge_url_from_env, init_logging,
+    DEFAULT_EDGE_URL, DEFAULT_WORKOS_CLIENT_ID, edge_token_from_env, edge_url_from_env, init_logging,
     long_running_setup, open_log_file, paths, workos_client_id_from_env,
 };
 pub use engine_commands::run_engine_command;
@@ -34,7 +34,7 @@ static ALLOC: allocator::Allocator = allocator::Allocator;
 /// operate on the exact session the daemon will load.
 pub fn engine_config_from_env() -> zend_engine::EngineConfig {
     // Dev-mode bearer (no WorkOS): an explicit token enables sync.
-    let edge_token = std::env::var("ZEND_EDGE_TOKEN").ok();
+    let edge_token = edge_token_from_env();
     zend_engine::EngineConfig {
         data_dir: paths::data_dir(),
         edge_url: edge_url_from_env(),
