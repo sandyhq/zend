@@ -45,7 +45,7 @@ describe("username rules", () => {
 
   it("reserves routes and our own name, however they're spelled", () => {
     // `wing` is staff's (the PR #1137 review, R17): reserved for new claims.
-    for (const name of ["admin", "api", "support", "zend", "ad-min", "sup_port", "zend-team", "zendofficial", "z_eron", "wing"]) {
+    for (const name of ["admin", "api", "support", "zend", "ad-min", "sup_port", "zend-team", "zendofficial", "z_end", "wing"]) {
       expect(isReservedUsername(name)).toBe(true);
     }
     for (const name of ["ada", "supporter"]) expect(isReservedUsername(name)).toBe(false);
