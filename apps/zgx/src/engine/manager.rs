@@ -20,13 +20,13 @@
 //! `ZEND_ZGX_ENGINE_PORT` (27871) with its data in `ZEND_ZGX_ENGINE_DATA`
 //! (~/.zend-staging), scripts/staging-app.sh's. One already serving that port
 //! is used as it is; otherwise this app starts `zend-engine`
-//! (`ZEND_ZGX_ENGINE_BIN`, or this checkout's `target/debug/zend-engine`:
+//! (`ZEND_ZGX_ENGINE_BIN`, else the `zend-engine` beside this app, else this checkout's `target/debug/zend-engine`:
 //! `cargo build -p zend --bin zend-engine` at the repository's root)
 //! against the same edge and sign-in client as `src/auth.rs`'s, detached, so
 //! it outlives the app as the shipping app's engine does.
 //!
 //!   ZEND_ZGX_ENGINE_PORT=<n>     the engine's IPC port (27871)
-//!   ZEND_ZGX_ENGINE_DATA=<dir>   its data dir (~/.zend-staging)
+//!   ZEND_ZGX_ENGINE_DATA=<dir>   its data dir (~/.zend)
 //!   ZEND_ZGX_ENGINE_BIN=<path>   the engine to start when none answers
 //!   ZEND_ZGX_ENGINE_HOME=<dir>   a home of its own for the engine it starts
 //!                                 (HOME, CLAUDE_CONFIG_DIR, CODEX_HOME), so
@@ -230,7 +230,12 @@ impl Config {
                 return Err(format!("{} is the production engine's (ZEND_ZGX_ENGINE_PRODUCTION=1 to use it anyway)", dir.display()));
             }
         }
-        let bin = var("ZEND_ZGX_ENGINE_BIN").map(|p| expand(&p, home)).or_else(|| {
+        let beside = || {
+            let exe = std::env::current_exe().ok()?;
+            let engine = exe.parent()?.join("zend-engine");
+            engine.exists().then_some(engine)
+        };
+        let bin = var("ZEND_ZGX_ENGINE_BIN").map(|p| expand(&p, home)).or_else(beside).or_else(|| {
             // This checkout's: apps/zgx is two below the repository's root.
             let built = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/zend-engine");
             built.exists().then_some(built)
