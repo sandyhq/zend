@@ -353,8 +353,12 @@ impl Visuals {
         let all = self.revs(None);
         for (scope, shared) in self.shared.borrow().iter() {
             match scope {
-                None => shared.set(all.clone()),
-                Some(prefix) => shared.set(self.revs(Some(prefix))),
+                None => {
+                    shared.set(all.clone());
+                }
+                Some(prefix) => {
+                    shared.set(self.revs(Some(prefix)));
+                }
             }
         }
     }
