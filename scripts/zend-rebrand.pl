@@ -32,6 +32,8 @@ sub rebrand {
     $s =~ s/ZERON/ZEND/g;
     $s =~ s/Zeron/Zend/g;
     $s =~ s/zeron/zend/g;
+    # Lookalikes of the brand in the edge's name tests: zend's own.
+    $s =~ s/\bzer0n\b/zen_d/g; $s =~ s/\bZer0n\b/Ze-nd/g; $s =~ s/\bzer_on\b/ze_nd/g;
     $s =~ s{\x{1}KEEP(\d+)\x{1}}{$keep[$1]}g;
     return $s;
 }

@@ -199,7 +199,7 @@ describe("R17: a lookup says who, how sure, and what to compare", () => {
 
   it("keeps brand, staff and lookalike names from being claimed", async () => {
     const { userId } = await person();
-    for (const name of ["github", "anthropic", "openai", "google", "apple", "microsoft", "wing", "admin", "support", "security", "zer0n", "the-zend", "openai-dev", "github_bot", "g00gle", "adm1n", "zend-support", "wingleeio"]) {
+    for (const name of ["github", "anthropic", "openai", "google", "apple", "microsoft", "wing", "admin", "support", "security", "zen_d", "the-zend", "openai-dev", "github_bot", "g00gle", "adm1n", "zend-support", "wingleeio"]) {
       const res = await edge(userId, "POST", "/username", { username: name });
       expect(res.status, name).toBe(403);
     }
@@ -361,7 +361,7 @@ describe("R24: invitations", () => {
   });
 
   it("refuses org names with links, addresses, lookalike letters or our name", async () => {
-    for (const name of ["Verify at evil.com", "https://x.test", "Zend Security", "Zer0n Team", "Acme‮gnp", "Pаypal Support", "Login www.example", "mail me@x.io", "GitHub", "Open AI"]) {
+    for (const name of ["Verify at evil.com", "https://x.test", "Zend Security", "Ze-nd Team", "Acme‮gnp", "Pаypal Support", "Login www.example", "mail me@x.io", "GitHub", "Open AI"]) {
       const { userId } = await person();
       const created = await auth("POST", "/auth/orgs", userId, { json: { name } });
       expect(created.status, name).toBe(400);
