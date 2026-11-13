@@ -1,4 +1,6 @@
 [package]
+# Vendored: zgx's workspace by path (cargo finds no uncached root for a path dependency).
+workspace = "../.."
 # Integration tests build as a few binaries by area (see AGENTS.md).
 autotests = false
 name = "zgx-script"

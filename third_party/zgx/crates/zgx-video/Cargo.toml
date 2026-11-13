@@ -1,4 +1,6 @@
 [package]
+# Vendored: zgx's workspace by path (cargo finds no uncached root for a path dependency).
+workspace = "../.."
 name = "zgx-video"
 version.workspace = true
 edition.workspace = true
