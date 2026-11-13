@@ -1075,7 +1075,14 @@ export class UserDirectory extends DurableObject<Env> {
    * here. The same key again from its owner is a no-op that succeeds without
    * one, so an engine can retry a registration whose answer it lost. A
    * revoked key stays revoked. */
-  registerPluginKey(userId: string, key: string, deviceId: string | null, stepUpHash?: string): PluginKeyRegistration {
+  registerPluginKey(
+    userId: string,
+    key: string,
+    deviceId: string | null,
+    stepUpHash?: string,
+    /** zend self-hosting (DEV_USERS): the bearer is the secret, no sign-in mints tickets. */
+    stepUpWaived = false
+  ): PluginKeyRegistration {
     return this.ctx.storage.transactionSync((): PluginKeyRegistration => {
       const [row] = this.ctx.storage.sql.exec("SELECT user_id, revoked_at FROM plugin_keys WHERE key = ?", key).toArray();
       if (row) {
@@ -1088,7 +1095,7 @@ export class UserDirectory extends DurableObject<Env> {
         .exec("SELECT COUNT(*) AS n FROM plugin_keys WHERE user_id = ? AND created_at > ?", userId, now - 86_400_000)
         .one().n as number;
       if (today >= PLUGIN_KEYS_PER_DAY) return "rate_limited";
-      if (!this.useStepUp(userId, stepUpHash)) return "step_up_required";
+      if (!stepUpWaived && !this.useStepUp(userId, stepUpHash)) return "step_up_required";
       this.ctx.storage.sql.exec(
         "INSERT INTO plugin_keys (key, user_id, device_id, created_at) VALUES (?, ?, ?, ?)",
         key,
