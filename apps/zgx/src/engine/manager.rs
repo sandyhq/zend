@@ -382,6 +382,17 @@ fn spawn(config: &Config, bin: &Path) -> std::io::Result<()> {
             .env("CLAUDE_CONFIG_DIR", claude)
             .env("CODEX_HOME", codex);
     }
+    // zend: a self-hosted edge in dev-mode auth. The bearer (`u-…@org`, the
+    // edge's DEV_USERS) is read from a file so it never sits in this app's
+    // environment; the engine gets it and no WorkOS client (dev mode).
+    if let Some(path) = std::env::var_os("ZERON_ZGX_EDGE_TOKEN_FILE") {
+        let token = std::fs::read_to_string(&path)?;
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(std::io::Error::other("ZERON_ZGX_EDGE_TOKEN_FILE is empty"));
+        }
+        command.env("ZERON_EDGE_TOKEN", token).env("ZERON_WORKOS_CLIENT_ID", "");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

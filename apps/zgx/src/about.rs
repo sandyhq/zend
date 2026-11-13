@@ -348,7 +348,10 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
                 return Ok(Value::record([("latest", Value::from(latest.as_str())), ("available", Value::Bool(available))]));
             }
             // A development build: the public stable feed, beside the
-            // engine's own report.
+            // engine's own report. zend's self-hosted builds ask nobody.
+            if std::env::var_os("ZERON_ZGX_EDGE_TOKEN_FILE").is_some() {
+                return Err("failed".to_string());
+            }
             let manifest = on_tokio(async { zeron_update::fetch_latest_on(zeron_cli::DEFAULT_EDGE_URL, Channel::Stable).await })
                 .await
                 .ok_or("failed")?

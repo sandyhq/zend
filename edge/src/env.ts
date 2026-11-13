@@ -26,6 +26,11 @@ export interface Env {
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */
   AUTH_MODE: string;
+  /** zend self-hosting: comma-separated bearers (`userId@orgId`) dev mode
+   * accepts. Set ⇒ any other bearer, and every dev runner bearer, is refused,
+   * so a long random userId works as the shared secret. Unset ⇒ dev mode as
+   * upstream (everyone). */
+  DEV_USERS?: string;
   /** "1": ChatRoom also stores its head on every push. Set this and wait out
    * one bookkeeping flush (5 min) before rolling back past the release that
    * derives the head from the rows: older code reads the stored copy, and a

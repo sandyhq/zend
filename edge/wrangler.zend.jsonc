@@ -1,0 +1,36 @@
+{
+  // zend: the edge self-hosted on the AI VM, run by `wrangler dev` (workerd +
+  // miniflare's local Durable Objects and R2, persisted under --persist-to).
+  // Reachable only on the tailnet. No routes, no Cloud, no vault, no cards'
+  // browser: those routes answer unavailable. Auth: AUTH_MODE=dev with
+  // DEV_USERS (set by the container from a secret), see src/auth.ts.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zend-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
+  "alias": { "loro-crdt": "loro-crdt/base64" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION_ROOMS", "class_name": "SessionRoom" },
+      { "name": "DEVICE_ROOMS", "class_name": "DeviceRoom" },
+      { "name": "PREVIEW_ROOMS", "class_name": "PreviewRoom" },
+      { "name": "REGISTRY_ROOMS", "class_name": "RegistryRoom" },
+      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" },
+      { "name": "USER_DIRECTORY", "class_name": "UserDirectory" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SessionRoom", "DeviceRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["RegistryRoom"] },
+    { "tag": "v3", "new_sqlite_classes": ["ChatRoom"] },
+    { "tag": "v4", "new_sqlite_classes": ["PreviewRoom"] },
+    { "tag": "v6", "new_sqlite_classes": ["UserDirectory"] }
+  ],
+  "r2_buckets": [
+    { "binding": "BLOBS", "bucket_name": "zend-blobs" },
+    { "binding": "RELEASES", "bucket_name": "zend-releases" }
+  ],
+  "vars": { "AUTH_MODE": "dev", "WORKOS_CLIENT_ID": "" }
+}
