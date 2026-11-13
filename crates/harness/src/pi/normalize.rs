@@ -206,7 +206,7 @@ fn tool(name: &str, args: &Value) -> ToolCall {
         },
         name if name.starts_with("zend_") => ToolCall::Mcp {
             server: "zend".into(),
-            tool: name[6..].into(),
+            tool: name["zend_".len()..].into(),
             input: Some(args.clone()),
         },
         _ => ToolCall::Unknown {
@@ -248,5 +248,13 @@ mod tests {
         assert!(
             matches!(&events[0],AgentEvent::ToolResult{id,diff:Some(diff),..} if id=="t" && diff.new_text=="new")
         );
+    }
+
+    #[test]
+    fn zend_tools_keep_their_whole_name() {
+        assert!(matches!(tool("zend_whoami", &json!({})),
+            ToolCall::Mcp { server, tool, .. } if server == "zend" && tool == "whoami"));
+        assert!(matches!(tool("zend_create_chats", &json!({})),
+            ToolCall::Mcp { server, tool, .. } if server == "zend" && tool == "create_chats"));
     }
 }
