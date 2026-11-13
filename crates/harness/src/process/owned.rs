@@ -172,6 +172,10 @@ mod tests {
                 "CLAUDE_CODE_SSE_PORT",
                 "CLAUDE_EFFORT",
                 "CLAUDE_PID",
+                // The engine's secrets: never an agent's.
+                "ZEND_EDGE_TOKEN",
+                "ZEND_EDGE_TOKEN_FILE",
+                "ZEND_IPC_TOKEN",
             ]
         );
         assert_eq!(
