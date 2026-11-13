@@ -64,7 +64,7 @@ local function paragraph(i: number)
         ", ",
         ui.span { "emphasis", italic = true },
         ", a ",
-        ui.span { "link", color = "#5ea5ff", underline = true, href = "https://zgx.zeron.sh" },
+        ui.span { "link", color = "#5ea5ff", underline = true, href = "https://zgx.zend.invalid" },
         " and ",
         ui.span { "struck", strike = true },
         ` to line {i}.`,

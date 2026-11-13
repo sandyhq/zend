@@ -1,8 +1,8 @@
-//! The version-change hook (`zeron_update::set_before_restart`) prepares
+//! The version-change hook (`zend_update::set_before_restart`) prepares
 //! the live engine's store, and keeps no engine alive once it is shut down.
 //! (A binary of its own: the hook is process-wide, the newest one wins.)
 
-use zeron_engine::{Engine, EngineConfig, HarnessId};
+use zend_engine::{Engine, EngineConfig, HarnessId};
 
 #[tokio::test]
 async fn the_restart_hook_reaches_the_live_engine_and_holds_none_after() {
@@ -28,7 +28,7 @@ async fn the_restart_hook_reaches_the_live_engine_and_holds_none_after() {
     let retired = runtime.core().doc_host.retirement_probe();
 
     assert!(!store.snapshot_deltas_stopped());
-    zeron_update::run_before_restart();
+    zend_update::run_before_restart();
     assert!(
         store.snapshot_deltas_stopped(),
         "the hook prepared the running engine's store"
@@ -44,5 +44,5 @@ async fn the_restart_hook_reaches_the_live_engine_and_holds_none_after() {
     }
     assert!(retired(), "the hook (or anything else) kept the engine alive");
     // With the engine gone there is nothing to prepare, and nothing breaks.
-    zeron_update::run_before_restart();
+    zend_update::run_before_restart();
 }

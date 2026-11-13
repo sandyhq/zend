@@ -633,7 +633,7 @@ describe("a machine whose data is gone", () => {
     expect(current.state).toBe("data_expired");
     expect(current.dataExpired).toBeUndefined();
     expect(current.failedAction).toBeUndefined();
-    const named = await call("POST", `/cloud/org1/sessions/${s.chatId}/sleep`, bearer, {}, { "x-zeron-cloud-states": "something_later, data_expired" });
+    const named = await call("POST", `/cloud/org1/sessions/${s.chatId}/sleep`, bearer, {}, { "x-zend-cloud-states": "something_later, data_expired" });
     expect(((await named.json()) as SessionView).state).toBe("data_expired");
   });
 
@@ -667,19 +667,19 @@ describe("a machine whose data is gone", () => {
     await expect
       .poll(async () => {
         const state = await boatState();
-        next = state.sandboxes.find((b) => b.id !== s.sandboxId && b.env.ZERON_RUNNER_ENROLL?.includes(`.${s.deviceId}.`));
+        next = state.sandboxes.find((b) => b.id !== s.sandboxId && b.env.ZEND_RUNNER_ENROLL?.includes(`.${s.deviceId}.`));
         return next !== undefined;
       })
       .toBe(true);
-    expect(next!.env.ZERON_CLOUD_REPO).toBe(created.env.ZERON_CLOUD_REPO);
-    expect(next!.env.ZERON_CLOUD_BRANCH).toBe(created.env.ZERON_CLOUD_BRANCH);
-    expect(next!.env.ZERON_CLOUD_CHAT).toBe(s.chatId);
+    expect(next!.env.ZEND_CLOUD_REPO).toBe(created.env.ZEND_CLOUD_REPO);
+    expect(next!.env.ZEND_CLOUD_BRANCH).toBe(created.env.ZEND_CLOUD_BRANCH);
+    expect(next!.env.ZEND_CLOUD_CHAT).toBe(s.chatId);
     // The dead one is dropped.
     await expect.poll(async () => (await boatState()).sandboxes.find((b) => b.id === s.sandboxId)?.deleted).toBe(true);
 
     // A new disk has no key: the same device enrolls a new one.
     const key = await runnerKey();
-    const code = next!.env.ZERON_RUNNER_ENROLL!.split(".").at(-1)!;
+    const code = next!.env.ZEND_RUNNER_ENROLL!.split(".").at(-1)!;
     expect((await enroll(u, s.deviceId, code, key.publicKey)).status).toBe(200);
     await expect.poll(async () => (await session(u, s.chatId))?.state).toBe("ready");
     expect(await session(u, s.chatId)).toMatchObject({ machine: "large", sandbox: { id: next!.id } });

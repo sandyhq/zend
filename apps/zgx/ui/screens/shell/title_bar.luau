@@ -1,5 +1,5 @@
 -- The main window's title bar: the design system's (ds.TitleBar: the
--- window's buttons, the sidebar's toggle, back and forward, at Zeron's
+-- window's buttons, the sidebar's toggle, back and forward, at Zend's
 -- places), over the window's top, its island showing while the sidebar is
 -- collapsed over a new chat's wallpaper. At its other end, the page's own
 -- controls: on a session, its panel's toggle. Plugins place theirs by
@@ -45,8 +45,8 @@ local function corner_card(size: number): Node
 			w = (18 + stroke) * s,
 			h = (16 + stroke) * s,
 			rounded = raw((4 + stroke / 2) * s),
-			border = "$zeron.glyph.stroke",
-			border_color = "$zeron.bar.ink",
+			border = "$zend.glyph.stroke",
+			border_color = "$zend.bar.ink",
 		},
 		ui.div {
 			absolute = true,
@@ -55,7 +55,7 @@ local function corner_card(size: number): Node
 			w = 5.5 * s,
 			h = 4.5 * s,
 			rounded = raw(0.875 * s),
-			bg = "$zeron.bar.ink",
+			bg = "$zend.bar.ink",
 		},
 	}
 end
@@ -74,9 +74,9 @@ return function(props: Props): Node
 	local actions = ui.row {
 		id = "titlebar-actions",
 		items = "center",
-		gap = "$zeron.island.gap",
+		gap = "$zend.island.gap",
 		-- The session's details (its lanes: side chats and subagents), as
-		-- Zeron's titlebar toggle: its count while any run, open or not.
+		-- Zend's titlebar toggle: its count while any run, open or not.
 		ui.show(
 			function(): boolean
 				local l = lanes()
@@ -122,7 +122,7 @@ return function(props: Props): Node
 						items = "center",
 						justify = "center",
 						rounded = "$radius.full",
-						bg = "$zeron.status.working",
+						bg = "$zend.status.working",
 						pointer_events = "none",
 						ui.text {
 							function(): string
@@ -157,7 +157,7 @@ return function(props: Props): Node
 				on_click = function()
 					fit.toggle_panel()
 				end,
-				ds.SidebarIcon { open = props.files, side = "right", size = 16, ink = "$zeron.bar.ink" },
+				ds.SidebarIcon { open = props.files, side = "right", size = 16, ink = "$zend.bar.ink" },
 			}
 		),
 	}
@@ -174,7 +174,7 @@ return function(props: Props): Node
 			collapsed = props.collapsed,
 			on_toggle = fit.toggle_sidebar,
 			-- Glass behind the window's buttons and the controls while the
-			-- sidebar is collapsed over a wallpaper (v2's new chat). Zeron's own
+			-- sidebar is collapsed over a wallpaper (v2's new chat). Zend's own
 			-- look has no art here (`art` false): they stand on its top bar.
 			island = function(): boolean
 				return props.collapsed:get() and props.art()

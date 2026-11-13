@@ -1,8 +1,8 @@
 #![cfg(unix)]
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
-use zeron_harness::{ClaudeHarness, Harness};
-use zeron_proto::ReasoningLevel;
+use zend_harness::{ClaudeHarness, Harness};
+use zend_proto::ReasoningLevel;
 
 fn fixture(response: serde_json::Value) -> (tempfile::TempDir, ClaudeHarness) {
     let dir = tempfile::tempdir().unwrap();
@@ -47,7 +47,7 @@ async fn initialize_is_shared_and_curated_metadata_survives_the_live_union() {
     assert_eq!(defaults, ["claude-opus-5-5"]);
     let at = |id: &str| catalog.models.iter().position(|m| m.id == id).unwrap();
     assert_eq!(at("claude-opus-5-5") + 1, at("claude-opus-5-5[1m]"));
-    for curated in zeron_harness::claude::catalog::static_models() {
+    for curated in zend_harness::claude::catalog::static_models() {
         if let Some(row) = catalog.models.iter().find(|m| m.id == curated.id) {
             assert_eq!(row, &curated);
         }

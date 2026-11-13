@@ -4,7 +4,7 @@
 -- says, and says nothing for any other `status`. Setup's Name your
 -- organization uses it, and the gallery's.
 --
---   AddressLine { prefix = "zeron.sh/", value = function() return slug end, status = function() return "free" end }
+--   AddressLine { prefix = "zend.invalid/", value = function() return slug end, status = function() return "free" end }
 
 local Icon = require("@self/icon")
 local progress = require("@self/progress")
@@ -44,15 +44,15 @@ return function(props: Props): Node
 				text_size = "$font.size.sm",
 				line_height = "$font.line.sm",
 				color = function()
-					return if props.status() == "taken" then "$zeron.tone.danger.ink" else "$text.secondary"
+					return if props.status() == "taken" then "$zend.tone.danger.ink" else "$text.secondary"
 				end,
 			},
 		},
 		ui.row {
 			items = "center",
 			show("checking", progress.ProgressRing { size = 12, tone = "neutral", label = locale.t("ds.address_line.checking_label") }, locale.t("ds.address_line.checking"), "$text.tertiary"),
-			show("free", ui.div { y = -0.5, Icon { name = "check-circle", size = 12 } }, locale.t("ds.address_line.available"), "$zeron.tone.success.ink"),
-			show("taken", ui.div { y = -0.5, Icon { name = "close-circle", size = 12 } }, locale.t("ds.address_line.taken"), "$zeron.tone.danger.ink"),
+			show("free", ui.div { y = -0.5, Icon { name = "check-circle", size = 12 } }, locale.t("ds.address_line.available"), "$zend.tone.success.ink"),
+			show("taken", ui.div { y = -0.5, Icon { name = "close-circle", size = 12 } }, locale.t("ds.address_line.taken"), "$zend.tone.danger.ink"),
 		},
 	}
 end

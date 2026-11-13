@@ -146,7 +146,7 @@ function M.view(): Node
 					ui.div {
 						w_full = true,
 						opacity = function()
-							return if on:get() then 1 else "$zeron.disabled"
+							return if on:get() then 1 else "$zend.disabled"
 						end,
 						disabled = function()
 							return not on:get()

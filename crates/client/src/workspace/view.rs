@@ -5,7 +5,7 @@
 //! Ordering mirrors the desktop sidebar (`Shell::sidebar_visible_order`,
 //! "In one list" + "Last updated"): pinned sessions in their shared manual
 //! order, then the user's sections (each in its placed order), then everything
-//! else by recency ([`zeron_proto::view::sort_active`] keys). Archived and
+//! else by recency ([`zend_proto::view::sort_active`] keys). Archived and
 //! child (side/subagent) chats never appear in the active lists, and a chat
 //! pointing at a deleted project is hidden (projectless chats are first-class).
 
@@ -14,9 +14,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use zeron_doc::WorkspaceState;
-use zeron_proto::view::{attention_rank, display_status, project_key, representative_space};
-use zeron_proto::{
+use zend_doc::WorkspaceState;
+use zend_proto::view::{attention_rank, display_status, project_key, representative_space};
+use zend_proto::{
     ChangeRequestState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus,
     Device, Session, SidebarPreferences, SleepState, Space, WaitingKind,
 };
@@ -149,7 +149,7 @@ pub struct ProjectView {
     pub git_detected: bool,
     pub created_at_ms: i64,
     /// The repository project this checkout belongs to
-    /// ([`zeron_proto::view::project_key`]): clones and worktrees of one
+    /// ([`zend_proto::view::project_key`]): clones and worktrees of one
     /// repository, on any device, share it.
     pub group_key: String,
     /// The group's name — its representative checkout's — shared by every
@@ -362,7 +362,7 @@ const CLOUD_NAME: &str = "Cloud";
 /// A Cloud device: the logical one Cloud projects belong to, or a session's
 /// own machine.
 pub(crate) fn is_cloud_device(device_id: &str) -> bool {
-    device_id.starts_with(zeron_proto::CLOUD_DEVICE_PREFIX)
+    device_id.starts_with(zend_proto::CLOUD_DEVICE_PREFIX)
 }
 
 fn is_execution_host(device: &Device) -> bool {
@@ -466,7 +466,7 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
     let now_ms = cx.now.timestamp_millis();
     let session = rc.sessions.get(chat.id.as_str()).copied();
     let send_state = cx.send_states.get(&chat.id).copied();
-    let host_indicator = zeron_proto::view::native_display_status(chat, session, cx.now);
+    let host_indicator = zend_proto::view::native_display_status(chat, session, cx.now);
     let indicator = display_status(chat, session, cx.now);
     let (sleep_until_ms, woke_at_ms) = match chat.sleep_state(cx.now) {
         SleepState::Awake => (None, None),
@@ -474,7 +474,7 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
         SleepState::Woke { at } => (None, Some(at.timestamp_millis())),
     };
     let waits_on_process = indicator == ChatIndicator::Waiting
-        && zeron_proto::view::waiting(session, cx.now)
+        && zend_proto::view::waiting(session, cx.now)
             .is_some_and(|w| w.on.iter().any(|on| on.kind == WaitingKind::Process));
     let working_since_ms = match host_indicator {
         ChatIndicator::Working | ChatIndicator::AwaitingInput => session
@@ -517,7 +517,7 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
         preview: chat
             .last_message_preview
             .as_deref()
-            .map(zeron_proto::view::single_line)
+            .map(zend_proto::view::single_line)
             .filter(|p| !p.is_empty()),
         project,
         device_id: chat.device_id.clone(),
@@ -551,7 +551,7 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
         last_activity_ms: sort_key(chat).timestamp_millis(),
         time_label: relative_time_label(sort_key(chat).timestamp_millis(), now_ms),
         created_at_ms: chat.created_at.timestamp_millis(),
-        unseen: zeron_proto::view::has_unseen_activity(chat, session),
+        unseen: zend_proto::view::has_unseen_activity(chat, session),
         archived: chat.archived,
         pinned: rc.pinned.contains(chat.id.as_str()),
         section_id: rc.section_of.get(chat.id.as_str()).map(|s| (*s).to_owned()),
@@ -582,7 +582,7 @@ pub(crate) fn derive(
 ) -> WorkspaceSnapshot {
     let now_ms = cx.now.timestamp_millis();
     let pinned_order: &[String] = prefs.map_or(&[], |p| p.pinned_session_ids.as_slice());
-    let sections: &[zeron_proto::SidebarSection] = prefs.map_or(&[], |p| p.sections.as_slice());
+    let sections: &[zend_proto::SidebarSection] = prefs.map_or(&[], |p| p.sections.as_slice());
     let mut section_of: HashMap<&str, &str> = HashMap::new();
     for section in sections {
         for id in &section.session_ids {
@@ -766,7 +766,7 @@ pub(crate) fn derive(
             device
                 .capabilities
                 .iter()
-                .any(|c| c == zeron_proto::CLOUD_SESSION_CAPABILITY)
+                .any(|c| c == zend_proto::CLOUD_SESSION_CAPABILITY)
         });
     devices.sort_by(|a, b| {
         b.is_execution_host

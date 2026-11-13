@@ -1,6 +1,6 @@
 -- The main window's shortcuts, one list: what the shell's commands are
 -- made from (screens/shell/init, each its `ui.command`, its menu item and
--- its key) and what Settings → Shortcuts lists. Zeron's defaults (crates/ui
+-- its key) and what Settings → Shortcuts lists. Zend's defaults (crates/ui
 -- settings.rs `default_combo_on`), as zgx's actions have them.
 --
 --   keys.LIST            { { id, title, key, group, menu, reserved?, rule? }, … }
@@ -13,7 +13,7 @@
 --
 -- `group`: where Settings lists it ("Sessions", "Panels", "Go", "App");
 -- `menu`: the menu bar's menu it's in; `reserved`: a focused terminal
--- never has it first (Zeron's keep their shortcuts from a page);
+-- never has it first (Zend's keep their shortcuts from a page);
 -- `elsewhere`: another screen makes its command (the shell makes the rest).
 
 export type Key = {
@@ -59,7 +59,7 @@ end
 for _, k in
 	{
 		{ id = "shell.palette", title = "Search", key = "cmd+k", group = "App", menu = "File", reserved = true },
-		-- (The application menu's, over Services, as Zeron's was: macOS's
+		-- (The application menu's, over Services, as Zend's was: macOS's
 		-- first menu. `Application` is zgx-desktop's APPLICATION_MENU.)
 		{ id = "shell.check_updates", title = "Check for Updates…", key = "", group = "App", menu = "Application", rule = true },
 		{ id = "shell.settings", title = "Settings", key = "cmd+,", group = "App", menu = "Application", reserved = true },
@@ -68,7 +68,7 @@ for _, k in
 		{ id = "shell.dictate", title = "Hold to dictate", key = "cmd+d", group = "App", menu = "Edit", elsewhere = true },
 		{ id = "shell.close", title = "Close", key = "cmd+w", group = "App", menu = "File", reserved = true },
 		-- (No key of their own: Settings → Shortcuts can give them one.)
-		{ id = "shell.reload", title = "Reload Zeron", key = "", group = "App", menu = "View" },
+		{ id = "shell.reload", title = "Reload Zend", key = "", group = "App", menu = "View" },
 		{ id = "shell.reload_interface", title = "Reload interface", key = "", group = "App", menu = "View" },
 	} :: { Key }
 do

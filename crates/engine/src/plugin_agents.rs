@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use zeron_doc::SessionCommandPayload;
-use zeron_proto::{AgentAccount, AgentAccountsSnapshot, Chat, ChatConfig, HarnessId, Model, Session, SessionStatus, UserInputAnswer};
+use zend_doc::SessionCommandPayload;
+use zend_proto::{AgentAccount, AgentAccountsSnapshot, Chat, ChatConfig, HarnessId, Model, Session, SessionStatus, UserInputAnswer};
 
 use crate::agent_accounts::AgentAccounts;
 use crate::plugins::agents::{AgentHost, Delivery, NewChat, Pin};
@@ -140,7 +140,7 @@ impl AgentHost for EngineAgentHost {
     }
 
     fn create_chat(&self, new: &NewChat) -> Result<(), String> {
-        if new.device.as_deref().is_some_and(|d| zeron_proto::is_cloud_device(d, "")) {
+        if new.device.as_deref().is_some_and(|d| zend_proto::is_cloud_device(d, "")) {
             return Err("A Cloud chat is started from the composer".into());
         }
         self.workspace

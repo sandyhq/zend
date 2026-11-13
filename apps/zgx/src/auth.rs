@@ -1,4 +1,4 @@
-//! Zeron's account, for the scripts: the engine's session (src/engine),
+//! Zend's account, for the scripts: the engine's session (src/engine),
 //! signed into through the system browser (the hosted sign-in, which makes
 //! an account or signs into one), and the calls setup makes as it (a
 //! username, a card, the organizations it belongs to).
@@ -23,18 +23,18 @@
 //! The engine's edge, sign-in client and loopback port come from here (the
 //! engine this app starts is given them, src/engine/manager.rs).
 //!
-//! Zeron.app's beta (the `beta` feature) is production's only: edge.zeron.sh,
+//! Zend.app's beta (the `beta` feature) is production's only: edge.zend.invalid,
 //! its client and port 27641 (the only loopback production's WorkOS client
-//! accepts, shared with Zeron.app). It has no staging built in, and the
+//! accepts, shared with Zend.app). It has no staging built in, and the
 //! variables below do nothing in it.
 //!
 //! Development builds are staging's by default, production one variable
 //! away:
-//!   ZERON_ZGX_ENV=production       edge.zeron.sh, its client, port 27641
-//!   ZERON_ZGX_EDGE=<url>           the edge (https://staging.zeron.sh)
-//!   ZERON_ZGX_WORKOS_CLIENT=<id>   the sign-in client
-//!   ZERON_ZGX_CALLBACK_PORT=<n>    the loopback port that client redirects to
-//!   ZERON_ZGX_PRIVATE_SIGNIN=1     sign in in a private Chrome window (no
+//!   ZEND_ZGX_ENV=production       edge.zend.invalid, its client, port 27641
+//!   ZEND_ZGX_EDGE=<url>           the edge (https://staging.zend.invalid)
+//!   ZEND_ZGX_WORKOS_CLIENT=<id>   the sign-in client
+//!   ZEND_ZGX_CALLBACK_PORT=<n>    the loopback port that client redirects to
+//!   ZEND_ZGX_PRIVATE_SIGNIN=1     sign in in a private Chrome window (no
 //!                                  browser session picks the account)
 //!
 //! What scripts see, `account`:
@@ -66,7 +66,7 @@
 //!
 //! (A browser that turns the sign-in down ends at the engine's page; the
 //! engine's session never arrives, so it ends `timed_out` or `cancelled`.
-//! Earlier builds kept their own session in the Keychain, `sh.zeron.zgx`;
+//! Earlier builds kept their own session in the Keychain, `sh.zend.zgx`;
 //! it is left as it is, unused.)
 
 use std::{
@@ -85,13 +85,13 @@ use crate::engine::{self, rpc::Watch};
 #[cfg(not(feature = "beta"))]
 const STAGING: Env = Env {
     name: "staging",
-    edge: "https://staging.zeron.sh",
+    edge: "https://staging.zend.invalid",
     client: "client_01KWD0E9SYPV2WE4QN9TP9DP0W",
     port: 27642,
 };
 const PRODUCTION: Env = Env {
     name: "production",
-    edge: "https://edge.zeron.sh",
+    edge: "https://edge.zend.invalid",
     client: "client_01KWD0EAKZKD50YCQJNYSRE4BY",
     port: 27641,
 };
@@ -140,13 +140,13 @@ fn endpoint_with(_var: impl Fn(&str) -> Option<String>) -> Endpoint {
 /// A development build's: staging's by default, or as the variables say.
 #[cfg(not(feature = "beta"))]
 fn endpoint_with(var: impl Fn(&str) -> Option<String>) -> Endpoint {
-    let base = match var("ZERON_ZGX_ENV").as_deref() {
+    let base = match var("ZEND_ZGX_ENV").as_deref() {
         Some("production" | "prod") => &PRODUCTION,
         _ => &STAGING,
     };
-    let edge = var("ZERON_ZGX_EDGE");
-    let client = var("ZERON_ZGX_WORKOS_CLIENT");
-    let port = var("ZERON_ZGX_CALLBACK_PORT").and_then(|p| p.parse().ok());
+    let edge = var("ZEND_ZGX_EDGE");
+    let client = var("ZEND_ZGX_WORKOS_CLIENT");
+    let port = var("ZEND_ZGX_CALLBACK_PORT").and_then(|p| p.parse().ok());
     let custom = edge.is_some() || client.is_some() || port.is_some();
     Endpoint {
         name: if custom { "custom" } else { base.name },
@@ -173,10 +173,10 @@ mod endpoint_tests {
     /// Every variable that picks an edge, set to staging's.
     fn staging_vars(key: &str) -> Option<String> {
         match key {
-            "ZERON_ZGX_ENV" => Some("staging".into()),
-            "ZERON_ZGX_EDGE" => Some("https://staging.zeron.sh".into()),
-            "ZERON_ZGX_WORKOS_CLIENT" => Some("client_01KWD0E9SYPV2WE4QN9TP9DP0W".into()),
-            "ZERON_ZGX_CALLBACK_PORT" => Some("27642".into()),
+            "ZEND_ZGX_ENV" => Some("staging".into()),
+            "ZEND_ZGX_EDGE" => Some("https://staging.zend.invalid".into()),
+            "ZEND_ZGX_WORKOS_CLIENT" => Some("client_01KWD0E9SYPV2WE4QN9TP9DP0W".into()),
+            "ZEND_ZGX_CALLBACK_PORT" => Some("27642".into()),
             _ => None,
         }
     }
@@ -188,10 +188,10 @@ mod endpoint_tests {
             let at = endpoint_with(vars);
             assert_eq!(
                 (at.name, at.edge.as_str(), at.client.as_str(), at.port),
-                ("production", "https://edge.zeron.sh", "client_01KWD0EAKZKD50YCQJNYSRE4BY", 27641)
+                ("production", "https://edge.zend.invalid", "client_01KWD0EAKZKD50YCQJNYSRE4BY", 27641)
             );
         }
-        assert_eq!(endpoint().edge, "https://edge.zeron.sh");
+        assert_eq!(endpoint().edge, "https://edge.zend.invalid");
     }
 
     #[cfg(not(feature = "beta"))]
@@ -199,7 +199,7 @@ mod endpoint_tests {
     fn a_development_build_is_staging_unless_told() {
         let at = endpoint_with(|_| None);
         assert_eq!((at.name, at.edge.as_str(), at.port), ("staging", STAGING.edge, STAGING.port));
-        let at = endpoint_with(|key| (key == "ZERON_ZGX_ENV").then(|| "production".into()));
+        let at = endpoint_with(|key| (key == "ZEND_ZGX_ENV").then(|| "production".into()));
         assert_eq!((at.name, at.edge.as_str(), at.port), ("production", PRODUCTION.edge, PRODUCTION.port));
         assert_eq!(endpoint_with(staging_vars).name, "custom");
     }
@@ -447,7 +447,7 @@ impl Auth {
     fn new() -> Self {
         let endpoint = endpoint();
         eprintln!(
-            "zeron-zgx: account: {} ({}, callback port {}), kept by the engine",
+            "zend-zgx: account: {} ({}, callback port {}), kept by the engine",
             endpoint.name, endpoint.edge, endpoint.port
         );
         Self {
@@ -546,7 +546,7 @@ impl Auth {
             self.failure.set(None);
         } else if was_signed_in && self.failure.get().is_none() && !self.signed_out_here.get() {
             // Signed out, not by asking here: the session was refused.
-            eprintln!("zeron-zgx: account: the session ended");
+            eprintln!("zend-zgx: account: the session ended");
             self.failure.set(Some("expired"));
         }
         engine::get().session(now_signed_in);
@@ -563,7 +563,7 @@ impl Auth {
         zgx::timer::sleep(RESTORE_WAIT).await;
         let kept = session_exists() && engine::get().can_start();
         if *self.session.borrow() == Session::Unknown && gives_up_on_session(kept) {
-            eprintln!("zeron-zgx: account: no answer from the engine yet; shown signed out");
+            eprintln!("zend-zgx: account: no answer from the engine yet; shown signed out");
             self.gave_up.set(true);
             self.publish();
         }
@@ -593,11 +593,11 @@ impl Auth {
             Ok(()) => {
                 self.signed_out_here.set(false);
                 self.publish();
-                eprintln!("zeron-zgx: account: signed in");
+                eprintln!("zend-zgx: account: signed in");
                 Ok(self.value())
             }
             Err(outcome) => {
-                eprintln!("zeron-zgx: account: sign-in didn't finish ({outcome})");
+                eprintln!("zend-zgx: account: sign-in didn't finish ({outcome})");
                 self.failure.set(Some(outcome));
                 self.publish();
                 Err(outcome)
@@ -619,7 +619,7 @@ impl Auth {
             .call_soon("SignIn", params)
             .await
             .map_err(|error| {
-                eprintln!("zeron-zgx: account: the engine didn't start a sign-in: {error}");
+                eprintln!("zend-zgx: account: the engine didn't start a sign-in: {error}");
                 engine::outcome(&error)
             })?;
         // Empty: the engine has no sign-in to do (development).
@@ -628,7 +628,7 @@ impl Auth {
                 return Err("failed");
             }
             if let Err(error) = open_sign_in(url) {
-                eprintln!("zeron-zgx: account: the browser didn't open: {error}");
+                eprintln!("zend-zgx: account: the browser didn't open: {error}");
                 return Err("failed");
             }
         }
@@ -665,13 +665,13 @@ impl Auth {
         self.signed_out_here.set(true);
         self.access.borrow_mut().take();
         if let Err(error) = engine::get().call("SignOut", json!({})).await {
-            eprintln!("zeron-zgx: account: the engine didn't sign out: {error}");
+            eprintln!("zend-zgx: account: the engine didn't sign out: {error}");
         }
         *self.session.borrow_mut() = Session::SignedOut;
         self.failure.set(None);
         engine::get().session(false);
         self.publish();
-        eprintln!("zeron-zgx: account: signed out");
+        eprintln!("zend-zgx: account: signed out");
     }
 
     /// The engine's bearer, kept until it nears its end.
@@ -993,7 +993,7 @@ fn card_value(card: &Json) -> Value {
     ])
 }
 
-/// Opens a page the engine handed us in the browser. `ZERON_ZGX_PRIVATE_SIGNIN=1`
+/// Opens a page the engine handed us in the browser. `ZEND_ZGX_PRIVATE_SIGNIN=1`
 /// (development) opens it in a private Chrome window instead, so the
 /// browser's own sessions (a Google account it signs into by itself) can't
 /// pick the account: every sign-in asks.
@@ -1001,7 +1001,7 @@ pub fn open_sign_in(url: &str) -> std::io::Result<()> {
     if no_browser(url) {
         return Ok(());
     }
-    if cfg!(target_os = "macos") && std::env::var_os("ZERON_ZGX_PRIVATE_SIGNIN").is_some() {
+    if cfg!(target_os = "macos") && std::env::var_os("ZEND_ZGX_PRIVATE_SIGNIN").is_some() {
         return std::process::Command::new("/usr/bin/open")
             .args(["-na", "Google Chrome", "--args", "--incognito", url])
             .spawn()
@@ -1010,16 +1010,16 @@ pub fn open_sign_in(url: &str) -> std::io::Result<()> {
     open::that_detached(url)
 }
 
-/// `ZERON_ZGX_NO_BROWSER=1` (development: trying a flow without a browser
+/// `ZEND_ZGX_NO_BROWSER=1` (development: trying a flow without a browser
 /// window opening on this Mac): the page isn't opened, only its host said.
 /// Set to a file's path, the page goes in that file (owner-only), for a
 /// test rig's own browser to open.
 pub fn no_browser(url: &str) -> bool {
-    let Some(setting) = crate::dev::smoke_switch("ZERON_ZGX_NO_BROWSER") else {
+    let Some(setting) = crate::dev::smoke_switch("ZEND_ZGX_NO_BROWSER") else {
         return false;
     };
     let host = url.split("://").nth(1).and_then(|rest| rest.split(['/', '?']).next()).unwrap_or("");
-    eprintln!("zeron-zgx: (not opened: a page on {host})");
+    eprintln!("zend-zgx: (not opened: a page on {host})");
     if setting != "1" {
         #[cfg(unix)]
         {
@@ -1032,7 +1032,7 @@ pub fn no_browser(url: &str) -> bool {
                 .open(&setting)
                 .and_then(|mut file| file.write_all(url.as_bytes()));
             if let Err(error) = written {
-                eprintln!("zeron-zgx: the page couldn't be written for the rig: {error}");
+                eprintln!("zend-zgx: the page couldn't be written for the rig: {error}");
             }
         }
     }
@@ -1067,7 +1067,7 @@ enum Http {
 fn request(method: &str, url: &str, bearer: Option<&str>, body: Option<Json>) -> Http {
     let agent = ureq::AgentBuilder::new()
         .timeout(HTTP_TIMEOUT)
-        .user_agent("zeron-zgx")
+        .user_agent("zend-zgx")
         .build();
     let mut req = agent.request(method, url).set("accept", "application/json");
     if let Some(token) = bearer {
@@ -1088,7 +1088,7 @@ fn request(method: &str, url: &str, bearer: Option<&str>, body: Option<Json>) ->
 fn request_bytes(method: &str, url: &str, bearer: &str, bytes: &[u8], content_type: &str) -> Http {
     let agent = ureq::AgentBuilder::new()
         .timeout(HTTP_TIMEOUT)
-        .user_agent("zeron-zgx")
+        .user_agent("zend-zgx")
         .build();
     let answer = agent
         .request(method, url)

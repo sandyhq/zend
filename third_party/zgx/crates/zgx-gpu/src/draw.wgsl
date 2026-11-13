@@ -23,7 +23,7 @@ fn firm(a:f32, k:f32)->f32 {return a+k*.67*a*(1.-a);}
 // with their radii (top-left, top-right, bottom-right, bottom-left), cut
 // with antialiased corners; and a box (x0, y0, x1, y1) whose content fades
 // out over bands at its edges (top, right, bottom, left), quadratically, as
-// Zeron fades transcript edges. Logical units of the target, where the
+// Zend fades transcript edges. Logical units of the target, where the
 // pixel is on screen (a transformed quad's `point` is its own).
 // `color0..2` (`tint.x` on): its colour filters as rows of an affine map
 // of straight RGB (brightness, contrast, saturate), applied as the colour

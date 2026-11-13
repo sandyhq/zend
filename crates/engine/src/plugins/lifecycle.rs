@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use zeron_rpc::{RpcError, RpcReply, methods, parse_params};
+use zend_rpc::{RpcError, RpcReply, methods, parse_params};
 
 use super::capability;
 use super::install::{self, Package, Source};
@@ -91,8 +91,8 @@ pub fn handles(method: &str) -> bool {
 /// Who may send a plugin file here: this device's app, or another of your
 /// devices as the edge verified the link (an agent installs by `path`).
 fn uploads_origin() -> Result<super::reviews::Origin, RpcError> {
-    super::reviews::Origin::of(&zeron_rpc::caller())
-        .ok_or_else(|| failed("Only Zeron on one of your devices can send a plugin file here"))
+    super::reviews::Origin::of(&zend_rpc::caller())
+        .ok_or_else(|| failed("Only Zend on one of your devices can send a plugin file here"))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, RpcError> {
@@ -178,12 +178,12 @@ impl Plugins {
             }
             methods::EXPORT_PLUGIN => {
                 let p: ExportParams = parse_params(params)?;
-                // R29: an agent exports to Zeron's plugin-exports folder
-                // only; a path of its choosing is the person's (`zeron
+                // R29: an agent exports to Zend's plugin-exports folder
+                // only; a path of its choosing is the person's (`zend
                 // plugin export --to`, their save dialog).
-                if !zeron_rpc::caller().is_local() && p.to.as_deref().is_some_and(|to| !to.trim().is_empty()) {
+                if !zend_rpc::caller().is_local() && p.to.as_deref().is_some_and(|to| !to.trim().is_empty()) {
                     return Err(failed(
-                        "Agents export to Zeron's plugin-exports folder: leave out `to` (the reply says where it went)",
+                        "Agents export to Zend's plugin-exports folder: leave out `to` (the reply says where it went)",
                     ));
                 }
                 self.rescan().await;
@@ -265,7 +265,7 @@ impl Plugins {
         }
         source.version = package.manifest.version.clone();
         source.installed_at = now_secs();
-        let local = zeron_rpc::caller().is_local();
+        let local = zend_rpc::caller().is_local();
         let author = self.resolve_now(&package.key).await;
         let plugins_dir = self.inner.plugins_dir.clone();
         let staged = package.clone();
@@ -477,7 +477,7 @@ impl Plugins {
         self.rescan().await;
         let entry = self.entry(id).ok_or_else(|| failed(format!("There's no plugin {id}")))?;
         if entry.item.builtin {
-            return Err(failed("Built-in plugins update when Zeron does"));
+            return Err(failed("Built-in plugins update when Zend does"));
         }
         let mut found = install::found(&self.inner.plugins_dir, id, &entry.item.hash);
         if found.is_none() {
@@ -513,7 +513,7 @@ impl Plugins {
         self.rescan().await;
         let entry = self.entry(id).ok_or_else(|| failed(format!("There's no plugin {id}")))?;
         if entry.item.builtin {
-            return Err(failed("Built-in plugins update when Zeron does"));
+            return Err(failed("Built-in plugins update when Zend does"));
         }
         if entry.item.own {
             return Err(failed("It's one you're making on this device: there's nowhere else to get it from"));

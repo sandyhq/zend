@@ -1,12 +1,12 @@
--- Notes tool: two tools agents can call through Zeron's own MCP server
+-- Notes tool: two tools agents can call through Zend's own MCP server
 -- ("tools"; each is listed in the manifest). They run here, in this
--- plugin's sandbox, while Zeron is open on this Mac. `open_chat` says
+-- plugin's sandbox, while Zend is open on this Mac. `open_chat` says
 -- which chat you're looking at, by its title ("sessions.read": without it
 -- the session is only an id).
 
-local zeron = require("./zeron")("notes-tool")
+local zend = require("./zend")("notes-tool")
 
-zeron.tool {
+zend.tool {
 	name = "count_words",
 	run = function(args: any): any
 		local text = if type(args.text) == "string" then args.text else ""
@@ -21,10 +21,10 @@ zeron.tool {
 	end,
 }
 
-zeron.tool {
+zend.tool {
 	name = "open_chat",
 	run = function(): any
-		local session = zeron.context("session")
+		local session = zend.context("session")
 		if not session then
 			return { open = false }
 		end

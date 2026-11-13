@@ -1,17 +1,17 @@
 -- What a chat's composer offers as `@`, `/` and `$` are typed, for whichever
 -- composer shows that chat (the chat page's, a side chat's): the files of where
--- it works, the agent's commands and skills, then Zeron's own.
+-- it works, the agent's commands and skills, then Zend's own.
 --
 --   local c = Completions.bind { key, text, agent, target, files, in_chat, run }
 --   ds.Composer { mentions = c.lists, on_mention = c.on_mention,
 --     mention_enabled = c.enabled, mention_empty = c.empty }
---   c.command_of(draft)   the Zeron command a whole draft is, if any
+--   c.command_of(draft)   the Zend command a whole draft is, if any
 --
 -- `key` names what it keeps (so a reload reads nothing again), `text` is the
 -- draft, `agent` the harness its model runs on, `target` where its commands and
 -- skills are read (`{ chat, device }`, or a new chat's `{ space, device }`),
 -- `files` where `@` searches, `in_chat` whether the chat is made yet, and `run`
--- runs one of Zeron's commands.
+-- runs one of Zend's commands.
 
 local files = require("@app/screens/files/api")
 local sessions = require("@account/sessions")
@@ -22,7 +22,7 @@ local route = require("@app/screens/shell/route")
 local mentions = require("@ds/composer_mentions")
 local prefs = require("@app/screens/settings/prefs")
 local Invocations = require("@app/screens/chat/invocations")
-local ZeronCommands = require("@app/screens/chat/zeron_commands")
+local ZendCommands = require("@app/screens/chat/zend_commands")
 
 local M = {}
 
@@ -64,7 +64,7 @@ function M.bind(b: Bind): { [string]: any }
 		return Invocations.key(b.agent(), b.target())
 	end
 	-- `@`'s other chats: each by its title, its project under it, when it
-	-- last moved at its end; picked, Zeron's chat mention.
+	-- last moved at its end; picked, Zend's chat mention.
 	local function chats(): { any }
 		local here = if b.chat then b.chat() else nil
 		local now = sessions.now:get()
@@ -149,7 +149,7 @@ function M.bind(b: Bind): { [string]: any }
 		local catalog = Invocations.catalog(invocation_key())
 		given["/"] = Invocations.items(catalog, "command")
 		given["$"] = Invocations.items(catalog, "skill")
-		-- No agent to ask: Zeron's own alone. Its list still coming: nil.
+		-- No agent to ask: Zend's own alone. Its list still coming: nil.
 		if b.agent() == nil then
 			given["/"] = {}
 		elseif given["/"] == nil then
@@ -165,8 +165,8 @@ function M.bind(b: Bind): { [string]: any }
 				table.insert(slash, skill)
 			end
 		end
-		-- Then Zeron's own (named clear of the agent's).
-		for _, row in ZeronCommands.rows(taken, b.in_chat()) do
+		-- Then Zend's own (named clear of the agent's).
+		for _, row in ZendCommands.rows(taken, b.in_chat()) do
 			table.insert(slash, row)
 		end
 		given["/"] = slash
@@ -225,7 +225,7 @@ function M.bind(b: Bind): { [string]: any }
 						detail = folder,
 						file = not f.dir,
 						dir = f.dir,
-						-- Sent as Zeron's file mention (screens/chat/shared).
+						-- Sent as Zend's file mention (screens/chat/shared).
 						link = require("@app/screens/chat/shared").file_link(f.path, f.dir),
 					})
 				end
@@ -244,10 +244,10 @@ function M.bind(b: Bind): { [string]: any }
 		-- `@` is a launcher with these sections (ds/composer_mentions).
 		sections = { ["@"] = sections },
 		-- A command, skill or file picked: what its token stands for; one of
-		-- Zeron's own runs (its token gone).
+		-- Zend's own runs (its token gone).
 		on_mention = function(item: any, trigger: string, token: string)
-			if item.zeron then
-				b.run(item.zeron)
+			if item.zend then
+				b.run(item.zend)
 			elseif trigger == "@" then
 				Invocations.remember(item, trigger, token)
 			else
@@ -271,10 +271,10 @@ function M.bind(b: Bind): { [string]: any }
 				return nil
 			end,
 		}) :: any,
-		-- A draft that is only one of Zeron's own commands (its token goes;
+		-- A draft that is only one of Zend's own commands (its token goes;
 		-- anything carried stays).
 		command_of = function(draft: string): string?
-			return ZeronCommands.of_text(draft, (lists:peek() or {})["/"] or {})
+			return ZendCommands.of_text(draft, (lists:peek() or {})["/"] or {})
 		end,
 	}
 end

@@ -127,7 +127,7 @@ stub_sessions.archive = function(id: string): any
 end
 stub_sessions.link = function(id: string): any
 	note(`link:{id}`)
-	return settled(true, `https://zeron.sh/c/{id}`)
+	return settled(true, `https://zend.invalid/c/{id}`)
 end
 stub_sessions.fork = function(source: string, _parent: string?, id: string?): any
 	note(`fork:{source}:{id}`)
@@ -212,7 +212,7 @@ stub_lanes.watch = function(slot: string, id: string?, frozen: boolean?, _chat: 
 		lanes.view(slot).messages:set({ { id = `{id}-m`, role = "assistant", text = `This is {id}` } })
 		-- (A side chat as the host publishes it: side-a runs Codex's GPT-6.1.)
 		if id == "side-a" then
-			lanes.view(slot).session:set({ id = id, state = "ready", harness = "codex", model = "codex/gpt-6.1", effort = "medium", access = "edits", project = "p1", device = "d", branch = "feature", cwd = "/proj/.zeron/worktrees/feature", running = false, context_tokens = 52000, context_window = 200000 })
+			lanes.view(slot).session:set({ id = id, state = "ready", harness = "codex", model = "codex/gpt-6.1", effort = "medium", access = "edits", project = "p1", device = "d", branch = "feature", cwd = "/proj/.zend/worktrees/feature", running = false, context_tokens = 52000, context_window = 200000 })
 		end
 	end
 end
@@ -311,7 +311,7 @@ end
 local invocations_stub = require("@app/screens/chat/invocations") :: any
 invocations_stub.read = function(harness: string, target: any): any
 	note(`invocations:{harness}:{target.chat or target.space or "?"}`)
-	return settled(true, { rows = { { kind = "command", name = "review", label = "/review", detail = "Review the diff", link = "[/review](zeron-invoke:review)" } } })
+	return settled(true, { rows = { { kind = "command", name = "review", label = "/review", detail = "Review the diff", link = "[/review](zend-invoke:review)" } } })
 end
 stub_store.queue = function(id: string, op: any)
 	note(`queue:{id}:{op.op}:{op.item}`)

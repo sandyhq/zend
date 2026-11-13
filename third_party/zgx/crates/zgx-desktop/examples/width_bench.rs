@@ -1,5 +1,5 @@
 //! A chat page whose width changes as a side panel's edge is dragged, one
-//! width a frame: what Zeron's interface lays out while a person drags its
+//! width a frame: what Zend's interface lays out while a person drags its
 //! panel open, offscreen. The page nests as the app's does: a shell column
 //! under a band its insets place (a title bar), a row growing into the rest
 //! of it, a screen column and a row taking the rest of that beside the
@@ -87,7 +87,7 @@ fn message(index: u32) -> View {
         )
 }
 
-/// A transition's wrapper (Zeron's `ui.presence`): a one-cell grid filling
+/// A transition's wrapper (Zend's `ui.presence`): a one-cell grid filling
 /// its parent, around `inner`.
 fn presence(inner: View) -> View {
     column()

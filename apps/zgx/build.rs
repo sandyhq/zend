@@ -1,12 +1,12 @@
-//! Zeron's version, as `ZERON_VERSION`: the root workspace's
+//! Zend's version, as `ZEND_VERSION`: the root workspace's
 //! (`[workspace.package] version` in ../../Cargo.toml). zgx is a workspace of
-//! its own at 0.0.0, so its crate version says nothing of which Zeron this
+//! its own at 0.0.0, so its crate version says nothing of which Zend this
 //! is. Templates are stamped with it (src/plugins/live.rs), and one made for
-//! another Zeron reads as out of date.
+//! another Zend reads as out of date.
 //!
-//! And the app's own version, as `ZERON_APP_VERSION`: a beta build's
-//! (`ZERON_BETA_VERSION=0.2.136-beta.1` at build time, the release
-//! workflow's), else Zeron's. `zeron --version` prints it and the updater
+//! And the app's own version, as `ZEND_APP_VERSION`: a beta build's
+//! (`ZEND_BETA_VERSION=0.2.136-beta.1` at build time, the release
+//! workflow's), else Zend's. `zend --version` prints it and the updater
 //! compares releases with it.
 
 fn main() {
@@ -44,25 +44,25 @@ fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
     let manifest = std::path::Path::new(&dir).join("../../Cargo.toml");
     println!("cargo:rerun-if-changed={}", manifest.display());
-    println!("cargo:rerun-if-env-changed=ZERON_BETA_VERSION");
+    println!("cargo:rerun-if-env-changed=ZEND_BETA_VERSION");
     let text = std::fs::read_to_string(&manifest).unwrap_or_default();
     let version = workspace_version(&text).unwrap_or_default();
-    let app = std::env::var("ZERON_BETA_VERSION")
+    let app = std::env::var("ZEND_BETA_VERSION")
         .ok()
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| version.clone());
-    println!("cargo:rustc-env=ZERON_VERSION={version}");
-    println!("cargo:rustc-env=ZERON_APP_VERSION={app}");
+    println!("cargo:rustc-env=ZEND_VERSION={version}");
+    println!("cargo:rustc-env=ZEND_APP_VERSION={app}");
 
-    // On Windows, Zeron's icon in the exe: without one the taskbar shows
+    // On Windows, Zend's icon in the exe: without one the taskbar shows
     // the system's blank one, and zgx has none to give the window.
-    println!("cargo:rerun-if-changed=../../dist/windows/zeron.rc");
-    println!("cargo:rerun-if-changed=../../dist/windows/zeron.ico");
+    println!("cargo:rerun-if-changed=../../dist/windows/zend.rc");
+    println!("cargo:rerun-if-changed=../../dist/windows/zend.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         embed_resource::compile_for(
-            "../../dist/windows/zeron.rc",
-            &["zeron-zgx"],
+            "../../dist/windows/zend.rc",
+            &["zend-zgx"],
             embed_resource::NONE,
         )
         .manifest_required()

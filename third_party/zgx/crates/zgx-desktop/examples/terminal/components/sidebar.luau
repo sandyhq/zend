@@ -1,6 +1,6 @@
 -- The agents sidebar: every coding agent running in a pane, with what it
 -- is doing, most urgent first. A row opens its agent's tab and focuses it.
--- It slides open and closed; its toggle (Zeron's sidebar icon) stays beside
+-- It slides open and closed; its toggle (Zend's sidebar icon) stays beside
 -- the traffic lights, over the sidebar's header and the titlebar alike.
 local theme = require("../theme")
 local state = require("../state")
@@ -49,7 +49,7 @@ local function ago(since: number): string
 	return `{s // 86400}d`
 end
 
--- Zeron's sidebar icon (icons.zeron.sh, "Sidebar"): a rounded frame and a
+-- Zend's sidebar icon (icons.zend.invalid, "Sidebar"): a rounded frame and a
 -- panel inside it that widens as the sidebar opens.
 local function sidebar_icon(size: number): Node
 	local k = size / 24

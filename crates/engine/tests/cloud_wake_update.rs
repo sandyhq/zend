@@ -12,17 +12,17 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::Notify;
 
-use zeron_doc::{
+use zend_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionDoc, SessionMessageEntry,
 };
-use zeron_engine::wake_update::{self, Found, Limits, Steps};
-use zeron_engine::{EngineCore, HarnessRegistry, RunJournal};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use zend_engine::wake_update::{self, Found, Limits, Steps};
+use zend_engine::{EngineCore, HarnessRegistry, RunJournal};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
-use zeron_sync::DocsStore;
+use zend_sync::DocsStore;
 
 const CHAT: &str = "chat-wake-update";
 const DEVICE: &str = "dev-cloud";
@@ -147,10 +147,10 @@ impl Rig {
 }
 
 async fn create_chat(core: &EngineCore) {
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     let _ = client
         .call(
-            zeron_rpc::methods::MUTATE,
+            zend_rpc::methods::MUTATE,
             serde_json::json!({ "op": "createChat", "chatId": CHAT, "deviceId": core.device_id }),
         )
         .await;
@@ -398,7 +398,7 @@ async fn a_failed_download_answers_on_this_version_and_marks_it_for_later() {
 }
 
 /// After a bad new version's rollback the old one boots here again. It finds the
-/// rollback (`zeron_update::boot_skip_reason`, with real processes in
+/// rollback (`zend_update::boot_skip_reason`, with real processes in
 /// `update_transaction.rs`) and answers.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_new_versions_rollback_ends_with_the_message_answered() {

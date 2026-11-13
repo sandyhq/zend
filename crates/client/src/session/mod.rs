@@ -17,13 +17,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use tokio::sync::watch;
-use zeron_doc::{
+use zend_doc::{
     CommandBasedOn, MessagePart, MessageRole, MessageStatus, QueueDeliveryGate, QueuedMessage,
     SessionCommandEntry, SessionCommandPayload, SessionCommandStatus, SessionDoc,
     SessionMessageEntry,
 };
-use zeron_sync::attachment_store::{HeldBody, HeldPayload, HeldSend, HeldUpload};
-use zeron_proto::{
+use zend_sync::attachment_store::{HeldBody, HeldPayload, HeldSend, HeldUpload};
+use zend_proto::{
     ChatIndicator, ContextUsage, RunRequest, SandboxLevel, UserInputAnswer, WorktreeSpec,
 };
 
@@ -401,9 +401,9 @@ impl SessionCore {
     fn relay_route(
         &self,
         client: &Arc<ClientInner>,
-        chat: &zeron_proto::Chat,
+        chat: &zend_proto::Chat,
     ) -> crate::live::room::RelayRoute {
-        use zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY;
+        use zend_proto::relay_gen::CHAT_RELAY_CAPABILITY;
         let workspace = client.workspace.snapshot();
         let device = workspace.device(&chat.device_id);
         let host_online = device.is_some_and(|d| d.online);
@@ -450,7 +450,7 @@ impl SessionCore {
     /// Serialized doc write, then an incremental refresh.
     pub(crate) fn write<R>(
         &self,
-        f: impl FnOnce(&SessionDoc) -> std::result::Result<R, zeron_doc::DocError>,
+        f: impl FnOnce(&SessionDoc) -> std::result::Result<R, zend_doc::DocError>,
     ) -> Result<R> {
         let result = {
             let _gate = lock(&self.write_gate);
@@ -520,7 +520,7 @@ impl SessionCore {
         // before it answers (its edge says so: `cloud_stage`).
         let machine = workspace
             .session(&self.chat_id)
-            .filter(|row| zeron_proto::is_cloud_device(&row.device_id, ""))
+            .filter(|row| zend_proto::is_cloud_device(&row.device_id, ""))
             .map_or(MachineWait::Up, |row| {
                 if client.cloud_machine_updating(&row.device_id) {
                     MachineWait::Updating
@@ -535,7 +535,7 @@ impl SessionCore {
         let cloud_booting = machine == MachineWait::Booting;
         let restored_at_ms = workspace
             .session(&self.chat_id)
-            .filter(|row| zeron_proto::is_cloud_device(&row.device_id, ""))
+            .filter(|row| zend_proto::is_cloud_device(&row.device_id, ""))
             .and_then(|row| client.cloud_store_restored(&row.device_id, now));
         drop(workspace);
         let mut transcript_event = None;
@@ -761,7 +761,7 @@ impl SessionCore {
             .client()
             .ok()
             .and_then(|client| client.workspace.chat(&self.chat_id))
-            .is_some_and(|chat| zeron_proto::is_cloud_device(&chat.device_id, ""));
+            .is_some_and(|chat| zend_proto::is_cloud_device(&chat.device_id, ""));
         let entry = SessionCommandEntry {
             id,
             payload,
@@ -771,7 +771,7 @@ impl SessionCore {
                 turn_id: Some(turn_id),
                 frontier: None,
             }),
-            expires_at: Some(now + zeron_doc::command_ttl_ms(cloud)),
+            expires_at: Some(now + zend_doc::command_ttl_ms(cloud)),
             status: SessionCommandStatus::Pending,
             resolution: None,
         };
@@ -1155,7 +1155,7 @@ fn refresh_setup_placeholder(st: &mut CoreState, machine: MachineWait) -> bool {
             .find_map(|p| st.echoes.get(&p.message_id))
             .or_else(|| transcript.iter().rev().find(|e| e.role() == MessageRole::User));
         latest_user.filter(|_| machine != MachineWait::Up).and_then(|message| {
-            let setup_id = zeron_proto::cloud_setup_entry_id(&message.id);
+            let setup_id = zend_proto::cloud_setup_entry_id(&message.id);
             // Nothing after the message in the doc, and no setup entry yet.
             let answered = transcript.iter().any(|e| e.id == setup_id)
                 || transcript
@@ -1178,7 +1178,7 @@ fn refresh_setup_placeholder(st: &mut CoreState, machine: MachineWait) -> bool {
     let next = wanted.map(|(message_id, setup_id, name, created_at)| {
         if let Some(current) = &st.setup_placeholder
             && current.id == setup_id
-            && matches!(current.message.parts.first(), Some(MessagePart::Tool { call: zeron_proto::ToolCall::Unknown { name: n, .. }, .. }) if n == name)
+            && matches!(current.message.parts.first(), Some(MessagePart::Tool { call: zend_proto::ToolCall::Unknown { name: n, .. }, .. }) if n == name)
         {
             return current.clone();
         }
@@ -1189,8 +1189,8 @@ fn refresh_setup_placeholder(st: &mut CoreState, machine: MachineWait) -> bool {
                 id: setup_id,
                 role: MessageRole::Assistant,
                 parts: vec![MessagePart::Tool {
-                    id: zeron_proto::cloud_setup_part_id(&message_id, "machine"),
-                    call: zeron_proto::ToolCall::Unknown { name: name.into(), input: None },
+                    id: zend_proto::cloud_setup_part_id(&message_id, "machine"),
+                    call: zend_proto::ToolCall::Unknown { name: name.into(), input: None },
                     is_error: false,
                     resolved: false,
                     output: None,
@@ -1419,14 +1419,14 @@ impl SessionHandle {
             && !client.is_demo()
         {
             return Err(ClientError::Unsupported(
-                "the host is too old for image attachments — update Zeron on it".into(),
+                "the host is too old for image attachments — update Zend on it".into(),
             ));
         }
         // A Cloud machine may be asleep: the bytes go to the edge's store, and
         // the message waits until they're there.
         let via_store = !request.attachments.is_empty()
             && client.live().is_some()
-            && zeron_proto::is_cloud_device(&chat.device_id, "")
+            && zend_proto::is_cloud_device(&chat.device_id, "")
             && composer.host.capabilities.attachment_store;
         let refs = client.stage_attachments(
             &self.core.chat_id,
@@ -1766,7 +1766,7 @@ impl SessionHandle {
         };
         let reply = self
             .queue_rpc(
-                zeron_rpc::methods::BEGIN_QUEUED_MESSAGE_EDIT,
+                zend_rpc::methods::BEGIN_QUEUED_MESSAGE_EDIT,
                 serde_json::json!({
                     "chatId": self.core.chat_id,
                     "id": id,
@@ -1805,7 +1805,7 @@ impl SessionHandle {
 
     pub async fn renew_queued_edit(&self, lease: &QueueEditLease) -> bool {
         self.queue_rpc(
-            zeron_rpc::methods::RENEW_QUEUED_MESSAGE_EDIT,
+            zend_rpc::methods::RENEW_QUEUED_MESSAGE_EDIT,
             serde_json::json!({
                 "chatId": self.core.chat_id,
                 "id": lease.row_id,
@@ -1833,7 +1833,7 @@ impl SessionHandle {
             params["text"] = serde_json::Value::String(text);
         }
         match self
-            .queue_rpc(zeron_rpc::methods::FINISH_QUEUED_MESSAGE_EDIT, params)
+            .queue_rpc(zend_rpc::methods::FINISH_QUEUED_MESSAGE_EDIT, params)
             .await
         {
             Ok(value) => match value.get("outcome").and_then(|o| o.as_str()) {
@@ -1865,9 +1865,9 @@ impl SessionHandle {
             self.core.recompute_composer(&client);
         }
         let method = match action {
-            QueueAction::SendNow => zeron_rpc::methods::SEND_QUEUED_MESSAGE_NOW,
-            QueueAction::Steer => zeron_rpc::methods::STEER_QUEUED_MESSAGE_NOW,
-            QueueAction::Remove => zeron_rpc::methods::REMOVE_QUEUED_MESSAGE,
+            QueueAction::SendNow => zend_rpc::methods::SEND_QUEUED_MESSAGE_NOW,
+            QueueAction::Steer => zend_rpc::methods::STEER_QUEUED_MESSAGE_NOW,
+            QueueAction::Remove => zend_rpc::methods::REMOVE_QUEUED_MESSAGE,
         };
         let result = self
             .queue_rpc(
@@ -2114,11 +2114,11 @@ mod setup_placeholder_tests {
         let mut st = state_with_pending_send();
         assert!(refresh_setup_placeholder(&mut st, MachineWait::Booting));
         let placeholder = st.setup_placeholder.clone().expect("placeholder under the message");
-        assert_eq!(placeholder.id, zeron_proto::cloud_setup_entry_id("m1"));
+        assert_eq!(placeholder.id, zend_proto::cloud_setup_entry_id("m1"));
         assert!(placeholder.is_streaming());
         assert!(matches!(
             placeholder.message.parts.first(),
-            Some(MessagePart::Tool { call: zeron_proto::ToolCall::Unknown { name, .. }, .. }) if name == "Starting a machine"
+            Some(MessagePart::Tool { call: zend_proto::ToolCall::Unknown { name, .. }, .. }) if name == "Starting a machine"
         ));
         // Unchanged: the same entry (row reuse), no change reported.
         assert!(!refresh_setup_placeholder(&mut st, MachineWait::Booting));
@@ -2137,7 +2137,7 @@ mod setup_placeholder_tests {
 
     fn step_name(st: &CoreState) -> Option<String> {
         match st.setup_placeholder.as_ref()?.message.parts.first() {
-            Some(MessagePart::Tool { call: zeron_proto::ToolCall::Unknown { name, .. }, .. }) => {
+            Some(MessagePart::Tool { call: zend_proto::ToolCall::Unknown { name, .. }, .. }) => {
                 Some(name.clone())
             }
             _ => None,
@@ -2152,7 +2152,7 @@ mod setup_placeholder_tests {
         // Its heartbeat is back, and it installs a release: the same step,
         // saying what it waits on now.
         assert!(refresh_setup_placeholder(&mut st, MachineWait::Updating));
-        assert_eq!(st.setup_placeholder.as_ref().unwrap().id, zeron_proto::cloud_setup_entry_id("m1"));
+        assert_eq!(st.setup_placeholder.as_ref().unwrap().id, zend_proto::cloud_setup_entry_id("m1"));
         assert_eq!(step_name(&st).as_deref(), Some("Updating the machine"));
         assert!(!refresh_setup_placeholder(&mut st, MachineWait::Updating));
         // Done: the machine's own steps take over.
@@ -2177,7 +2177,7 @@ mod setup_placeholder_tests {
         let mut st = state_with_pending_send();
         st.pending.clear();
         st.echoes.clear();
-        st.commands = vec![zeron_doc::SessionCommandEntry {
+        st.commands = vec![zend_doc::SessionCommandEntry {
             id: "cmd1".into(),
             payload: SessionCommandPayload::Steer {
                 prompt: "read the readme".into(),

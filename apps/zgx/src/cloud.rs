@@ -157,7 +157,7 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
 /// An engine call, its failure said as an outcome word.
 async fn call(method: &str, params: Json) -> Result<Json, String> {
     engine::get().call(method, params).await.map_err(|error| {
-        eprintln!("zeron-zgx: cloud: {method} failed: {error}");
+        eprintln!("zend-zgx: cloud: {method} failed: {error}");
         if error.to_ascii_lowercase().contains("unknown method") {
             "outdated".to_string()
         } else if error.contains("github_not_connected") {
@@ -174,7 +174,7 @@ async fn call(method: &str, params: Json) -> Result<Json, String> {
 async fn status(set_up: bool) -> Result<Value, String> {
     let mut status = call("CloudStatus", json!({})).await?;
     if set_up && status["available"].as_bool() == Some(true) && status["state"].as_str() == Some("off") {
-        eprintln!("zeron-zgx: cloud: setting up Cloud for the account");
+        eprintln!("zend-zgx: cloud: setting up Cloud for the account");
         if let Ok(on) = call("CloudEnable", json!({})).await {
             status = on;
         }
@@ -195,7 +195,7 @@ async fn on_machine(method: &str, chat: Option<String>, machine: Option<String>)
 /// Why a machine's action didn't happen, for the screen: `disk_too_small` for the typed
 /// refusal, a word for what has one, else the edge's own sentence.
 fn wake_failure(error: &str) -> String {
-    eprintln!("zeron-zgx: cloud: a machine's action failed: {error}");
+    eprintln!("zend-zgx: cloud: a machine's action failed: {error}");
     if error.contains("disk_too_small") {
         return "disk_too_small".into();
     }

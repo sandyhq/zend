@@ -1,6 +1,6 @@
 name: zgx beta
 
-# Zeron's beta channel: the next Zeron app, built as release.yml builds a
+# Zend's beta channel: the next Zend app, built as release.yml builds a
 # stable one (zgx-build.yml: apps/zgx with the engine from this same commit
 # inside, on macOS, Linux and Windows). The point of a beta is to test what's
 # next, the engine too. Testers keep their data and device; the app updates
@@ -10,7 +10,7 @@ name: zgx beta
 # Signed as release.yml signs: macOS only. Linux and Windows aren't signed.
 #
 # Published to the beta channel only — R2 `comet-native-releases/beta/*`
-# (zeron.sh/releases/beta/*, the manifest last) — and as a GitHub
+# (zend.invalid/releases/beta/*, the manifest last) — and as a GitHub
 # pre-release that's never the latest. It never writes release.yml's
 # channel: not `comet-native-releases/manifest.json`, not `latest.txt`.
 #
@@ -49,7 +49,7 @@ concurrency:
 
 jobs:
   version:
-    if: github.repository == 'zeronsh/zeron' && vars.ZGX_BETA_ENABLED == 'true'
+    if: github.repository == 'sandyhq/zend' && vars.ZGX_BETA_ENABLED == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -75,7 +75,7 @@ jobs:
           case "$number" in
             ''|*[!0-9]*) echo "the beta number '$number' is not a number"; exit 1 ;;
           esac
-          stable="$(curl -fsS --retry 3 https://zeron.sh/releases/latest.txt)"
+          stable="$(curl -fsS --retry 3 https://zend.invalid/releases/latest.txt)"
           # A beta is of the next release: newer than the stable it carries.
           if [ "$(printf '%s\n%s\n' "$stable" "$workspace" | sort -V | tail -1)" != "$workspace" ] || [ "$stable" = "$workspace" ]; then
             echo "the workspace's $workspace isn't newer than stable $stable: bump it first"; exit 1
@@ -95,9 +95,9 @@ jobs:
       platforms: ${{ github.event_name == 'push' && 'macos linux windows' || inputs.platforms }}
       # The edge's: its `beta/` is the beta channel, and stable's manifest
       # and files, for going back, are beside it.
-      windows-feed: https://zeron.sh/releases
+      windows-feed: https://zend.invalid/releases
 
-  # The GitHub pre-release: never the latest release (Zeron's updater and
+  # The GitHub pre-release: never the latest release (Zend's updater and
   # download links follow releases/latest), with the beta's manifest.
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/beta-v')
@@ -122,7 +122,7 @@ jobs:
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
               macos-arm64.dmg macos-arm64-app.tar.gz \
               windows-x86_64.zip windows-x86_64-setup.exe; do
-            test -f "dist/zeron-$VERSION-$platform" \
+            test -f "dist/zend-$VERSION-$platform" \
               || { echo "missing artifact for $VERSION: $platform"; exit 1; }
           done
           # crates/update's Manifest: the beta's version, the engine it
@@ -142,7 +142,7 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         id: draft
         with:
-          name: Zeron ${{ needs.version.outputs.version }}
+          name: Zend ${{ needs.version.outputs.version }}
           prerelease: true
           draft: true
           make_latest: "false"
@@ -153,10 +153,10 @@ jobs:
             dist/*
             beta-manifest.json
           body: |
-            Zeron ${{ needs.version.outputs.version }}, a beta of the next Zeron app.
+            Zend ${{ needs.version.outputs.version }}, a beta of the next Zend app.
 
-            - It replaces Zeron and keeps your Zeron: the same data, account and device.
-            - Once installed, it updates from the beta channel. To go back, turn off **Get beta updates** in Settings → About & updates; Zeron then installs the latest stable release.
+            - It replaces Zend and keeps your Zend: the same data, account and device.
+            - Once installed, it updates from the beta channel. To go back, turn off **Get beta updates** in Settings → About & updates; Zend then installs the latest stable release.
             - macOS 13 or later on Apple silicon; Linux x86_64 and aarch64 (run `install.sh` from the tarball); Windows x86_64 (the installer or the zip).
       - name: publish the draft (a prerelease, never the latest)
         env:
@@ -172,7 +172,7 @@ jobs:
           test "$(gh api "$endpoint" --jq '.prerelease')" = true
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" != "$GITHUB_REF_NAME"
 
-  # The beta channel on R2: zeron.sh/releases/beta/*. Every key is under
+  # The beta channel on R2: zend.invalid/releases/beta/*. Every key is under
   # `beta/`: never the stable manifest.json or latest.txt.
   channel:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/beta-v')
@@ -191,7 +191,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern beta-manifest.json --dir .
-      - name: upload to R2 (zeron.sh/releases/beta/*)
+      - name: upload to R2 (zend.invalid/releases/beta/*)
         if: env.CLOUDFLARE_API_TOKEN != ''
         run: |
           put() {

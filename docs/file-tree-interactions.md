@@ -120,13 +120,13 @@ between the tree and the real conversation drop zone.
 Commands from the repository root:
 
 ```sh
-cargo test --release --locked -p zeron-proto --lib
-cargo test --release --locked -p zeron-engine --lib workspace_files::
-cargo test --release --locked -p zeron-engine --lib rpc::
-cargo test --release --locked -p zeron-engine --test workspace_files
-cargo test --release --locked -p zeron-engine --test device_routing workspace_entry_mutations_are_forwarded
-cargo test --release --locked -p zeron-ui --lib -- --test-threads=1
-cargo check --release --locked -p zeron
+cargo test --release --locked -p zend-proto --lib
+cargo test --release --locked -p zend-engine --lib workspace_files::
+cargo test --release --locked -p zend-engine --lib rpc::
+cargo test --release --locked -p zend-engine --test workspace_files
+cargo test --release --locked -p zend-engine --test device_routing workspace_entry_mutations_are_forwarded
+cargo test --release --locked -p zend-ui --lib -- --test-threads=1
+cargo check --release --locked -p zend
 ```
 
 This implementation was exercised on Linux with GPUI's test backend. Native

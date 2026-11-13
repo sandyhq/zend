@@ -29,7 +29,7 @@ use tokio::sync::oneshot;
 const PRELUDE: &str = include_str!("prelude.luau");
 /// A source file, at most.
 const MAX_SCRIPT_BYTES: usize = 1 << 20;
-/// What `zeron.store` keeps, at most (its JSON).
+/// What `zend.store` keeps, at most (its JSON).
 pub const MAX_STORE_BYTES: usize = 1 << 20;
 /// Tables nested deeper than this don't cross to or from JSON.
 const MAX_DEPTH: usize = 64;
@@ -63,9 +63,9 @@ pub struct Spec {
     pub dir: PathBuf,
     /// The service's file, relative to `dir` (`service.luau`).
     pub entry: String,
-    /// `{ id, name }` of this device, as `zeron.device`.
+    /// `{ id, name }` of this device, as `zend.device`.
     pub device: Json,
-    /// `zeron.store`'s file (`None`: kept in memory only).
+    /// `zend.store`'s file (`None`: kept in memory only).
     pub store: Option<PathBuf>,
     pub limits: Limits,
 }
@@ -75,7 +75,7 @@ pub enum Kind {
     Method,
     Tool,
     Timer,
-    /// An event a `zeron.on` listener hears (plugins/agents).
+    /// An event a `zend.on` listener hears (plugins/agents).
     Event,
 }
 
@@ -110,16 +110,16 @@ pub trait Ops: Send + Sync + 'static {
     /// Start `kind` (`run`, `fetch`, `notify`) with `args`; `done` with its
     /// outcome, from any thread. A refusal is `done(Err(why))`.
     fn start(&self, kind: &str, args: Json, done: Done);
-    /// `zeron.emit`: to the plugin's windows.
+    /// `zend.emit`: to the plugin's windows.
     fn emit(&self, event: &str, data: Json);
     /// `print`, and what failed with nobody to tell.
     fn log(&self, line: &str);
-    /// `zeron.watch`: changes under `folders` (each all the way down) told
+    /// `zend.watch`: changes under `folders` (each all the way down) told
     /// to `heard` as they happen, from any thread, until the handle drops.
     /// A refusal is `Err(why)`.
     fn watch(&self, folders: Vec<PathBuf>, heard: Heard) -> Result<Box<dyn Send>, String> {
         let _ = (folders, heard);
-        Err("zeron.watch isn't something this service can do".into())
+        Err("zend.watch isn't something this service can do".into())
     }
 }
 
@@ -156,7 +156,7 @@ pub struct Described {
     pub tools: Vec<String>,
     /// Each timer's key (`#1`, `#2`: by its place) and period in seconds.
     pub timers: Vec<(String, f64)>,
-    /// Each `zeron.on` listener: its key (`@1`, `@2`: by its place), the
+    /// Each `zend.on` listener: its key (`@1`, `@2`: by its place), the
     /// event it hears and its options (a threshold's `below`, …).
     pub listeners: Vec<(String, String, Json)>,
 }
@@ -300,7 +300,7 @@ struct State {
     /// Out of memory: it ends, and what it hadn't answered is dropped.
     dead: Cell<bool>,
     status: Arc<Status>,
-    /// `zeron.watch`es, by id.
+    /// `zend.watch`es, by id.
     watches: RefCell<HashMap<u64, Watching>>,
     next_watch: Cell<u64>,
 }
@@ -607,8 +607,8 @@ fn setup(
 
     let host = natives(&lua, spec, ops, tx, state).map_err(fail)?;
     let (service, dispatch, describe, done, stopping, heard): (Function, Function, Function, Function, Function, Function) =
-        lua.load(PRELUDE).set_name("=zeron").set_mode(ChunkMode::Text).call(host).map_err(fail)?;
-    globals.raw_set("zeron_service", service).map_err(fail)?;
+        lua.load(PRELUDE).set_name("=zend").set_mode(ChunkMode::Text).call(host).map_err(fail)?;
+    globals.raw_set("zend_service", service).map_err(fail)?;
     lua.sandbox(true).map_err(fail)?;
     Ok((
         lua,
@@ -728,14 +728,14 @@ fn natives(
         })?,
     )?;
 
-    // `zeron.watch`: the folders, and how long a burst is quiet before it's
+    // `zend.watch`: the folders, and how long a burst is quiet before it's
     // told (ms); its id, or an error.
     let (watch_state, watch_ops, watch_tx) = (state.clone(), ops.clone(), tx.clone());
     host.set(
         "watch",
         lua.create_function(move |_, (folders, quiet): (Vec<String>, Option<f64>)| {
             if folders.is_empty() || folders.iter().any(|f| f.trim().is_empty()) {
-                return Err(mlua::Error::runtime("zeron.watch: the folders to watch"));
+                return Err(mlua::Error::runtime("zend.watch: the folders to watch"));
             }
             let id = watch_state.next_watch.get();
             watch_state.next_watch.set(id + 1);
@@ -793,10 +793,10 @@ fn natives(
                     Some(was) => map.insert(key, was),
                     None => map.remove(&key),
                 };
-                return Err(mlua::Error::runtime("zeron.store: that's more than 1 MB to keep"));
+                return Err(mlua::Error::runtime("zend.store: that's more than 1 MB to keep"));
             }
             if let Some(path) = &set_state.store_path {
-                write_replace(path, &bytes).map_err(|e| mlua::Error::runtime(format!("zeron.store: couldn't save: {e}")))?;
+                write_replace(path, &bytes).map_err(|e| mlua::Error::runtime(format!("zend.store: couldn't save: {e}")))?;
             }
             Ok(())
         })?,

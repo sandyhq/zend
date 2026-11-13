@@ -1,8 +1,8 @@
--- Zeron's sidebar: what you're working on, and what needs you. New chat
+-- Zend's sidebar: what you're working on, and what needs you. New chat
 -- and search at the top; pinned sessions; each project's sessions under it;
 -- you at the foot.
 --
--- Two densities, as Zeron's: compact (a line a session: its glyph, its
+-- Two densities, as Zend's: compact (a line a session: its glyph, its
 -- title, its time) and regular (a second line under the title: its agent,
 -- device and branch). Collapsed, it slides away whole; its rail, if the app
 -- shows one (`island = true`), floats at the window's bottom left.
@@ -78,7 +78,7 @@ export type Session = {
 	-- Regular's second line: where it runs and on what.
 	device: string?,
 	branch: string?,
-	-- Subagents and side chats working under it (Zeron's "● N" pill beside
+	-- Subagents and side chats working under it (Zend's "● N" pill beside
 	-- its corner).
 	subagents: number?,
 	-- Its pull request: a badge beside its corner.
@@ -105,13 +105,13 @@ export type PullRequest = { number: number, state: ("open" | "merged" | "closed"
 export type Project = { id: string, name: string, hue: string?, src: string?, emoji: string?, icon: string?, empty: boolean?, unused: boolean?, sessions: { Session } }
 -- You: your name, and an id your avatar is drawn from.
 export type User = { id: string?, name: string, avatar: string? }
--- How its sessions are grouped (Zeron's Organize), as a key: its levels
+-- How its sessions are grouped (Zend's Organize), as a key: its levels
 -- in order, outermost first ("project", "device", "project>device",
 -- "device>project"), or "none", one list (ds/session_row `levels`). The
 -- view's own state holds the levels as a list (`{ "project", "device" }`;
 -- an old single choice, "project", reads as its one level).
 export type Organize = string
--- Which of a session's details show (Zeron's Show): its branch and where it
+-- Which of a session's details show (Zend's Show): its branch and where it
 -- runs (regular's second line), its pull request, its harness (the agent's
 -- mark leading the row), its project's icon (beside its title, where the
 -- group isn't its project already).
@@ -121,10 +121,10 @@ export type Details = {
 	harness: State<boolean>,
 	project_icon: State<boolean>,
 	location: State<boolean>,
-	-- The Archived shelf at the list's end (Zeron's "Show archived"), where
+	-- The Archived shelf at the list's end (Zend's "Show archived"), where
 	-- the caller has one.
 	archived: State<boolean>?,
-	-- A project filter over the list (Zeron's), where the caller has one.
+	-- A project filter over the list (Zend's), where the caller has one.
 	project_filter: State<boolean>?,
 	-- The empty projects' fold at the end of the projects (those it says
 	-- are `empty`): listed there, or (off) not at all. On unless the caller
@@ -135,7 +135,7 @@ export type Details = {
 	-- shows a glyph), each leaving as it settles. On unless the caller says.
 	keep_active: State<boolean>?,
 }
--- How grouped sessions are ordered (Zeron's Sort): the most recently
+-- How grouped sessions are ordered (Zend's Sort): the most recently
 -- updated first, or the most recently made. (Pinned and sections keep the
 -- order they were put in.)
 export type Sort = "updated" | "created"
@@ -247,13 +247,13 @@ export type Props = {
 	-- shelf when `details.archived` is on; a row's Unarchive.
 	archived: Live<{ Session }>?,
 	on_unarchive: ((id: string) -> ())?,
-	-- A session renamed in its row (Zeron's inline rename): which one is
+	-- A session renamed in its row (Zend's inline rename): which one is
 	-- being renamed (a double click on its row starts it; the caller may
 	-- too), and the name it's given (trimmed, changed, not empty).
 	renaming_session: State<string?>?,
 	on_rename: ((id: string, title: string) -> ())?,
 	-- A session's card, its row rested on (its id and the row's box in the
-	-- window, to stand beside); nil, put away. (Zeron's hover card: the
+	-- window, to stand beside); nil, put away. (Zend's hover card: the
 	-- caller draws it, over the window, ds.SessionCard.)
 	on_card: ((card: { id: string, x: number, y: number, w: number, h: number }?) -> ())?,
 	-- The sessions shown are a narrowed few (a filter is on): your sections
@@ -271,10 +271,10 @@ export type Props = {
 	project_menu: ((id: string) -> { ContextMenu.Entry }?)?,
 }
 
--- Widths: Zeron's default, the inset either side, and the leading slot (a
+-- Widths: Zend's default, the inset either side, and the leading slot (a
 -- compact row's height); collapsed, the slot and its insets.
 local WIDE, PAD, SLOT = 256, 8, 30
--- How far it resizes (Zeron's: 242 to 400, 256 by default).
+-- How far it resizes (Zend's: 242 to 400, 256 by default).
 local MIN_W, MAX_W = 242, 400
 -- A regular session row: two lines (the title's 17, a gap, the detail's 14)
 -- inside a compact row's top and bottom inset.
@@ -297,7 +297,7 @@ local FLY_ROOM = 400
 -- How everything moves: one ease.
 local SLIDE = { duration = 260, ease = "out(3)" }
 local FADE = { duration = 160 }
--- Rows moving aside for a dragged one, and closing up after it (Zeron's
+-- Rows moving aside for a dragged one, and closing up after it (Zend's
 -- TAB_SLIDE: 150 ms, easing out).
 local DRAG_SLIDE = { duration = 150, ease = "out(3)" }
 -- How many of a group's sessions show before "Show N more" (the session
@@ -337,7 +337,7 @@ local function pressing(sessions: { Session }): status.Kind?
 end
 
 local function list_gap(): number
-	return (ui.theme.get("zeron.list.gap") :: number?) or 2
+	return (ui.theme.get("zend.list.gap") :: number?) or 2
 end
 -- A row's words' inset from its edge, with no slot before them.
 local function words_inset(): number
@@ -397,7 +397,7 @@ return ui.component(function(props: Props): Node
 	-- Its width is where it's going (`base`, which its edge dragged or the
 	-- window resized moves at once) and, after a step (folding, coming
 	-- back, a neighbour narrowing or freeing it), what's left of the step
-	-- (`step`), easing to nothing on its own clock (Zeron's column motion,
+	-- (`step`), easing to nothing on its own clock (Zend's column motion,
 	-- ds/motion): it glides whatever the window does meanwhile, and is over
 	-- in its time.
 	local base = shown_w:peek()
@@ -978,7 +978,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				cursor = "pointer",
 				bg = function()
 					if is_selected and is_selected() then
-						return "$zeron.menu.selected"
+						return "$zend.menu.selected"
 					end
 					return if hovered:get() then "$hover" else "#00000000"
 				end,
@@ -1116,7 +1116,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	-- a pick closes it (`on_pick`).
 	-- (`list`: the sidebar's list it stands in, "pinned", a section's id or a
 	-- group's key, and `index`, where in it: draggable there.)
-	-- A group's tree, as Zeron's transcript draws its tools (transcript.rs,
+	-- A group's tree, as Zend's transcript draws its tools (transcript.rs,
 	-- `activity_rail`): a hairline trunk down from under the group's tile
 	-- (`trunk`: how far in), and at each session a rounded elbow off it
 	-- toward the row, which starts a little past the elbow's end. `last`:
@@ -1139,7 +1139,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	local function on_tree(body: Node, now_tree: () -> Tree?): Node
 		return SessionRow.on_tree(body, now_tree, lead_at, list_gap())
 	end
-	-- A session's card (Zeron's hover card, shell/session_hover_card.rs):
+	-- A session's card (Zend's hover card, shell/session_hover_card.rs):
 	-- the pointer resting on a row 550 ms, the caller shows its card beside
 	-- it (`on_card`, told the row's box; nil, none); within 400 ms of one
 	-- going, the next shows at once. A press, a scroll or a rename puts it
@@ -1333,7 +1333,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			title = ui.row {
 				grow = 1,
 				min_w = 0,
-				gap = "$zeron.space.tight",
+				gap = "$zend.space.tight",
 				items = "center",
 				ui.show(function(): boolean
 					local by_now = if place and place.by_now then place.by_now() else by
@@ -1363,7 +1363,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				else function(e: PointerEvent)
 					-- (A press puts its card away, the next waiting its rest.)
 					card_hide(true)
-					-- (Once the click is over, as Zeron's starts on the second
+					-- (Once the click is over, as Zend's starts on the second
 					-- click: nothing of the press left to take focus back.)
 					if e.clicks == 2 and props.on_rename then
 						ui.after(0, function()
@@ -1395,7 +1395,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			lead = if in_flyout then agent(s, strong, cur) else session_glyph(s, strong, cur),
 			words = ui.column {
 				w_full = true,
-				gap = "$zeron.space.hair",
+				gap = "$zend.space.hair",
 				line(
 					title,
 					if s.pr then ui.show(details.pr, pr_badge(s.pr)) else nil,
@@ -1542,7 +1542,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			-- Its rows' width, inside its inset and its border either side.
 			w = WIDE - PAD * 2 + 8 + 2,
 			p = "$space.1",
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 			rounded = "$radius.lg",
 			build = function()
 				-- Its title on a short row, so the gap under it is the rows'.
@@ -1572,7 +1572,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				end
 				return ui.column {
 					w_full = true,
-					gap = "$zeron.list.gap",
+					gap = "$zend.list.gap",
 					Menu.Heading { if type(title) == "function" then title() else title },
 					ui.list {
 						w_full = true,
@@ -1700,7 +1700,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	end
 	-- The chrome's own tile (pinned's, a device's, the list's): quiet, a
 	-- wash, not a hue.
-	local QUIET = { bg = "$zeron.secondary.bg", ink = "$text.secondary" }
+	local QUIET = { bg = "$zend.secondary.bg", ink = "$text.secondary" }
 
 	-- A group: its name, its tile, its sessions, and (a project's) where a
 	-- new chat in it starts.
@@ -2071,7 +2071,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		hook = if is_island then "rail.actions" else "sidebar.actions",
 		id = if is_island then nil else "sidebar-actions",
 		w_full = true,
-		gap = "$zeron.list.gap",
+		gap = "$zend.list.gap",
 		shrink = 0,
 		row {
 			name = function(): string
@@ -2153,7 +2153,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			end,
 		} :: any
 	end
-	-- How many of the Archived shelf show (Zeron's: 10, then 25 more a time).
+	-- How many of the Archived shelf show (Zend's: 10, then 25 more a time).
 	local SHELF_FIRST, SHELF_MORE = 10, 25
 	local shelf_shown = ui.use_state(SHELF_FIRST)
 	local groups_open = opened["::groups"]
@@ -2670,7 +2670,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		end
 		local function room(chain: { Fold }, place: string, key: string)
 			add({ kind = "room", key = `room:{key}`, place = place, chain = chain, base = function(): number
-				return (ui.theme.get("zeron.space.hair") :: number?) or 2
+				return (ui.theme.get("zend.space.hair") :: number?) or 2
 			end })
 		end
 		local function drop_row(chain: { Fold }, place: string, text: string)
@@ -3489,7 +3489,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				fold_set(group_fold(g.key), not open:peek())
 			end,
 		}
-		-- A project's: its menu on a right click (Zeron's Rename…, Remove…).
+		-- A project's: its menu on a right click (Zend's Rename…, Remove…).
 		local project, menu = g.project, props.project_menu
 		if project and menu then
 			header = ContextMenu {
@@ -4342,7 +4342,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 			on_click = props.on_user,
 			selected = props.user_open,
 			-- (Room for settings' button beside it, and the list's gap.)
-			less = if props.on_settings then SLOT + ((ui.theme.get("zeron.list.gap") :: number?) or 2) else nil,
+			less = if props.on_settings then SLOT + ((ui.theme.get("zend.list.gap") :: number?) or 2) else nil,
 			-- Your avatar: a gradient of your own, from your id (another
 			-- account, another avatar).
 			lead = ui.presence(function(): string
@@ -4374,7 +4374,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 			end
 			local on_settings = props.on_settings
 			foot = ui.row {
-				gap = "$zeron.list.gap",
+				gap = "$zend.list.gap",
 				items = "center",
 				you,
 				ToggleButton {
@@ -4482,7 +4482,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 				if key == "pinned" then
 					-- (Pinned, a group of its own: the room after it a group's.)
 					return ui.column {
-						gap = "$zeron.island.gap",
+						gap = "$zend.island.gap",
 						items = "center",
 						pin_icon(sessions(key)),
 						ui.div { h = RAIL_GROUP - im.gap * 2, shrink = 0 },
@@ -4570,7 +4570,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 						-- do: a group going first.)
 						animate = motion.layout({ duration = motion.BASE, ease = motion.EASE }),
 						w_full = true,
-						gap = "$zeron.island.gap",
+						gap = "$zend.island.gap",
 						items = "center",
 					}),
 				},
@@ -4578,7 +4578,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		end
 		return ui.column {
 			w = island.thickness(),
-			p = "$zeron.island.pad",
+			p = "$zend.island.pad",
 			-- (The scroll's room round its icons is part of the gap above it.)
 			gap = RAIL_GROUP - ROOM,
 			items = "center",
@@ -4602,7 +4602,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		}
 	end
 
-	-- Its view options, as Zeron's: a "…" at its top right, on the title
+	-- Its view options, as Zend's: a "…" at its top right, on the title
 	-- bar's line (centred where its controls are), opening how it groups and
 	-- what its sessions show. A grouping or a sort is a choice (the menu
 	-- closes on it); what shows, toggles (it stays open, for several); then
@@ -4663,7 +4663,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		-- changed: past its edge as far as the rail's flyouts are (the
 		-- trigger sits its inset in from it).
 		placement = if props.card then { side = "bottom", align = "start", offset = 4 } else { side = "right", align = "start", offset = PAD + 4 },
-		w = "$zeron.menu.width",
+		w = "$zend.menu.width",
 		p = 0,
 		gap = 0,
 		rounded = "$radius.lg",
@@ -4731,8 +4731,8 @@ fn layer(input:LayerInput)->vec4<f32> {
 				end
 				local function grip(lit: () -> boolean): Node
 					return ui.div {
-						w = "$zeron.menu.glyph.box",
-						h = "$zeron.menu.glyph.box",
+						w = "$zend.menu.glyph.box",
+						h = "$zend.menu.glyph.box",
 						shrink = 0,
 						items = "center",
 						justify = "center",
@@ -4742,7 +4742,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 						cursor = function(): string
 							return if held() then "grabbing" else "grab"
 						end,
-						Icon { name = "grip", size = (ui.theme.get("zeron.menu.glyph.size") :: number?) or 16 },
+						Icon { name = "grip", size = (ui.theme.get("zend.menu.glyph.size") :: number?) or 16 },
 					}
 				end
 				return Menu.Row {
@@ -4777,14 +4777,14 @@ fn layer(input:LayerInput)->vec4<f32> {
 					-- shadow.
 					drag_preview = function()
 						local inset = (ui.theme.get("space.1") :: number?) or 4
-						local menu_w = (ui.theme.get("zeron.menu.width") :: number?) or 232
+						local menu_w = (ui.theme.get("zend.menu.width") :: number?) or 232
 						local card: { [any]: any } = {
 							w = menu_w - inset * 2,
-							h = "$zeron.menu.row",
+							h = "$zend.menu.row",
 							px = "$space.2",
 							gap = "$space.2",
 							items = "center",
-							rounded = "$zeron.menu.row_radius",
+							rounded = "$zend.menu.row_radius",
 							color = "$text.primary",
 							grip(function(): boolean
 								return true
@@ -4971,7 +4971,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		end,
 	}, "menu"))
 
-	-- Dragging near the list's top or bottom scrolls it, as Zeron's does:
+	-- Dragging near the list's top or bottom scrolls it, as Zend's does:
 	-- within 48 of an edge, faster the nearer, up to 12 every 16 ms. Where
 	-- a held session would land is worked out again as its list moves under
 	-- it.
@@ -5063,7 +5063,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		w_full = true,
 		grow = 1,
 		min_h = 0,
-		-- None at all yet: said so, faintly, at the list's head (Zeron's);
+		-- None at all yet: said so, faintly, at the list's head (Zend's);
 		-- under projects, their groups (each with its new chat) say it.
 		ui.show(function(): boolean
 			local ix = index:get()
@@ -5101,7 +5101,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		})
 	end
 	if #feet > 0 then
-		table.insert(body, ui.column { w_full = true, shrink = 0, gap = "$zeron.list.gap", table.unpack(feet) })
+		table.insert(body, ui.column { w_full = true, shrink = 0, gap = "$zend.list.gap", table.unpack(feet) })
 	end
 	-- Its edge: dragged, it resizes (242 to 400), following the pointer at once,
 	-- bouncing past either end; double-clicked, back to its default width,
@@ -5180,10 +5180,10 @@ fn layer(input:LayerInput)->vec4<f32> {
 				top = props.top or 0,
 				bottom = 5,
 				overflow = "hidden",
-				rounded = "$zeron.inset.radius",
-				-- (Frosted, its own wash over the window's glass, Zeron's
+				rounded = "$zend.inset.radius",
+				-- (Frosted, its own wash over the window's glass, Zend's
 				-- sidebar tone; opaque, the page's card's fill.)
-				bg = material.pick("$zeron.sidebar.tint", "$zeron.sidebar.solid"),
+				bg = material.pick("$zend.sidebar.tint", "$zend.sidebar.solid"),
 				ui.column(body),
 			}
 			else ui.column(body),
@@ -5203,7 +5203,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 			else ui.div {},
 		-- Its view options, at its top right: on the title bar's line when one
 		-- lies over it (`TitleBar.middle`: halfway down it under its top inset,
-		-- Zeron's 38 and 4, or the window's own buttons' line), else at its
+		-- Zend's 38 and 4, or the window's own buttons' line), else at its
 		-- own inset. Where it stands
 		-- open, whatever its width as it folds or comes back: its edge clips
 		-- it there, as it clips the rest, so it never slides under the title
@@ -5217,7 +5217,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 					-- (`controls_end` holds the row's own 10 past its last control.)
 					return ui.raw(TitleBar.controls_end() - 10 + 8 - 5, "past the title bar's controls, by its group gap")
 				end
-				local button = (ui.theme.get("zeron.icon_button.md") :: number?) or 24
+				local button = (ui.theme.get("zend.icon_button.md") :: number?) or 24
 				return room() - PAD - button
 			end,
 			top = if props.top
@@ -5256,7 +5256,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 	end
 	-- (A card's root clips what it holds as it folds; its edge, in the gap beside it,
 	-- stands outside that.)
-	local gap = (ui.theme.get("zeron.inset.gap") :: number?) or 4
+	local gap = (ui.theme.get("zend.inset.gap") :: number?) or 4
 	local card_top = props.top or 0
 	return ui.div {
 		relative = true,

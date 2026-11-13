@@ -65,7 +65,7 @@ const BASE_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const DEADLINE_PER_GIB: Duration = Duration::from_secs(60);
 const MAX_DEADLINE: Duration = Duration::from_secs(60 * 60);
 /// Overrides the deadline (seconds), for testing a stuck trial.
-const DEADLINE_ENV: &str = "ZERON_UPDATE_TRIAL_SECS";
+const DEADLINE_ENV: &str = "ZEND_UPDATE_TRIAL_SECS";
 
 /// How much space to leave free on top of what an update needs.
 const SPARE_BYTES: u64 = 256 * 1024 * 1024;
@@ -79,13 +79,13 @@ const GIB: u64 = 1024 * 1024 * 1024;
 // Only Unix runs the watchdog as its own process; on Windows the old version
 // stays on as it.
 #[cfg(unix)]
-const WATCH_ID_ENV: &str = "ZERON_UPDATE_WATCH_ID";
+const WATCH_ID_ENV: &str = "ZEND_UPDATE_WATCH_ID";
 #[cfg(unix)]
-const WATCH_PID_ENV: &str = "ZERON_UPDATE_WATCH_PID";
+const WATCH_PID_ENV: &str = "ZEND_UPDATE_WATCH_PID";
 #[cfg(unix)]
-const WATCH_DATA_ENV: &str = "ZERON_UPDATE_WATCH_DATA";
+const WATCH_DATA_ENV: &str = "ZEND_UPDATE_WATCH_DATA";
 #[cfg(unix)]
-const WATCH_ARGS_ENV: &str = "ZERON_UPDATE_WATCH_ARGS";
+const WATCH_ARGS_ENV: &str = "ZEND_UPDATE_WATCH_ARGS";
 
 /// The hidden subcommand that runs [`run_watchdog`].
 pub const WATCHDOG_SUBCOMMAND: &str = "update-watchdog";
@@ -133,7 +133,7 @@ pub enum Layout {
     Versioned { app_root: PathBuf },
     /// `bundle` is the installed app; `incoming` is the new one beside it.
     MacBundle { bundle: PathBuf, incoming: PathBuf },
-    /// `directory/zeron.exe` is installed; `incoming` is the new exe, in a folder
+    /// `directory/zend.exe` is installed; `incoming` is the new exe, in a folder
     /// of its own inside `directory`.
     WindowsFolder { directory: PathBuf, incoming: PathBuf },
 }
@@ -164,7 +164,7 @@ impl Layout {
         match self {
             Self::Versioned { app_root } => app_root.join("current").join(name),
             Self::MacBundle { bundle, .. } => bundle.join("Contents/MacOS").join(name),
-            Self::WindowsFolder { directory, .. } => directory.join("zeron.exe"),
+            Self::WindowsFolder { directory, .. } => directory.join("zend.exe"),
         }
     }
 
@@ -215,7 +215,7 @@ impl Layout {
                 let recorded: Option<String> = None;
                 let current = recorded.unwrap_or_else(|| transaction.from.clone());
                 // The zgx app runs its engine from its version's folder beside
-                // `zeron.exe` (crates/update `windows::version_files`): the new
+                // `zend.exe` (crates/update `windows::version_files`): the new
                 // version's while it's tried, the installed one's after.
                 #[cfg(windows)]
                 let files = |version: &str| inside(&crate::windows::version_files(directory, version));
@@ -223,7 +223,7 @@ impl Layout {
                 let files = |_: &str| false;
                 let me = if inside(incoming) || files(&transaction.target) {
                     transaction.target.clone()
-                } else if inside(&directory.join("zeron.exe")) || files(&current) {
+                } else if inside(&directory.join("zend.exe")) || files(&current) {
                     current.clone()
                 } else {
                     return None;
@@ -365,9 +365,9 @@ impl Transaction {
 /// builds don't have the knob.
 fn crash_point(step: &str) {
     if cfg!(debug_assertions)
-        && std::env::var("ZERON_UPDATE_CRASH_AT").is_ok_and(|at| at == step)
+        && std::env::var("ZEND_UPDATE_CRASH_AT").is_ok_and(|at| at == step)
     {
-        eprintln!("zeron-update: crashing at {step}, as asked");
+        eprintln!("zend-update: crashing at {step}, as asked");
         std::process::abort();
     }
 }
@@ -534,7 +534,7 @@ fn room_verdict(free: u64, needed: u64) -> Result<(), String> {
     }
     Err(format!(
         "There isn't enough disk space to update safely: {} needed, {} free. Free up some space \
-         and try again. Zeron is still running.",
+         and try again. Zend is still running.",
         gib(needed),
         gib(free)
     ))
@@ -545,7 +545,7 @@ fn room_verdict(free: u64, needed: u64) -> Result<(), String> {
 /// once it's staged. A check that can't run refuses too: not knowing isn't room.
 pub fn ensure_room(data_dir: &Path, app_root: &Path, download: u64) -> Result<(), String> {
     let cannot = |err: std::io::Error| {
-        format!("Zeron couldn't check the free disk space ({err}), so it didn't update.")
+        format!("Zend couldn't check the free disk space ({err}), so it didn't update.")
     };
     let snapshot = store_bytes(data_dir);
     let snapshot_copy = snapshot + snapshot / 20;
@@ -825,7 +825,7 @@ pub fn request_within(
 // ---------------------------------------------------------------------------
 
 /// An engine that was an earlier update's trial runs from that update's
-/// incoming bundle (`.Zeron.app.new-…`, beside the installed one), and its
+/// incoming bundle (`.Zend.app.new-…`, beside the installed one), and its
 /// commit renamed that folder to the installed bundle: macOS goes on naming
 /// the executable by the path it was started from, which no longer exists.
 /// That engine *is* the installed version. Without this it counted as a build
@@ -1141,7 +1141,7 @@ pub fn boot<G>(
                 "another version was installed during the update; leaving its data alone"
             );
             let reason = format!(
-                "Zeron {} was installed while this update was running, so the update stopped there.",
+                "Zend {} was installed while this update was running, so the update stopped there.",
                 who.me
             );
             let done = finish(data_dir, transaction, Phase::Failed, Some(reason))?;
@@ -1193,14 +1193,14 @@ fn start_trial<G>(
     let new_binary = transaction.layout.new_binary(&transaction.target, &exe_name);
     if !new_binary.is_file() {
         let why = format!(
-            "Zeron {}'s files are missing, so it stayed on {}.",
+            "Zend {}'s files are missing, so it stayed on {}.",
             transaction.target, transaction.from
         );
         return give_up(transaction, why, new_binary.display().to_string());
     }
     if let Err(err) = take_snapshot(data_dir, &transaction.id) {
         let why = format!(
-            "Zeron couldn't back up its data before updating, so it stayed on {}.",
+            "Zend couldn't back up its data before updating, so it stayed on {}.",
             transaction.from
         );
         return give_up(transaction, why, format!("{err:#}"));
@@ -1215,7 +1215,7 @@ fn start_trial<G>(
         // Without a watchdog a stuck new version would never be stopped. Nothing
         // has touched the data yet, so there's nothing to restore.
         let why = format!(
-            "Zeron couldn't watch over the update, so it stayed on {}.",
+            "Zend couldn't watch over the update, so it stayed on {}.",
             transaction.from
         );
         return give_up(transaction, why, format!("{err:#}"));
@@ -1226,7 +1226,7 @@ fn start_trial<G>(
     let err = hand_over(data_dir, options, &mut transaction, &new_binary);
     // Only reached if the new binary couldn't be started at all.
     let why = format!(
-        "Zeron {} couldn't start here, so it stayed on {}.",
+        "Zend {} couldn't start here, so it stayed on {}.",
         transaction.target, transaction.from
     );
     give_up(transaction, why, err.to_string())
@@ -1304,7 +1304,7 @@ fn roll_back(data_dir: &Path, mut transaction: Transaction) -> anyhow::Result<()
         transaction.interrupted = true;
     }
     let why = if transaction.interrupted {
-        "Zeron was stopped while it was trying the new version (the machine went to sleep, or \
+        "Zend was stopped while it was trying the new version (the machine went to sleep, or \
          the service restarted)."
             .to_owned()
     } else {
@@ -1329,7 +1329,7 @@ fn roll_back(data_dir: &Path, mut transaction: Transaction) -> anyhow::Result<()
     let outcome = if transaction.interrupted {
         format!("{why} It's on {from} for now and will try {target} again.")
     } else {
-        format!("{why} Zeron went back to {from} instead of {target}.")
+        format!("{why} Zend went back to {from} instead of {target}.")
     };
     let done = finish(data_dir, transaction, Phase::RolledBack, Some(outcome))?;
     crash_point("rollback-recorded");
@@ -1378,7 +1378,7 @@ fn prepare_watchdog(
     let status = command
         .arg("-c")
         .arg(r#""$@" </dev/null & exit 0"#)
-        .arg("zeron-update-watch")
+        .arg("zend-update-watch")
         .arg(&exe)
         .args(&options.watchdog_args)
         .env(WATCH_ID_ENV, &transaction.id)
@@ -1473,7 +1473,7 @@ fn watch(data_dir: &Path, id: &str, pid: u32, engine_args: &[String], exe_name: 
                     &format!("The new version didn't finish starting within {minutes} min."),
                 );
                 tracing::error!(pid, "update trial missed its deadline; stopping it");
-                eprintln!("zeron-update: the update trial missed its deadline; stopping it");
+                eprintln!("zend-update: the update trial missed its deadline; stopping it");
                 kill_process(pid);
             }
         } else {
@@ -1608,7 +1608,7 @@ fn start_unit(unit: &str) {
         .args(["--no-block", "start", unit])
         .status();
     if !started.is_ok_and(|status| status.success()) {
-        eprintln!("zeron-update: couldn't ask the service manager to start {unit}");
+        eprintln!("zend-update: couldn't ask the service manager to start {unit}");
     }
 }
 
@@ -1618,7 +1618,7 @@ fn relaunch_installed(layout: &Layout, exe_name: &std::ffi::OsStr, engine_args: 
     let mut command = std::process::Command::new(layout.installed_binary(exe_name));
     command.args(engine_args).stdin(std::process::Stdio::null());
     if let Err(err) = spawn_detached(&mut command) {
-        eprintln!("zeron-update: couldn't start the previous version: {err}");
+        eprintln!("zend-update: couldn't start the previous version: {err}");
     }
 }
 
@@ -1917,19 +1917,19 @@ mod tests {
         assert_eq!(unknown.state, UpdateState::Unknown);
     }
 
-    /// `/Applications`-like folder with the installed `Zeron.app` at
-    /// `version`, and an update to 2.0.0 requested into `.Zeron.app.new-next`.
+    /// `/Applications`-like folder with the installed `Zend.app` at
+    /// `version`, and an update to 2.0.0 requested into `.Zend.app.new-next`.
     fn mac_install(version: &str) -> (tempfile::TempDir, Transaction) {
         let root = tempfile::tempdir().unwrap();
-        let bundle = root.path().join("Zeron.app");
+        let bundle = root.path().join("Zend.app");
         std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
         std::fs::write(
             bundle.join("Contents/Info.plist"),
-            format!("<plist><key>ZeronVersion</key><string>{version}</string></plist>"),
+            format!("<plist><key>ZendVersion</key><string>{version}</string></plist>"),
         )
         .unwrap();
-        std::fs::write(bundle.join("Contents/MacOS/Zeron Engine"), "").unwrap();
-        let incoming = root.path().join(".Zeron.app.new-next");
+        std::fs::write(bundle.join("Contents/MacOS/Zend Engine"), "").unwrap();
+        let incoming = root.path().join(".Zend.app.new-next");
         std::fs::create_dir_all(incoming.join("Contents/MacOS")).unwrap();
         let mut update = transaction(Phase::Requested);
         update.layout = Layout::MacBundle { bundle, incoming };
@@ -1937,40 +1937,40 @@ mod tests {
     }
 
     /// m1-laptop, Nov 11: the engine had been the trial of the update before
-    /// (started from `.Zeron.app.new-<id>`, renamed to `Zeron.app` at its
+    /// (started from `.Zend.app.new-<id>`, renamed to `Zend.app` at its
     /// commit) and was still named by that path. Asked for the next update,
     /// it didn't recognise its own installation, stopped, and never came back.
     #[test]
     fn an_engine_from_an_earlier_update_is_the_installed_version() {
         let (root, update) = mac_install("1.0.0");
-        let installed = root.path().join("Zeron.app/Contents/MacOS/Zeron Engine");
-        let earlier = root.path().join(".Zeron.app.new-earlier/Contents/MacOS/Zeron Engine");
+        let installed = root.path().join("Zend.app/Contents/MacOS/Zend Engine");
+        let earlier = root.path().join(".Zend.app.new-earlier/Contents/MacOS/Zend Engine");
         for exe in [&installed, &earlier] {
             let who = update.layout.whoami_of(exe, &update);
             assert_eq!(who, Some(self::who("1.0.0", "1.0.0")), "{}", exe.display());
             assert_eq!(step_for(&update, &who.unwrap()), Step::StartTrial);
         }
         // The new version, on trial from the incoming bundle.
-        let trial = root.path().join(".Zeron.app.new-next/Contents/MacOS/Zeron Engine");
+        let trial = root.path().join(".Zend.app.new-next/Contents/MacOS/Zend Engine");
         std::fs::write(&trial, "").unwrap();
         assert_eq!(update.layout.whoami_of(&trial, &update), Some(who("2.0.0", "1.0.0")));
     }
 
     /// The zgx app on Windows runs its engine from its version's folder
-    /// (`app\<version>\engine\zeron.exe`): there it's the new version on
+    /// (`app\<version>\engine\zend.exe`): there it's the new version on
     /// trial, or the installed one asked for the next update.
     #[cfg(windows)]
     #[test]
     fn a_zgx_engine_in_its_version_s_folder_is_part_of_the_installation() {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().to_path_buf();
-        std::fs::write(directory.join("zeron.exe"), "").unwrap();
-        std::fs::write(directory.join("zeron-version"), "1.0.0").unwrap();
-        let incoming = directory.join(".zeron-update-x").join("zeron.exe");
+        std::fs::write(directory.join("zend.exe"), "").unwrap();
+        std::fs::write(directory.join("zend-version"), "1.0.0").unwrap();
+        let incoming = directory.join(".zend-update-x").join("zend.exe");
         std::fs::create_dir_all(incoming.parent().unwrap()).unwrap();
         std::fs::write(&incoming, "").unwrap();
         let engine = |version: &str| {
-            let exe = crate::windows::version_files(&directory, version).join("engine").join("zeron.exe");
+            let exe = crate::windows::version_files(&directory, version).join("engine").join("zend.exe");
             std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
             std::fs::write(&exe, "").unwrap();
             exe
@@ -1978,7 +1978,7 @@ mod tests {
         let mut update = transaction(Phase::Requested);
         update.layout = Layout::WindowsFolder { directory: directory.clone(), incoming: incoming.clone() };
         assert_eq!(update.layout.whoami_of(&engine("1.0.0"), &update), Some(who("1.0.0", "1.0.0")));
-        assert_eq!(update.layout.whoami_of(&directory.join("zeron.exe"), &update), Some(who("1.0.0", "1.0.0")));
+        assert_eq!(update.layout.whoami_of(&directory.join("zend.exe"), &update), Some(who("1.0.0", "1.0.0")));
         assert_eq!(update.layout.whoami_of(&engine("2.0.0"), &update), Some(who("2.0.0", "1.0.0")));
         assert_eq!(update.layout.whoami_of(&incoming, &update), Some(who("2.0.0", "1.0.0")));
         assert_eq!(update.layout.whoami_of(&engine("3.0.0"), &update), None);
@@ -1990,13 +1990,13 @@ mod tests {
     #[test]
     fn only_the_installation_is_recognised() {
         let (root, update) = mac_install("1.0.0");
-        let abandoned = root.path().join(".Zeron.app.new-abandoned");
+        let abandoned = root.path().join(".Zend.app.new-abandoned");
         std::fs::create_dir_all(abandoned.join("Contents/MacOS")).unwrap();
         for exe in [
-            root.path().join("build/Zeron Engine"),
-            abandoned.join("Contents/MacOS/Zeron Engine"),
-            root.path().join(".Other.app.new-x/Contents/MacOS/Zeron Engine"),
-            root.path().join(".Zeron.app.new-x/Zeron Engine"),
+            root.path().join("build/Zend Engine"),
+            abandoned.join("Contents/MacOS/Zend Engine"),
+            root.path().join(".Other.app.new-x/Contents/MacOS/Zend Engine"),
+            root.path().join(".Zend.app.new-x/Zend Engine"),
         ] {
             assert_eq!(update.layout.whoami_of(&exe, &update), None, "{}", exe.display());
         }
@@ -2008,8 +2008,8 @@ mod tests {
     fn an_engine_knows_whether_it_carries_out_the_update() {
         let (root, update) = mac_install("1.0.0");
         let data = tempfile::tempdir().unwrap();
-        let earlier = root.path().join(".Zeron.app.new-earlier/Contents/MacOS/Zeron Engine");
-        let beside = root.path().join("build/Zeron Engine");
+        let earlier = root.path().join(".Zend.app.new-earlier/Contents/MacOS/Zend Engine");
+        let beside = root.path().join("build/Zend Engine");
         assert!(!starts_from(data.path(), &earlier), "no update requested");
         write(data.path(), &update).unwrap();
         assert!(starts_from(data.path(), &earlier));
@@ -2019,7 +2019,7 @@ mod tests {
         let Layout::MacBundle { bundle, .. } = &update.layout else { unreachable!() };
         std::fs::write(
             bundle.join("Contents/Info.plist"),
-            "<plist><key>ZeronVersion</key><string>3.0.0</string></plist>",
+            "<plist><key>ZendVersion</key><string>3.0.0</string></plist>",
         )
         .unwrap();
         assert!(!starts_from(data.path(), &earlier));

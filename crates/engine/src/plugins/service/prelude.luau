@@ -1,6 +1,6 @@
--- The service side of Zeron's plugin SDK: what `require("./zeron")(id)`
+-- The service side of Zend's plugin SDK: what `require("./zend")(id)`
 -- gives a plugin's service.luau. The engine runs it (plugins/service/vm.rs)
--- with `host`, its natives, and keeps `zeron_service` for zeron.luau to
+-- with `host`, its natives, and keeps `zend_service` for zend.luau to
 -- hand out. Handlers, tools, timers and `after` callbacks each run as a
 -- task (a coroutine), so they can `:await()` a promise.
 
@@ -84,7 +84,7 @@ function Promise.await(self: any): any
 		local co = coroutine.running()
 		local step = co and tasks[co]
 		if not step then
-			error("await works in a task: a handler, a tool, a timer, or zeron.task(fn)", 2)
+			error("await works in a task: a handler, a tool, a timer, or zend.task(fn)", 2)
 		end
 		table.insert(self.waiters, step)
 		coroutine.yield()
@@ -110,9 +110,9 @@ local served: { [string]: { fn: (any, any) -> any, safe: boolean } } = {}
 local tools: { [string]: (any, any) -> any } = {}
 local timers: { { seconds: number, fn: (any) -> () } } = {}
 local stops: { () -> () } = {}
--- `zeron.watch`es, by id: each one's folders and listener.
+-- `zend.watch`es, by id: each one's folders and listener.
 local watches: { [number]: { folders: { string }, fn: (any) -> () } } = {}
--- `zeron.on` listeners, by place: the event each hears, its options.
+-- `zend.on` listeners, by place: the event each hears, its options.
 local listeners: { { event: string, opts: any, fn: (any, any) -> () } } = {}
 
 local function dispatch(kind: string, name: string, args: any, call: any, reply: number)
@@ -199,41 +199,41 @@ local function service(id: string): any
 		return made[id]
 	end
 	if id ~= host.plugin then
-		error(`this service is {host.plugin}'s: require("./zeron")("{host.plugin}")`, 2)
+		error(`this service is {host.plugin}'s: require("./zend")("{host.plugin}")`, 2)
 	end
 	local M = {}
 	M.device = host.device
 	M.json = host.json
 	M.null = host.null
 
-	-- A method callers reach with `zeron.service(device?):call(name, args)`.
+	-- A method callers reach with `zend.service(device?):call(name, args)`.
 	-- `fn(args, call)` returns the answer (or awaits, then returns it);
 	-- error() fails the call. `safe = true`: running it twice does no harm,
-	-- so Zeron may run it again when the service stopped during the call.
+	-- so Zend may run it again when the service stopped during the call.
 	function M.serve(name: string, fn: (any, any) -> any, opts: { safe: boolean? }?)
-		assert(type(name) == "string" and name ~= "", "zeron.serve: a method's name")
-		assert(type(fn) == "function", "zeron.serve: a function to answer it")
-		assert(string.sub(name, 1, 1) ~= "@", "zeron.serve: names starting with @ are Zeron's")
+		assert(type(name) == "string" and name ~= "", "zend.serve: a method's name")
+		assert(type(fn) == "function", "zend.serve: a function to answer it")
+		assert(string.sub(name, 1, 1) ~= "@", "zend.serve: names starting with @ are Zend's")
 		served[name] = { fn = fn, safe = (opts and opts.safe) == true }
 	end
 
 	-- A tool agents call (named in the manifest's "tools"), answered here
 	-- with no window open.
 	function M.tool(tool: { name: string, run: (any, any) -> any })
-		assert(type(tool) == "table" and type(tool.name) == "string", "zeron.tool { name, run }")
-		assert(type(tool.run) == "function", "zeron.tool { name, run }: run is a function")
+		assert(type(tool) == "table" and type(tool.name) == "string", "zend.tool { name, run }")
+		assert(type(tool.run) == "function", "zend.tool { name, run }: run is a function")
 		tools[tool.name] = tool.run
 	end
 
 	-- Now and then, 30 seconds at least, even while nothing calls the
-	-- service (Zeron starts it to run `fn`). Register timers at the top
+	-- service (Zend starts it to run `fn`). Register timers at the top
 	-- level, in the same order each time: they're known by their place.
 	function M.every(seconds: number, fn: (any) -> ())
-		assert(type(seconds) == "number" and type(fn) == "function", "zeron.every(seconds, fn)")
+		assert(type(seconds) == "number" and type(fn) == "function", "zend.every(seconds, fn)")
 		table.insert(timers, { seconds = math.max(30, seconds), fn = fn })
 	end
 
-	-- Told before the service stops (idle, an update, Zeron quitting).
+	-- Told before the service stops (idle, an update, Zend quitting).
 	function M.on_stop(fn: () -> ())
 		table.insert(stops, fn)
 	end
@@ -246,8 +246,8 @@ local function service(id: string): any
 	-- Reads aren't changes. Returns a function that stops watching. A
 	-- watch lasts while the service runs (5 minutes after its last call).
 	function M.watch(folders: { string }, fn: (any) -> (), opts: { quiet: number? }?): () -> ()
-		assert(type(folders) == "table" and #folders > 0, "zeron.watch(folders, fn)")
-		assert(type(fn) == "function", "zeron.watch(folders, fn)")
+		assert(type(folders) == "table" and #folders > 0, "zend.watch(folders, fn)")
+		assert(type(fn) == "function", "zend.watch(folders, fn)")
 		local id = host.watch(folders, opts and opts.quiet)
 		watches[id] = { folders = table.clone(folders), fn = fn }
 		return function()
@@ -259,7 +259,7 @@ local function service(id: string): any
 	end
 
 	-- To this plugin's windows (on this device, and those watching it from
-	-- others): `zeron.service(device):on(event, fn)`.
+	-- others): `zend.service(device):on(event, fn)`.
 	function M.emit(event: string, data: any)
 		host.emit(event, data)
 	end
@@ -283,7 +283,7 @@ local function service(id: string): any
 		return op("fetch", { url = url, method = o.method, headers = o.headers, body = o.body, timeout = o.timeout })
 	end
 
-	-- A notification, as Zeron's own ("notifications"): a promise of
+	-- A notification, as Zend's own ("notifications"): a promise of
 	-- "posted", "off", "held", "paced" or "unavailable".
 	function M.notify(n: { title: string, body: string?, session: string? }): any
 		return op("notify", { title = n.title, body = n.body, session = n.session })
@@ -296,7 +296,7 @@ local function service(id: string): any
 	-- with "<reason>: <words>" (paced, loop, not_allowed, …).
 
 	-- `fn(data, event)` for each `event` on this device (usage.threshold,
-	-- turn.finished, …), with no window open: Zeron starts the service to
+	-- turn.finished, …), with no window open: Zend starts the service to
 	-- tell it. Register listeners at the top level, in the same order each
 	-- time: they're known by their place. `opts`: a threshold's `below`
 	-- (percent remaining), and `provider`, `account`, `window` to narrow.
@@ -305,8 +305,8 @@ local function service(id: string): any
 	-- (it has `prepare_wait`, 3 s, to say; "accounts.pin"). Say nothing and
 	-- the chat runs on the active account. Every other event ignores it.
 	function M.on(event: string, fn: (any, string) -> any, opts: { [string]: any }?)
-		assert(type(event) == "string" and event ~= "", "zeron.on(event, fn)")
-		assert(type(fn) == "function", "zeron.on(event, fn)")
+		assert(type(event) == "string" and event ~= "", "zend.on(event, fn)")
+		assert(type(fn) == "function", "zend.on(event, fn)")
 		table.insert(listeners, {
 			event = event,
 			opts = opts or {},
@@ -322,7 +322,7 @@ local function service(id: string): any
 		return op("agents", a)
 	end
 
-	-- Each provider's accounts' usage, as Zeron last read it (never a new
+	-- Each provider's accounts' usage, as Zend last read it (never a new
 	-- read): { { provider, account, active, plan?, fetched_at?, error?,
 	-- windows = { { label, used, remaining, resets_at? } } } }.
 	function M.usage(opts: { provider: string? }?): any

@@ -1,8 +1,8 @@
-//! zeron-rpc — the typed control plane (UiRpc / ControlRpc) over WebSocket + in-memory
+//! zend-rpc — the typed control plane (UiRpc / ControlRpc) over WebSocket + in-memory
 //! transports, plus the device-room relay transport ({s,k,to,from} frames — [`device_room`]).
 //!
 //! Framing: ndjson envelopes, one JSON object per WebSocket text message (or per line on
-//! byte transports), matching the shape of zeron's Effect RPC without the Effect runtime:
+//! byte transports), matching the shape of zend's Effect RPC without the Effect runtime:
 //!
 //! - client → server: `{id, method, params}` to invoke, `{id, cancel: true}` to stop a stream;
 //! - server → client: `{id, ok}` / `{id, err}` for unary calls,
@@ -77,7 +77,7 @@ pub mod methods {
     /// replies with the device's fresh `ListHarnesses` catalog.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";
-    /// Whether agents' commits on this device credit Zeron
+    /// Whether agents' commits on this device credit Zend
     /// (`{enabled, cloud}`; set with `{enabled}`).
     pub const GET_COMMIT_CREDIT: &str = "GetCommitCredit";
     pub const SET_COMMIT_CREDIT: &str = "SetCommitCredit";
@@ -137,25 +137,25 @@ pub mod methods {
     /// app foregrounded). No params; IPC-only. Each room ignores the hint
     /// unless it has been broadcast-quiet ≥30s, so this is cheap to spam.
     pub const PROBE_SYNC: &str = "ProbeSync";
-    /// Live sync introspection (`zeron sync` / debug surfaces): per-room
+    /// Live sync introspection (`zend sync` / debug surfaces): per-room
     /// connection state, last pushed-frame/ack ages, rejoin/probe/resync
     /// counters for the workspace room and every open chat doc. No params;
     /// IPC-only.
     pub const SYNC_STATUS: &str = "SyncStatus";
-    /// Pushed edge-connectivity posture (`zeron_proto::Connectivity`):
+    /// Pushed edge-connectivity posture (`zend_proto::Connectivity`):
     /// current value first, then every change — the connection pill /
     /// composer-honesty / queued-badge feed. No params; IPC-only.
     pub const WATCH_CONNECTIVITY: &str = "WatchConnectivity";
-    /// In-flight queued-attachment transfers (`zeron_proto::TransferProgress`
+    /// In-flight queued-attachment transfers (`zend_proto::TransferProgress`
     /// list): current set first, then a fresh snapshot per landed chunk —
     /// the sending thumbnail's percent-ring feed. No params; IPC-only.
     pub const WATCH_TRANSFERS: &str = "WatchTransfers";
     /// Sends waiting for their attachment bytes to reach the edge's store
-    /// (`zeron_proto::HeldSendStatus` list): current set first, then every
+    /// (`zend_proto::HeldSendStatus` list): current set first, then every
     /// change. No params; IPC-only.
     pub const WATCH_HELD_SENDS: &str = "WatchHeldSends";
     /// One chat's messages not yet taken by its agent
-    /// (`zeron_proto::WaitingMessage` list), `{chatId}`: current set first, then
+    /// (`zend_proto::WaitingMessage` list), `{chatId}`: current set first, then
     /// every change. IPC-only.
     pub const WATCH_WAITING_MESSAGES: &str = "WatchWaitingMessages";
     /// Remove a send from this device's outbox, failed or still uploading:
@@ -179,7 +179,7 @@ pub mod methods {
     /// This engine runtime's fixed device and workspace identity.
     pub const ENGINE_INFO: &str = "EngineInfo";
     /// What a device's machine can say about itself (OS, CPU, memory,
-    /// storage, GPU, load, battery, Zeron's version): `{targetDeviceId?}` →
+    /// storage, GPU, load, battery, Zend's version): `{targetDeviceId?}` →
     /// `DeviceStats`. Another of the account's devices answers through its
     /// relay within a few seconds, or the call says it's offline or too old.
     pub const DEVICE_STATS: &str = "DeviceStats";
@@ -191,7 +191,7 @@ pub mod methods {
     /// engine behind its windows would leave that process unusable.
     pub const STOP_ENGINE: &str = "StopEngine";
     /// Headless IPC only: stop starting work ahead of a Cloud sleep (the
-    /// edge runs `zeron quiesce` before stopping the machine). Replies
+    /// edge runs `zend quiesce` before stopping the machine). Replies
     /// `{"quiesced":true}` or `{"quiesced":false,"busy":"<why>"}`.
     pub const QUIESCE_FOR_SLEEP: &str = "QuiesceForSleep";
     pub const AUTH_STATUS: &str = "AuthStatus";
@@ -278,7 +278,7 @@ pub mod methods {
     pub const READ_BACKGROUND_TASK_OUTPUT: &str = "ReadBackgroundTaskOutput";
     /// `{chatId, taskIds, waiting?}` → `{matched, unmatched}`: the agent says
     /// it waits on these of its background processes (or, `waiting` false,
-    /// no longer), so its turn's end reads as a wait (Zeron's MCP
+    /// no longer), so its turn's end reads as a wait (Zend's MCP
     /// `wait_on_background`). An agent's always names its own chat. Refused
     /// where the runtime doesn't wake its agent when the work ends. Local:
     /// an agent's MCP server dials its chat's host.
@@ -481,7 +481,7 @@ pub mod methods {
     /// each change.
     pub const WATCH_PLUGINS: &str = "WatchPlugins";
     /// `{id, allow, hash, review?}` → `PluginItem`. Allowing needs `review`,
-    /// minted by [`REVIEW_PLUGIN`] for the same `id` and `hash`: only Zeron's
+    /// minted by [`REVIEW_PLUGIN`] for the same `id` and `hash`: only Zend's
     /// consent window holds one. Declining (`allow: false`) needs none.
     /// Allowing is this device's alone: never over the relay.
     pub const DECIDE_PLUGIN: &str = "DecidePlugin";
@@ -537,7 +537,7 @@ pub mod methods {
     /// usage, accounts and models as that plugin was allowed them on this
     /// device, or on `device` (sent there as [`SERVE_PLUGIN_AGENTS`]).
     /// `op: "listen"` with `listeners: [{key, event, opts}]` says what its
-    /// windows here listen for (`zeron.on`).
+    /// windows here listen for (`zend.on`).
     pub const PLUGIN_AGENTS: &str = "PluginAgents";
     /// Peer to peer over the device link: `{plugin, version, authorKey?,
     /// op, args?}` → as `PluginAgents`. Refused unless the caller is a
@@ -553,16 +553,16 @@ pub mod methods {
     /// looks up its own key at once (nothing in the call is trusted; it only
     /// hastens the regular check). Answered to peers; not to agents.
     pub const CHECK_PLUGIN_KEY: &str = "CheckPluginKey";
-    /// Templates (whole replacements of Zeron's interface): `{}` → `{dir,
+    /// Templates (whole replacements of Zend's interface): `{}` → `{dir,
     /// active, templates: [{id, name, description, author, version,
-    /// zeron_version, builtin, active, status: "ok" | "errors" | "out_of_date"
+    /// zend_version, builtin, active, status: "ok" | "errors" | "out_of_date"
     /// | "broken", error?, dir, preview?, imported?: {key, author}}], pending:
-    /// [{pending, id, name, key, author, hash, ignored, …}]}`, Zeron's own
+    /// [{pending, id, name, key, author, hash, ignored, …}]}`, Zend's own
     /// first. "out_of_date":
-    /// its `zeron_version` isn't this Zeron's (a real update since it was made).
+    /// its `zend_version` isn't this Zend's (a real update since it was made).
     pub const LIST_TEMPLATES: &str = "ListTemplates";
     /// `{id, name?, from?}` → `{id, dir, files: [rel], map}`: a full copy of
-    /// Zeron's app (overlaid with `from`'s files) to edit.
+    /// Zend's app (overlaid with `from`'s files) to edit.
     pub const CREATE_TEMPLATE: &str = "CreateTemplate";
     /// `{id}` → `{active}`: the template the window runs (the app switches
     /// live).
@@ -574,17 +574,17 @@ pub mod methods {
     /// `.removed`.
     pub const DELETE_TEMPLATE: &str = "DeleteTemplate";
     /// `{id, path}` → `{id, path, files, key}`: the template as a signed
-    /// package (`path`, a `.zeron-template` file), signed with this device's
+    /// package (`path`, a `.zend-template` file), signed with this device's
     /// plugin key in the template domain. Never-templated files are left out.
     pub const EXPORT_TEMPLATE: &str = "ExportTemplate";
     /// `{path}` → yours (signed by this device's key): installed,
     /// `{installed, name, author, ignored}`; anyone else's: kept for you to
-    /// allow in Zeron, `{pending, id, name, …, key, author, hash, ignored,
+    /// allow in Zend, `{pending, id, name, …, key, author, hash, ignored,
     /// needs_consent: true}`. Unsigned or tampered packages are refused.
     pub const IMPORT_TEMPLATE: &str = "ImportTemplate";
     /// `{pending, allow, hash}` → `{installed, name, author}` or
     /// `{declined}`: the consent window's answer for a waiting package
-    /// (checked again; `hash` is the package as shown). Only Zeron's consent
+    /// (checked again; `hash` is the package as shown). Only Zend's consent
     /// window calls it.
     pub const DECIDE_TEMPLATE: &str = "DecideTemplate";
     /// `{pending, hash}` → `{review}`: as [`REVIEW_PLUGIN`], for
@@ -600,7 +600,7 @@ pub mod methods {
     /// `DescribeElements` is the live window's.
     pub const DESCRIBE_APP: &str = "DescribeApp";
     /// Themes (the window's colours, apart from its template; all data,
-    /// this device's, in the data dir: `zeron_theme::catalog`): `{}` →
+    /// this device's, in the data dir: `zend_theme::catalog`): `{}` →
     /// `{themes: [{id, name, source, editable, variants: {light?, dark?},
     /// in_use, template?, problem?}], wearing: {light, dark}, chosen, guide}`.
     pub const LIST_THEMES: &str = "ListThemes";
@@ -633,11 +633,11 @@ pub mod methods {
     /// landed in the window, for an agent to check its work (and, with
     /// `snapshot`, a picture of the window cut to them).
     pub const PLUGIN_STATUS: &str = "PluginStatus";
-    /// `{dir}` → the list: the app's folder of Zeron's own plugins, scanned
+    /// `{dir}` → the list: the app's folder of Zend's own plugins, scanned
     /// with yours (allowed what they ask, on unless turned off, never
     /// removed).
     pub const SET_BUILTIN_PLUGINS: &str = "SetBuiltinPlugins";
-    /// `{path}` (a `.zeron-plugin` file) or `{url, ref?, folder?}` (a
+    /// `{path}` (a `.zend-plugin` file) or `{url, ref?, folder?}` (a
     /// package link, a GitHub release, a git repository) → `{plugin,
     /// update, from?, added, removed, waiting}`: someone else's plugin
     /// installed, verified first; it waits for you in the app (`waiting`)
@@ -648,7 +648,7 @@ pub mod methods {
     /// as `{upload, name?}`: what `StagePluginPackage` took, and its name.
     pub const INSTALL_PLUGIN: &str = "InstallPlugin";
     /// `{upload?, data}` → `{upload, bytes}`: a piece (base64, at most
-    /// 384 KiB) of a `.zeron-plugin` file on its way to this device from
+    /// 384 KiB) of a `.zend-plugin` file on its way to this device from
     /// another of yours, added to `upload` (none: a new one). Then
     /// `InstallPlugin {upload}`. Good only to whoever sent it, for minutes.
     pub const STAGE_PLUGIN_PACKAGE: &str = "StagePluginPackage";
@@ -660,7 +660,7 @@ pub mod methods {
     /// (checked first when none was found yet). Refused when someone else
     /// signed it or it was changed; new permissions wait for you again.
     pub const UPDATE_PLUGIN: &str = "UpdatePlugin";
-    /// `{id, to?}` → `{path, bytes}`: a plugin as a `.zeron-plugin` package
+    /// `{id, to?}` → `{path, bytes}`: a plugin as a `.zend-plugin` package
     /// (an own plugin is re-signed first), into the folder or file `to`
     /// (absolute), else `<data dir>/plugin-exports`. Only this device's own
     /// app or CLI names `to`: an agent's export goes to plugin-exports.
@@ -759,7 +759,7 @@ pub fn app_forward_only(method: &str, params: &serde_json::Value) -> bool {
     }
 }
 
-/// The methods an agent's `zeron mcp` server may call with the
+/// The methods an agent's `zend mcp` server may call with the
 /// agent-scoped IPC token: what its tools need and nothing that grants
 /// power. An allow-list, so a method added later stays the app's until
 /// it's listed here. Never here: deciding or reviewing (`Decide*`,
@@ -793,7 +793,7 @@ pub fn agent_allowed(method: &str) -> bool {
             // Saying what the calling chat's agent waits on.
             | methods::AWAIT_BACKGROUND
             // Plugins: authoring, installing (lands waiting for the person),
-            // checking for updates, exporting (to Zeron's plugin-exports
+            // checking for updates, exporting (to Zend's plugin-exports
             // folder only: the engine refuses an agent's `to`), and their
             // tools.
             | methods::LIST_PLUGINS
@@ -1389,7 +1389,7 @@ mod tests {
         }
     }
 
-    /// R6/R16: the agent-scoped token (what `zeron mcp` holds) reaches its
+    /// R6/R16: the agent-scoped token (what `zend mcp` holds) reaches its
     /// tools' methods as an agent, and nothing that decides, signs, updates
     /// or hands out credentials; the full token still reaches everything.
     #[tokio::test]
@@ -1437,7 +1437,7 @@ mod tests {
         let asked = agent.call(methods::LIST_PLUGINS, serde_json::json!({})).await.unwrap();
         assert!(asked.as_str().unwrap().starts_with("Agent"), "{asked}");
         // Exporting a plugin reaches the engine as the agent's, which keeps
-        // it to Zeron's plugin-exports folder (R29).
+        // it to Zend's plugin-exports folder (R29).
         let asked = agent.call(methods::EXPORT_PLUGIN, serde_json::json!({})).await.unwrap();
         assert!(asked.as_str().unwrap().starts_with("Agent"), "{asked}");
         // The theme tools' methods, exactly: data only.

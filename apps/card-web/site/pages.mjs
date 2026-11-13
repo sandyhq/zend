@@ -50,7 +50,7 @@ export const PLAYER = { width: 480, height: 480 };
 // as the player, at 2.5x.
 export const IMAGE = { width: 1200, height: 1200 };
 
-/** The page's URLs. `site`: the public origin (https://zeron.sh); `base`:
+/** The page's URLs. `site`: the public origin (https://zend.invalid); `base`:
  * where card.js, the fonts and the art live (`<site>/card` by default). */
 export function urlsFor(card, site, base = `${site}/card`) {
   const u = encodeURIComponent(String(card.username || ""));
@@ -81,9 +81,9 @@ ${extra}</head>`;
  * `options.site`: the X handle for `twitter:site`. */
 export function renderShare(card, urls, options = {}) {
   const name = nameOf(card);
-  const title = `${name} — Zeron member #${Number(card.userNumber)}`;
-  const description = `${name}'s Zeron member card: #${Number(card.userNumber)}, joined ${card.joinedOn}.`;
-  const alt = `${name}'s Zeron member card`;
+  const title = `${name} — Zend member #${Number(card.userNumber)}`;
+  const description = `${name}'s Zend member card: #${Number(card.userNumber)}, joined ${card.joinedOn}.`;
+  const alt = `${name}'s Zend member card`;
   const meta = `
 <meta name="twitter:card" content="player" />
 ${options.site ? `<meta name="twitter:site" content="${escapeHtml(options.site)}" />` : ""}
@@ -127,12 +127,12 @@ ${dataBlock(card)}
  * tests; see card-page.js. */
 export function renderPlayer(card, urls) {
   const name = nameOf(card);
-  const alt = `${name}'s Zeron member card`;
+  const alt = `${name}'s Zend member card`;
   const style = `<style>
   html, body { height: 100%; overflow: hidden; }
   .stage { position: absolute; inset: 0; }
 </style>`;
-  return `${head(`${name} — Zeron`, alt, urls, style)}
+  return `${head(`${name} — Zend`, alt, urls, style)}
 <body>
 <div class="stage" id="stage" data-mode="player"><img class="fallback" alt="${escapeHtml(alt)}" data-src="${urls.image}" /></div>
 ${dataBlock(card)}
@@ -174,8 +174,8 @@ export function renderEmbedTest(members, urls) {
   <label><input id="mobile" type="checkbox" /> phone column (375)</label>
 </div>
 <article class="post" id="post">
-  <header><i></i><div><b>Zeron</b> <span>@zeron · 1m</span></div></header>
-  <p id="text">My Zeron member card.</p>
+  <header><i></i><div><b>Zend</b> <span>@zend · 1m</span></div></header>
+  <p id="text">My Zend member card.</p>
   <div class="frame"><iframe id="player" title="Member card" allow="autoplay" sandbox="allow-scripts allow-same-origin"></iframe></div>
 </article>
 <div class="report" id="report"></div>

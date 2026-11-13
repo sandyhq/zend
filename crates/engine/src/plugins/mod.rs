@@ -1,4 +1,4 @@
-//! Zeron plugins, engine side (the plugins contract, v1).
+//! Zend plugins, engine side (the plugins contract, v1).
 //!
 //! Folders under `<data>/plugins/<id>/` are watched, hashed, checked against
 //! their ed25519 signature and the user's decisions, and listed to the app
@@ -46,7 +46,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
-use zeron_rpc::{RpcError, RpcReply, methods, parse_params};
+use zend_rpc::{RpcError, RpcReply, methods, parse_params};
 
 use broker::{CallError, Slot, ToolAnswer, ToolBroker};
 use keys::{CachedKey, KeyCache, KeyDirectory};
@@ -61,7 +61,7 @@ pub const PLUGINS_DIR: &str = "plugins";
 pub const TEMPLATES_DIR: &str = "templates";
 pub const REMOVED_DIR: &str = ".removed";
 
-/// Forget what plugin `id` kept under `plugins_dir/.storage`: `zeron.store`
+/// Forget what plugin `id` kept under `plugins_dir/.storage`: `zend.store`
 /// (the app's and its service's), its settings, and its database with
 /// SQLite's files beside it. A plugin installed later under the id starts
 /// with none of it.
@@ -93,9 +93,9 @@ pub(crate) fn sweep_removed(plugins_dir: &Path) {
 pub const MAX_SEND_BYTES: usize = 64 * 1024;
 /// A service call's `args` from another device, serialized.
 pub const MAX_CALL_BYTES: usize = 1024 * 1024;
-/// The author Zeron's own plugins say they are across devices: never a
+/// The author Zend's own plugins say they are across devices: never a
 /// key, so never the same as one.
-pub const BUILTIN_AUTHOR: &str = "zeron";
+pub const BUILTIN_AUTHOR: &str = "zend";
 /// How often this device looks for signing keys added on the account's
 /// other devices, and rescans so authors looked up longer ago than
 /// `keys::CACHE_TTL_SECS` are looked up again (a key revoked elsewhere
@@ -189,7 +189,7 @@ pub const ELEMENTS_FILE: &str = ".elements.json";
 type AccountFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 /// Posts a plugin's notification: `(source, title, body, session)` → outcome.
 type NotifyFn = Arc<dyn Fn(&str, &str, &str, Option<&str>) -> String + Send + Sync>;
-/// This device's chats' and projects' folders (a service's `zeron.folders`).
+/// This device's chats' and projects' folders (a service's `zend.folders`).
 type FoldersFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
 enum Kick {
@@ -223,7 +223,7 @@ struct Inner {
     workspace: Mutex<Option<crate::WorkspaceHost>>,
     directory: Mutex<Option<Arc<dyn KeyDirectory>>>,
     account: Mutex<Option<AccountFn>>,
-    links: Mutex<Option<Arc<zeron_rpc::LinkCache>>>,
+    links: Mutex<Option<Arc<zend_rpc::LinkCache>>>,
     state: Mutex<State>,
     cache: Mutex<KeyCache>,
     lookup_failed: Mutex<HashMap<String, Instant>>,
@@ -246,10 +246,10 @@ struct Inner {
     watch: Mutex<Option<crate::fs_watch::FsWatch>>,
     /// The plugins dir as the watcher reports it (canonical).
     root: Mutex<Option<PathBuf>>,
-    /// Zeron's own plugins, the app's folder of them (`SetBuiltinPlugins`).
+    /// Zend's own plugins, the app's folder of them (`SetBuiltinPlugins`).
     builtin_dir: Mutex<Option<PathBuf>>,
-    /// Zeron's own plugins' folder, watched as yours are: an edit to one
-    /// (developing Zeron) loads as it's saved, not at the next rescan.
+    /// Zend's own plugins' folder, watched as yours are: an edit to one
+    /// (developing Zend) loads as it's saved, not at the next rescan.
     builtin_watch: Mutex<Option<crate::fs_watch::FsWatch>>,
     /// Plugins' services (plugins/service).
     services: Services,
@@ -262,9 +262,9 @@ struct Inner {
     /// The (plugin, device) services this device's windows watch.
     watching: Mutex<HashSet<(String, String)>>,
     notifier: Mutex<Option<NotifyFn>>,
-    /// Where this device's chats and projects are (`zeron.folders`).
+    /// Where this device's chats and projects are (`zend.folders`).
     folders: Mutex<Option<FoldersFn>>,
-    /// One-time capabilities for Zeron's consent window (`ReviewPlugin`,
+    /// One-time capabilities for Zend's consent window (`ReviewPlugin`,
     /// `ReviewTemplate`): what allowing and signing need.
     reviews: Mutex<reviews::Reviews>,
     /// Plugin files on their way here from another of your devices
@@ -384,7 +384,7 @@ struct DeliverParams {
     author_key: Option<String>,
     #[serde(default)]
     data: serde_json::Value,
-    /// A service's event (`zeron.emit`) for windows here, not a message.
+    /// A service's event (`zend.emit`) for windows here, not a message.
     #[serde(default)]
     event: Option<String>,
     /// From another device whose id the link didn't say: `from` is only
@@ -475,7 +475,7 @@ fn sign_folder(dir: &Path, key: &SigningKey) -> Result<Option<Vec<u8>>, String> 
     }
     let bytes = signing::pretty(&key.sign_manifest(&manifest.raw, &inspected.files));
     write_replace(&dir.join(MANIFEST_FILE), &bytes)
-        .map_err(|_| "Couldn't write its zeron-plugin.json".to_string())?;
+        .map_err(|_| "Couldn't write its zend-plugin.json".to_string())?;
     Ok(Some(bytes))
 }
 
@@ -556,7 +556,7 @@ impl Plugins {
         plugins
     }
 
-    /// How a service's `zeron.notify` is posted (the engine's banners).
+    /// How a service's `zend.notify` is posted (the engine's banners).
     pub fn set_notifier(
         &self,
         notify: impl Fn(&str, &str, &str, Option<&str>) -> String + Send + Sync + 'static,
@@ -565,7 +565,7 @@ impl Plugins {
     }
 
     /// Where this device's chats and projects are, for a service's
-    /// `zeron.folders()` (the engine's workspace; a test's own).
+    /// `zend.folders()` (the engine's workspace; a test's own).
     pub fn set_folders(&self, folders: impl Fn() -> Vec<String> + Send + Sync + 'static) {
         *lock(&self.inner.folders) = Some(Arc::new(folders));
     }
@@ -579,9 +579,9 @@ impl Plugins {
     /// plugins' events, while the plugins service runs.
     pub fn follow_agents(
         &self,
-        accounts: watch::Receiver<Option<zeron_proto::AgentAccountsSnapshot>>,
-        sessions: watch::Receiver<Vec<zeron_proto::Session>>,
-        chats: watch::Receiver<Vec<zeron_proto::Chat>>,
+        accounts: watch::Receiver<Option<zend_proto::AgentAccountsSnapshot>>,
+        sessions: watch::Receiver<Vec<zend_proto::Session>>,
+        chats: watch::Receiver<Vec<zend_proto::Chat>>,
     ) {
         let tasks = agents::follow(&self.inner.agents, accounts, sessions, chats);
         lock(&self.inner.tasks).extend(tasks);
@@ -605,7 +605,7 @@ impl Plugins {
         *lock(&self.inner.workspace) = Some(workspace);
     }
 
-    pub fn set_links(&self, links: Arc<zeron_rpc::LinkCache>) {
+    pub fn set_links(&self, links: Arc<zend_rpc::LinkCache>) {
         *lock(&self.inner.links) = Some(links);
     }
 
@@ -771,7 +771,7 @@ impl Plugins {
         *lock(&self.inner.watch) = Some(watch);
     }
 
-    /// Watches Zeron's own plugins' folder: any change there rescans (the
+    /// Watches Zend's own plugins' folder: any change there rescans (the
     /// worker's debounce), so a built-in plugin edited in a checkout
     /// reloads as it's saved. In an installed app the folder never changes.
     fn watch_builtin(&self, dir: &Path) {
@@ -1122,7 +1122,7 @@ impl Plugins {
         }
         self.publish_list();
         if let Some(notify) = lock(&self.inner.notifier).clone() {
-            notify("zeron", title, words, None);
+            notify("zend", title, words, None);
         }
     }
 
@@ -1184,7 +1184,7 @@ impl Plugins {
                 scan::entry(inspected, author, &state)
             })
             .collect();
-        // Zeron's own, from the app's folder of them. A folder of yours by
+        // Zend's own, from the app's folder of them. A folder of yours by
         // the same name gives way, said so.
         if let Some(dir) = lock(&self.inner.builtin_dir).clone() {
             for dir in scan::plugin_dirs(&dir) {
@@ -1230,7 +1230,7 @@ impl Plugins {
         (entries, owed, keeps)
     }
 
-    /// Forget own ids and decisions whose folder is gone (yours, or Zeron's
+    /// Forget own ids and decisions whose folder is gone (yours, or Zend's
     /// own for its off switch). Under the scan lock, which installs hold
     /// while they swap a folder.
     fn prune_state(&self) {
@@ -1521,7 +1521,7 @@ impl Plugins {
         keys::same_account(&old, &new)
     }
 
-    /// The plugin `id`: Zeron's own when a folder of yours squats its id
+    /// The plugin `id`: Zend's own when a folder of yours squats its id
     /// (that folder is listed Broken beside it, and what's kept under the id
     /// is the built-in's).
     fn entry(&self, id: &str) -> Option<Entry> {
@@ -1553,7 +1553,7 @@ impl Plugins {
 
     /// Native MCP servers for a local run: plugins `on`, with `native`
     /// allowed and an `mcp` entry, each started from its snapshot.
-    pub fn native_mcp_servers(&self) -> Vec<zeron_proto::McpServer> {
+    pub fn native_mcp_servers(&self) -> Vec<zend_proto::McpServer> {
         lock(&self.inner.entries)
             .iter()
             .filter(|e| e.allows("native"))
@@ -1571,7 +1571,7 @@ impl Plugins {
                         .to_string(),
                     None => mcp.command.clone(),
                 };
-                Some(zeron_proto::McpServer {
+                Some(zend_proto::McpServer {
                     name: format!("plugin-{}", e.item.id),
                     command,
                     args: mcp.args.clone(),
@@ -1597,7 +1597,7 @@ impl Plugins {
             reviews::Kind::Plugin => "Allowing a plugin",
             reviews::Kind::Template => "Allowing a template",
         };
-        let origin = reviews::Origin::of(&zeron_rpc::caller()).ok_or_else(|| reviews::needed(what))?;
+        let origin = reviews::Origin::of(&zend_rpc::caller()).ok_or_else(|| reviews::needed(what))?;
         if kind == reviews::Kind::Template && origin != reviews::Origin::Local {
             return Err(reviews::needed(what));
         }
@@ -1628,7 +1628,7 @@ impl Plugins {
             return Err(failed("Only a plugin in your plugins folder can be signed, by its id"));
         };
         // Signing is with this device's key: its own app's alone.
-        if !zeron_rpc::caller().is_local() {
+        if !zend_rpc::caller().is_local() {
             return Err(reviews::needed("Signing a plugin"));
         }
         self.rescan().await;
@@ -1659,7 +1659,7 @@ impl Plugins {
                 // account's devices as the edge verified the link: its
                 // consent window shows this plugin as listed here. The
                 // review is good only to whoever asked for it.
-                let origin = reviews::Origin::of(&zeron_rpc::caller())
+                let origin = reviews::Origin::of(&zend_rpc::caller())
                     .filter(|origin| method == methods::REVIEW_PLUGIN || *origin == reviews::Origin::Local)
                     .ok_or_else(|| reviews::needed("A review"))?;
                 let review = if method == methods::REVIEW_PLUGIN {
@@ -1686,7 +1686,7 @@ impl Plugins {
             }
             methods::DECIDE_PLUGIN => {
                 let p: DecideParams = parse_params(params)?;
-                // Allowing is Zeron's consent window's alone: this device's
+                // Allowing is Zend's consent window's alone: this device's
                 // app's, or another of the account's devices' (its Settings →
                 // Plugins), with a review minted for this plugin as shown,
                 // for whoever decides.
@@ -1747,7 +1747,7 @@ impl Plugins {
                 let p: BuiltinParams = parse_params(params)?;
                 let dir = PathBuf::from(p.dir.trim());
                 if !dir.is_absolute() || !dir.is_dir() {
-                    return Err(failed("Zeron's own plugins: that isn't a folder"));
+                    return Err(failed("Zend's own plugins: that isn't a folder"));
                 }
                 *lock(&self.inner.builtin_dir) = Some(dir.clone());
                 self.watch_builtin(&dir);
@@ -1760,7 +1760,7 @@ impl Plugins {
                 let entry = self
                     .entry(&p.id)
                     .ok_or_else(|| failed(format!("There's no plugin {}", p.id)))?;
-                // Zeron's own: on or off is all there is to decide.
+                // Zend's own: on or off is all there is to decide.
                 if entry.item.builtin {
                     self.update_state(|state| {
                         let mut decision = state.decisions.get(&p.id).cloned().unwrap_or_else(|| entry.facts().record(true));
@@ -1795,7 +1795,7 @@ impl Plugins {
                 let builtin = self.entry(&p.id).is_some_and(|e| e.item.builtin);
                 // (One plain name, joined so it stays in the plugins folder on
                 // every system: never `C:`, a device name or a trailing dot.)
-                let dir = match zeron_plugin_guard::path::join(&self.inner.plugins_dir, &p.id) {
+                let dir = match zend_plugin_guard::path::join(&self.inner.plugins_dir, &p.id) {
                     Ok(dir) if !p.id.starts_with('.') && !p.id.contains('/') => dir,
                     _ => return Err(failed(format!("There's no plugin {}", p.id))),
                 };
@@ -1822,7 +1822,7 @@ impl Plugins {
                     state.decisions.remove(&p.id);
                     state.own.remove(&p.id);
                 })?;
-                // What it kept (`zeron.store`, its settings, its database)
+                // What it kept (`zend.store`, its settings, its database)
                 // goes with it.
                 forget_storage(&self.inner.plugins_dir, &p.id);
                 install::forget_found(&self.inner.plugins_dir, &p.id);
@@ -1841,7 +1841,7 @@ impl Plugins {
                     .find(|x| !manifest::KNOWN_PERMISSIONS.contains(&x.as_str()))
                 {
                     return Err(failed(format!(
-                        "\"{unknown}\" isn't a permission Zeron knows"
+                        "\"{unknown}\" isn't a permission Zend knows"
                     )));
                 }
                 let dir = self.inner.plugins_dir.join(&p.id);
@@ -2060,7 +2060,7 @@ impl Plugins {
             }
             methods::WATCH_THEMES => Ok(RpcReply::Stream(self.inner.themes.subscribe(|| {}))),
             method if themes::handles(method) => {
-                if let Some(by) = zeron_rpc::caller().record() {
+                if let Some(by) = zend_rpc::caller().record() {
                     tracing::info!(method, %by, "themes: asked by an agent");
                 }
                 let (data_dir, asked) = (self.inner.data_dir.clone(), method.to_owned());
@@ -2092,7 +2092,7 @@ impl Plugins {
                 let dir = self.inner.data_dir.join(TEMPLATES_DIR);
                 let data_dir = self.inner.data_dir.clone();
                 // Who asked, when it wasn't this device's app (for the record).
-                let by = zeron_rpc::caller().record();
+                let by = zend_rpc::caller().record();
                 if let Some(by) = &by {
                     tracing::info!(method, id = ?p.id, %by, "templates: asked by an agent or another device");
                 }
@@ -2192,7 +2192,7 @@ impl Plugins {
                     review: Option<String>,
                 }
                 let p: PackageParams = parse_params(params)?;
-                // Allowing a template is Zeron's template consent window's
+                // Allowing a template is Zend's template consent window's
                 // alone, with a review minted for this package as shown.
                 if method == methods::DECIDE_TEMPLATE && p.allow {
                     let pending = p.pending.as_deref().unwrap_or_default().trim();
@@ -2203,14 +2203,14 @@ impl Plugins {
                         p.review.as_deref(),
                     )?;
                 }
-                // R29: an agent exports to Zeron's exports folder only; a
+                // R29: an agent exports to Zend's exports folder only; a
                 // path of its choosing is the person's (their save dialog).
                 if method == methods::EXPORT_TEMPLATE
-                    && !zeron_rpc::caller().is_local()
+                    && !zend_rpc::caller().is_local()
                     && p.path.as_deref().is_some_and(|path| !path.trim().is_empty())
                 {
                     return Err(failed(
-                        "Agents export to Zeron's exports folder: leave out `path` (the reply says where it went)",
+                        "Agents export to Zend's exports folder: leave out `path` (the reply says where it went)",
                     ));
                 }
                 let dir = self.inner.data_dir.join(TEMPLATES_DIR);
@@ -2226,7 +2226,7 @@ impl Plugins {
                                 return Err("Say which template (`id`).".to_string());
                             };
                             // Where it's asked to go, if that's a folder of
-                            // yours; else Zeron's exports folder.
+                            // yours; else Zend's exports folder.
                             let path = match path {
                                 Some(path) => {
                                     template_packages::check_export_path(&path, &this.inner.data_dir, Some(&crate::repos::home_dir()))?;
@@ -2244,7 +2244,7 @@ impl Plugins {
                             template_packages::export(&dir, id, &path, &key)
                         }
                         methods::IMPORT_TEMPLATE => {
-                            let path = path.ok_or("Say which file to import (`path`, a .zeron-template file).")?;
+                            let path = path.ok_or("Say which file to import (`path`, a .zend-template file).")?;
                             template_packages::import(&dir, &path, author_of)
                         }
                         _ => {
@@ -2305,7 +2305,7 @@ impl Plugins {
                     }
                     Err(CallError::NotOpen) => {
                         out["open"] = serde_json::json!(false);
-                        out["note"] = serde_json::json!("Zeron's window isn't open on this device: open it to see where the plugin shows.");
+                        out["note"] = serde_json::json!("Zend's window isn't open on this device: open it to see where the plugin shows.");
                     }
                     Err(CallError::TimedOut) => {
                         out["open"] = serde_json::json!(true);
@@ -2321,10 +2321,10 @@ impl Plugins {
             methods::DESCRIBE_ELEMENTS => {
                 let path = self.inner.plugins_dir.join(ELEMENTS_FILE);
                 let text = tokio::fs::read_to_string(&path).await.map_err(|_| {
-                    failed("Zeron's window hasn't said where plugins can go yet: open Zeron, then ask again.")
+                    failed("Zend's window hasn't said where plugins can go yet: open Zend, then ask again.")
                 })?;
                 let mut map: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|_| failed("Zeron's map of where plugins can go couldn't be read."))?;
+                    .map_err(|_| failed("Zend's map of where plugins can go couldn't be read."))?;
                 let (guide, _) = guides::ensure(&self.inner.data_dir);
                 map["guide"] = serde_json::json!(guide.display().to_string());
                 map["guide_summary"] = serde_json::json!(guides::PLUGINS_SUMMARY);
@@ -2506,7 +2506,7 @@ impl Plugins {
         {
             Ok(value) => RpcReply::value(&serde_json::json!({ "ok": true, "value": value })),
             Err(CallError::NotOpen) => Err(failed(format!(
-                "Open Zeron on {} to use {tool}",
+                "Open Zend on {} to use {tool}",
                 self.device_name(&self.inner.device_id)
             ))),
             Err(CallError::TimedOut) => Err(failed(format!("{plugin_name} didn't answer in time"))),
@@ -2630,8 +2630,8 @@ impl Plugins {
         }
     }
 
-    /// Both sides have to be the same author, failing closed: Zeron's own
-    /// only with Zeron's own; a signed one only with one signed by the same
+    /// Both sides have to be the same author, failing closed: Zend's own
+    /// only with Zend's own; a signed one only with one signed by the same
     /// key, or by a key of the same account (each looked up now: stale or
     /// offline is Unknown, which matches nothing); unsigned only with
     /// unsigned (the ids, already equal, are all there is).
@@ -2711,7 +2711,7 @@ impl service::Hooks for ServiceHooks {
 
     fn agents(&self, plugin: &str, args: serde_json::Value, done: service::vm::Done) {
         let (Some(inner), Ok(runtime)) = (self.inner.upgrade(), tokio::runtime::Handle::try_current()) else {
-            return done(Err("Zeron is stopping".into()));
+            return done(Err("Zend is stopping".into()));
         };
         let (agents, plugin) = (inner.agents.clone(), plugin.to_owned());
         drop(inner);
@@ -2738,7 +2738,7 @@ impl service::Hooks for ServiceHooks {
         if let (Some(inner), Ok(runtime)) = (self.inner.upgrade(), tokio::runtime::Handle::try_current()) {
             runtime.spawn(async move { Plugins { inner }.rescan().await });
         }
-        Err(format!("its files changed since you allowed it ({why}); Zeron is checking it again"))
+        Err(format!("its files changed since you allowed it ({why}); Zend is checking it again"))
     }
 }
 
@@ -2759,12 +2759,12 @@ impl agents::Sink for AgentSink {
     fn to_window(&self, plugin: &str, listener: &str, event: &str, data: serde_json::Value) {
         let Some(inner) = self.inner.upgrade() else { return };
         let plugins = Plugins { inner };
-        // As a service's event to this device's windows, named `zeron:…`
-        // (no service's event can be: `zeron.emit` names are its own).
+        // As a service's event to this device's windows, named `zend:…`
+        // (no service's event can be: `zend.emit` names are its own).
         plugins.inner.channel.push(serde_json::json!({
             "plugin": plugin,
             "from": plugins.here(),
-            "event": format!("zeron:{event}"),
+            "event": format!("zend:{event}"),
             "here": true,
             "data": { "listener": listener, "data": data },
             "at": crate::now_ms(),
@@ -2899,7 +2899,7 @@ impl Plugins {
             Ok(Ok(value)) => value,
             Ok(Err(RpcError::UnknownMethod(_))) => Refusal::new(
                 reason::OLD_ENGINE,
-                format!("{name} runs a Zeron from before plugins could read usage: update Zeron there"),
+                format!("{name} runs a Zend from before plugins could read usage: update Zend there"),
             )
             .to_json(),
             Ok(Err(error)) => {
@@ -2987,7 +2987,7 @@ impl Plugins {
         self.inner.services.sync(plans);
     }
 
-    /// `zeron.emit`: to this device's windows, and to the devices watching.
+    /// `zend.emit`: to this device's windows, and to the devices watching.
     fn emit_event(&self, plugin: &str, event: &str, data: serde_json::Value) {
         self.inner.channel.push(serde_json::json!({
             "plugin": plugin,
@@ -3084,7 +3084,7 @@ impl Plugins {
             Ok(Ok(value)) => value,
             Ok(Err(RpcError::UnknownMethod(_))) => Refusal::new(
                 reason::OLD_ENGINE,
-                format!("{name} runs a Zeron from before plugin services: update Zeron there"),
+                format!("{name} runs a Zend from before plugin services: update Zend there"),
             )
             .to_json(),
             Ok(Err(RpcError::BadParams(why))) => Refusal::new(reason::BAD_CALL, why).to_json(),
@@ -3216,7 +3216,7 @@ pub fn same_account(a: &Author, b: &Author) -> bool {
 /// What a device that isn't vouched for is called (`from`).
 pub const UNKNOWN_DEVICE: &str = "unknown";
 
-/// Who a plugin's author is across devices: Zeron for its own, else its
+/// Who a plugin's author is across devices: Zend for its own, else its
 /// signing key (none when unsigned).
 fn author_identity(entry: &Entry) -> Option<String> {
     if entry.item.builtin {
@@ -3231,10 +3231,10 @@ impl Plugins {
     /// link (`Caller::Peer{device}`). Anything else (a dial the edge didn't
     /// verify, an agent) is unknown: empty, and never sent events.
     fn trusted_from(&self, claimed: String, unverified: &mut bool) -> String {
-        match zeron_rpc::caller() {
-            zeron_rpc::Caller::Local => claimed,
-            zeron_rpc::Caller::Peer { device: Some(device) } => device,
-            zeron_rpc::Caller::Peer { device: None } | zeron_rpc::Caller::Agent { .. } => {
+        match zend_rpc::caller() {
+            zend_rpc::Caller::Local => claimed,
+            zend_rpc::Caller::Peer { device: Some(device) } => device,
+            zend_rpc::Caller::Peer { device: None } | zend_rpc::Caller::Agent { .. } => {
                 *unverified = true;
                 String::new()
             }

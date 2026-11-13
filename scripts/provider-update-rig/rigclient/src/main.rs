@@ -10,7 +10,7 @@ async fn main() {
     let dir = std::path::PathBuf::from(&a[3]);
     let deadline = Instant::now() + Duration::from_secs(60);
     let client = loop {
-        match zeron_rpc::connect_ipc(port, Some(&dir)).await {
+        match zend_rpc::connect_ipc(port, Some(&dir)).await {
             Ok(c) => break std::sync::Arc::new(c),
             Err(e) if Instant::now() > deadline => panic!("connect: {e}"),
             Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,

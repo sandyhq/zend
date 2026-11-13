@@ -101,7 +101,7 @@ export const appJwt = async (clientId: string, pem: string, nowMs: number): Prom
 const headers = (bearer: string) => ({
   accept: "application/vnd.github+json",
   authorization: `Bearer ${bearer}`,
-  "user-agent": "zeron-vault",
+  "user-agent": "zend-vault",
   "x-github-api-version": "2022-11-28"
 });
 
@@ -248,7 +248,7 @@ export const revokeUserToken = async (
       accept: "application/vnd.github+json",
       authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
       "content-type": "application/json",
-      "user-agent": "zeron-vault",
+      "user-agent": "zend-vault",
       "x-github-api-version": "2022-11-28"
     },
     body: JSON.stringify({ access_token: accessToken })

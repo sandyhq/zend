@@ -6,12 +6,12 @@
 //! Its self-updater (`claude update`, `pi update --self`, …) reinstalls with
 //! whatever npm it finds, which may be another Node's, writing a second copy
 //! the launcher never runs. So an install is updated by the package manager
-//! that owns it, into the place it lives; one zeron can't prove is left to
+//! that owns it, into the place it lives; one zend can't prove is left to
 //! the user, with the reason.
 
 use std::path::{Path, PathBuf};
 
-use zeron_proto::HarnessId;
+use zend_proto::HarnessId;
 
 /// A version-manager wrapper script is a few lines; anything larger is a
 /// real launcher.
@@ -47,7 +47,7 @@ pub(super) enum PackageOwner {
     Project,
 }
 
-/// How an install must be updated, when zeron can't do it itself.
+/// How an install must be updated, when zend can't do it itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Manual {
     /// A mise-managed tool: its version is pinned in mise's config.
@@ -70,7 +70,7 @@ impl Manual {
     }
 }
 
-/// An update zeron can run for a package-managed install.
+/// An update zend can run for a package-managed install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PackageUpdate {
     pub program: PathBuf,
@@ -96,7 +96,7 @@ fn real(path: &Path) -> PathBuf {
 /// finds npm's `.cmd` shim (`%APPDATA%\npm\claude.cmd`), which isn't inside
 /// any package: the file the shim runs is.
 pub(super) fn real_target(resolved: &Path) -> PathBuf {
-    match zeron_harness::process::npm_shim_target(resolved) {
+    match zend_harness::process::npm_shim_target(resolved) {
         Some(target) if target.exists() => real(&target),
         _ => real(resolved),
     }
@@ -379,7 +379,7 @@ fn find_program(name: &str, near: &[PathBuf]) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = near.to_vec();
     for path in [
         std::env::var_os("PATH"),
-        zeron_harness::shell_env::login_shell_path().map(|p| p.to_os_string()),
+        zend_harness::shell_env::login_shell_path().map(|p| p.to_os_string()),
     ]
     .into_iter()
     .flatten()
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(owner("/home/u/.local/bin/claude"), None);
         // Nothing real can answer here: this box's own /usr/local/bin/codex
         // may well be an npm install.
-        assert_eq!(owner("/usr/local/bin/zeron-test-no-such-cli"), None);
+        assert_eq!(owner("/usr/local/bin/zend-test-no-such-cli"), None);
     }
 
     #[cfg(unix)]

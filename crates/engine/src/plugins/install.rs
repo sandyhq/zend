@@ -1,9 +1,9 @@
 //! Plugins from someone else: installed from a package file
-//! (`.zeron-plugin`), a link to one, a GitHub release carrying one, or a
+//! (`.zend-plugin`), a link to one, a GitHub release carrying one, or a
 //! git repository; updated from where each came from.
 //!
 //! A package is the shared signed package (`package.rs`, the format
-//! templates use too) with the plugin's own signed `zeron-plugin.json` as
+//! templates use too) with the plugin's own signed `zend-plugin.json` as
 //! its manifest and the files that signature covers. A git repository is
 //! read the same way: its folder packed, then verified like any package. So
 //! every way in checks the signature over every file before anything is
@@ -19,7 +19,7 @@
 //!
 //! Where each came from is kept beside its files in `.source.json` (a dot
 //! file, so never part of what's signed). An update found is kept in
-//! `<plugins>/.updates/<id>.zeron-plugin`, with what it changes in
+//! `<plugins>/.updates/<id>.zend-plugin`, with what it changes in
 //! `<id>.json`, until it's installed or the plugin changes.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,8 +35,8 @@ use super::package::{self, MAX_PACKAGE_BYTES, Words};
 use super::scan;
 use super::signing::{self, SigCheck};
 
-pub const FORMAT: &str = "zeron-plugin:v1";
-pub const EXTENSION: &str = "zeron-plugin";
+pub const FORMAT: &str = "zend-plugin:v1";
+pub const EXTENSION: &str = "zend-plugin";
 pub const SOURCE_FILE: &str = ".source.json";
 /// Where a plugin is put together before it takes its folder.
 pub const INCOMING_DIR: &str = ".incoming";
@@ -70,7 +70,7 @@ pub mod reason {
     pub const RATE_LIMITED: &str = "rate_limited";
     pub const GITHUB_UNREACHABLE: &str = "github_unreachable";
     pub const RELEASE_NOT_FOUND: &str = "release_not_found";
-    /// The release carries no `.zeron-plugin` (or `.zeron-template`).
+    /// The release carries no `.zend-plugin` (or `.zend-template`).
     pub const NO_PACKAGE: &str = "no_package";
     pub const DOWNLOAD_FAILED: &str = "download_failed";
     pub const NOT_A_LINK: &str = "not_a_link";
@@ -100,12 +100,12 @@ pub fn reason_of(error: &str) -> Option<&str> {
 }
 
 pub const WORDS: Words = Words {
-    not_a_package: "not_a_package: That isn't a Zeron plugin",
+    not_a_package: "not_a_package: That isn't a Zend plugin",
     unsigned: "unsigned: It isn't signed, so there's no telling who made it",
     tampered: "tampered: Its files don't match its signature: it was changed after it was signed",
     bad_signature: "bad_signature: Its signature doesn't check out",
     too_big: "too_big: It's too big for a plugin",
-    bad_file: "bad_file: It has a file Zeron won't write ({rel})",
+    bad_file: "bad_file: It has a file Zend won't write ({rel})",
 };
 
 /// Where a plugin came from (`.source.json`).
@@ -180,7 +180,7 @@ fn keep_path(rel: &str) -> bool {
 }
 
 /// The plugin package `raw`, verified (signature over every file, a
-/// manifest Zeron can run, an id it can be installed under).
+/// manifest Zend can run, an id it can be installed under).
 pub fn parse(raw: Vec<u8>) -> Result<Package, String> {
     let verified = package::parse(raw, FORMAT, signing::PAYLOAD_PREFIX, keep_path, &WORDS)?;
     let manifest = Manifest::from_value(verified.manifest.clone())?;
@@ -224,7 +224,7 @@ pub fn pack_folder(dir: &Path) -> Result<Vec<u8>, String> {
     }
     let mut files = BTreeMap::new();
     for rel in inspected.files.keys() {
-        let path = zeron_plugin_guard::path::join(dir, rel)?;
+        let path = zend_plugin_guard::path::join(dir, rel)?;
         let bytes = std::fs::read(path).map_err(|_| format!("Couldn't read {rel}"))?;
         files.insert(rel.clone(), bytes);
     }
@@ -363,7 +363,7 @@ fn stage(staged: &Path, package: &Package, source: &Source) -> Result<(), String
     for (rel, bytes) in &package.files {
         // (Every path through the one join that keeps it inside, on every
         // system: `D:x.cmd` never leaves the staging folder.)
-        let path = zeron_plugin_guard::path::join(staged, rel)?;
+        let path = zend_plugin_guard::path::join(staged, rel)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(write_error)?;
         }
@@ -417,7 +417,7 @@ pub fn https_link(link: &str) -> Option<String> {
 }
 
 /// What `link` names, if it's something a plugin can come from: a package
-/// link (`….zeron-plugin`), a GitHub release (`…/releases/latest`,
+/// link (`….zend-plugin`), a GitHub release (`…/releases/latest`,
 /// `…/releases/tag/<tag>`), a GitHub repository (`owner/repo`, its page,
 /// `…/tree/<branch>/<folder>`), or any `https` git repository.
 pub fn origin(link: &str, git_ref: Option<&str>, path: Option<&str>) -> Result<Origin, String> {
@@ -479,7 +479,7 @@ fn http() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .https_only(!cfg!(test))
-        .user_agent("Zeron")
+        .user_agent("Zend")
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -511,7 +511,7 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// The `.zeron-plugin` asset of `repo`'s release `tag` (the latest when none).
+/// The `.zend-plugin` asset of `repo`'s release `tag` (the latest when none).
 pub async fn release_asset(repo: &str, tag: Option<&str>) -> Result<String, String> {
     release_asset_of(repo, tag, EXTENSION).await
 }
@@ -564,7 +564,7 @@ pub async fn release_asset_of(repo: &str, tag: Option<&str>, extension: &str) ->
 fn rate_limited() -> String {
     failure(
         reason::RATE_LIMITED,
-        "GitHub is turning away requests from this device for now (too many in a short while). Try again later, or sign in with GitHub's own tool (`gh auth login`) so Zeron asks as you",
+        "GitHub is turning away requests from this device for now (too many in a short while). Try again later, or sign in with GitHub's own tool (`gh auth login`) so Zend asks as you",
     )
 }
 
@@ -645,7 +645,7 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
         .map_err(|_| {
             failure(
                 reason::GIT_MISSING,
-                "git isn't available on this device: install git, or install the plugin from a .zeron-plugin file or a GitHub release instead",
+                "git isn't available on this device: install git, or install the plugin from a .zend-plugin file or a GitHub release instead",
             )
         })?;
     if !output.status.success() {
@@ -692,11 +692,11 @@ pub async fn from_git(url: &str, git_ref: Option<&str>, path: Option<&str>, scra
 /// The plugin's folder at `path` in the repository cloned to `clone`, which
 /// must stay inside it however its links point (a folder linked out of the
 /// clone would pack files from this computer), with its own
-/// `zeron-plugin.json` (not a link).
+/// `zend-plugin.json` (not a link).
 fn plugin_folder(clone: &Path, path: Option<&str>) -> Result<PathBuf, String> {
     let missing = || match path {
-        Some(path) => failure(reason::NO_MANIFEST, format!("There's no zeron-plugin.json in {path}")),
-        None => failure(reason::NO_MANIFEST, "There's no zeron-plugin.json at the top of that repository"),
+        Some(path) => failure(reason::NO_MANIFEST, format!("There's no zend-plugin.json in {path}")),
+        None => failure(reason::NO_MANIFEST, "There's no zend-plugin.json at the top of that repository"),
     };
     let root = std::fs::canonicalize(clone).map_err(|_| "Couldn't read that repository".to_string())?;
     let folder = match path {
@@ -970,7 +970,7 @@ pub(crate) mod tests {
         let raw = signed_package(&key, "focus", "1.0.0", &["ui.add"], "return 1");
         let package = parse(raw.clone()).unwrap();
         assert_eq!((package.id(), package.key.as_str()), ("focus", key.public().as_str()));
-        let source = Source { kind: "file".into(), url: None, path: Some("/x.zeron-plugin".into()), git_ref: None, commit: None, version: "1.0.0".into(), installed_at: 1 };
+        let source = Source { kind: "file".into(), url: None, path: Some("/x.zend-plugin".into()), git_ref: None, commit: None, version: "1.0.0".into(), installed_at: 1 };
         assert!(install(dir.path(), &package, &source, None).unwrap().is_none());
         let installed = scan::inspect(&dir.path().join("focus"), true);
         assert_eq!(installed.sig, SigCheck::Valid(key.public()));
@@ -992,14 +992,14 @@ pub(crate) mod tests {
         assert!(install(dir.path(), &theirs, &source, None).unwrap_err().contains("signed by someone else"));
         assert_eq!(scan::inspect(&dir.path().join("focus"), true).hash, newer.hash);
 
-        // A package carrying its own zeron-plugin.json as a file, refused.
+        // A package carrying its own zend-plugin.json as a file, refused.
         let mut files = BTreeMap::new();
         files.insert("init.luau".to_string(), b"return 1".to_vec());
         files.insert(MANIFEST_FILE.to_string(), b"{}".to_vec());
         let manifest = key.sign_manifest(&json!({ "id": "sneaky", "name": "S", "version": "1", "entry": "init.luau" }), &package::hashes(&files));
-        assert!(parse(package::pack(FORMAT, &manifest, &files).unwrap()).unwrap_err().starts_with("bad_file: It has a file Zeron won't write"));
-        // Zeron's own name, refused.
-        assert!(parse(signed_package(&key, "zeron", "1", &[], "return 1")).is_err());
+        assert!(parse(package::pack(FORMAT, &manifest, &files).unwrap()).unwrap_err().starts_with("bad_file: It has a file Zend won't write"));
+        // Zend's own name, refused.
+        assert!(parse(signed_package(&key, "zend", "1", &[], "return 1")).is_err());
     }
 
     #[test]
@@ -1009,8 +1009,8 @@ pub(crate) mod tests {
         assert_eq!(origin("https://github.com/ada/focus", Some("v2"), None).unwrap(), git("https://github.com/ada/focus.git", Some("v2"), None));
         assert_eq!(origin("github.com/ada/focus", None, None).unwrap(), git("https://github.com/ada/focus.git", None, None));
         assert_eq!(
-            origin("example.com/x/focus.zeron-plugin", None, None).unwrap(),
-            Origin::Link("https://example.com/x/focus.zeron-plugin".into())
+            origin("example.com/x/focus.zend-plugin", None, None).unwrap(),
+            Origin::Link("https://example.com/x/focus.zend-plugin".into())
         );
         assert_eq!(
             origin("https://github.com/ada/tools/tree/main/plugins/focus", None, None).unwrap(),
@@ -1022,11 +1022,11 @@ pub(crate) mod tests {
             Origin::Release { repo: "ada/focus".into(), tag: Some("v1.2".into()) }
         );
         assert_eq!(
-            origin("https://example.com/focus.zeron-plugin", None, None).unwrap(),
-            Origin::Link("https://example.com/focus.zeron-plugin".into())
+            origin("https://example.com/focus.zend-plugin", None, None).unwrap(),
+            Origin::Link("https://example.com/focus.zend-plugin".into())
         );
         assert_eq!(origin("https://git.example.com/focus.git", None, None).unwrap(), git("https://git.example.com/focus.git", None, None));
-        for bad in ["http://example.com/x.zeron-plugin", "ssh://git@github.com/a/b", "ext::sh -c x", "", "/etc/passwd", "a b/c", "git@github.com:a/b"] {
+        for bad in ["http://example.com/x.zend-plugin", "ssh://git@github.com/a/b", "ext::sh -c x", "", "/etc/passwd", "a b/c", "git@github.com:a/b"] {
             assert!(origin(bad, None, None).is_err(), "{bad}");
         }
         assert!(origin("ada/focus", Some("--upload-pack=x"), None).is_err());
@@ -1038,7 +1038,7 @@ pub(crate) mod tests {
         let (key, _) = SigningKey::generate().unwrap();
         let (eve, _) = SigningKey::generate().unwrap();
         let installed = parse(signed_package(&key, "focus", "1.0.0", &["ui.add"], "return 1")).unwrap();
-        let source = Source { kind: "link".into(), url: Some("https://e/x.zeron-plugin".into()), path: None, git_ref: None, commit: None, version: "1.0.0".into(), installed_at: 0 };
+        let source = Source { kind: "link".into(), url: Some("https://e/x.zend-plugin".into()), path: None, git_ref: None, commit: None, version: "1.0.0".into(), installed_at: 0 };
         let perms = installed.manifest.permissions.clone();
         let record = crate::plugins::capability::record(&installed.manifest);
         let key_public = key.public();
@@ -1070,8 +1070,8 @@ pub(crate) mod tests {
         let inside = plugin_folder(clone.path(), Some("plugins/focus")).unwrap();
         assert!(inside.ends_with("plugins/focus"));
         assert!(plugin_folder(clone.path(), Some("plugins/out")).unwrap_err().contains("isn't inside"));
-        assert!(plugin_folder(clone.path(), Some("plugins/linked")).unwrap_err().contains("There's no zeron-plugin.json"));
-        assert!(plugin_folder(clone.path(), Some("plugins/none")).unwrap_err().contains("There's no zeron-plugin.json"));
+        assert!(plugin_folder(clone.path(), Some("plugins/linked")).unwrap_err().contains("There's no zend-plugin.json"));
+        assert!(plugin_folder(clone.path(), Some("plugins/none")).unwrap_err().contains("There's no zend-plugin.json"));
         assert!(plugin_folder(clone.path(), None).unwrap_err().contains("at the top"));
     }
 
@@ -1083,7 +1083,7 @@ pub(crate) mod tests {
         assert_eq!(reason_of(&not_newer("1", "2")), Some(reason::NOT_NEWER));
         assert_eq!(reason_of("Its files don't match: x"), None, "English with a colon isn't a reason");
         assert_eq!(reason_of(&origin("ftp://x", None, None).unwrap_err()), Some(reason::HTTPS_ONLY));
-        assert!(github_host("https://github.com/a/b/releases/download/v1/x.zeron-plugin"));
+        assert!(github_host("https://github.com/a/b/releases/download/v1/x.zend-plugin"));
         assert!(github_host("https://objects.githubusercontent.com/x"));
         assert!(!github_host("https://github.com.evil.example/x") && !github_host("https://example.com/github.com"));
 
@@ -1100,7 +1100,7 @@ pub(crate) mod tests {
                     let _ = socket.write_all(reply.as_bytes()).await;
                 }
             });
-            format!("http://{at}/x.zeron-plugin")
+            format!("http://{at}/x.zend-plugin")
         }
         let limited = download(&answering(429).await).await.unwrap_err();
         assert_eq!(reason_of(&limited), Some(reason::RATE_LIMITED), "{limited}");

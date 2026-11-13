@@ -1,8 +1,8 @@
--- What a prompt's words say of what it carries: Zeron's canonical
+-- What a prompt's words say of what it carries: Zend's canonical
 -- attachment mentions (crates/proto attachment_mentions.rs), as the shipping
 -- app, mobile and the engine read them. A draft's attachment is referred to
 -- by its number in that draft, never a path: a picture as
--- `[Image N](zeron-image:N)`, any other file as `[<its name>](zeron-attachment:N)`
+-- `[Image N](zend-image:N)`, any other file as `[<its name>](zend-attachment:N)`
 -- (the name escaped as file_mentions.rs `escape_mention_label` escapes it).
 -- The engine gives each agent the plain label ("Image 2", "notes.md"); the
 -- message keeps the link, so it's a chip wherever it's shown, after a
@@ -10,8 +10,8 @@
 
 local M = {}
 
-M.IMAGE = "zeron-image:"
-M.FILE = "zeron-attachment:"
+M.IMAGE = "zend-image:"
+M.FILE = "zend-attachment:"
 
 export type Mention = {
 	-- Where its link runs in the words, bytes from 1, both ends in it.

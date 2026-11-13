@@ -146,7 +146,7 @@ for _, scheme in { "light", "dark" } do
 		menu = "Fixture",
 		run = function()
 			ui.theme.follow_system(false)
-			ui.theme.current:set(`zeron-{scheme}`)
+			ui.theme.current:set(`zend-{scheme}`)
 		end,
 	}
 end
@@ -419,7 +419,7 @@ stub.link = function(id: string): any
 	note(`link:{id}`)
 	return {
 		after = function(_, ok: (any) -> ())
-			ok(`zeron://open/chat/{id}?workspace=0123456789abcdef`)
+			ok(`zend://open/chat/{id}?workspace=0123456789abcdef`)
 		end,
 	}
 end
@@ -535,8 +535,8 @@ ui.command {
 }
 -- Cloud chats' machines, each with its own copy of the repository's
 -- project (as the engine stamps them, one repository identity), as Wing's
--- beta.5 had them: zeronsh/zeron on three, acme/app on a fourth, and a
--- clone of zeronsh/zeron on this Mac too.
+-- beta.5 had them: sandyhq/zend on three, acme/app on a fourth, and a
+-- clone of sandyhq/zend on this Mac too.
 ui.command {
 	id = "fixture.cloud_projects",
 	title = "Fixture: Cloud machines, each with a copy of a repository's project",
@@ -544,12 +544,12 @@ ui.command {
 		for i = 1, 4 do
 			table.insert(model.devices, { id = `cloud-m{i}`, name = "Cloud session", platform = "cloud", here = false, online = false, cloud = true })
 		end
-		local zeron = { github = "zeronsh/zeron", repository = "github.com/zeronsh/zeron", path = "/home/user/zeron", git = true }
+		local zend = { github = "sandyhq/zend", repository = "github.com/sandyhq/zend", path = "/home/user/zend", git = true }
 		for i, created in { 100, 300, 200 } do
-			table.insert(model.projects, { id = `zc{i}`, name = "zeron", device = `cloud-m{i}`, path = zeron.path, git = true, github = zeron.github, repository = zeron.repository, created = created })
+			table.insert(model.projects, { id = `zc{i}`, name = "zend", device = `cloud-m{i}`, path = zend.path, git = true, github = zend.github, repository = zend.repository, created = created })
 		end
 		table.insert(model.projects, { id = "app1", name = "app", device = "cloud-m4", path = "/home/user/app", git = true, github = "acme/app", repository = "github.com/acme/app", created = 150 })
-		table.insert(model.projects, { id = "zmac", name = "zeron", device = "mac", path = "/work/zeron", git = true, github = "zeronsh/zeron", repository = "github.com/zeronsh/zeron", created = 50 })
+		table.insert(model.projects, { id = "zmac", name = "zend", device = "mac", path = "/work/zend", git = true, github = "sandyhq/zend", repository = "github.com/sandyhq/zend", created = 50 })
 		table.insert(model.chats, { id = "zc1a", title = "Cloud fix", project = "zc1", device = "cloud-m1", status = "working", updated = NOW - 120, created = NOW - HOUR, agent = "claude" })
 		table.insert(model.chats, { id = "zc2a", title = "Cloud docs", project = "zc2", device = "cloud-m2", updated = NOW - 2 * HOUR, created = NOW - 3 * HOUR, agent = "claude" })
 		table.insert(model.archived, { id = "zc3a", title = "Cloud old", project = "zc3", device = "cloud-m3", updated = NOW - 30 * HOUR, created = NOW - 31 * HOUR, agent = "claude" })
@@ -721,7 +721,7 @@ projects_stub.forget_icon = function(url: string)
 	note(`forget_icon:{url}`)
 end
 projects_stub.icon_file = function(url: string): any
-	return answer(uploaded[url] or "assets/favicons/zeron.png")
+	return answer(uploaded[url] or "assets/favicons/zend.png")
 end
 projects_stub.delete = function(id: string): any
 	note(`delete_project:{id}`)
@@ -1643,7 +1643,7 @@ ui.effect(function()
 	end
 end)
 -- The theme, for captures (as ui/chat_fixture.luau's).
-ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zeron-light") end }
-ui.command { id = "theme_dark", title = "Dark theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zeron-dark") end }
+ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zend-light") end }
+ui.command { id = "theme_dark", title = "Dark theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zend-dark") end }
 local shell = require("@app/screens/shell")
 return shell()

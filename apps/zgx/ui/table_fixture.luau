@@ -36,7 +36,7 @@ local TABLES: { [string]: string } = {
 | **Beta.5** | Windows and both Linux builds passed. macOS has been building, signing and notarizing for about 40 minutes; notarization usually takes the longest. It publishes right after. |
 | **Memory** | Two of the three fixes are merged in zgx (#1960, #1981); #1945 merges after its checks. Together they bring memory after heavy use to about **264 MB** (was 315, and beta.1 was 271). The memory chat is now chasing the remaining ~50 MB stuck in partly used memory pages. |
 | **Streaming** | ff4bff4f's three zgx PRs are open and in CI: append-only text, styled text that follows state, and the fade-in drawn as one piece. Next is the GPU-run fade-in under the glass, worked out with the render chat. Your staging app's build is at 5.9% (from 7.1%), with about 4–4.5% as the next target. |
-| **Scrolling** | Waiting on zgx CI: accessibility updates (#1931), zgx's built-in scroll bar (#1961), and the "scrolling stopped" timer (#1975). The Zeron side of each is ready on branches. The working-rings fix is merged. |
+| **Scrolling** | Waiting on zgx CI: accessibility updates (#1931), zgx's built-in scroll bar (#1961), and the "scrolling stopped" timer (#1975). The Zend side of each is ready on branches. The working-rings fix is merged. |
 | **The scroll-skip / overlapping-rows bug** | Not reproduced, and no cause yet. Tests are in place. If it happens again, send a screenshot and the chat name before navigating away. |
 ]],
 	-- Short labels and numbers beside a column of prose.
@@ -107,11 +107,11 @@ for _, w in { 280, 360, 400, 480, 560, 620, 680, 760, 860 } do
 end
 ui.command { id = "theme_light", title = "Light", run = function()
 	ui.theme.follow_system(false)
-	ui.theme.current:set("zeron-light")
+	ui.theme.current:set("zend-light")
 end }
 ui.command { id = "theme_dark", title = "Dark", run = function()
 	ui.theme.follow_system(false)
-	ui.theme.current:set("zeron-dark")
+	ui.theme.current:set("zend-dark")
 end }
 ui.command { id = "opaque", title = "Opaque", run = function()
 	material.frosted:set(false)
@@ -136,7 +136,7 @@ return ui.column {
 	w_full = true,
 	h_full = true,
 	bg = function(): string
-		return if material.frosted:get() then "$background" else "$zeron.window"
+		return if material.frosted:get() then "$background" else "$zend.window"
 	end,
 	ui.scroll {
 		id = "page",

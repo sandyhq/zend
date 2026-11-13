@@ -5,10 +5,10 @@
 //! by zgx's renderer offscreen at a Retina scale, frame by frame on the
 //! test's 60 Hz clock (so every run draws the same frames at the same times).
 //!
-//!   cargo test --release --bin zeron-zgx slide_cost -- --ignored --nocapture
+//!   cargo test --release --bin zend-zgx slide_cost -- --ignored --nocapture
 //!       each message's CPU: script and layout, damage, drawing (this thread),
 //!       and the whole process's (the GPU driver's threads with it)
-//!   SLIDE_PIXELS=<dir> cargo test --release --bin zeron-zgx slide_pixels -- --ignored --nocapture
+//!   SLIDE_PIXELS=<dir> cargo test --release --bin zend-zgx slide_pixels -- --ignored --nocapture
 //!       every frame drawn after each of the first messages read back, its
 //!       pixels hashed into <dir>/frames.txt (and kept, raw RGBA, in <dir>),
 //!       to compare two builds frame for frame (`cmp`, or a script)

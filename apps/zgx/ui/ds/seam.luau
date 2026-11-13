@@ -1,5 +1,5 @@
 -- A seam: a column's edge or a split's divider, dragged to resize what's
--- beside it (Zeron's resize handle, crates/ui shell.rs `resize_handle`).
+-- beside it (Zend's resize handle, crates/ui shell.rs `resize_handle`).
 -- It takes the pointer `REACH` points each side of its middle, under the
 -- top bar (the sidebar's edge, under the page, on its own side only); its gap lights under the pointer and as it's dragged, fading
 -- (ds/motion `hover`); dragged past its limit it bounces (ds/motion
@@ -15,7 +15,7 @@ local motion = require("@self/motion")
 
 local M = {}
 
--- How far each side of a seam's middle takes the pointer (Zeron's
+-- How far each side of a seam's middle takes the pointer (Zend's
 -- `PANE_RESIZE_HITBOX_HALF_WIDTH`).
 M.REACH = 10
 

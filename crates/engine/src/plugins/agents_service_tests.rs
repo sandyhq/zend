@@ -14,30 +14,30 @@ use super::agents::tests::{Host, account, chat};
 use super::*;
 
 const ROTATE: &str = r#"
-local zeron = require("./zeron")("svc")
+local zend = require("./zend")("svc")
 
 -- Below 10% left on the active Claude Code account: the next saved one.
-zeron.on("usage.threshold", function(e)
-	local accounts = zeron.accounts({ provider = e.provider }):await()
+zend.on("usage.threshold", function(e)
+	local accounts = zend.accounts({ provider = e.provider }):await()
 	for _, a in accounts do
 		if not a.active and a.switchable then
-			local done = zeron.switch_account({ provider = e.provider, account = a.account, when_idle = true }):await()
-			zeron.emit("switched", { to = a.account, status = done.status })
+			local done = zend.switch_account({ provider = e.provider, account = a.account, when_idle = true }):await()
+			zend.emit("switched", { to = a.account, status = done.status })
 			return
 		end
 	end
 end, { below = 10, provider = "claude-code" })
 
-zeron.serve("usage", function()
-	return zeron.usage({ provider = "claude-code" }):await()
+zend.serve("usage", function()
+	return zend.usage({ provider = "claude-code" }):await()
 end, { safe = true })
 
-zeron.serve("switch", function(args)
-	return zeron.switch_account({ provider = "claude-code", account = args.account }):await()
+zend.serve("switch", function(args)
+	return zend.switch_account({ provider = "claude-code", account = args.account }):await()
 end)
 
-zeron.serve("models", function()
-	return zeron.models("claude-code"):await()
+zend.serve("models", function()
+	return zend.models("claude-code"):await()
 end, { safe = true })
 "#;
 
@@ -52,7 +52,7 @@ fn fixture() -> Fixture {
     let plugins = Plugins::new(dir.path(), "dev-1");
     std::fs::create_dir_all(plugins.plugins_dir()).unwrap();
     let host = Arc::new(Host::default());
-    *lock(&host.snapshot) = zeron_proto::AgentAccountsSnapshot {
+    *lock(&host.snapshot) = zend_proto::AgentAccountsSnapshot {
         accounts: vec![account("a1", true, 0.5), account("a2", false, 0.1)],
         warnings: vec![],
     };
@@ -75,7 +75,7 @@ async fn write(plugins: &Plugins, permissions: &[&str], service: Option<&str>) {
     let dir = plugins.plugins_dir().join("svc");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("init.luau"), "return nil").unwrap();
-    std::fs::write(dir.join("zeron.luau"), scaffold::SDK).unwrap();
+    std::fs::write(dir.join("zend.luau"), scaffold::SDK).unwrap();
     let mut manifest = json!({ "id": "svc", "name": "Svc", "version": "1.0.0", "entry": "init.luau", "permissions": permissions });
     if let Some(service) = service {
         std::fs::write(dir.join("service.luau"), service).unwrap();
@@ -103,7 +103,7 @@ async fn ask(plugins: &Plugins, method: &str, args: serde_json::Value) -> serde_
     call(plugins, methods::CALL_PLUGIN_SERVICE, json!({ "plugin": "svc", "method": method, "args": args })).await
 }
 
-fn snapshot(f: &Fixture) -> zeron_proto::AgentAccountsSnapshot {
+fn snapshot(f: &Fixture) -> zend_proto::AgentAccountsSnapshot {
     lock(&f.host.snapshot).clone()
 }
 
@@ -224,7 +224,7 @@ async fn agents_a_window_hears_its_events_over_its_channel() {
     agents.observe_accounts(&snapshot(&f));
     let heard = tokio::time::timeout(Duration::from_secs(5), channel.next()).await.unwrap().unwrap();
     assert_eq!(heard["plugin"], "svc");
-    assert_eq!(heard["event"], "zeron:usage.threshold");
+    assert_eq!(heard["event"], "zend:usage.threshold");
     assert_eq!(heard["data"]["listener"], "w1");
     assert_eq!(heard["data"]["data"]["remaining"], 3.0);
     // And a window's ops: its grants, here.
@@ -275,10 +275,10 @@ async fn agents_the_account_rotate_example_switches_once_a_running_chat_finishes
     let dir = f.plugins.plugins_dir().join("account-rotate");
     std::fs::create_dir_all(&dir).unwrap();
     let example = "../../apps/zgx/plugins-dev/account-rotate";
-    for file in ["zeron-plugin.json", "init.luau", "service.luau"] {
+    for file in ["zend-plugin.json", "init.luau", "service.luau"] {
         std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join(example).join(file), dir.join(file)).unwrap();
     }
-    std::fs::write(dir.join("zeron.luau"), scaffold::SDK).unwrap();
+    std::fs::write(dir.join("zend.luau"), scaffold::SDK).unwrap();
     // A third account, nearly spent: skipped for a2.
     {
         let mut s = lock(&f.host.snapshot);
@@ -298,7 +298,7 @@ async fn agents_the_account_rotate_example_switches_once_a_running_chat_finishes
     })
     .await;
     // A chat on Claude Code is running.
-    *lock(&f.host.sessions) = vec![super::agents::tests::session("c1", zeron_proto::SessionStatus::Working, None)];
+    *lock(&f.host.sessions) = vec![super::agents::tests::session("c1", zend_proto::SessionStatus::Working, None)];
     let agents = f.plugins.agents().clone();
     let sessions = lock(&f.host.sessions).clone();
     agents.observe_sessions(&sessions);
@@ -311,8 +311,8 @@ async fn agents_the_account_rotate_example_switches_once_a_running_chat_finishes
     // The chat finishes: switched, to a2 (a0 has 3% left).
     *lock(&f.host.sessions) = vec![super::agents::tests::session(
         "c1",
-        zeron_proto::SessionStatus::Idle,
-        Some(zeron_proto::DoneStatus::Completed),
+        zend_proto::SessionStatus::Idle,
+        Some(zend_proto::DoneStatus::Completed),
     )];
     let sessions = lock(&f.host.sessions).clone();
     agents.observe_sessions(&sessions);
@@ -328,14 +328,14 @@ async fn agents_the_account_rotate_example_switches_once_a_running_chat_finishes
 #[tokio::test]
 async fn agents_the_account_pin_example_spreads_new_chats_across_saved_accounts() {
     let f = fixture();
-    lock(&f.host.mechanisms).insert(zeron_proto::HarnessId::ClaudeCode, "env");
+    lock(&f.host.mechanisms).insert(zend_proto::HarnessId::ClaudeCode, "env");
     let dir = f.plugins.plugins_dir().join("account-pin");
     std::fs::create_dir_all(&dir).unwrap();
     let example = "../../apps/zgx/plugins-dev/account-pin";
-    for file in ["zeron-plugin.json", "init.luau", "service.luau"] {
+    for file in ["zend-plugin.json", "init.luau", "service.luau"] {
         std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join(example).join(file), dir.join(file)).unwrap();
     }
-    std::fs::write(dir.join("zeron.luau"), scaffold::SDK).unwrap();
+    std::fs::write(dir.join("zend.luau"), scaffold::SDK).unwrap();
     // A signed-out account in front: never chosen.
     {
         let mut s = lock(&f.host.snapshot);
@@ -357,7 +357,7 @@ async fn agents_the_account_pin_example_spreads_new_chats_across_saved_accounts(
     agents.observe_accounts(&snapshot(&f));
     let mut chosen = Vec::new();
     for chat in ["c1", "c2", "c3", "c4"] {
-        chosen.push(agents.preparing(zeron_proto::HarnessId::ClaudeCode, chat).await);
+        chosen.push(agents.preparing(zend_proto::HarnessId::ClaudeCode, chat).await);
     }
     let chosen: Vec<Option<&str>> = chosen.iter().map(|c| c.as_deref()).collect();
     assert_eq!(chosen, [Some("a1"), Some("a2"), Some("a1"), Some("a2")], "the fewest chats, in turn");
@@ -396,18 +396,18 @@ fn agents_permissions_are_known_and_controls_stay_outside_the_sandbox() {
 // ── Messages (`messages.send`) through the plugins module ──────────────────
 
 const SENDER: &str = r#"
-local zeron = require("./zeron")("svc")
+local zend = require("./zend")("svc")
 
-zeron.serve("send", function(args)
-	return zeron.send_message({ chat = args.chat, text = args.text, mode = args.mode }):await()
+zend.serve("send", function(args)
+	return zend.send_message({ chat = args.chat, text = args.text, mode = args.mode }):await()
 end)
 
-zeron.serve("start", function(args)
-	return zeron.new_chat({ prompt = args.prompt, harness = "claude-code" }):await()
+zend.serve("start", function(args)
+	return zend.new_chat({ prompt = args.prompt, harness = "claude-code" }):await()
 end)
 
-zeron.serve("answer", function(args)
-	return zeron.answer({ chat = args.chat, answers = { q1 = "Yes" } }):await()
+zend.serve("answer", function(args)
+	return zend.answer({ chat = args.chat, answers = { q1 = "Yes" } }):await()
 end)
 "#;
 
@@ -477,7 +477,7 @@ async fn messages_a_window_and_another_device_send_by_this_devices_grants() {
     assert_eq!(remote["ok"], true, "{remote}");
     assert_eq!(delivered(&f).len(), 2);
     // Never an agent's.
-    assert!(!zeron_rpc::agent_allowed(methods::PLUGIN_AGENTS) && !zeron_rpc::agent_allowed(methods::SERVE_PLUGIN_AGENTS));
+    assert!(!zend_rpc::agent_allowed(methods::PLUGIN_AGENTS) && !zend_rpc::agent_allowed(methods::SERVE_PLUGIN_AGENTS));
 }
 
 /// The example (plugins-dev/keep-going), as it ships: with no window open,
@@ -489,10 +489,10 @@ async fn messages_the_keep_going_example_continues_a_turn_that_asks() {
     let dir = f.plugins.plugins_dir().join("keep-going");
     std::fs::create_dir_all(&dir).unwrap();
     let example = "../../apps/zgx/plugins-dev/keep-going";
-    for file in ["zeron-plugin.json", "init.luau", "service.luau"] {
+    for file in ["zend-plugin.json", "init.luau", "service.luau"] {
         std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join(example).join(file), dir.join(file)).unwrap();
     }
-    std::fs::write(dir.join("zeron.luau"), scaffold::SDK).unwrap();
+    std::fs::write(dir.join("zend.luau"), scaffold::SDK).unwrap();
     let signed = call(&f.plugins, methods::SIGN_PLUGIN, json!({ "id": "keep-going" })).await;
     assert!(signed.get("rpc_error").is_none(), "{signed}");
     let item = call(&f.plugins, methods::LIST_PLUGINS, json!({})).await["plugins"][0].clone();
@@ -504,11 +504,11 @@ async fn messages_the_keep_going_example_continues_a_turn_that_asks() {
     .await;
     let agents = f.plugins.agents().clone();
     let turn = |reply: &str| {
-        let working = vec![super::agents::tests::session("c1", zeron_proto::SessionStatus::Working, None)];
+        let working = vec![super::agents::tests::session("c1", zend_proto::SessionStatus::Working, None)];
         *lock(&f.host.sessions) = working.clone();
         agents.observe_sessions(&working);
         agents.observe_reply("c1", reply);
-        let idle = vec![super::agents::tests::session("c1", zeron_proto::SessionStatus::Idle, Some(zeron_proto::DoneStatus::Completed))];
+        let idle = vec![super::agents::tests::session("c1", zend_proto::SessionStatus::Idle, Some(zend_proto::DoneStatus::Completed))];
         *lock(&f.host.sessions) = idle.clone();
         agents.observe_sessions(&idle);
     };

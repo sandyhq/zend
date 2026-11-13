@@ -8,7 +8,7 @@
 --   column, row, grid   our layout, the script's gaps and alignment; a row
 --                       the reader can click or scan washes under the
 --                       pointer, the wash hanging past its text
---   text                the transcript's type scale (`zeron.visual.text.*`)
+--   text                the transcript's type scale (`zend.visual.text.*`)
 --   stat                ds/stat: a headline figure over its label
 --   table               ds/data_table: frameless, hairlines, a row wash
 --   chart               ds/chart: bars, lines, areas, scatter
@@ -32,7 +32,7 @@
 --   Visual { id = "v:…", path = "/…/v_…-visual.luau", title = "Latency", device = nil }
 --   (`source` in place of `path`: a fixture's script, run as is.)
 --   (`api`: whose calls draw it, `"visuals"` by default; a plugin's own
---   are `"plugin.<id>.visuals"`, its SDK's `zeron.visual`. zend.)
+--   are `"plugin.<id>.visuals"`, its SDK's `zend.visual`. zend.)
 
 local Button = require("@self/button")
 local Switch = require("@self/switch")
@@ -294,8 +294,8 @@ local Toggle = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			cursor = "pointer",
 			-- (The switch is named by it: one control, not two.)
 			aria_hidden = true,
-			text_size = "$zeron.visual.text.body.size",
-			line_height = "$zeron.visual.text.body.line",
+			text_size = "$zend.visual.text.body.size",
+			line_height = "$zend.visual.text.body.line",
 			color = "$text.primary",
 			on_click = function()
 				value:toggle()
@@ -327,8 +327,8 @@ local VisualSlider = ui.component(function(props: { n: any, ctx: Ctx }): Node
 				label,
 				literal = true,
 				truncate = true,
-				text_size = "$zeron.visual.text.sm.size",
-				line_height = "$zeron.visual.text.sm.line",
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
 				color = "$text.secondary",
 			}
 		),
@@ -963,8 +963,8 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 			literal = true,
 			role = "link",
 			cursor = "pointer",
-			text_size = "$zeron.visual.text.body.size",
-			line_height = "$zeron.visual.text.body.line",
+			text_size = "$zend.visual.text.body.size",
+			line_height = "$zend.visual.text.body.line",
 			color = "$accent",
 			hover = { color = "$accent.hover" },
 			on_click = function()
@@ -1092,15 +1092,15 @@ return ui.component(function(props: Props): Node
 					class = "visual-loading",
 					items = "center",
 					gap = "$space.2",
-					h = "$zeron.visual.text.sm.line",
+					h = "$zend.visual.text.sm.line",
 					status.Spinner { size = 12, ink = "$text.tertiary" },
 					ui.text {
 						function(): string
 							return locale.s("ds.visual.loading", { title = title() })
 						end,
 						literal = true,
-						text_size = "$zeron.visual.text.sm.size",
-						line_height = "$zeron.visual.text.sm.line",
+						text_size = "$zend.visual.text.sm.size",
+						line_height = "$zend.visual.text.sm.line",
 						color = "$text.tertiary",
 					},
 				}

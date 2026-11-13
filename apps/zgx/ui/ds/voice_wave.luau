@@ -60,7 +60,7 @@ fn layer(input: LayerInput) -> vec4<f32> {
 }
 ]], { fps = 30 })
 
-local INK = "$zeron.composer.voice.ink"
+local INK = "$zend.composer.voice.ink"
 
 -- Bar `i` from the trailing edge (1: the newest).
 local function bar(levels: any, i: number): Node
@@ -98,7 +98,7 @@ M.VoiceWave = ui.component(function(props: { levels: any, phase: any }): Node
 	-- (Its ink as a colour, not a token: a clocked shader's parameters drop
 	-- theme tokens, zgx 4809bcce. The composer's presence is keyed on the
 	-- theme, so this is made again as that changes.)
-	local ink = ui.theme.get("zeron.composer.voice.ink")
+	local ink = ui.theme.get("zend.composer.voice.ink")
 	local function baseline(first: number, breathe: boolean): Node
 		return ui.div {
 			absolute = true,

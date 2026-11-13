@@ -218,7 +218,7 @@ ui.command {
 	run = function()
 		local n = find("notes-tool")
 		n.status = "broken"
-		n.error = "Its manifest asks for a permission Zeron doesn't know: teleport"
+		n.error = "Its manifest asks for a permission Zend doesn't know: teleport"
 		publish()
 	end,
 }
@@ -288,9 +288,9 @@ ui.command {
 }
 ui.command {
 	id = "builtin",
-	title = "Zeron's own GitHub arrives",
+	title = "Zend's own GitHub arrives",
 	run = function()
-		local p = plugin("github", "GitHub", "zeron", "on", { permissions = { "ui.add", "github" } })
+		local p = plugin("github", "GitHub", "zend", "on", { permissions = { "ui.add", "github" } })
 		local any: any = p
 		any.builtin = true
 		any.allowed = { "github", "ui.add" }
@@ -319,7 +319,7 @@ ui.command {
 publish()
 
 -- Light, for pictures of it (src/audit_shots.rs: `!theme_light`).
-ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zeron-light") end }
+ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zend-light") end }
 
 return ui.scroll {
 	w_full = true,

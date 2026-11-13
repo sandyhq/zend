@@ -126,7 +126,7 @@ function M.subagents(): { any }
 	return subagents:get()
 end
 
--- A child chat in the tray (one a Zeron chat started): its task's id, the
+-- A child chat in the tray (one a Zend chat started): its task's id, the
 -- chat's own after this (a subagent's is its doc).
 local CHILD = "chat:"
 
@@ -135,8 +135,8 @@ local CHILD = "chat:"
 -- the finished (done or failed) after, newest first, as the lanes card
 -- orders them. A subagent not heard from yet counts as running, as it does
 -- there. Each task's id is the subagent's doc (`ref`). With the chat
--- (`session`), its child chats a Zeron chat started (`child_kind`, a
--- subagent's or a side chat's, made through Zeron's tools) are among them,
+-- (`session`), its child chats a Zend chat started (`child_kind`, a
+-- subagent's or a side chat's, made through Zend's tools) are among them,
 -- listed as a subagent is; those the person started aren't.
 function M.tasks(session: string?): { any }
 	local active, finished = {}, {}

@@ -1,13 +1,13 @@
 -- Keep going's window: says what its service did, in a toast. The work is
 -- the service's (service.luau), which runs with no window open.
 
-local zeron = require("./zeron")("keep-going")
+local zend = require("./zend")("keep-going")
 
-zeron.service():on("continued", function(e)
+zend.service():on("continued", function(e)
 	local title = e.chat
-	local session = zeron.sessions()[e.chat]
+	local session = zend.sessions()[e.chat]
 	if session and session.title then
 		title = session.title
 	end
-	zeron.toast(`Sent "continue" to {title}.`)
+	zend.toast(`Sent "continue" to {title}.`)
 end)

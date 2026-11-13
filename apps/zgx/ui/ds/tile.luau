@@ -2,11 +2,11 @@
 -- 50). One tile wherever a project shows: the sidebar, a dropdown, the
 -- composer's project.
 --
--- `Tile { label = "Zeron", hue = "violet", size = 18 }`; `inside` puts a
+-- `Tile { label = "Zend", hue = "violet", size = 18 }`; `inside` puts a
 -- glyph where the initial goes (pinned's pin), and `hue` may be nil for a
 -- neutral tile (a quiet wash, the glyph in secondary ink). `src` is the
 -- project's own artwork (an image its people chose, else its favicon, as
--- Zeron finds it in the checkout): shown whole in the tile's place, clipped
+-- Zend finds it in the checkout): shown whole in the tile's place, clipped
 -- to its corner. `emoji` is a picture its people chose: the emoji in the
 -- middle, an even inset all round, on a soft wash of its hue (none: the
 -- neutral wash). Artwork wins over an emoji, an emoji over the initial.
@@ -86,7 +86,7 @@ local function tile(props: Props): Node
 			relative = true,
 			items = "center",
 			justify = "center",
-			bg = "$zeron.secondary.bg",
+			bg = "$zend.secondary.bg",
 			-- (The hue's own wash over the neutral one, so either theme's
 			-- page shows through the same.)
 			ui.div {
@@ -134,10 +134,10 @@ local function tile(props: Props): Node
 			bg = if type(hue) == "function"
 				then function(): string
 					local h = hue()
-					return if h then `$palette.{h}.500` else "$zeron.secondary.bg"
+					return if h then `$palette.{h}.500` else "$zend.secondary.bg"
 				end
 				elseif hue then `$palette.{hue}.500`
-				else "$zeron.secondary.bg",
+				else "$zend.secondary.bg",
 			color = if type(hue) == "function"
 				then function(): string
 					local h = hue()

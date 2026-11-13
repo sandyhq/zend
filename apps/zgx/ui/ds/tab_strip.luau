@@ -54,7 +54,7 @@ end
 local M = {}
 
 local function gap(): number
-	return (ui.theme.get("zeron.space.hair") :: number?) or 2
+	return (ui.theme.get("zend.space.hair") :: number?) or 2
 end
 
 -- Where a tab stands in the tabs' row as `list` lays it out.
@@ -167,7 +167,7 @@ function M.Highlight(props: HighlightProps): Node
 			id = id_of(props.key, "chosen"),
 			h = props.h,
 			rounded = props.rounded,
-			bg = "$zeron.selected.flat.bg",
+			bg = "$zend.selected.flat.bg",
 			pointer_events = "none",
 			x = motion.spring(ui.computed(function(): number
 				return left_in(props.order(), props.width, chosen())
@@ -432,7 +432,7 @@ function M.new(props: Props)
 				w = held_w,
 				h = props.h,
 				rounded = props.rounded,
-				bg = if props.selected() == id then "$zeron.selected.flat.bg" else "$hover",
+				bg = if props.selected() == id then "$zend.selected.flat.bg" else "$hover",
 				color = "$text.primary",
 				props.face(id),
 			},

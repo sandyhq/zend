@@ -1,4 +1,4 @@
--- Zeron's panel fit, the policy alone (no state): its widths and which
+-- Zend's panel fit, the policy alone (no state): its widths and which
 -- columns a window has room for. screens/shell/fit holds the window's and
 -- reads it; see there. (crates/ui settings.rs, shell/panel_layout.rs
 -- `horizontal_panel_fit`, shell.rs `content_split`, `right_pane_max_width`,
@@ -6,8 +6,8 @@
 
 local M = {}
 
--- Zeron's widths (crates/ui settings.rs), in points. (The sidebar's default
--- a step wider than Zeron's 256: Gaël's.)
+-- Zend's widths (crates/ui settings.rs), in points. (The sidebar's default
+-- a step wider than Zend's 256: Gaël's.)
 M.SIDEBAR_MIN, M.SIDEBAR_MAX, M.SIDEBAR_DEFAULT = 242, 400, 272
 M.FILES_PANEL_MIN, M.FILES_PANEL_DEFAULT, M.FILES_PANEL_MAX = 220, 286, 440
 M.RIGHT_PANE_MIN, M.RIGHT_PANE_DEFAULT = 360, 520
@@ -54,7 +54,7 @@ end
 
 -- The policy: which of the columns show in a window `viewport` wide, the
 -- sidebar preferring `sidebar_width`, the panel expanded or not. (`files_min`:
--- Files' least, Zeron's unless an app's Files column is wider.)
+-- Files' least, Zend's unless an app's Files column is wider.)
 function M.panels(
 	viewport: number,
 	sidebar_width: number,

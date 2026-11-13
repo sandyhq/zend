@@ -29,8 +29,8 @@ const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const LATEST_PROTOCOL: &str = "2025-06-18";
 
 const INSTRUCTIONS: &str = "\
-Zeron runs coding agents in chats, each hosted on a device, optionally in a project \
-(a folder on that specific device). These tools operate the local Zeron engine: \
+Zend runs coding agents in chats, each hosted on a device, optionally in a project \
+(a folder on that specific device). These tools operate the local Zend engine: \
 discover devices/projects/chats, create chats with a chosen harness and \
 model, read transcripts, and send messages between chats.\n\
 \n\
@@ -64,7 +64,7 @@ from a Cloud chat it clones the same repository, and without `cloud` it shares y
 \n\
 When a chart, table, diagram, dashboard, or 3D view would say more than prose and \
 `show_visual` is available, write a Luau visual script and show it with `show_visual` before \
-your final reply. Zeron renders it with its own native interface and enforces its style: \
+your final reply. Zend renders it with its own native interface and enforces its style: \
 content sits directly on the chat with no cards or boxed panels, text uses the interface font \
 and type scale, and colors are theme tokens that work on frosted glass or opaque, light or dark. \
 The reader sees the visual above that reply, so don't announce or restate it. To show the \
@@ -72,17 +72,17 @@ reader an image file (a screenshot, a rendered PNG), call `show_image` with its 
 draw images through `show_visual`.";
 
 /// Appended to [`INSTRUCTIONS`] where the agent is offered
-/// `wait_on_background` ([`zeron_proto::McpServer::WAITS_ON_BACKGROUND_ENV`]).
+/// `wait_on_background` ([`zend_proto::McpServer::WAITS_ON_BACKGROUND_ENV`]).
 const WAITS_ON_BACKGROUND: &str = "\n\n\
 Before ending a turn while a background command you started is still running and you'll carry on \
 once it ends (tests, a build), call `wait_on_background` with its task id, so the person sees the \
 chat waiting rather than finished. Not for anything you leave running (a dev server, a watcher).";
 
 /// Appended to [`INSTRUCTIONS`] when the host launched the agent without its
-/// own subagent tools ([`zeron_proto::McpServer::SIDE_CHATS_ONLY_ENV`]).
+/// own subagent tools ([`zend_proto::McpServer::SIDE_CHATS_ONLY_ENV`]).
 const SIDE_CHATS_ONLY: &str = "\n\n\
-Your own subagent tools are turned off in Zeron's settings: where you would start a \
-subagent, delegate through Zeron chats instead, with `create_chats` (or `create_chat`).";
+Your own subagent tools are turned off in Zend's settings: where you would start a \
+subagent, delegate through Zend chats instead, with `create_chats` (or `create_chat`).";
 
 /// What `initialize` tells the agent: with when to say it waits where it's
 /// offered `wait_on_background`, and the side-chat rule when its host turned
@@ -97,7 +97,7 @@ fn instructions(waits: bool, side_chats_only: bool) -> std::borrow::Cow<'static,
 }
 
 /// How often a call still running reports progress. Clients abort a call
-/// that sends nothing for long enough (Claude Code: 30 minutes); a Zeron
+/// that sends nothing for long enough (Claude Code: 30 minutes); a Zend
 /// wait may run an hour.
 const PROGRESS_EVERY: Duration = Duration::from_secs(30);
 
@@ -294,7 +294,7 @@ pub async fn handle_request(tools: &Tools, id: Value, method: &str, params: Valu
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": true } },
                     "serverInfo": {
-                        "name": "zeron",
+                        "name": "zend",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "instructions": instructions(tools.waits_on_background(), tools.side_chats_only()),
@@ -423,11 +423,11 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
 mod tests {
     use super::*;
 
-    use crate::zeron::{Origin, Zeron};
+    use crate::zend::{Origin, Zend};
     use async_trait::async_trait;
     use futures::StreamExt;
     use std::time::Duration;
-    use zeron_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
+    use zend_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
 
     /// An engine whose plugin tools go from one to two, then stay.
     struct Watching;
@@ -457,7 +457,7 @@ mod tests {
     }
 
     fn watching_tools() -> Arc<Tools> {
-        Arc::new(Tools::new(Arc::new(Zeron::with_client(
+        Arc::new(Tools::new(Arc::new(Zend::with_client(
             memory_client(Arc::new(Watching)),
             Origin::default(),
         ))))

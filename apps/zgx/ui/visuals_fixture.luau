@@ -2,7 +2,7 @@
 -- shipping app's crates/visual): every node type, from the shipping app's
 -- demo visuals (crates/client/src/demo/visuals.rs) and the visual crate's
 -- own examples, and two that fail. For src/visuals_tests.rs and a look in
--- a window: `zeron-zgx fixture=visuals_fixture.luau --inspect`. Commands
+-- a window: `zend-zgx fixture=visuals_fixture.luau --inspect`. Commands
 -- switch the theme. `only=<name>` (an arg) shows one of them alone.
 
 ui.theme.strict("warn")
@@ -104,7 +104,7 @@ return function()
     ui.column { gap = 2, rows },
     ui.space(4),
     ui.row { gap = 16, align = "center",
-      ui.link { label = "Read the full notes", url = "https://zeron.sh" },
+      ui.link { label = "Read the full notes", url = "https://zend.invalid" },
       ui.text { picked > 0 and ("Picked " .. items[picked]) or "Pick one", size = "sm", color = "faint", italic = true },
     },
   }
@@ -193,11 +193,11 @@ end
 
 ui.command { id = "theme_light", title = "Light theme", run = function()
 	ui.theme.follow_system(false)
-	ui.theme.current:set("zeron-light")
+	ui.theme.current:set("zend-light")
 end }
 ui.command { id = "theme_dark", title = "Dark theme", run = function()
 	ui.theme.follow_system(false)
-	ui.theme.current:set("zeron-dark")
+	ui.theme.current:set("zend-dark")
 end }
 
 local only = nil :: string?
@@ -230,7 +230,7 @@ return ui.scroll {
 		id = "reply",
 		selectable = true,
 		w_full = true,
-		max_w = "$zeron.prose.measure",
+		max_w = "$zend.prose.measure",
 		p = "$space.6",
 		gap = "$space.7",
 		blocks,

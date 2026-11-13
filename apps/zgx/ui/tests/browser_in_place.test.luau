@@ -59,7 +59,7 @@ end
 -- stands the nonce check in: see `test.web_message`.)
 local function pick(app: any, nonce: number, element: string, marker: number)
 	app:set_state("test_web_message", {
-		kind = "zeron.annotation",
+		kind = "zend.annotation",
 		nonce = nonce,
 		event = "pick",
 		pick = {
@@ -83,7 +83,7 @@ local function pick(app: any, nonce: number, element: string, marker: number)
 end
 
 local function ended(app: any, nonce: number, how: string)
-	app:set_state("test_web_message", { kind = "zeron.annotation", nonce = nonce, event = "state", state = how })
+	app:set_state("test_web_message", { kind = "zend.annotation", nonce = nonce, event = "state", state = how })
 	app:command("test.web_message")
 	app:frames(3)
 end
@@ -131,15 +131,15 @@ test("the address rides with the tab across a reload; a link opened twice is one
 	app:command("test.open_url")
 	app:frames(5)
 	expect(tab_titles(app)).to_be("Page at example.com")
-	app:set_state("test_open_url", "https://zeron.sh/docs")
+	app:set_state("test_open_url", "https://zend.invalid/docs")
 	app:command("test.open_url")
 	app:frames(5)
 	expect(eventually(app, function(): boolean
-		return tab_titles(app) == "Page at example.com,Page at zeron.sh"
+		return tab_titles(app) == "Page at example.com,Page at zend.invalid"
 	end)).to_be(true)
-	expect(web_calls(app)).to_be("load:https://example.com/,load:https://zeron.sh/docs")
+	expect(web_calls(app)).to_be("load:https://example.com/,load:https://zend.invalid/docs")
 	-- (⌘W closes the panel's tab while the panel has the keyboard.)
-	app:click('role:tab "Page at zeron.sh"')
+	app:click('role:tab "Page at zend.invalid"')
 	app:frames(2)
 	app:key("cmd+w")
 	app:frames(5)
@@ -203,17 +203,17 @@ test("the keys: ⌘T opens a browser tab beside, ⌘L takes the address, ⌘⇧R
 	app:command("panel.reload_page")
 	expect(string.find(web_calls(app), "reload", 1, true) ~= nil).to_be(true)
 	-- A popup the page asks for: a new tab on its address, beside this one.
-	app:set_state("test_web_window", "https://zeron.sh/docs")
+	app:set_state("test_web_window", "https://zend.invalid/docs")
 	app:command("test.web_new_window")
 	app:frames(5)
 	expect(eventually(app, function(): boolean
-		return tab_titles(app) == "Page at example.com,Browser,Page at zeron.sh"
+		return tab_titles(app) == "Page at example.com,Browser,Page at zend.invalid"
 	end)).to_be(true)
 	-- One that isn't a web address opens nothing.
 	app:set_state("test_web_window", "javascript:alert(1)")
 	app:command("test.web_new_window")
 	app:frames(3)
-	expect(tab_titles(app)).to_be("Page at example.com,Browser,Page at zeron.sh")
+	expect(tab_titles(app)).to_be("Page at example.com,Browser,Page at zend.invalid")
 end)
 
 test("find in page: ⌘F with the tab's keyboard opens the bar, the words light the page and step, Escape closes it", function()

@@ -24,7 +24,7 @@ return {
 					-- hairline under it.
 					banner.Banner { edge = true, tone = "danger", title = "Can't reach GitHub.", body = "Pull requests and checks are from 4 minutes ago.", action = { label = "Retry" } },
 					banner.Banner { edge = true, tone = "warning", title = "This branch is 12 commits behind main.", action = { label = "Update branch" }, on_dismiss = function() end },
-					banner.Banner { edge = true, tone = "info", title = "Zeron 0.3 is ready.", body = "Restart to update.", actions = { { label = "Restart", primary = true }, { label = "Later" } } },
+					banner.Banner { edge = true, tone = "info", title = "Zend 0.3 is ready.", body = "Restart to update.", actions = { { label = "Restart", primary = true }, { label = "Later" } } },
 					-- Inside a page, among its cards: the same line, rounded.
 					banner.Banner { tone = "danger", title = "Tests failed", body = "2 of 318. Fix them on the branch and the check runs again.", action = { label = "See what failed" } },
 				}
@@ -38,7 +38,7 @@ return {
 					banner.Callout {
 						tone = "warning",
 						title = "Merge conflicts in 2 files",
-						body = "ds/tokens.luau and ds/themes/zeron-dark.json changed on main too.",
+						body = "ds/tokens.luau and ds/themes/zend-dark.json changed on main too.",
 						actions = { { label = "Resolve with agent", primary = true }, { label = "Open in editor" } },
 					},
 					banner.Callout { tone = "success", title = "Signed in as ada@example.net", action = { label = "Switch" } },
@@ -66,14 +66,14 @@ return {
 						"Success",
 						tone = "secondary",
 						on_click = function()
-							toast.show { title = "Pushed to origin", body = "zeron/primitives, 3 commits.", tone = "success" }
+							toast.show { title = "Pushed to origin", body = "zend/primitives, 3 commits.", tone = "success" }
 						end,
 					},
 					Button {
 						"With an action",
 						tone = "secondary",
 						on_click = function()
-							toast.show { title = "Branch deleted", body = "zeron/old-composer", action = { label = "Undo", run = function() end } }
+							toast.show { title = "Branch deleted", body = "zend/old-composer", action = { label = "Undo", run = function() end } }
 						end,
 					},
 					Button {

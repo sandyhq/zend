@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use zeron_proto::{Chat, ChatConfig, Device, MAX_SIDEBAR_PINS, Session, SidebarPreferences, Space};
+use zend_proto::{Chat, ChatConfig, Device, MAX_SIDEBAR_PINS, Session, SidebarPreferences, Space};
 
 use crate::schema::DocError;
 use crate::workspace::{DeletedSpace, WorkspaceState};
@@ -479,7 +479,7 @@ struct PersistedDelta {
 }
 
 /// The local registry replica. Pure data — no I/O, no async; the transport
-/// (`zeron_sync::RegistryClient`) and the engine host drive it under a lock.
+/// (`zend_sync::RegistryClient`) and the engine host drive it under a lock.
 pub struct RegistryDoc {
     device_id: String,
     /// kind → id → row (server truth).
@@ -1378,7 +1378,7 @@ impl RegistryDoc {
     /// session's machine. Nothing lists or dials it after (`device_deleted`);
     /// its chats and spaces keep their rows. The device's own engine revives
     /// the row at its next boot (`upsert_device` is a newer write), so a
-    /// computer still signed in comes back the next time Zeron opens on it.
+    /// computer still signed in comes back the next time Zend opens on it.
     /// `false` when no such row (already gone, or never heard of).
     pub fn delete_device(&mut self, device_id: &str) -> Result<bool, DocError> {
         if !self.row_exists(KIND_DEVICES, device_id) {
@@ -1475,7 +1475,7 @@ impl RegistryDoc {
     /// LWW picture set from any device, for every copy of its repository, whole
     /// (emoji, image and hue in one field); `None` clears back to the default
     /// tile. `false` when no row.
-    pub fn set_space_icon(&mut self, space_id: &str, icon: Option<&zeron_proto::SpaceIcon>) -> Result<bool, DocError> {
+    pub fn set_space_icon(&mut self, space_id: &str, icon: Option<&zend_proto::SpaceIcon>) -> Result<bool, DocError> {
         let value = icon.map_or(Value::Null, |icon| json!(icon));
         Ok(self.write_look_field(space_id, "icon", value))
     }
@@ -1581,7 +1581,7 @@ impl RegistryDoc {
                 chat.room_gen.map(|g| json!(g)).unwrap_or(Value::Null),
             ),
             ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
-            ("childKind", opt_str(chat.child_kind.map(zeron_proto::ChildKind::as_str))),
+            ("childKind", opt_str(chat.child_kind.map(zend_proto::ChildKind::as_str))),
         ]);
         self.write(KIND_CHATS, &chat.id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1795,7 +1795,7 @@ impl RegistryDoc {
     pub fn set_chat_source_context(
         &mut self,
         chat_id: &str,
-        context: &zeron_proto::ConversationSourceContext,
+        context: &zend_proto::ConversationSourceContext,
     ) -> Result<bool, DocError> {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);
@@ -2008,7 +2008,7 @@ impl RegistryDoc {
             .filter(|(id, _)| !known.contains(id))
             .collect();
         for (id, _) in &removed {
-            self.change_sidebar_pin(&zeron_proto::SidebarPinChange::Unpin {
+            self.change_sidebar_pin(&zend_proto::SidebarPinChange::Unpin {
                 session_id: id.clone(),
             })?;
         }
@@ -2131,7 +2131,7 @@ impl RegistryDoc {
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
                     ("lastSeenAt", opt_ms(chat.last_seen_at)),
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
-                    ("childKind", opt_str(chat.child_kind.map(zeron_proto::ChildKind::as_str))),
+                    ("childKind", opt_str(chat.child_kind.map(zend_proto::ChildKind::as_str))),
                 ]),
             );
         }
@@ -2239,7 +2239,7 @@ fn row_to<T: serde::de::DeserializeOwned>(row: &RegistryRow) -> Option<T> {
 }
 
 // SessionStatus needs to serialize to the same strings the loro doc used
-// ("idle"/"working"/…) — zeron_proto's serde derives already use camelCase;
+// ("idle"/"working"/…) — zend_proto's serde derives already use camelCase;
 // the compile-time check lives in the tests below.
 
 #[cfg(test)]

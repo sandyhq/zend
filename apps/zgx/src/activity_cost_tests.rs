@@ -17,8 +17,8 @@
 //! - `think`: the thought being written growing in the draft;
 //! - `scroll`: a settled turn scrolled past, a wheel's step a frame.
 //!
-//!   cargo test --release --bin zeron-zgx activity_cost -- --ignored --nocapture
-//!   ACTIVITY_PIXELS=<dir> cargo test --release --bin zeron-zgx activity_pixels -- --ignored --nocapture
+//!   cargo test --release --bin zend-zgx activity_cost -- --ignored --nocapture
+//!   ACTIVITY_PIXELS=<dir> cargo test --release --bin zend-zgx activity_pixels -- --ignored --nocapture
 //!
 //! The second hashes every frame drawn through a fixed script of the same
 //! states into <dir>/frames.txt (raw RGBA kept beside it), to compare two
@@ -1338,7 +1338,7 @@ fn a_reply_built_again_keeps_its_calls_as_they_were() {
 /// a hundred calls joining it at once. Per row: instructions by phase, calls
 /// into scripts, scene nodes.
 ///
-///   cargo test --release --bin zeron-zgx activity_row_cost -- --ignored --nocapture
+///   cargo test --release --bin zend-zgx activity_row_cost -- --ignored --nocapture
 #[test]
 #[ignore = "a benchmark: run it --release, as the doc above says"]
 fn activity_row_cost() {

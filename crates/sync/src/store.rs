@@ -538,7 +538,7 @@ impl DocsStore {
     }
 
     /// From now on, refuse deltas: savers write whole snapshots, which every
-    /// version of Zeron reads. For the last moments before a restart into
+    /// version of Zend reads. For the last moments before a restart into
     /// another version (which may be an older one).
     pub fn stop_snapshot_deltas(&self) {
         self.deltas_stopped

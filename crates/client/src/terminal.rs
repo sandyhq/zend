@@ -1,5 +1,5 @@
 //! Terminals on a chat's host: the engine's PTY sessions, carried by the hub
-//! every viewer runs (`zeron_term_link::remote`, the desktop engine's too):
+//! every viewer runs (`zend_term_link::remote`, the desktop engine's too):
 //!
 //! - **Direct when it can be.** A terminal starts on a direct WebRTC link to
 //!   its host when one is up, else on the relay while pairing runs beside it,
@@ -21,9 +21,9 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
-use zeron_proto::TerminalEvent;
-use zeron_rpc::{RpcError, methods};
-use zeron_term_link::remote::{Direct, Relay, TerminalPath, Write};
+use zend_proto::TerminalEvent;
+use zend_rpc::{RpcError, methods};
+use zend_term_link::remote::{Direct, Relay, TerminalPath, Write};
 
 use crate::client::{Client, ClientInner};
 use crate::error::{ClientError, Result};
@@ -251,7 +251,7 @@ impl Client {
                 json!({ "chatId": chat_id, "cols": cols.max(2), "rows": rows.max(1) }),
             )
             .await?;
-        let session: zeron_proto::TerminalSession = serde_json::from_value(reply)
+        let session: zend_proto::TerminalSession = serde_json::from_value(reply)
             .map_err(|e| ClientError::HostError(format!("OpenTerminal: {e}")))?;
         Ok(TerminalInfo {
             id: session.id,
@@ -318,7 +318,7 @@ async fn follow(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return,
-            _ = zeron_sync::wake::until_awake() => {}
+            _ = zend_sync::wake::until_awake() => {}
         }
         let Some(inner) = weak.upgrade() else { return };
         let hub = inner.remote_terminals.clone();

@@ -32,7 +32,7 @@ export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
 /** The hex SHA-256 of the object, sent on PUT and returned on GET. */
-export const SHA256_HEADER = "x-zeron-sha256";
+export const SHA256_HEADER = "x-zend-sha256";
 
 export const attachmentKey = (userId: string, chatId: string, uploadId: string): string =>
   `attachments/${userId}/${chatId}/${uploadId}`;

@@ -25,7 +25,7 @@ local M = {}
 M.GAP = 8
 M.FOOTER = 32
 M.REST = 81
--- The title bar's height (Zeron's): a new chat's composer centres under it,
+-- The title bar's height (Zend's): a new chat's composer centres under it,
 -- lifted a little over the middle of the room there (by LIFT).
 M.TITLE_H = 38
 M.LIFT = 48
@@ -38,10 +38,10 @@ end
 -- Its sides' room from the page's edges.
 M.SIDES = ui.raw(32, "the composer's room from the page's edges")
 
--- A chat's head: the height of a code pane's (`zeron.files.head`), so the two stand
+-- A chat's head: the height of a code pane's (`zend.files.head`), so the two stand
 -- level side by side.
 function M.head(): number
-	return (ui.theme.get("zeron.files.head") :: number?) or 40
+	return (ui.theme.get("zend.files.head") :: number?) or 40
 end
 
 function M.page_pad(): any

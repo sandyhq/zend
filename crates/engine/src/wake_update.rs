@@ -11,7 +11,7 @@
 //! The message always gets answered. Each step is bounded, and whatever goes wrong
 //! lifts the hold on the version already running; the background updater tries
 //! again once it's idle. A machine can't loop: a release it went back from, or
-//! couldn't install, isn't tried again from a boot (`zeron_update::BootCheck`).
+//! couldn't install, isn't tried again from a boot (`zend_update::BootCheck`).
 //!
 //! After the restart it's the update trial's turn: the new version holds work until
 //! it's proven and commits (`update_trial`), and a new version that fails or hangs
@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use zeron_update::{BootCheck, BootSkipReason, Manifest, PreparedBootUpdate, Updater};
+use zend_update::{BootCheck, BootSkipReason, Manifest, PreparedBootUpdate, Updater};
 
 use crate::wake_trace::{self, Stage};
 use crate::{EngineCore, doc_host::DocHost, sessions::SessionsEngine, terminals::Terminals};
@@ -46,8 +46,8 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 /// assembly holds back.
 pub fn arm() {
     let armed = crate::runner::session().is_some()
-        && !zeron_update::transaction::in_trial()
-        && zeron_update::can_update_at_boot();
+        && !zend_update::transaction::in_trial()
+        && zend_update::can_update_at_boot();
     ARMED.store(armed, Ordering::SeqCst);
 }
 
@@ -205,7 +205,7 @@ impl Steps for RealSteps {
     }
 
     fn install_failed(&self, version: &str) {
-        zeron_update::note_boot_update_failed(version);
+        zend_update::note_boot_update_failed(version);
     }
 
     async fn restart(&self, trial_limit: Duration) -> anyhow::Result<()> {

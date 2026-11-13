@@ -1,6 +1,6 @@
 //! What plugins may know and do about the agents: their accounts' usage,
 //! the saved accounts and which is active, the models a harness offers and
-//! a chat's model; and the events of those changing (`zeron.on`).
+//! a chat's model; and the events of those changing (`zend.on`).
 //!
 //! **The engine decides.** Every op and every event is checked here against
 //! what this device allowed the plugin (`Sink::grants`), never against what
@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json, json};
-use zeron_proto::{
+use zend_proto::{
     AgentAccount, AgentAccountsSnapshot, Chat, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel,
     Session, SessionStatus, UserInputAnswer, run_errors::ProviderProblem,
 };
@@ -65,7 +65,7 @@ pub const MESSAGES_SEND: &str = "messages.send";
 const FILES_READ: &str = "files.read";
 const SESSIONS_READ: &str = "sessions.read";
 
-/// Every event a plugin may listen for (`zeron.on`).
+/// Every event a plugin may listen for (`zend.on`).
 pub const EVENTS: &[&str] = &[
     "usage.changed",
     "usage.threshold",
@@ -156,7 +156,7 @@ pub mod reason {
     pub const NOT_FOUND: &str = "not_found";
     /// The op itself is wrong.
     pub const BAD_CALL: &str = "bad_call";
-    /// Zeron tried and it failed (the words say why).
+    /// Zend tried and it failed (the words say why).
     pub const FAILED: &str = "failed";
 }
 
@@ -252,7 +252,7 @@ impl Delivery {
     }
 }
 
-/// A chat a plugin starts (`zeron.new_chat`).
+/// A chat a plugin starts (`zend.new_chat`).
 #[derive(Debug, Clone)]
 pub struct NewChat {
     pub chat_id: String,
@@ -450,7 +450,7 @@ fn percent(fraction: f32) -> f64 {
     (f64::from(fraction.clamp(0.0, 1.0)) * 1000.0).round() / 10.0
 }
 
-fn window_json(w: &zeron_proto::AgentUsageWindow) -> Json {
+fn window_json(w: &zend_proto::AgentUsageWindow) -> Json {
     json!({
         "label": w.label,
         "used": percent(w.used_fraction),
@@ -492,7 +492,7 @@ fn usage_row(a: &AgentAccount) -> Json {
 /// Whether a usage error says the login needs signing in again.
 fn signed_out(error: &Option<String>) -> bool {
     error.as_deref().is_some_and(|e| {
-        zeron_proto::run_errors::provider_problem(e) == Some(ProviderProblem::SignedOut)
+        zend_proto::run_errors::provider_problem(e) == Some(ProviderProblem::SignedOut)
             || e.to_ascii_lowercase().contains("sign in")
     })
 }
@@ -841,7 +841,7 @@ impl Agents {
             return Err(Refused::new(reason::ALREADY, "That account is the active one already"));
         }
         if !target.switchable {
-            return Err(Refused::new(reason::FAILED, "Zeron can't switch to that account"));
+            return Err(Refused::new(reason::FAILED, "Zend can't switch to that account"));
         }
         self.loop_guard(by)?;
         // Switched at once, running chats or not; `when_idle` asks to wait
@@ -885,7 +885,7 @@ impl Agents {
             .find(|a| a.harness == harness && a.id == account)
             .ok_or_else(|| Refused::new(reason::NOT_FOUND, format!("There's no saved {} account {account}", harness.as_str())))?;
         if host.pin_mechanism(target).is_none() {
-            return Err(Refused::new(reason::FAILED, "Zeron can't run a chat on that account on this device"));
+            return Err(Refused::new(reason::FAILED, "Zend can't run a chat on that account on this device"));
         }
         if current.as_ref().is_some_and(|p| p.account == account) {
             return Err(Refused::new(reason::ALREADY, "That chat runs on that account already"));
@@ -1092,7 +1092,7 @@ impl Agents {
 
     // ── Messages ───────────────────────────────────────────────────────────
 
-    /// `zeron.send_message { chat, text, attachments?, mode? }`: as the
+    /// `zend.send_message { chat, text, attachments?, mode? }`: as the
     /// composer sends, by the chat's status wherever it runs. Running, it's
     /// queued for the turn's end (`mode = "queue"`, the default) or steers
     /// it (`"steer"`); not running, it's a turn of its own.
@@ -1123,7 +1123,7 @@ impl Agents {
             "steer" => {
                 return Err(Refused::new(
                     reason::BAD_CALL,
-                    "That chat is waiting for an answer: answer it (zeron.answer), or queue this",
+                    "That chat is waiting for an answer: answer it (zend.answer), or queue this",
                 ));
             }
             other => return Err(Refused::new(reason::BAD_CALL, format!("\"{other}\" isn't a mode: \"queue\" or \"steer\""))),
@@ -1151,7 +1151,7 @@ impl Agents {
         self.record(by, json!({ "op": "send_message", "chat": chat, "id": id, "delivery": how.word() }));
     }
 
-    /// `zeron.new_chat { prompt, device?, project?, harness?, model?, effort?,
+    /// `zend.new_chat { prompt, device?, project?, harness?, model?, effort?,
     /// cwd? }`: a chat made as the composer makes one, and its first
     /// message. Its id.
     async fn new_chat(&self, by: &By, args: &Json) -> Result<Json, Refused> {
@@ -1192,7 +1192,7 @@ impl Agents {
                 model,
                 reasoning,
                 model_options: Map::new(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
                 access: Default::default(),
                 plan: false,
             },
@@ -1208,7 +1208,7 @@ impl Agents {
         Ok(json!({ "status": "sent", "chat": new.chat_id, "id": id }))
     }
 
-    /// `zeron.answer { chat, answers, request? }`: a chat's question (or
+    /// `zend.answer { chat, answers, request? }`: a chat's question (or
     /// approval) answered, as `respond_to_input` answers it. `answers`:
     /// `{ { question, labels } }` (or `{ [question] = label(s) }`).
     fn answer(&self, by: &By, args: &Json) -> Result<Json, Refused> {
@@ -1479,7 +1479,7 @@ impl Agents {
                 }
                 let signed_out = |e: &Option<String>| {
                     e.as_deref().is_some_and(|e| {
-                        zeron_proto::run_errors::provider_problem(e) == Some(ProviderProblem::SignedOut)
+                        zend_proto::run_errors::provider_problem(e) == Some(ProviderProblem::SignedOut)
                             || e.to_ascii_lowercase().contains("sign in")
                     })
                 };
@@ -1714,7 +1714,7 @@ impl Agents {
 
     /// A turn's error, as a harness said it: a limit, a sign-in.
     pub fn observe_problem(&self, chat: &str, message: &str) {
-        let Some(problem) = zeron_proto::run_errors::provider_problem(message) else { return };
+        let Some(problem) = zend_proto::run_errors::provider_problem(message) else { return };
         {
             let mut st = self.state();
             if st.problems.get(chat) == Some(&problem) {

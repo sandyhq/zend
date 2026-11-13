@@ -68,8 +68,8 @@ return function(props: Props): Node
 						literal = true,
 						wrap = true,
 						min_w = 0,
-						text_size = "$zeron.visual.text.sm.size",
-						line_height = "$zeron.visual.text.sm.line",
+						text_size = "$zend.visual.text.sm.size",
+						line_height = "$zend.visual.text.sm.line",
 						weight = "$font.weight.medium",
 						color = "$text.secondary",
 					}

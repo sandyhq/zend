@@ -18,7 +18,7 @@
 
 use super::*;
 use sha2::{Digest, Sha256};
-use zeron_proto::SpaceIcon;
+use zend_proto::SpaceIcon;
 
 const NAME: &str = "name";
 const ICON: &str = "icon";

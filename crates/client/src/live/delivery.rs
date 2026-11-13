@@ -30,7 +30,7 @@ pub(crate) fn start(inner: &Arc<ClientInner>, wake: Arc<Notify>, cancel: Cancell
             // What's waiting is on disk, and goes on the way back.
             tokio::select! {
                 _ = cancel.cancelled() => return,
-                _ = zeron_sync::wake::until_awake() => {}
+                _ = zend_sync::wake::until_awake() => {}
             }
             let Some(inner) = weak.upgrade() else { return };
             let Some(live) = inner.live() else { return };

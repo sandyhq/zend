@@ -99,7 +99,7 @@ export const listGithubRepos = async (accessToken: string, fetchFn: FetchFn): Pr
   const headers = {
     accept: "application/vnd.github+json",
     authorization: `Bearer ${accessToken}`,
-    "user-agent": "zeron-vault",
+    "user-agent": "zend-vault",
     "x-github-api-version": "2022-11-28"
   };
   let requests = 0;
@@ -210,7 +210,7 @@ export const listGithubBranches = async (
   const headers = {
     accept: "application/vnd.github+json",
     authorization: `Bearer ${accessToken}`,
-    "user-agent": "zeron-vault",
+    "user-agent": "zend-vault",
     "x-github-api-version": "2022-11-28"
   };
   const branches: string[] = [];

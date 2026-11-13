@@ -133,7 +133,7 @@ fn a_span_keeps_every_option_it_is_given() {
                 underline_thickness = 2,
                 underline_offset = 1,
             },
-            ui.span { "d", href = "https://zgx.zeron.sh", hover = { underline = true } },
+            ui.span { "d", href = "https://zgx.zend.invalid", hover = { underline = true } },
             ui.span { "e", font = "mono", underline = true },
             ui.span { "f", on_click = function() end },
             ui.span { "g", on_click = function() end, underline = false },

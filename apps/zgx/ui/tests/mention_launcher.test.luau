@@ -143,7 +143,7 @@ test("each scope says when it has nothing, and when nothing matches", function()
 	expect(app:tree("#mention-launcher")).to_contain("No chats match “zzzz”")
 end)
 
-test("a file picked goes as its mention, a chat as Zeron's chat link", function()
+test("a file picked goes as its mention, a chat as Zend's chat link", function()
 	local app = chat()
 	app:type(BOX, "@chat.r")
 	settle(app)
@@ -158,8 +158,8 @@ test("a file picked goes as its mention, a chat as Zeron's chat link", function(
 	settle(app)
 	expect(app:wait('~"and"', { timeout_ms = 2000 })).to_be(true)
 	local calls = app:state("calls")
-	expect(calls).to_contain("zeron-file:")
-	expect(calls).to_contain("[Long chat](zeron-chat:s1)")
+	expect(calls).to_contain("zend-file:")
+	expect(calls).to_contain("[Long chat](zend-chat:s1)")
 end)
 
 test("what's attached, picked, goes as its mention (a picture by its number); once it's taken off, its name alone", function()
@@ -176,7 +176,7 @@ test("what's attached, picked, goes as its mention (a picture by its number); on
 	app:key("Enter")
 	settle(app)
 	expect(app:wait('~"look at"', { timeout_ms = 2000 })).to_be(true)
-	expect(app:state("calls")).to_contain("look at [Image 3](zeron-image:3)")
+	expect(app:state("calls")).to_contain("look at [Image 3](zend-image:3)")
 	-- Taken off before it goes: the name alone.
 	app:command("drop_pictures")
 	settle(app)
@@ -198,7 +198,7 @@ test("what's attached, picked, goes as its mention (a picture by its number); on
 	local calls = app:state("calls")
 	-- (Taken off: its name alone, no link to nothing.)
 	expect(calls).to_contain("then photo.heic")
-	expect(calls).never.to_contain("](zeron-attachment:2)")
+	expect(calls).never.to_contain("](zend-attachment:2)")
 end)
 
 -- The bubble's words (its paragraph's text).
@@ -229,10 +229,10 @@ test("round trip: an attachment picked in the draft goes as its mention, and the
 	app:key("Enter")
 	settle(app)
 	expect(app:wait('~"Look at"', { timeout_ms = 2000 })).to_be(true)
-	expect(app:state("calls")).to_contain("Look at [Image 3](zeron-image:3)")
+	expect(app:state("calls")).to_contain("Look at [Image 3](zend-image:3)")
 	local tree = app:tree("#transcript")
 	expect(tree).to_contain("Look at Image 3")
-	expect(tree).never.to_contain("zeron-image")
+	expect(tree).never.to_contain("zend-image")
 end)
 
 -- Whether the launcher shows (in the tree and not hidden), and what has the

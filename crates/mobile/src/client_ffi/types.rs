@@ -1,4 +1,4 @@
-//! FFI records/enums mirroring `zeron-client`'s view models, plus the
+//! FFI records/enums mirroring `zend-client`'s view models, plus the
 //! conversions both ways. Plain data: Swift/Kotlin get value types.
 //!
 //! Wire-string ids (harness `claude-code`, effort `xhigh`) stay strings so a
@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zeron_client as zc;
+use zend_client as zc;
 
 // ── errors ────────────────────────────────────────────────────────────────
 
@@ -833,9 +833,9 @@ impl From<&zc::ChatConfig> for ChatConfig {
                 })
                 .collect(),
             sandbox: match c.sandbox {
-                zeron_proto::SandboxLevel::ReadOnly => SandboxLevel::ReadOnly,
-                zeron_proto::SandboxLevel::WorkspaceWrite => SandboxLevel::WorkspaceWrite,
-                zeron_proto::SandboxLevel::DangerFullAccess => SandboxLevel::DangerFullAccess,
+                zend_proto::SandboxLevel::ReadOnly => SandboxLevel::ReadOnly,
+                zend_proto::SandboxLevel::WorkspaceWrite => SandboxLevel::WorkspaceWrite,
+                zend_proto::SandboxLevel::DangerFullAccess => SandboxLevel::DangerFullAccess,
             },
         }
     }
@@ -859,9 +859,9 @@ impl TryFrom<ChatConfig> for zc::ChatConfig {
                 .map(|(k, v)| (k, serde_json::Value::String(v)))
                 .collect(),
             sandbox: match c.sandbox {
-                SandboxLevel::ReadOnly => zeron_proto::SandboxLevel::ReadOnly,
-                SandboxLevel::WorkspaceWrite => zeron_proto::SandboxLevel::WorkspaceWrite,
-                SandboxLevel::DangerFullAccess => zeron_proto::SandboxLevel::DangerFullAccess,
+                SandboxLevel::ReadOnly => zend_proto::SandboxLevel::ReadOnly,
+                SandboxLevel::WorkspaceWrite => zend_proto::SandboxLevel::WorkspaceWrite,
+                SandboxLevel::DangerFullAccess => zend_proto::SandboxLevel::DangerFullAccess,
             },
             access: Default::default(),
             plan: false,
@@ -1108,10 +1108,10 @@ pub struct FileMatch {
     pub is_dir: bool,
 }
 
-/// The canonical mention link the host understands (`[name](zeron-file:path)`).
+/// The canonical mention link the host understands (`[name](zend-file:path)`).
 #[uniffi::export]
 pub fn file_mention_link(path: String, is_dir: bool) -> String {
-    zeron_proto::file_mentions::local_file_link(&path, is_dir)
+    zend_proto::file_mentions::local_file_link(&path, is_dir)
 }
 
 /// Which session notifications this device wants.

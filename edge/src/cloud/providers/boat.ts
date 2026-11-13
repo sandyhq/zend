@@ -171,7 +171,7 @@ const STOPPED_RETENTION_MS = 14 * 24 * 60 * 60_000;
 
 /** Boat's refusal counts what the machine added, not its base image, which
  * `df` does. Measured on a hydrated machine: `df` 72.4 GiB, refused at
- * "needs 51.8 GiB". A fresh machine, with Zeron and a small checkout, reads
+ * "needs 51.8 GiB". A fresh machine, with Zend and a small checkout, reads
  * 20.7. */
 export const BOAT_IMAGE_GIB = 20.5;
 

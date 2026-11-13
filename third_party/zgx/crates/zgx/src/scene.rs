@@ -21112,7 +21112,7 @@ mod set_box_tests {
             ..Default::default()
         }
     }
-    /// Zeron's transcript rail: an absolute rail of a fixed size in an
+    /// Zend's transcript rail: an absolute rail of a fixed size in an
     /// overlay, placed by the relative page above that (not by its parent),
     /// its thumb restyled twice a frame (its height, then its top). The rail
     /// is laid out alone, however long the page: its parent leaves it out

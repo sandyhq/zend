@@ -458,7 +458,7 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext, VisualTestContext};
 
-    fn test_chat(id: &str) -> zeron_proto::Chat {
+    fn test_chat(id: &str) -> zend_proto::Chat {
         serde_json::from_value(serde_json::json!({
             "id": id, "title": id, "deviceId": "local", "archived": false,
             "createdAt": Utc::now(),
@@ -483,7 +483,7 @@ mod tests {
                 edge_token: None,
                 org_id: None,
                 workos_client_id: None,
-                default_harness: zeron_proto::HarnessId::Mock,
+                default_harness: zend_proto::HarnessId::Mock,
             },
             cx,
         );
@@ -530,18 +530,18 @@ mod tests {
                     "now".into(),
                     "Project".into(),
                     None,
-                    Some(zeron_proto::ChangeRequestSummary {
+                    Some(zend_proto::ChangeRequestSummary {
                         provider: "github".into(),
                         number: 90,
                         title: "Pull request title".into(),
-                        url: "https://github.com/acme/zeron/pull/90".into(),
-                        state: zeron_proto::ChangeRequestState::Open,
+                        url: "https://github.com/acme/zend/pull/90".into(),
+                        state: zend_proto::ChangeRequestState::Open,
                         base_ref: "main".into(),
                         head_ref: "feature/pr".into(),
                         signals: None,
                     }),
                     None,
-                    zeron_proto::ChatIndicator::Idle,
+                    zend_proto::ChatIndicator::Idle,
                     false,
                     false,
                     false,

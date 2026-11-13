@@ -1,12 +1,12 @@
 //! Stable conversation links shared by sidebar copy actions and inbound URL routing.
 
-use zeron_notify::links::encode_component;
+use zend_notify::links::encode_component;
 // The link format itself is shared with the zgx app (crates/notify).
-pub use zeron_notify::links::{
-    ConversationDeepLink, conversation_link as zeron_conversation_link,
-    parse_conversation_link as parse_zeron_conversation_link,
+pub use zend_notify::links::{
+    ConversationDeepLink, conversation_link as zend_conversation_link,
+    parse_conversation_link as parse_zend_conversation_link,
 };
-use zeron_proto::{AuthState, Chat, HarnessId, WorkspaceScope};
+use zend_proto::{AuthState, Chat, HarnessId, WorkspaceScope};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessConversationLink {
@@ -35,7 +35,7 @@ pub fn workspace_locator(
         }
         WorkspaceScope::Local => format!("device:{}", local_device_id?),
     };
-    Some(zeron_notify::links::workspace_locator_of(
+    Some(zend_notify::links::workspace_locator_of(
         &format!("{scope:?}"),
         &identity,
     ))
@@ -69,12 +69,12 @@ mod tests {
             branch: None,
             checkout_id: None,
             source_context: None,
-            config: Some(zeron_proto::ChatConfig {
+            config: Some(zend_proto::ChatConfig {
                 harness,
                 model: None,
                 reasoning: None,
                 model_options: Default::default(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
                 access: Default::default(),
                 plan: false,
             }),
@@ -117,7 +117,7 @@ mod tests {
             workspace_locator(
                 scope,
                 Some(&AuthState::NeedsOrganization {
-                    user: zeron_proto::UserProfile {
+                    user: zend_proto::UserProfile {
                         id: "user-a".into(),
                         email: "user@example.com".into(),
                         name: None,
@@ -131,7 +131,7 @@ mod tests {
             workspace_locator(
                 scope,
                 Some(&AuthState::SignedIn {
-                    user: zeron_proto::UserProfile {
+                    user: zend_proto::UserProfile {
                         id: "user-a".into(),
                         email: "user@example.com".into(),
                         name: None,

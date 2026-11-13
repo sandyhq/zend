@@ -1,11 +1,11 @@
-//! Zeron v3's split chats (ui/screens/shell/split.luau, page.luau), and
-//! Zeron v2, the single-page layout, as the window runs them: mounted
+//! Zend v3's split chats (ui/screens/shell/split.luau, page.luau), and
+//! Zend v2, the single-page layout, as the window runs them: mounted
 //! headless on the shell's fixture (ui/shell_fixture.luau).
 //!
 //! A chat dragged from the sidebar onto a chat's edge sits beside it; a
 //! click focuses a pane; ⌘W takes it out; the split is kept across a
 //! reload and a launch; and resizing the window moves the panes without
-//! running any more script than one chat does. Zeron v2 (installed as
+//! running any more script than one chat does. Zend v2 (installed as
 //! `live` installs it, composed into `.live` as a switch composes it) has
 //! none of that: one page, no cards; and switching back gives v3 again.
 //!
@@ -399,7 +399,7 @@ fn a_pane_s_grown_composer_takes_a_drop_as_a_mention() {
     assert!(near(app.bounds("shell-page").x, app.bounds("#split-pane-a3").x), "the pane stayed where it was");
 }
 
-// ── Zeron v2 ────────────────────────────────────────────────────────────────
+// ── Zend v2 ────────────────────────────────────────────────────────────────
 
 /// The window going to the back closes the composer's menu, as every popover; it
 /// isn't dismissed, so back at the front it opens again. Escape does dismiss it.
@@ -502,19 +502,19 @@ fn compose(t: &Path, id: &str) -> PathBuf {
 }
 
 #[test]
-fn zeron_v2_is_installed_as_zeron_s_and_runs_one_page() {
+fn zend_v2_is_installed_as_zend_s_and_runs_one_page() {
     let root = scratch("v2");
     let t = root.join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
+    live::sync_zend(&ui(), &t).unwrap();
     // Installed beside the default, listed second, built in, trusted.
     let listed = live::installed(&t);
     let ids: Vec<&str> = listed.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(&ids[..2], [live::BUILTIN, "zeron-v2"]);
-    assert_eq!((listed[0].name.as_str(), listed[1].name.as_str()), ("Zeron v3", "Zeron v2"));
-    assert_eq!(listed[1].description, "The single-page layout from before Zeron v3.");
+    assert_eq!(&ids[..2], [live::BUILTIN, "zend-v2"]);
+    assert_eq!((listed[0].name.as_str(), listed[1].name.as_str()), ("Zend v3", "Zend v2"));
+    assert_eq!(listed[1].description, "The single-page layout from before Zend v3.");
     assert!(listed[1].official.is_some() && !listed[1].out_of_date);
-    assert!(preview::trusted_at(&t, "zeron-v2", &root.join("approvals.json")), "no consent asked of Zeron's own");
-    assert!(official::verified(&t.join("zeron-v2")).is_some());
+    assert!(preview::trusted_at(&t, "zend-v2", &root.join("approvals.json")), "no consent asked of Zend's own");
+    assert!(official::verified(&t.join("zend-v2")).is_some());
 
     // v3, the default: the page a card under the top bar.
     let live_dir = compose(&t, live::BUILTIN);
@@ -527,7 +527,7 @@ fn zeron_v2_is_installed_as_zeron_s_and_runs_one_page() {
     // Switched to v2, as a switch does: `.live` composed again, the window
     // reloaded in place. One page, to the window's edges: no card, and a
     // chat dragged to its edge doesn't split it.
-    compose(&t, "zeron-v2");
+    compose(&t, "zend-v2");
     app.host.reload().expect("v2 didn't load");
     app.frames(30);
     let v2 = app.bounds("shell-page");
@@ -1246,12 +1246,12 @@ fn toggle_cost(app: &mut TestApp) -> (u64, f64, f64) {
 }
 
 #[test]
-#[ignore = "a measurement: cargo test --bin zeron-zgx panel_toggle_over_visuals -- --ignored --nocapture"]
+#[ignore = "a measurement: cargo test --bin zend-zgx panel_toggle_over_visuals -- --ignored --nocapture"]
 fn panel_toggle_over_visuals_measured() {
     let root = scratch("toggle-v2");
     let t = root.join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let v2 = compose(&t, "zeron-v2").join("shell_fixture.luau");
+    live::sync_zend(&ui(), &t).unwrap();
+    let v2 = compose(&t, "zend-v2").join("shell_fixture.luau");
     for (label, fixture) in [("v3", ui().join("shell_fixture.luau")), ("v2", v2)] {
         for (chat, visuals) in [("a1", false), ("a1", true)] {
             for w in [1100., 1500.] {
@@ -1436,7 +1436,7 @@ fn costs(fixture: &Path, count: usize) -> String {
 }
 
 #[test]
-#[ignore = "a measurement: cargo test --release --bin zeron-zgx costs_of_v2_inset_and_v3 -- --ignored --nocapture"]
+#[ignore = "a measurement: cargo test --release --bin zend-zgx costs_of_v2_inset_and_v3 -- --ignored --nocapture"]
 fn costs_of_v2_inset_and_v3_measured() {
     let root = scratch("costs");
     let t = root.join("templates");
@@ -1444,7 +1444,7 @@ fn costs_of_v2_inset_and_v3_measured() {
     // one variant.)
     let from = std::env::var("COSTS_UI").map(PathBuf::from).unwrap_or_else(|_| ui());
     let only = std::env::var("COSTS_ONLY").ok();
-    live::sync_zeron(&from, &t).unwrap();
+    live::sync_zend(&from, &t).unwrap();
     // Inset as uploaded, laid over today's default as the app lays it (its
     // shell/init.luau fails there on its missing scroll_probe and falls
     // back to the default's: left out).
@@ -1454,9 +1454,9 @@ fn costs_of_v2_inset_and_v3_measured() {
         std::fs::create_dir_all(to.parent().unwrap()).unwrap();
         std::fs::copy(path, to).unwrap();
     }
-    std::fs::write(t.join("inset/zeron-template.json"), r#"{"id":"inset","name":"Inset"}"#).unwrap();
+    std::fs::write(t.join("inset/zend-template.json"), r#"{"id":"inset","name":"Inset"}"#).unwrap();
     let mut rows = Vec::new();
-    for (label, id, panes) in [("v2", "zeron-v2", vec![1]), ("Inset", "inset", vec![1, 2, 4, 6]), ("v3", live::BUILTIN, vec![1, 2, 4, 6])] {
+    for (label, id, panes) in [("v2", "zend-v2", vec![1]), ("Inset", "inset", vec![1, 2, 4, 6]), ("v3", live::BUILTIN, vec![1, 2, 4, 6])] {
         if only.as_deref().is_some_and(|o| o != label) {
             continue;
         }
@@ -1655,8 +1655,8 @@ fn a_dragged_sidebar_edge_builds_no_list() {
 #[test]
 fn v2_s_dragged_sidebar_edge_builds_no_list() {
     let t = scratch("v2-drag").join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let calls = drag_script_of(&compose(&t, "zeron-v2").join("shell_fixture.luau"), 1);
+    live::sync_zend(&ui(), &t).unwrap();
+    let calls = drag_script_of(&compose(&t, "zend-v2").join("shell_fixture.luau"), 1);
     assert!(calls <= 170, "{calls} script calls a frame");
 }
 
@@ -1769,8 +1769,8 @@ fn depth_of(app: &mut TestApp, id: &str) -> usize {
 #[test]
 fn the_page_stands_about_as_deep_as_v2_s() {
     let t = scratch("depth").join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let mut v2 = mount_at(&compose(&t, "zeron-v2").join("shell_fixture.luau"), &scratch("depth-v2"));
+    live::sync_zend(&ui(), &t).unwrap();
+    let mut v2 = mount_at(&compose(&t, "zend-v2").join("shell_fixture.luau"), &scratch("depth-v2"));
     let mut v3 = mount(&scratch("depth-v3"));
     let (two, three) = (depth_of(&mut v2, "#shell-page"), depth_of(&mut v3, "#shell-page"));
     assert!(three <= two + 1, "#shell-page under {three} boxes, v2's under {two}");
@@ -1782,8 +1782,8 @@ fn the_page_stands_about_as_deep_as_v2_s() {
 #[test]
 fn v2_s_title_bar_island_shows_over_art_with_the_sidebar_closed() {
     let t = scratch("island").join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let mut v2 = mount_at(&compose(&t, "zeron-v2").join("shell_fixture.luau"), &scratch("island-v2"));
+    live::sync_zend(&ui(), &t).unwrap();
+    let mut v2 = mount_at(&compose(&t, "zend-v2").join("shell_fixture.luau"), &scratch("island-v2"));
     let mut v3 = mount(&scratch("island-v3"));
     for app in [&mut v2, &mut v3] {
         assert!(app.host.run_command("fixture.wallpaper"));
@@ -1863,15 +1863,15 @@ fn split_of(app: &mut TestApp, ids: &[&str]) {
 /// over a long chat, and the sidebar's edge dragged with 1–6 long chats.
 /// (`COSTS_UI`: another ui/ to compose; `REFLOW_ONLY`: v2 or v3.)
 #[test]
-#[ignore = "a measurement: ZGX_PROFILE=1 cargo test --release --bin zeron-zgx live_reflow_measured -- --ignored --nocapture"]
+#[ignore = "a measurement: ZGX_PROFILE=1 cargo test --release --bin zend-zgx live_reflow_measured -- --ignored --nocapture"]
 fn live_reflow_measured() {
     const IDS: [&str; 6] = ["a1", "a2", "a3", "b1", "b2", "m1"];
     let root = scratch("reflow");
     let t = root.join("templates");
     let from = std::env::var("COSTS_UI").map(PathBuf::from).unwrap_or_else(|_| ui());
     let only = std::env::var("REFLOW_ONLY").ok();
-    live::sync_zeron(&from, &t).unwrap();
-    for (label, id) in [("v2", "zeron-v2"), ("v3", live::BUILTIN)] {
+    live::sync_zend(&from, &t).unwrap();
+    for (label, id) in [("v2", "zend-v2"), ("v3", live::BUILTIN)] {
         if only.as_deref().is_some_and(|o| o != label) {
             continue;
         }
@@ -1922,7 +1922,7 @@ fn live_reflow_measured() {
 ///   REFLOW_CASE=panes6 cargo test --release --features layout_probe \
 ///     --config 'patch."https://github.com/zeronsh/zgx".zgx.path="<copy>/crates/zgx"' \
 ///     --config 'patch."https://github.com/zeronsh/zgx".zgx-script.path="<copy>/crates/zgx-script"' \
-///     --bin zeron-zgx live_reflow_traced -- --ignored --nocapture
+///     --bin zend-zgx live_reflow_traced -- --ignored --nocapture
 #[cfg(feature = "layout_probe")]
 #[test]
 #[ignore = "a diagnosis: needs the probed zgx above"]
@@ -1933,8 +1933,8 @@ fn live_reflow_traced() {
     let case = std::env::var("REFLOW_CASE").unwrap_or_else(|_| "panes6".into());
     let fixture = if std::env::var_os("REFLOW_V2").is_some() {
         let t = scratch("trace-v2").join("templates");
-        live::sync_zeron(&ui(), &t).unwrap();
-        compose(&t, "zeron-v2").join("shell_fixture.luau")
+        live::sync_zend(&ui(), &t).unwrap();
+        compose(&t, "zend-v2").join("shell_fixture.luau")
     } else {
         ui().join("shell_fixture.luau")
     };
@@ -2062,7 +2062,7 @@ fn live_reflow_traced() {
 /// changes, against the nodes there are, for a few shapes of the same 40
 /// wrapped paragraphs. (A repro for zgx.)
 #[test]
-#[ignore = "a diagnosis: cargo test --release --bin zeron-zgx measures_per_width_change -- --ignored --nocapture"]
+#[ignore = "a diagnosis: cargo test --release --bin zend-zgx measures_per_width_change -- --ignored --nocapture"]
 fn measures_per_width_change() {
     let dir = scratch("measures");
     let para = "A paragraph long enough to wrap over a few lines at any of these widths, so its text lays out as a real reply's does, with more after it.";

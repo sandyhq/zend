@@ -161,7 +161,7 @@ test("arriving after the window resized on a chat with no panel, the panel stand
 	end
 end)
 
--- The panel's own motion (ds/motion `panel`, `content`), as Zeron's
+-- The panel's own motion (ds/motion `panel`, `content`), as Zend's
 -- `panel_content_tween`: opening, what's in it is laid out once, at the
 -- width it's going to (closing, the one it showed at, expanded or not),
 -- and stands at the window's right as its edge sweeps over it; between two

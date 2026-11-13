@@ -1,9 +1,9 @@
 //! Uploads — attachment staging on the chat's host device
-//! (feature-inventory §3.7 "Uploads"; port of zeron's `uploads.ts`).
+//! (feature-inventory §3.7 "Uploads"; port of zend's `uploads.ts`).
 //!
 //! The UI streams a file as base64 chunks (~60KB, sized for the relay when the
 //! target device is remote); chunks stage on disk under `{uploads_root}/tmp/
-//! {uploadId}/{seq}.b64` (surviving an engine restart mid-upload, unlike zeron's
+//! {uploadId}/{seq}.b64` (surviving an engine restart mid-upload, unlike zend's
 //! in-memory buffers), and `commit` assembles them into
 //! `{uploads_root}/{id8}-{name}` and returns the absolute path, which the
 //! composer appends to the prompt so the agent can read the file from disk.
@@ -14,7 +14,7 @@
 //! `read_chunk` serves attachments back in 45KB base64 chunks. Path jail:
 //! only files under the uploads dir or a workspace-known chat cwd are readable
 //! (the RPC layer supplies the cwd roots). Workspace files must be supported
-//! image types, as in zeron; files in the uploads dir read back whatever their
+//! image types, as in zend; files in the uploads dir read back whatever their
 //! type, so a queued message can restore them for editing.
 //!
 //! `read_chat_image_chunk` serves the images an agent's reply names in
@@ -606,7 +606,7 @@ fn is_windows_device_name(name: &std::ffi::OsStr) -> bool {
 /// (the RPC layer resolves it and refuses home and anything above it), with
 /// no link on the way ([`jail_without_links`]). Only a PNG, JPEG, WebP, or
 /// GIF by its extension AND its first bytes, of at most
-/// [`zeron_proto::IMAGE_MAX_BYTES`]: not the uploads dir, not another chat's
+/// [`zend_proto::IMAGE_MAX_BYTES`]: not the uploads dir, not another chat's
 /// folder, not any other file type.
 pub fn read_chat_image_chunk(
     path: &str,
@@ -621,7 +621,7 @@ pub fn read_chat_image_chunk(
     if !meta.is_file() {
         return Err(refused("Image is not a file"));
     }
-    if meta.len() > zeron_proto::IMAGE_MAX_BYTES as u64 {
+    if meta.len() > zend_proto::IMAGE_MAX_BYTES as u64 {
         return Err(refused("Image is too large"));
     }
     let mime_type = mime_by_ext(&resolved)
@@ -942,13 +942,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let uploads = Uploads::new(dir.path());
         let here = committed_here(&uploads);
-        let theirs = r"C:\Users\ADMIN\AppData\Local\Zeron\uploads\2fbd2b3b-image.png";
+        let theirs = r"C:\Users\ADMIN\AppData\Local\Zend\uploads\2fbd2b3b-image.png";
         assert_eq!(uploads.local_copy(theirs), Some(here.clone()));
         assert_eq!(uploads.localize(theirs), Some(here.clone()));
         // Forward slashes too (another Mac's, or a Windows path written so).
-        let other = "/Users/someone/.zeron/uploads/2fbd2b3b-image.png";
+        let other = "/Users/someone/.zend/uploads/2fbd2b3b-image.png";
         assert_eq!(uploads.local_copy(other), Some(here.clone()));
-        let mixed = "C:/Users/ADMIN/AppData/Local/Zeron/uploads/2fbd2b3b-image.png";
+        let mixed = "C:/Users/ADMIN/AppData/Local/Zend/uploads/2fbd2b3b-image.png";
         assert_eq!(uploads.local_copy(mixed), Some(here));
     }
 
@@ -978,7 +978,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let uploads = Uploads::new(dir.path());
         committed_here(&uploads);
-        let theirs = r"C:\Users\ADMIN\AppData\Local\Zeron\uploads\2fbd2b3b-image.png";
+        let theirs = r"C:\Users\ADMIN\AppData\Local\Zend\uploads\2fbd2b3b-image.png";
         let chunk = uploads.read_chunk(theirs, 0, &[]).unwrap();
         assert_eq!(chunk.name, "2fbd2b3b-image.png");
         assert_eq!(BASE64.decode(chunk.data).unwrap(), b"\x89PNG\r\n\x1a\n");
@@ -1174,7 +1174,7 @@ mod tests {
         let big = folder.path().join("big.png");
         std::fs::File::create(&big)
             .unwrap()
-            .set_len(zeron_proto::IMAGE_MAX_BYTES as u64 + 1)
+            .set_len(zend_proto::IMAGE_MAX_BYTES as u64 + 1)
             .unwrap();
         let escape = folder
             .path()
@@ -1544,7 +1544,7 @@ impl Uploads {
         bytes: &[u8],
     ) -> Result<ImportedImage, EngineError> {
         use std::io::Write;
-        use zeron_proto::{IMAGE_MAX_BYTES, IMAGE_MAX_SIDE};
+        use zend_proto::{IMAGE_MAX_BYTES, IMAGE_MAX_SIDE};
         let (ext, mime) = raster_signature(bytes)
             .ok_or_else(|| EngineError::Other("not a PNG, JPEG, WebP, or GIF image".into()))?;
         if bytes.len() > IMAGE_MAX_BYTES {

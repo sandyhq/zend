@@ -305,7 +305,7 @@ mod imp {
             properties.insert("count", Variant(Box::new(count)));
             properties.insert("count-visible", Variant(Box::new(count > 0)));
             let Ok(signal) = dbus::Message::new_signal(
-                "/com/zeron/zgx/LauncherEntry",
+                "/com/zend/zgx/LauncherEntry",
                 "com.canonical.Unity.LauncherEntry",
                 "Update",
             ) else {

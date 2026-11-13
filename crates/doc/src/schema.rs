@@ -680,7 +680,7 @@ impl SessionDoc {
     }
 
     /// A single atomic value prevents tokens and capacity from tearing on sync.
-    pub fn context_usage(&self) -> Option<zeron_proto::ContextUsage> {
+    pub fn context_usage(&self) -> Option<zend_proto::ContextUsage> {
         let loro::ValueOrContainer::Value(LoroValue::String(value)) =
             self.doc.get_map("meta").get("contextUsage")?
         else {
@@ -695,7 +695,7 @@ impl SessionDoc {
         window: Option<u64>,
     ) -> Result<(), DocError> {
         let previous = self.context_usage().unwrap_or_default();
-        let next = zeron_proto::ContextUsage {
+        let next = zend_proto::ContextUsage {
             tokens: tokens.or(previous.tokens),
             window: window.filter(|n| *n > 0).or(previous.window),
         };
@@ -1342,7 +1342,7 @@ impl SessionDoc {
     pub fn resolve_input(
         &self,
         request_id: &str,
-        answers: &[zeron_proto::UserInputAnswer],
+        answers: &[zend_proto::UserInputAnswer],
     ) -> Result<bool, DocError> {
         let messages = self.doc.get_list("messages");
         for i in 0..messages.len() {
@@ -1474,14 +1474,14 @@ impl SessionDoc {
     }
 }
 
-/// A tool part whose call is a subagent spawn ([`zeron_proto::ToolCall::is_subagent_spawn`]).
+/// A tool part whose call is a subagent spawn ([`zend_proto::ToolCall::is_subagent_spawn`]).
 fn is_spawn_part(part: &LoroMap) -> bool {
     part.get("call")
         .and_then(|v| match v {
             loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
             _ => None,
         })
-        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
+        .and_then(|j| serde_json::from_value::<zend_proto::ToolCall>(j).ok())
         .is_some_and(|c| c.is_subagent_spawn())
 }
 
@@ -1859,7 +1859,7 @@ pub fn join_continuation_entries(entries: Vec<SessionMessageEntry>) -> Vec<Sessi
 
 /// Incremental streaming writer for one assistant entry.
 ///
-/// Port of zeron's `DocSegmentWriter` diff discipline: called with the *folded* parts of the
+/// Port of zend's `DocSegmentWriter` diff discipline: called with the *folded* parts of the
 /// live segment (from `fold_event_into_parts`) at each commit tick, it diffs against what's in
 /// the doc and writes only the delta:
 /// - trailing text growth → `LoroText` append (RLE-merged),
@@ -2678,7 +2678,7 @@ mod tests {
         assert_eq!(doc.read_entries().unwrap()[0].parts, vec![seam]);
         assert!(doc.provider_switched());
     }
-    use zeron_proto::{AgentEvent, ToolCall};
+    use zend_proto::{AgentEvent, ToolCall};
 
     #[test]
     fn opening_tail_bounds_parts_and_preserves_continuation_ids() {
@@ -2850,10 +2850,10 @@ mod tests {
 
     #[test]
     fn todo_status_survives_the_doc_and_refreshes_in_place() {
-        use zeron_proto::{TodoItem, TodoStatus};
+        use zend_proto::{TodoItem, TodoStatus};
         let todo = |items: Vec<TodoItem>| MessagePart::Tool {
             // The ACP/Codex plan reuses one id for every update.
-            id: zeron_proto::LIVE_PLAN_TOOL_ID.into(),
+            id: zend_proto::LIVE_PLAN_TOOL_ID.into(),
             call: ToolCall::Todo { items },
             is_error: false,
             resolved: true,
@@ -2905,8 +2905,8 @@ mod tests {
         else {
             panic!("a legacy todo part must still decode");
         };
-        assert_eq!(items[0].status(), zeron_proto::TodoStatus::Completed);
-        assert_eq!(items[1].status(), zeron_proto::TodoStatus::Pending);
+        assert_eq!(items[0].status(), zend_proto::TodoStatus::Completed);
+        assert_eq!(items[1].status(), zend_proto::TodoStatus::Pending);
     }
 
     #[test]
@@ -2918,7 +2918,7 @@ mod tests {
         let mut w = SegmentWriter::begin(&doc, "e1", "dev", 1).unwrap();
         let mut part = MessagePart::Tool {
             id: "call_alpha".into(),
-            call: zeron_proto::ToolCall::Unknown {
+            call: zend_proto::ToolCall::Unknown {
                 name: "Agent: alpha".into(),
                 input: None,
             },
@@ -2974,7 +2974,7 @@ mod tests {
         // subtype and turned Run chips into dead spawn links, 2026-08-20).
         let doc = SessionDoc::init("c1").unwrap();
         let mut w = SegmentWriter::begin(&doc, "e1", "dev", 1).unwrap();
-        let tool = |id: &str, call: zeron_proto::ToolCall| MessagePart::Tool {
+        let tool = |id: &str, call: zend_proto::ToolCall| MessagePart::Tool {
             id: id.into(),
             call,
             is_error: false,
@@ -2995,13 +2995,13 @@ mod tests {
         let parts = vec![
             tool(
                 "toolu_bash",
-                zeron_proto::ToolCall::Exec {
+                zend_proto::ToolCall::Exec {
                     command: "git clone …".into(),
                 },
             ),
             tool(
                 "toolu_spawn",
-                zeron_proto::ToolCall::Unknown {
+                zend_proto::ToolCall::Unknown {
                     name: "Agent: scan".into(),
                     input: None,
                 },
@@ -3072,7 +3072,7 @@ mod tests {
             duration_ms: None,
         })
         .unwrap();
-        let picked = vec![zeron_proto::UserInputAnswer {
+        let picked = vec![zend_proto::UserInputAnswer {
             question_id: "q".into(),
             labels: vec!["B".into()],
         }];
@@ -3098,7 +3098,7 @@ mod tests {
             request_id: "r1".into(),
             questions: vec![],
             resolved: true,
-            answers: Some(vec![zeron_proto::UserInputAnswer {
+            answers: Some(vec![zend_proto::UserInputAnswer {
                 question_id: "q".into(),
                 labels: vec!["Deep dive".into()],
             }]),
@@ -3314,7 +3314,7 @@ mod tests {
                 id: "t1".into(),
                 is_error: false,
                 output: Some("total 0\nmore lines".into()),
-                diff: Some(zeron_proto::ToolDiff {
+                diff: Some(zend_proto::ToolDiff {
                     path: "/w/a.rs".into(),
                     old_text: Some("old\n".into()),
                     new_text: "new\n".into(),
@@ -3439,7 +3439,7 @@ mod tests {
                 is_error: false,
                 resolved: true,
                 output: Some("full inline output\nline 2".into()),
-                diff: Some(zeron_proto::ToolDiff {
+                diff: Some(zend_proto::ToolDiff {
                     path: "/w/a.rs".into(),
                     old_text: Some("old".into()),
                     new_text: "new".into(),
@@ -3618,7 +3618,7 @@ mod context_usage_tests {
             .unwrap();
         assert_eq!(
             replica.context_usage(),
-            Some(zeron_proto::ContextUsage {
+            Some(zend_proto::ContextUsage {
                 tokens: Some(0),
                 window: Some(200_000)
             })

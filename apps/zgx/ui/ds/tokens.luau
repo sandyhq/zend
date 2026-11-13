@@ -1,4 +1,4 @@
--- The theme layer: Zeron's two themes (themes/*.json, which restyle in
+-- The theme layer: Zend's two themes (themes/*.json, which restyle in
 -- place as they are saved) and the app's own tokens, declared in standard
 -- terms so any theme styles them. Values live here and in the theme files,
 -- nowhere else.
@@ -21,13 +21,13 @@ function M.setup()
 		local through = material.menus_see_through()
 		ui.theme.tokens {
 			menu = {
-				bg = if through then "{zeron.menu.tint}" else "{zeron.menu.solid}",
+				bg = if through then "{zend.menu.tint}" else "{zend.menu.solid}",
 				hover = "{hover}",
 			},
 		}
 	end)
 	ui.theme.tokens {
-		zeron = {
+		zend = {
 			-- Half-steps of the spacing scale (space.1 to 8: 4, 8, 12, 16, 24,
 			-- 32, 48, 64), for controls: a thumb's inset in its track, a chip's
 			-- padding and gap, a small button's padding.
@@ -61,15 +61,15 @@ function M.setup()
 				drop = "alpha({accent}, 0.14)",
 				drop_edge = "alpha({accent}, 0.7)",
 			},
-			-- The panel's card, frosted (screens/panel): Zeron's panel
+			-- The panel's card, frosted (screens/panel): Zend's panel
 			-- (theme.rs `panel_bg`, its background at 0.4); a theme without
 			-- its own, the page's card's (a chat's not focused: macOS's panel
 			-- is level with those, a focused chat alone a step lighter).
-			panel = { tint = "{zeron.inset.bg}" },
+			panel = { tint = "{zend.inset.bg}" },
 			-- The sidebar's card: frosted, its own wash over the window's glass
 			-- (`tint`, the themes': shipping's sidebar tone, theme.rs
 			-- `wash(0.05)`); opaque, the page's card's fill (`solid`).
-			sidebar = { tint = "{zeron.inset.bg}", solid = "{zeron.inset.bg}" },
+			sidebar = { tint = "{zend.inset.bg}", solid = "{zend.inset.bg}" },
 			-- Between the items of any list (a menu's rows, a sidebar's pages):
 			-- enough that one row's wash (hover, selected) never touches the
 			-- next's, no more.
@@ -86,25 +86,25 @@ function M.setup()
 			},
 			-- A title bar control's wash (ds/icon_button's `bar`: its glyph
 			-- held, this alone coming), under the pointer and pressed: the
-			-- shared washes, which Zeron's themes make its titlebar's firmer
-			-- (zeron-dark/light.json, shipping's `element_hover`/`_active`).
-			-- `ink`: its glyph, held through them; Zeron's themes make it
+			-- shared washes, which Zend's themes make its titlebar's firmer
+			-- (zend-dark/light.json, shipping's `element_hover`/`_active`).
+			-- `ink`: its glyph, held through them; Zend's themes make it
 			-- solid (the secondary as it reads on the strip), so the wash under
 			-- it never shows through.
 			bar = { hover = "{hover}", pressed = "{pressed}", ink = "{text.secondary}" },
-			-- A panel's tab in its strip (Zeron's surface_chrome.rs
+			-- A panel's tab in its strip (Zend's surface_chrome.rs
 			-- `tab_chip`): as wide as every other (`TAB_CHIP_WIDTH`), its icon's
 			-- slot and its title 3 apart, its title's size (11.5, a step under
 			-- the small text's), the chosen one on a wash and the others on a
 			-- fainter one under the pointer (`tab_frame`'s 0.10 and `tab`'s
-			-- 0.06 in Zeron's themes, zeron-dark/light.json).
-			tab = { w = 112, gap = 3, size = 11.5, selected = "{zeron.selected.flat.bg}", hover = "{hover}" },
+			-- 0.06 in Zend's themes, zend-dark/light.json).
+			tab = { w = 112, gap = 3, size = 11.5, selected = "{zend.selected.flat.bg}", hover = "{hover}" },
 			-- The lines of a tree (a group's sessions off its header, as
-			-- Zeron's transcript draws its tools): the text's own ink, faint
-			-- (Zeron's hairline at 12%), so it reads in both themes.
+			-- Zend's transcript draws its tools): the text's own ink, faint
+			-- (Zend's hairline at 12%), so it reads in both themes.
 			tree = "alpha({text.primary}, 0.12)",
 			-- The open session's title in the window's top strip: the text's
-			-- own ink a little under full (Zeron's at 85%), so it reads as the
+			-- own ink a little under full (Zend's at 85%), so it reads as the
 			-- window's, not as the page's heading.
 			title = "alpha({text.primary}, 0.85)",
 			-- A raised thing: its edge, the light on its top (an inset shadow;
@@ -133,7 +133,7 @@ function M.setup()
 				shadow = "{shadow.lg}",
 				-- A menu's chosen row: quieter than a sidebar's (many rows
 				-- close together), a step above the hover wash.
-				selected = "{zeron.selected.flat.bg}",
+				selected = "{zend.selected.flat.bg}",
 				-- A destructive row's wash, lit or asking once more: the
 				-- danger's hue, as faint as the hover wash reads.
 				danger = "alpha({danger}, 0.14)",
@@ -149,13 +149,13 @@ function M.setup()
 				-- row the time's column and the ↵ key's width (a key cap's: the
 				-- lit row's text fades out under it).
 				launcher = { width = 440, min_width = 320, tab = 24, time = 40, key = 18 },
-				-- (Zeron's frost::MENU_BLUR, as its popovers, palette and
+				-- (Zend's frost::MENU_BLUR, as its popovers, palette and
 				-- dialogs blur.)
 				blur = 16,
 			},
 			-- An island: controls gathered on glass over the page (the title
 			-- bar's at the window's top left as the sidebar goes, the sidebar's
-			-- rail at its bottom left), one look for both, as Zeron's
+			-- rail at its bottom left), one look for both, as Zend's
 			-- (shell.rs `titlebar_island_vertical_geometry`): its corner, its
 			-- inset from the window's edges, its padding round its controls,
 			-- its controls' size, the gap between them and between their
@@ -167,7 +167,7 @@ function M.setup()
 				control = 24,
 				gap = 2,
 				group = 8,
-				tint = "{zeron.menu.tint}",
+				tint = "{zend.menu.tint}",
 				blur = 20,
 				shadow = "{shadow.sm}",
 			},
@@ -185,11 +185,11 @@ function M.setup()
 				radius = 26,
 				text = 14,
 				line = 22,
-				-- The caret: the accent, two points wide, as Zeron's.
+				-- The caret: the accent, two points wide, as Zend's.
 				caret = "{accent}",
 				caret_width = 2,
 				-- What the message carries, as chips in a strip over the draft
-				-- (ds/composer_cargo), at Zeron's inline chip's scale (chip.rs:
+				-- (ds/composer_cargo), at Zend's inline chip's scale (chip.rs:
 				-- a row less three, corner 5, a 14 glyph): a chip's height and
 				-- corner, its glyph, how wide it may grow, the gap between chips,
 				-- the strip's inset from the pill's edge (the draft's own, so
@@ -216,7 +216,7 @@ function M.setup()
 					-- pill's only with the same gap above as beside.)
 					top = 16,
 					below = 12,
-					bg = "{zeron.secondary.bg}",
+					bg = "{zend.secondary.bg}",
 					edge = "{border}",
 					-- Over a thumbnail while it uploads or after it fails: the
 					-- scrim, and the ink of the ring or the glyph on it.
@@ -228,10 +228,10 @@ function M.setup()
 				-- how far one tucks under the next (and the last under the pill),
 				-- a header's height and a row's.
 				tray = {
-					tint = "{zeron.menu.tint}",
-					solid = "{zeron.menu.solid}",
+					tint = "{zend.menu.tint}",
+					solid = "{zend.menu.solid}",
 					edge = "{border}",
-					blur = "{zeron.menu.blur}",
+					blur = "{zend.menu.blur}",
 					radius = 16,
 					step = 16,
 					tuck = 10,
@@ -248,7 +248,7 @@ function M.setup()
 				deck = {
 					inset = 10,
 					tab = 30,
-					thumb = "{zeron.menu.selected}",
+					thumb = "{zend.menu.selected}",
 				},
 				-- A question's option (ds/composer_ask): its row, its corner, the
 				-- number cap at its start; chosen, a ring (never a fill).
@@ -261,19 +261,19 @@ function M.setup()
 				-- skill's in the accent, both a weight up. And the track that
 				-- unrolls from the microphone while dictating.
 				token = { trigger = "{text.tertiary}", file = "{text.primary}", action = "{accent}", weight = 500 },
-				voice = { h = 28, ink = "{accent}", bg = "{zeron.secondary.bg}" },
+				voice = { h = 28, ink = "{accent}", bg = "{zend.secondary.bg}" },
 			},
 			-- A line glyph's stroke, in points at 16 (the sidebar icon's). The
 			-- themes may weigh it differently: a dark line on light reads
 			-- thinner than the same line light on dark.
 			glyph = { stroke = 1.1667 },
 			-- Inline code and code blocks in what is typed: a wash behind them.
-			code = { wash = "{zeron.secondary.bg}" },
+			code = { wash = "{zend.secondary.bg}" },
 			-- The code editor: Geist Mono at the transcript's code size; the
-			-- wash behind the caret's row (Zeron's 2.5%, a breath); a matched
+			-- wash behind the caret's row (Zend's 2.5%, a breath); a matched
 			-- bracket's; a search's matches, the current one firmer; a line
 			-- just gone to, washed in the accent as it lands; its selection (the
-			-- accent, as Zeron's editor); a folded line's summary; and its status
+			-- accent, as Zend's editor); a folded line's summary; and its status
 			-- bar's height.
 			editor = {
 				size = 13,
@@ -293,9 +293,9 @@ function M.setup()
 			-- The command palette's card: in the window over its dimmed page
 			-- (not over the platform's material, as a menu is), so a denser
 			-- glass than a menu's tint over its own blur.
-			palette = { tint = "{surface.overlay}", solid = "{zeron.menu.solid}" },
+			palette = { tint = "{surface.overlay}", solid = "{zend.menu.solid}" },
 			-- A transcript, set for reading at length. Prose a step up from
-			-- Zeron's 14 on 22: 15 on 24 (a 1.6 leading) reads easier over a
+			-- Zend's 14 on 22: 15 on 24 (a 1.6 leading) reads easier over a
 			-- long reply on glass. Headings in three real steps, tight above
 			-- what they head; tables a touch smaller than prose; code in Geist
 			-- Mono at 13 on 20, which sits at the prose's x-height, and inline
@@ -311,10 +311,10 @@ function M.setup()
 				text = {
 					xs = { size = 12, line = 16 },
 					sm = { size = 13, line = 20 },
-					body = { size = "{zeron.prose.size}", line = "{zeron.prose.line}" },
+					body = { size = "{zend.prose.size}", line = "{zend.prose.line}" },
 					lg = { size = 16, line = 24 },
-					xl = { size = "{zeron.prose.h2.size}", line = "{zeron.prose.h2.line}" },
-					xxl = { size = "{zeron.prose.h1.size}", line = "{zeron.prose.h1.line}" },
+					xl = { size = "{zend.prose.h2.size}", line = "{zend.prose.h2.line}" },
+					xxl = { size = "{zend.prose.h1.size}", line = "{zend.prose.h1.line}" },
 				},
 				series = {
 					teal = "{palette.teal.500}",
@@ -325,8 +325,8 @@ function M.setup()
 					sky = "{palette.sky.500}",
 				},
 			},
-			-- The bubble: Zeron's wash (one step softer than a selection) and
-			-- its 16 corner; an attachment's thumbnail, Zeron's size.
+			-- The bubble: Zend's wash (one step softer than a selection) and
+			-- its 16 corner; an attachment's thumbnail, Zend's size.
 			prose = {
 				size = 15,
 				line = 24,
@@ -342,7 +342,7 @@ function M.setup()
 					edge = "{border.subtle}",
 				},
 				measure = 660,
-				bubble = { bg = "{zeron.secondary.bg}", radius = 16 },
+				bubble = { bg = "{zend.secondary.bg}", radius = 16 },
 				thumb = { w = 120, h = 84, radius = 10 },
 				-- A picture a reply shows (ds/reply_picture): at most the
 				-- reading column's width by 420, never past its own size; a
@@ -394,10 +394,10 @@ function M.setup()
 			-- checks behind an image's transparency (over the panel's own fill).
 			-- The pane's band (ds/files_pane): the tree's head and the file's
 			-- header share it, one line high (`head`), or two (`stack`); the
-			-- tree's width beside the file (Zeron's files panel, 286), and the
-			-- least a file wants beside it (Zeron's narrowest pane, 360): with
+			-- tree's width beside the file (Zend's files panel, 286), and the
+			-- least a file wants beside it (Zend's narrowest pane, 360): with
 			-- less, the tree hides and comes over the file instead.
-			-- Files carried over a chat: the scrim over all of it (Zeron's at
+			-- Files carried over a chat: the scrim over all of it (Zend's at
 			-- two thirds; the light theme's own in its file).
 			drop = { scrim = "#00000066" },
 			files = {
@@ -413,8 +413,8 @@ function M.setup()
 				light = 1,
 				dark = 0,
 			},
-			-- An agent's status: its glyph's and label's colour (`zeron.status.*`)
-			-- and its dot's in a list (`zeron.status.dot.*`), a hue a state,
+			-- An agent's status: its glyph's and label's colour (`zend.status.*`)
+			-- and its dot's in a list (`zend.status.dot.*`), a hue a state,
 			-- each theme its own.
 			status = {
 				working = "{info}",
@@ -443,7 +443,7 @@ function M.setup()
 			-- own.
 			slider = { track = "{surface.sunken}", tint = 0.14, ring = 0.3 },
 			-- A segmented control's thumb.
-			segmented = { thumb = "{zeron.selected.flat.bg}" },
+			segmented = { thumb = "{zend.selected.flat.bg}" },
 			-- A switch: its track (off, and on: translucent, the glass showing
 			-- through) and its knob.
 			switch = {
@@ -480,23 +480,23 @@ function M.setup()
 				edge_focus = "alpha({accent}, 0.7)",
 				edge_error = "alpha({danger}, 0.7)",
 				placeholder = "{text.tertiary}",
-				-- Frosted, its fill (dark, Zeron's settings select's wash;
+				-- Frosted, its fill (dark, Zend's settings select's wash;
 				-- light, its `input_glass_bg`); a theme without its own, the
 				-- well's.
-				glass = "{zeron.field.bg}",
-				-- Under the pointer: it lifts, as Zeron's (settings/widgets.rs).
-				glass_hover = "{zeron.field.hover}",
+				glass = "{zend.field.bg}",
+				-- Under the pointer: it lifts, as Zend's (settings/widgets.rs).
+				glass_hover = "{zend.field.hover}",
 				-- Its type at each size, and a multi-line field's line.
 				line = 20,
 			},
 			-- A check or a radio: its box (sunken until it is on), its edge,
 			-- the accent it fills with on, and the mark's ink.
-			check = { bg = "{zeron.field.bg}", edge = "{border.strong}", on = "{accent}", mark = "{accent.text}" },
+			check = { bg = "{zend.field.bg}", edge = "{border.strong}", on = "{accent}", mark = "{accent.text}" },
 			-- A tone's ink and the wash and edge that carry it (a badge, a
 			-- banner, a toast's glyph), each theme its own steps: pale inks on
 			-- dark, deep inks on light.
 			tone = {
-				neutral = { ink = "{text.secondary}", wash = "{zeron.secondary.bg}", edge = "{border}" },
+				neutral = { ink = "{text.secondary}", wash = "{zend.secondary.bg}", edge = "{border}" },
 				accent = { ink = "{accent}", wash = "alpha({accent}, 0.14)", edge = "alpha({accent}, 0.3)" },
 				info = { ink = "{info}", wash = "alpha({info}, 0.12)", edge = "alpha({info}, 0.28)" },
 				success = { ink = "{success}", wash = "alpha({success}, 0.12)", edge = "alpha({success}, 0.28)" },
@@ -507,7 +507,7 @@ function M.setup()
 			-- colour laid under it this faint, its ink this strong (the
 			-- sidebar's pull request badge, generalised).
 			-- Lit (under the pointer, a badge that's a link): stronger, as
-			-- Zeron's sidebar badge brightens.
+			-- Zend's sidebar badge brightens.
 			badge = { wash = 0.12, ink = 0.9, lit = { wash = 0.22, ink = 1 } },
 			-- A review's verdict, as a chip: its hue.
 			review = { approved = "{success}", changes = "{danger}", commented = "{text.secondary}", pending = "{warning}" },
@@ -522,7 +522,7 @@ function M.setup()
 			-- corner, the dim, and its width at each size.
 			dialog = {
 				tint = "{surface.overlay}",
-				solid = "{zeron.menu.solid}",
+				solid = "{zend.menu.solid}",
 				shadow = "{shadow.lg}",
 				-- The bare stage it stands on: no shadow of its own.
 				stage = "0 0 0 0 #00000000",
@@ -539,7 +539,7 @@ function M.setup()
 			-- The lightbox (ds/lightbox): the room a fitted picture keeps from
 			-- the window's edges, and under it for the controls; their island's
 			-- inset from the foot; the scrim's blur (its fill is each theme's).
-			lightbox = { inset = 40, foot = 72, island_inset = 16, blur = 24, scrim = "{backdrop}", shadow = "{zeron.dialog.stage}" },
+			lightbox = { inset = 40, foot = 72, island_inset = 16, blur = 24, scrim = "{backdrop}", shadow = "{zend.dialog.stage}" },
 			-- Settings: the column a page reads in, a row's least height, the
 			-- room a row's control keeps at its end, and a group's card (a
 			-- quiet fill with a hairline, the rows' dividers fainter).
@@ -548,14 +548,14 @@ function M.setup()
 				row = 52,
 				control = 240,
 				card = "{surface.base}",
-				-- Frosted, a card's fill (Zeron's settings `block_fill`); a
+				-- Frosted, a card's fill (Zend's settings `block_fill`); a
 				-- theme without its own, the card's.
-				tint = "{zeron.settings.card}",
+				tint = "{zend.settings.card}",
 				-- Frosted, a quieter card under a line (a pull request's note:
-				-- Zeron's `ink(0.035)`) and a comment's card (`render_comment_card`,
+				-- Zend's `ink(0.035)`) and a comment's card (`render_comment_card`,
 				-- `ink(0.05)`); a theme without its own, the card's.
-				note = "{zeron.settings.card}",
-				comment = "{zeron.settings.card}",
+				note = "{zend.settings.card}",
+				comment = "{zend.settings.card}",
 				edge = "{border.subtle}",
 				rule = "{border.subtle}",
 			},
@@ -589,9 +589,9 @@ function M.setup()
 			-- there: the card's own on a light window, none on a dark one,
 			-- where many pooled into a halo.
 			wall = {
-				scrim = "alpha({zeron.window}, 0)",
-				veil = "alpha({zeron.window}, 0.56)",
-				shadow = "{zeron.card.shadow}",
+				scrim = "alpha({zend.window}, 0)",
+				veil = "alpha({zend.window}, 0.56)",
+				shadow = "{zend.card.shadow}",
 			},
 			-- A member card: a printed card, the same in either theme. Paper,
 			-- its inks (strong, muted, faint, and a violet one),
@@ -639,7 +639,7 @@ function M.setup()
 				},
 			},
 			-- Code's colours, by what each piece of it is (ds/syntax). Here in
-			-- the standard tokens, so any theme colours code; Zeron's themes pick
+			-- the standard tokens, so any theme colours code; Zend's themes pick
 			-- palette hues for them. The structure (comments, punctuation,
 			-- operators) is the text's own ink, fainter, so it takes the colour
 			-- of whatever is behind it, glass or opaque, and the words carry the
@@ -680,13 +680,13 @@ function M.setup()
 	-- `accented`) draws in the accent, as the shipping app does; off, each
 	-- is the neutral it was. The conversation's list markers, its quotes'
 	-- rail, its inline code's ink and wash, and its links' ink (each
-	-- neutral here; ds/look points them at `zeron.accented.*`).
+	-- neutral here; ds/look points them at `zend.accented.*`).
 	ui.theme.tokens {
-		zeron = {
+		zend = {
 			prose = {
 				marker = "{text.tertiary}",
 				quote_rail = "{border.strong}",
-				code_wash = "{zeron.code.wash}",
+				code_wash = "{zend.code.wash}",
 			},
 			accented = {
 				ink = "{accent}",
@@ -700,7 +700,7 @@ function M.setup()
 		},
 	}
 	-- A chip in a message (a file, a chat, a skill or a command mentioned:
-	-- ds/markdown), as Zeron's shipping app paints one (composer/chip.rs
+	-- ds/markdown), as Zend's shipping app paints one (composer/chip.rs
 	-- `paint_chip`): a pill of the text's ink at 9% (white on dark, black
 	-- on light: theme.rs `ink(0.09)`), its icon on a well of its own, a
 	-- point in from the pill's edge, white on light and black on dark, at
@@ -713,7 +713,7 @@ function M.setup()
 		local glass = material.see_through()
 		local well = if dark then "#000000" else "#ffffff"
 		ui.theme.tokens {
-			zeron = {
+			zend = {
 				chip = {
 					bg = if dark then "#ffffff17" else "#00000017",
 					well = well .. (if glass then "52" else "29"),
@@ -722,10 +722,10 @@ function M.setup()
 			},
 		}
 	end)
-	ui.theme.load("ds/themes/zeron-dark.json")
-	ui.theme.load("ds/themes/zeron-light.json")
+	ui.theme.load("ds/themes/zend-dark.json")
+	ui.theme.load("ds/themes/zend-light.json")
 	-- The theme chosen for each scheme, else the template's own (its
-	-- theme.luau; the default's returns nil), else Zeron's, worn over those
+	-- theme.luau; the default's returns nil), else Zend's, worn over those
 	-- themes through the one mapping (ds/palettes), and worn again as the
 	-- choice or the themes change. (Guarded: a plugin, lent the design
 	-- system, has no app of its own to read.)
@@ -758,7 +758,7 @@ function M.setup()
 		local kind = ui.theme.kind()
 		local dark = not (kind == "light" or kind == "high-contrast-light")
 		ui.theme.tokens {
-			zeron = {
+			zend = {
 				inset = {
 					-- A card lifted off the window, lighter than it: the
 					-- theme's raised surface.
@@ -786,10 +786,10 @@ function M.setup()
 			if type(radius) ~= "number" then
 				return
 			end
-			local gap = (ui.theme.get("zeron.inset.gap") :: number?) or 4
+			local gap = (ui.theme.get("zend.inset.gap") :: number?) or 4
 			local card = math.max(0, radius - gap)
 			ui.theme.tokens {
-				zeron = {
+				zend = {
 					-- (And what follows its corner inside its 1-point edge,
 					-- as the effect below has it.)
 					inset = { radius = card, inner_radius = math.max(0, card - 1) },
@@ -798,15 +798,15 @@ function M.setup()
 		end)
 	end
 	ui.effect(function()
-		local chip = control.nest("$zeron.composer.radius", 1, "$zeron.composer.chip.inset")
-		local option = control.nest("$zeron.composer.radius", 1, control.nest("$zeron.composer.chip.inset", 8))
-		local tray_row = control.nest("$zeron.composer.tray.radius", 1, "$space.1")
+		local chip = control.nest("$zend.composer.radius", 1, "$zend.composer.chip.inset")
+		local option = control.nest("$zend.composer.radius", 1, control.nest("$zend.composer.chip.inset", 8))
+		local tray_row = control.nest("$zend.composer.tray.radius", 1, "$space.1")
 		ui.theme.tokens {
-			zeron = {
+			zend = {
 				menu = { row_radius = control.nest("$radius.lg", 1, "$space.1") },
 				-- What follows a card's corner inside its 1-point edge (where
 				-- a dropped tab would land, over a panel card's body).
-				inset = { inner_radius = control.nest("$zeron.inset.radius", 1) },
+				inset = { inner_radius = control.nest("$zend.inset.radius", 1) },
 				tag = { remove_radius = control.nest("$radius.md", 3) },
 				composer = {
 					chip = { radius = chip },

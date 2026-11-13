@@ -28,7 +28,7 @@ function M.lead(icon: any): Node
 		items = "center",
 		justify = "center",
 		rounded = "$radius.lg",
-		bg = "$zeron.secondary.bg",
+		bg = "$zend.secondary.bg",
 		color = "$text.secondary",
 		ds.Icon { name = icon, size = 16 },
 	}

@@ -2532,7 +2532,7 @@ impl ScriptHost {
         self.0.read_only_shared.borrow_mut().insert(key.clone());
         self.0.exposed_shared.borrow_mut().insert(key, capability);
     }
-    /// Keep names under `prefix` (`"zeron"`: `zeron` and `zeron.…`) for the
+    /// Keep names under `prefix` (`"zend"`: `zend` and `zend.…`) for the
     /// app's own scripts: a plugin may neither offer a `ui.slot` so named nor
     /// declare a `ui.command` with such an `id`, whatever it is granted. A
     /// plugin offers only its own names anyway (`<plugin>.…`); this holds

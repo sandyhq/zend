@@ -267,7 +267,7 @@ type RevocationRow = {
 
 /** Why a session can't reach `owner`, in words the engine shows the user. */
 const notInstalled = (owner: string, slug: string | undefined, targetId?: number): string =>
-  `github_app_not_installed: The Zeron GitHub App isn't installed on ${owner}, or no GitHub account you connected can reach it` +
+  `github_app_not_installed: The Zend GitHub App isn't installed on ${owner}, or no GitHub account you connected can reach it` +
   (slug ? ` — install it at ${installUrl(slug, targetId)}` : "") +
   ", or connect the account that can in Settings → Cloud";
 
@@ -945,7 +945,7 @@ export class VaultAccount extends DurableObject<Env> {
     if (dead.length > 0) {
       return fail("needs_reconnect", needsReconnecting(dead.flatMap((row) => row.account ?? []).join(", ") || undefined));
     }
-    if (noRepo) return fail("not_found", `No GitHub account you connected can reach ${repo} through the Zeron app.`);
+    if (noRepo) return fail("not_found", `No GitHub account you connected can reach ${repo} through the Zend app.`);
     if (notInstalledToken !== undefined) return fail("not_found", await this.notInstalledMessage(repo, notInstalledToken));
     return refused ?? fail("not_found", "no github credential");
   }

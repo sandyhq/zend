@@ -44,7 +44,7 @@
 //!   `{data_dir}/cloud/git-credentials` (0600) wired once via
 //!   `git config --global credential.https://github.com.helper`, and
 //!   `~/.config/gh/hosts.yml` for `gh` (only when absent or already
-//!   Zeron-managed). Refreshed in the background ~10 min before expiry. Never
+//!   Zend-managed). Refreshed in the background ~10 min before expiry. Never
 //!   `GH_TOKEN`/`GITHUB_TOKEN`: a run's environment is fixed at spawn, `gh`
 //!   prefers it over hosts.yml, and the token expires within the hour, so a
 //!   warm session's `gh` would start failing while `git push` kept working.
@@ -65,7 +65,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use zeron_proto::{GithubRepo, HarnessId, RunRequest, VaultProvider};
+use zend_proto::{GithubRepo, HarnessId, RunRequest, VaultProvider};
 
 use crate::http_error::describe_http_error;
 use crate::runner::{EdgeErrorBody, RunnerIdentity, write_private_atomic};
@@ -118,7 +118,7 @@ const GITHUB_PROBE_EVERY: Duration = Duration::from_secs(5 * 60);
 const OFFLINE_MIN_VALIDITY: Duration = Duration::from_secs(30);
 const GITHUB_MAX_PAGES: usize = 10;
 const HOSTS_MARKER: &str =
-    "# Managed by Zeron Cloud (GitHub grant) — delete this line to manage gh yourself.";
+    "# Managed by Zend Cloud (GitHub grant) — delete this line to manage gh yourself.";
 
 /// `{data_dir}/cloud/codex-home` — the managed `CODEX_HOME`.
 pub fn managed_codex_home(data_dir: &Path) -> PathBuf {
@@ -235,7 +235,7 @@ impl BrokerConfig {
             codex_env_login: ["OPENAI_API_KEY", "CODEX_API_KEY"]
                 .iter()
                 .any(|name| env(name).is_some()),
-            github_api: env("ZERON_GITHUB_API_URL")
+            github_api: env("ZEND_GITHUB_API_URL")
                 .unwrap_or_else(|| "https://api.github.com".into()),
             github_repo: crate::runner::session()
                 .and_then(crate::runner::CloudSession::github_repo),
@@ -253,7 +253,7 @@ struct FileState {
 struct Inner {
     config: BrokerConfig,
     identity: Arc<RunnerIdentity>,
-    tokens: Arc<dyn zeron_rpc::TokenSource>,
+    tokens: Arc<dyn zend_rpc::TokenSource>,
     http: reqwest::Client,
     cache: Mutex<HashMap<VaultProvider, Cached>>,
     /// One grant request in flight per device: the vault's replay fence
@@ -296,7 +296,7 @@ impl CredentialBroker {
     pub fn new(
         config: BrokerConfig,
         identity: Arc<RunnerIdentity>,
-        tokens: Arc<dyn zeron_rpc::TokenSource>,
+        tokens: Arc<dyn zend_rpc::TokenSource>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -621,9 +621,9 @@ impl CredentialBroker {
             CodexCheck::FailedAt(at) if at.elapsed() < CODEX_REPAIR_RETRY => return,
             _ => {}
         }
-        *check = match zeron_harness::codex::npm_repair::repair().await {
-            Ok(zeron_harness::codex::npm_repair::Repair::NotNeeded) => CodexCheck::Passed,
-            Ok(zeron_harness::codex::npm_repair::Repair::Repaired { version }) => {
+        *check = match zend_harness::codex::npm_repair::repair().await {
+            Ok(zend_harness::codex::npm_repair::Repair::NotNeeded) => CodexCheck::Passed,
+            Ok(zend_harness::codex::npm_repair::Repair::Repaired { version }) => {
                 tracing::info!(%version, "reinstalled Codex with its native binary");
                 CodexCheck::Passed
             }
@@ -1411,7 +1411,7 @@ fn is_managed_hosts(path: &Path) -> bool {
 }
 
 /// `~/.config/gh/hosts.yml` for interactive terminals — written only when
-/// absent or already Zeron-managed (a user's own `gh auth login` wins).
+/// absent or already Zend-managed (a user's own `gh auth login` wins).
 fn write_gh_hosts(home: &Path, grant: &Grant) {
     let path = gh_hosts_path(home);
     if path.exists() && !is_managed_hosts(&path) {
@@ -1698,7 +1698,7 @@ mod tests {
             "config",
             "--global",
             "user.email",
-            "346184242+zeronsh[bot]@users.noreply.github.com",
+            "346184242+sandyhq[bot]@users.noreply.github.com",
         ]);
         configure_git_identity(home.path(), &user).await;
         assert_eq!(git(&["config", "--global", "user.email"]), user.email);

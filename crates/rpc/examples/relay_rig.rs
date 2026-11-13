@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant};
 
-use zeron_rpc::{RpcClient, connect_ipc, methods};
+use zend_rpc::{RpcClient, connect_ipc, methods};
 
 fn fail(message: &str) -> ! {
     eprintln!("FAIL: {message}");
@@ -36,12 +36,12 @@ async fn watch<T>(
     }
 }
 
-async fn transcript(client: &RpcClient, chat: &str) -> Vec<zeron_doc::SessionMessageEntry> {
+async fn transcript(client: &RpcClient, chat: &str) -> Vec<zend_doc::SessionMessageEntry> {
     let mut entries = Vec::new();
     let params = serde_json::json!({ "chatId": chat });
     watch(client, methods::WATCH_DOC_MESSAGES, params, |item| {
-        let frame: zeron_doc::TranscriptFrame = serde_json::from_value(item.clone()).ok()?;
-        zeron_doc::apply_transcript_frame(&mut entries, frame).ok()?;
+        let frame: zend_doc::TranscriptFrame = serde_json::from_value(item.clone()).ok()?;
+        zend_doc::apply_transcript_frame(&mut entries, frame).ok()?;
         Some(())
     })
     .await;
@@ -146,8 +146,8 @@ async fn main() {
             let done = entries
                 .iter()
                 .filter(|entry| {
-                    entry.role == zeron_doc::MessageRole::Assistant
-                        && entry.status == Some(zeron_doc::MessageStatus::Complete)
+                    entry.role == zend_doc::MessageRole::Assistant
+                        && entry.status == Some(zend_doc::MessageStatus::Complete)
                 })
                 .count();
             println!("{done}");

@@ -7,7 +7,7 @@ name: deploy
 # secret is configured (until then: `npm -C edge run deploy` from a
 # wrangler-authenticated machine).
 #
-# The token needs: Workers Scripts (edit), Workers Routes (edit) on zeron.sh,
+# The token needs: Workers Scripts (edit), Workers Routes (edit) on zend.invalid,
 # Workers R2 Storage (edit), Workflows (edit). Account id is pinned in
 # edge/wrangler.jsonc. One-time setup: create the `vault-production`
 # environment (Settings → Environments) with required reviewers.
@@ -149,7 +149,7 @@ jobs:
         working-directory: edge
         run: npx wrangler deploy
 
-  # Static landing page (zeron.sh) — assets-only worker, no build step.
+  # Static landing page (zend.invalid) — assets-only worker, no build step.
   landing:
     runs-on: ubuntu-latest
     environment: cloudflare
@@ -186,7 +186,7 @@ jobs:
         working-directory: apps/landing
         run: npx wrangler@4 deploy
 
-  # www.zeron.sh → zeron.sh 301 (see apps/www-redirect/wrangler.jsonc).
+  # www.zend.invalid → zend.invalid 301 (see apps/www-redirect/wrangler.jsonc).
   www-redirect:
     runs-on: ubuntu-latest
     environment: cloudflare

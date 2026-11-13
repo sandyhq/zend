@@ -1,12 +1,12 @@
-//! Zeron mobile core — the UniFFI surface shared by the iOS and Android apps.
+//! Zend mobile core — the UniFFI surface shared by the iOS and Android apps.
 //!
-//! - [`client_ffi`]: account, workspace and session state (wraps `zeron-client`).
+//! - [`client_ffi`]: account, workspace and session state (wraps `zend-client`).
 //! - [`layout`]: analytic transcript layout — markdown → measured display lists
-//!   (wraps `zeron-markdown` + `zeron-text`).
-//! - [`orb`]: the desktop's voice orb as paintable frames (wraps `zeron-orb`).
-//! - [`caption`]: the voice caption's streaming veil (wraps `zeron-veil`).
+//!   (wraps `zend-markdown` + `zend-text`).
+//! - [`orb`]: the desktop's voice orb as paintable frames (wraps `zend-orb`).
+//! - [`caption`]: the voice caption's streaming veil (wraps `zend-veil`).
 
-uniffi::setup_scaffolding!("zeron_core");
+uniffi::setup_scaffolding!("zend_core");
 
 mod client_ffi;
 pub mod layout;

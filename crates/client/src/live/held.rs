@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use zeron_sync::attachment_store::{self, HeldSend, PutError};
+use zend_sync::attachment_store::{self, HeldSend, PutError};
 
 use crate::client::ClientInner;
 use crate::{lock, now_ms};

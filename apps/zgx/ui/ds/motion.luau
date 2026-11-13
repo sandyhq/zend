@@ -1,6 +1,6 @@
 -- How the window's columns move: the sidebar folding away and back, a
 -- session's panel opening and closing, and what rides with them (the
--- page's title in the strip, the title bar's island). Zeron's own
+-- page's title in the strip, the title bar's island). Zend's own
 -- (crates/ui `WidthTween::panel`, motion `PANEL_RESIZE`): the dialog
 -- entrance's curve, CSS `ease`, easing into the move and landing softly;
 -- 180 ms for the sidebar's width, longer moves taking longer by the square
@@ -19,7 +19,7 @@ local prefers = require("@self/prefers")
 local M = {}
 
 -- Reduce motion: the one place every animation asks. On with the system's
--- Reduce motion (macOS) or Zeron's own setting (`M.reduce`, Settings), and
+-- Reduce motion (macOS) or Zend's own setting (`M.reduce`, Settings), and
 -- then nothing travels: a move lands at once, a fade is a short crossfade,
 -- and what a state change shows is right on the next frame. Tracked: read in
 -- a binding or computed, it follows a change of either.
@@ -171,7 +171,7 @@ M.sidebar = { duration = M.BASE, ease = M.EASE } :: TweenOptions
 -- width it's going to (or, going, the width it rested at), it never
 -- squeezes and never moves: the edge alone uncovers it and covers it
 -- again. It only fades a little as it comes or goes, from `FADE_FLOOR` to
--- full in `FADE_MS` (Zeron's quick fade, `FADE_QUICK`, CSS `ease`; the
+-- full in `FADE_MS` (Zend's quick fade, `FADE_QUICK`, CSS `ease`; the
 -- floor is its menus' entrance's, 0.3 + 0.7t), so it softens under the
 -- edge instead of being cut by it alone.
 M.FADE_FLOOR = 0.3
@@ -208,7 +208,7 @@ M.SWEEP = 0.01
 
 -- A seam (a column's edge, a split's divider) dragged past its limit
 -- gives `NUDGE` points more and comes back, once each time the drag gets
--- there (Zeron's resize-edge bounce): `BOUNCE_MS` long, out in the first
+-- there (Zend's resize-edge bounce): `BOUNCE_MS` long, out in the first
 -- `BOUNCE_OUT` of it and home in the rest, both smoothstep, so it starts
 -- and lands still. With motion reduced, none.
 M.NUDGE, M.BOUNCE_MS, M.BOUNCE_OUT = 5, 220, 0.32
@@ -235,7 +235,7 @@ end
 -- tune it.
 M.SNAPPY = { open = 250, close = 200, zoom = 200, ease = "out(4)" }
 
--- A hover's fade (Zeron's `HOVER_FADE`: 150 ms on Tailwind's ease,
+-- A hover's fade (Zend's `HOVER_FADE`: 150 ms on Tailwind's ease,
 -- cubic-bezier(0.4, 0, 0.2, 1)): what the pointer lights fades in at once
 -- and out as it leaves, from wherever it stood. `hover()` is it for
 -- `ui.tween`, at once with motion reduced.

@@ -18,20 +18,20 @@ local M = {}
 
 -- How many rows show before it scrolls, how long a row's place may be
 -- before it's cut from its start. Its geometry is the theme's
--- (`zeron.menu.launcher`, ds/tokens): its width, its least, a tab's height, the
+-- (`zend.menu.launcher`, ds/tokens): its width, its least, a tab's height, the
 -- time's column and the ↵ key's slot, the same on every row (what's at a
 -- row's end lines up down the list, and lighting a row moves nothing).
 local ROWS, PLACE = 8, 34
 local function row_h(): number
-	return (ui.theme.get("zeron.menu.row") :: number?) or 28
+	return (ui.theme.get("zend.menu.row") :: number?) or 28
 end
 
 -- The panel's width in this window: its own, narrowing with a small window
 -- to its least (a margin of the page's gutter each side). A host that
 -- feeds no window size (a headless test) gets its own.
 function M.width(): number
-	local own = (ui.theme.get("zeron.menu.launcher.width") :: number?) or 440
-	local least = (ui.theme.get("zeron.menu.launcher.min_width") :: number?) or 320
+	local own = (ui.theme.get("zend.menu.launcher.width") :: number?) or 440
+	local least = (ui.theme.get("zend.menu.launcher.min_width") :: number?) or 320
 	local margin = (ui.theme.get("space.4") :: number?) or 16
 	local window = (ui :: any).window
 	local state = if type(window) == "table" or type(window) == "userdata" then window.size else nil
@@ -200,13 +200,13 @@ local function tile(item: any): Node
 		lead = Icon { name = item.icon or "paperclip", size = 14 }
 	end
 	return ui.div {
-		w = "$zeron.menu.glyph.box",
-		h = "$zeron.menu.glyph.box",
+		w = "$zend.menu.glyph.box",
+		h = "$zend.menu.glyph.box",
 		shrink = 0,
 		items = "center",
 		justify = "center",
 		rounded = "$radius.md",
-		bg = "$zeron.chip.well",
+		bg = "$zend.chip.well",
 		color = "$text.secondary",
 		lead,
 	}
@@ -236,13 +236,13 @@ function M.Panel(props: Props): Node
 	-- scope chosen at the end, each centred on the band's middle (each text
 	-- a line of its own size high, so its box sits on its glyphs).
 	local head = band(ui.row {
-		h = "$zeron.menu.row",
+		h = "$zend.menu.row",
 		w_full = true,
 		px = "$space.2",
 		gap = "$space.2",
 		items = "center",
 		ui.row {
-			w = "$zeron.menu.glyph.box",
+			w = "$zend.menu.glyph.box",
 			shrink = 0,
 			justify = "center",
 			ui.text { trigger, text_size = "$font.size.md", line_height = "$font.line.md", color = "$text.tertiary" },
@@ -294,7 +294,7 @@ function M.Panel(props: Props): Node
 	end
 	local scopes: { [any]: any } = {
 		w_full = true,
-		gap = "$zeron.space.hair",
+		gap = "$zend.space.hair",
 		items = "center",
 		role = "tablist",
 	}
@@ -308,13 +308,13 @@ function M.Panel(props: Props): Node
 				role = "tab",
 				selected = chosen,
 				label = s.label,
-				h = "$zeron.menu.launcher.tab",
+				h = "$zend.menu.launcher.tab",
 				px = "$space.2",
-				gap = "$zeron.space.tight",
+				gap = "$zend.space.tight",
 				items = "center",
 				rounded = Menu.row_radius(),
 				bg = function(): string
-					return if chosen() then "$zeron.menu.selected" else "#00000000"
+					return if chosen() then "$zend.menu.selected" else "#00000000"
 				end,
 				hover = { bg = "$hover" },
 				focus = { outline = 0, border = 0 },
@@ -324,7 +324,7 @@ function M.Panel(props: Props): Node
 					props.active:set(1)
 				end,
 				ui.row {
-					gap = "$zeron.space.tight",
+					gap = "$zend.space.tight",
 					items = "center",
 					ui.text {
 						s.label,
@@ -368,8 +368,8 @@ function M.Panel(props: Props): Node
 		-- content keeps the row's whole width, so nothing in it moves.
 		local line = ui.ref()
 		local function key_room(): number
-			local key = (ui.theme.get("zeron.menu.launcher.key") :: number?) or 18
-			local gap = (ui.theme.get("zeron.space.tight") :: number?) or 6
+			local key = (ui.theme.get("zend.menu.launcher.key") :: number?) or 18
+			local gap = (ui.theme.get("zend.space.tight") :: number?) or 6
 			return key + gap
 		end
 		local function full(): number?
@@ -390,7 +390,7 @@ function M.Panel(props: Props): Node
 		end
 		if item.side then
 			table.insert(meta, ui.row {
-				w = "$zeron.menu.launcher.time",
+				w = "$zend.menu.launcher.time",
 				shrink = 0,
 				justify = "end",
 				ui.text { item.side, literal = true, tabular = true, text_size = "$font.size.sm", color = "$text.tertiary" },
@@ -401,7 +401,7 @@ function M.Panel(props: Props): Node
 			role = "option",
 			selected = lit,
 			label = item.label,
-			h = "$zeron.menu.row",
+			h = "$zend.menu.row",
 			w_full = true,
 			px = "$space.2",
 			gap = "$space.2",
@@ -478,14 +478,14 @@ function M.Panel(props: Props): Node
 		key = function(entry: any): string
 			return if entry.heading then `h:{entry.heading}:{entry.first}` else `r:{entry.i}:{entry.item.section or ""}:{entry.item.value}`
 		end,
-		gap = "$zeron.list.gap",
+		gap = "$zend.list.gap",
 	})
 	local function list_cap(): number
 		return Menu.list_height(shape(placed:get()), ROWS, row_h())
 	end
 	local function legend(keys: Node, what: string): Node
 		return ui.row {
-			gap = "$zeron.space.tight",
+			gap = "$zend.space.tight",
 			items = "center",
 			shrink = 0,
 			keys,
@@ -493,12 +493,12 @@ function M.Panel(props: Props): Node
 		}
 	end
 	local foot = band(ui.row {
-		h = "$zeron.menu.row",
+		h = "$zend.menu.row",
 		w_full = true,
 		px = "$space.2",
 		gap = "$space.4",
 		items = "center",
-		legend(ui.row { gap = "$zeron.space.hair", Kbd { keys = "up" }, Kbd { keys = "down" } }, locale.s("ds.mention_launcher.navigate")),
+		legend(ui.row { gap = "$zend.space.hair", Kbd { keys = "up" }, Kbd { keys = "down" } }, locale.s("ds.mention_launcher.navigate")),
 		legend(Kbd { keys = "enter" }, locale.s("ds.mention_launcher.insert")),
 		legend(Kbd { keys = "tab" }, locale.s("ds.mention_launcher.switch_tab")),
 	})
@@ -506,7 +506,7 @@ function M.Panel(props: Props): Node
 	local function note(words: any, id: string?): Node
 		return ui.row {
 			id = id,
-			h = "$zeron.menu.row",
+			h = "$zend.menu.row",
 			w_full = true,
 			px = "$space.2",
 			items = "center",

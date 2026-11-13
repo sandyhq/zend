@@ -9,11 +9,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use zeron_doc::RegistryDoc;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_proto::HarnessId;
-use zeron_sync::registry::mock_server::MockRegistryServer;
-use zeron_sync::{RegistryClient, RegistryEvent, RegistryTuning};
+use zend_doc::RegistryDoc;
+use zend_engine::{EngineCore, HarnessRegistry};
+use zend_proto::HarnessId;
+use zend_sync::registry::mock_server::MockRegistryServer;
+use zend_sync::{RegistryClient, RegistryEvent, RegistryTuning};
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -106,7 +106,7 @@ async fn rejoined(events: &mut tokio::sync::broadcast::Receiver<RegistryEvent>) 
 #[tokio::test]
 async fn a_client_that_stopped_beating_stays_quiet_after_a_rejoin() {
     let server = MockRegistryServer::start().await;
-    let url = Arc::new(zeron_sync::StaticUrl(server.url()));
+    let url = Arc::new(zend_sync::StaticUrl(server.url()));
     let short = RegistryTuning {
         rejoin_beat_window: Duration::from_millis(300),
         ..RegistryTuning::default()

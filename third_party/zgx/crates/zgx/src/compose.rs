@@ -848,7 +848,7 @@ impl View {
         };
         self
     }
-    /// Draw the image dithered in dots `dot` points square, as Zeron dithers
+    /// Draw the image dithered in dots `dot` points square, as Zend dithers
     /// its wallpapers (see `ImageData::dithered`): worked out on the GPU as
     /// the image draws, following it as it moves, scales and covers. This
     /// method requires an image view.

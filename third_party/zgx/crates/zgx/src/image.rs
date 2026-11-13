@@ -16,7 +16,7 @@ pub enum ImageEffect {
     /// Its pixels.
     #[default]
     Plain,
-    /// Zeron's two-level dither, in dots this many points square.
+    /// Zend's two-level dither, in dots this many points square.
     Dither(f32),
     /// Characters in a 5 by 7 pixel font, each pixel this many points
     /// square, over the image (see `ImageData::characters`).
@@ -465,7 +465,7 @@ impl ImageData {
     pub fn animation(&self) -> Option<&Arc<crate::animation::Animation>> {
         self.pixels.animation.as_ref()
     }
-    /// Share decoded pixels and GPU upload identity, drawn dithered as Zeron
+    /// Share decoded pixels and GPU upload identity, drawn dithered as Zend
     /// dithers its wallpapers: in dots `dot` points square, on the screen's
     /// grid, each the colour at its centre lit to that colour's full value
     /// where its brightest channel passes a 4x4 Bayer threshold, and nearly

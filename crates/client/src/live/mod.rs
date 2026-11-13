@@ -1,6 +1,6 @@
 //! Live mode: the edge transports behind [`crate::Client`].
 //!
-//! - registry: `RegistryClient` over the shared [`zeron_doc::RegistryDoc`]
+//! - registry: `RegistryClient` over the shared [`zend_doc::RegistryDoc`]
 //!   (WS + HTTPS pull/push), persisted in the docs store, presence beats,
 //!   sidebar-pin reconciliation once synced;
 //! - rooms ([`room`]): one chat2 `ChatClient` per open session;
@@ -30,8 +30,8 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use zeron_doc::{REGISTRY_DOC_ID, RegistryDoc};
-use zeron_sync::{
+use zend_doc::{REGISTRY_DOC_ID, RegistryDoc};
+use zend_sync::{
     DocsStore, RegistryClient, RegistryEvent, RegistryTransport, RegistryTuning, SyncError,
     UrlProvider,
 };
@@ -54,11 +54,11 @@ const OFFLINE_PARK: Duration = Duration::from_secs(30);
 /// Sleep `wait` (jittered), cut short by wake/online events. `false` when
 /// cancelled.
 pub(crate) async fn wait_backoff(cancel: &CancellationToken, wait: Duration) -> bool {
-    let mut wake = zeron_sync::wake::subscribe();
-    let mut online = zeron_sync::wake::subscribe_online();
+    let mut wake = zend_sync::wake::subscribe();
+    let mut online = zend_sync::wake::subscribe_online();
     while online.try_recv().is_ok() {}
     let jitter = Duration::from_millis((now_ms().unsigned_abs() % 250) + 1);
-    let wait = if zeron_sync::wake::path_is_offline() {
+    let wait = if zend_sync::wake::path_is_offline() {
         wait.max(OFFLINE_PARK)
     } else {
         wait + jitter
@@ -71,7 +71,7 @@ pub(crate) async fn wait_backoff(cancel: &CancellationToken, wait: Duration) -> 
     }
     tokio::select! {
         _ = cancel.cancelled() => false,
-        _ = zeron_sync::wake::until_awake() => true,
+        _ = zend_sync::wake::until_awake() => true,
     }
 }
 
@@ -93,12 +93,12 @@ impl Bearer {
 }
 
 #[async_trait::async_trait]
-impl zeron_rpc::TokenSource for Bearer {
-    async fn token(&self) -> std::result::Result<String, zeron_rpc::TokenError> {
+impl zend_rpc::TokenSource for Bearer {
+    async fn token(&self) -> std::result::Result<String, zend_rpc::TokenError> {
         match self.get().await {
             Ok(token) => Ok(token),
-            Err(SyncError::Auth(_) | SyncError::Closed) => Err(zeron_rpc::TokenError::SignedOut),
-            Err(err) => Err(zeron_rpc::TokenError::TemporarilyUnavailable(
+            Err(SyncError::Auth(_) | SyncError::Closed) => Err(zend_rpc::TokenError::SignedOut),
+            Err(err) => Err(zend_rpc::TokenError::TemporarilyUnavailable(
                 err.to_string(),
             )),
         }
@@ -208,7 +208,7 @@ pub(crate) struct LiveBackend {
     last_liveness_probe: AtomicI64,
     pub(crate) relay: relay::Relay,
     /// Direct peer connections (terminals), started with the backend.
-    pub(crate) direct: std::sync::OnceLock<Option<zeron_preview::viewer::ViewerPeers>>,
+    pub(crate) direct: std::sync::OnceLock<Option<zend_preview::viewer::ViewerPeers>>,
     pub(crate) escorts: escort::Escorts,
     pub(crate) held: held::HeldSends,
     pub(crate) delivery_wake: Arc<Notify>,
@@ -287,7 +287,7 @@ impl LiveBackend {
     }
 
     /// The direct peers, when they started.
-    pub(crate) fn direct(&self) -> Option<&zeron_preview::viewer::ViewerPeers> {
+    pub(crate) fn direct(&self) -> Option<&zend_preview::viewer::ViewerPeers> {
         self.direct.get().and_then(Option::as_ref)
     }
 
@@ -357,7 +357,7 @@ impl LiveBackend {
                 .await
                 .is_ok_and(|r| r.status().is_success());
             if ok {
-                zeron_sync::wake::notify_online();
+                zend_sync::wake::notify_online();
             }
         });
     }
@@ -393,7 +393,7 @@ impl LiveBackend {
                 client.redial();
             }
         }
-        zeron_sync::wake::notify_online();
+        zend_sync::wake::notify_online();
     }
 
     fn flush_registry_now_with(&self, inner: Option<&ClientInner>) {

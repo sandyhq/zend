@@ -80,18 +80,18 @@ add(providers, "widget", "Devices")
 add(devices, "laptop", "Devices")
 add(projects_page, "folder-with-files", "Devices")
 add(members, "users-group-rounded", "Organization")
--- Last, under Zeron's own heading (the shipping app's About and its
+-- Last, under Zend's own heading (the shipping app's About and its
 -- updates, in its app menu): after everything, Archived too.
 settings.add {
 	id = about.ID,
 	title = about.TITLE,
 	icon = "info-square",
-	group = "Zeron",
+	group = "Zend",
 	view = about.view,
 }
 
 -- Cloud and Billing, only while the account has Cloud (the shipping app's
--- `cloud_offered`): listed ahead of Zeron's own, and found by the search
+-- `cloud_offered`): listed ahead of Zend's own, and found by the search
 -- only then.
 settings.extra("cloud", function(): { any }
 	if not cloud.offered() then

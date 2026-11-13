@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use loro::LoroDoc;
 use support::mock_edge::MockEdge;
-use zeron_client::events::NullListener;
-use zeron_client::{Client, ClientConfig, Credentials, SendRequest, SessionHandle};
-use zeron_doc::{RegistryDoc, SessionCommandPayload, SessionDoc};
-use zeron_proto::{Chat, Device};
-use zeron_sync::RegistryClient;
+use zend_client::events::NullListener;
+use zend_client::{Client, ClientConfig, Credentials, SendRequest, SessionHandle};
+use zend_doc::{RegistryDoc, SessionCommandPayload, SessionDoc};
+use zend_proto::{Chat, Device};
+use zend_sync::RegistryClient;
 
 const HOST: &str = "cloud-machine";
 const CHAT: &str = "chat-cloud";
@@ -76,12 +76,12 @@ async fn host_registry(edge: &MockEdge, capabilities: Vec<String>) -> RegistryCl
 }
 
 fn store_capable() -> Vec<String> {
-    zeron_proto::capabilities::current()
+    zend_proto::capabilities::current()
 }
 
 fn peer_only() -> Vec<String> {
     let mut caps = store_capable();
-    caps.retain(|cap| cap != zeron_proto::capabilities::ATTACHMENT_STORE_V1);
+    caps.retain(|cap| cap != zend_proto::capabilities::ATTACHMENT_STORE_V1);
     caps
 }
 
@@ -132,7 +132,7 @@ fn send_image(session: &SessionHandle) {
     session
         .send(SendRequest {
             text: "look at this".into(),
-            attachments: vec![zeron_client::OutgoingAttachment {
+            attachments: vec![zend_client::OutgoingAttachment {
                 name: "shot.png".into(),
                 mime_type: "image/png".into(),
                 data: IMAGE.to_vec(),
@@ -178,7 +178,7 @@ fn room_prompts(edge: &MockEdge) -> Vec<String> {
     commands.chain(rows).collect()
 }
 
-fn room_commands(edge: &MockEdge) -> Vec<zeron_doc::SessionCommandEntry> {
+fn room_commands(edge: &MockEdge) -> Vec<zend_doc::SessionCommandEntry> {
     let doc = LoroDoc::new();
     for row in edge.rows(CHAT) {
         let _ = doc.import(&row.bytes);
@@ -190,7 +190,7 @@ fn room_commands(edge: &MockEdge) -> Vec<zeron_doc::SessionCommandEntry> {
 
 /// The host's word on the room's first command: its status, and (when it ran)
 /// the user's message in the transcript.
-fn host_marks(edge: &MockEdge, status: zeron_doc::SessionCommandStatus, ran: bool) {
+fn host_marks(edge: &MockEdge, status: zend_doc::SessionCommandStatus, ran: bool) {
     let doc = LoroDoc::new();
     for row in edge.rows(CHAT) {
         let _ = doc.import(&row.bytes);
@@ -208,16 +208,16 @@ fn host_marks(edge: &MockEdge, status: zeron_doc::SessionCommandStatus, ran: boo
         } = &command.payload
     {
         session
-            .push_message(&zeron_doc::SessionMessageEntry {
+            .push_message(&zend_doc::SessionMessageEntry {
                 id: message_id.clone(),
-                role: zeron_doc::MessageRole::User,
-                parts: vec![zeron_doc::MessagePart::Text {
+                role: zend_doc::MessageRole::User,
+                parts: vec![zend_doc::MessagePart::Text {
                     id: "t0".into(),
                     text: request.prompt.clone(),
                 }],
                 created_at: Utc::now().timestamp_millis(),
                 device_id: "ios-live".into(),
-                status: Some(zeron_doc::MessageStatus::Complete),
+                status: Some(zend_doc::MessageStatus::Complete),
                 continuation_of: None,
                 duration_ms: None,
             })
@@ -233,7 +233,7 @@ fn host_marks(edge: &MockEdge, status: zeron_doc::SessionCommandStatus, ran: boo
 
 fn upload_of(session: &SessionHandle) -> String {
     let reference = session.snapshot().pending[0].images[0].clone();
-    zeron_client::attachments::parse_pending_ref(&reference)
+    zend_client::attachments::parse_pending_ref(&reference)
         .unwrap()
         .0
         .to_owned()
@@ -253,7 +253,7 @@ async fn a_send_waits_for_its_bytes_to_be_stored_and_shows_meanwhile() {
     // The echo is up with the image; nothing has reached the room.
     let pending = session.snapshot().pending[0].clone();
     assert_eq!(pending.visible_text, "look at this");
-    assert_eq!(pending.state, zeron_client::SendState::Sending);
+    assert_eq!(pending.state, zend_client::SendState::Sending);
     assert!(room_prompts(&edge).is_empty());
     let upload = upload_of(&session);
 
@@ -265,13 +265,13 @@ async fn a_send_waits_for_its_bytes_to_be_stored_and_shows_meanwhile() {
     let command = room_commands(&edge).remove(0);
     assert_eq!(
         command.expires_at.unwrap() - command.issued_at,
-        zeron_doc::CLOUD_COMMAND_TTL_MS,
+        zend_doc::CLOUD_COMMAND_TTL_MS,
         "a Cloud machine's message waits a week"
     );
     // Kept until the message has run, for a retry after it expired.
     let stash = dir.path().join(format!("uploads/{upload}.bin"));
     assert!(stash.exists());
-    host_marks(&edge, zeron_doc::SessionCommandStatus::Applied, true);
+    host_marks(&edge, zend_doc::SessionCommandStatus::Applied, true);
     wait_for("the kept file to go once it ran", || !stash.exists()).await;
     client.shutdown();
 }
@@ -291,7 +291,7 @@ async fn a_refused_upload_reads_as_failed_and_a_retry_sends_it() {
             .snapshot()
             .pending
             .first()
-            .is_some_and(|p| p.state == zeron_client::SendState::Failed)
+            .is_some_and(|p| p.state == zend_client::SendState::Failed)
     })
     .await;
     assert!(room_prompts(&edge).is_empty(), "not sent, and not dropped");
@@ -370,7 +370,7 @@ async fn a_failing_upload_backs_off_instead_of_hammering_the_edge() {
     assert!((1..=50).contains(&puts), "{puts} uploads in 1.5 s");
     assert_eq!(
         session.snapshot().pending[0].state,
-        zeron_client::SendState::Sending
+        zend_client::SendState::Sending
     );
     assert!(room_prompts(&edge).is_empty());
     client.shutdown();
@@ -424,7 +424,7 @@ async fn a_removed_send_never_goes_out_and_stays_gone() {
             .snapshot()
             .pending
             .first()
-            .is_some_and(|p| p.state == zeron_client::SendState::Failed)
+            .is_some_and(|p| p.state == zend_client::SendState::Failed)
     })
     .await;
     let pending = session.snapshot().pending[0].clone();
@@ -458,9 +458,9 @@ async fn a_month_old_failed_send_is_still_there_to_retry_or_remove() {
     let _host = host_registry(&edge, store_capable()).await;
     let dir = tempfile::tempdir().unwrap();
     {
-        let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
-        let payload = zeron_sync::attachment_store::HeldPayload {
-            body: zeron_sync::attachment_store::HeldBody::Command {
+        let store = zend_sync::DocsStore::open(dir.path()).unwrap();
+        let payload = zend_sync::attachment_store::HeldPayload {
+            body: zend_sync::attachment_store::HeldBody::Command {
                 payload: SessionCommandPayload::Steer {
                     prompt: "from a month ago".into(),
                     message_id: Some("m-old".into()),
@@ -478,7 +478,7 @@ async fn a_month_old_failed_send_is_still_there_to_retry_or_remove() {
     let pending = session.snapshot().pending.clone();
     assert_eq!(pending.len(), 1, "kept");
     assert_eq!(pending[0].message_id, "m-old");
-    assert_eq!(pending[0].state, zeron_client::SendState::Failed);
+    assert_eq!(pending[0].state, zend_client::SendState::Failed);
     assert!(pending[0].removable);
     client.shutdown();
 }
@@ -495,13 +495,13 @@ async fn a_retry_after_expiry_uploads_the_kept_file_again() {
     assert_eq!(edge.store_puts(), 1);
 
     // The machine never came back in time.
-    host_marks(&edge, zeron_doc::SessionCommandStatus::Expired, false);
+    host_marks(&edge, zend_doc::SessionCommandStatus::Expired, false);
     wait_for("the failed state", || {
         session
             .snapshot()
             .pending
             .first()
-            .is_some_and(|p| p.state == zeron_client::SendState::Failed)
+            .is_some_and(|p| p.state == zend_client::SendState::Failed)
     })
     .await;
 

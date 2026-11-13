@@ -86,7 +86,7 @@ end
 
 test("a web link: Open where the setting says, the other place, Copy link", function()
 	local app = setup()
-	-- "Open links in" Zeron: Open is the panel's, the other place outside.
+	-- "Open links in" Zend: Open is the panel's, the other place outside.
 	menu(app, 'role:link "the docs"')
 	expect(shows(app, "Open")).to_be(true)
 	expect(shows(app, "Open in default browser")).to_be(true)
@@ -122,9 +122,9 @@ test("a web link: Open where the setting says, the other place, Copy link", func
 	expect(shows(app, "Open in browser panel")).to_be(true)
 	expect(shows(app, "Copy link")).to_be(true)
 	shut(app)
-	menu(app, 'role:link "https://github.com/zeronsh/example/pull/1"')
+	menu(app, 'role:link "https://github.com/sandyhq/example/pull/1"')
 	pick(app, "Copy link")
-	expect(app:clipboard()).to_be("https://github.com/zeronsh/example/pull/1")
+	expect(app:clipboard()).to_be("https://github.com/sandyhq/example/pull/1")
 	expect(app:error()).to_be(nil)
 end)
 
@@ -152,7 +152,7 @@ test("external links bypass an internal opener, including pull requests", functi
 	app:command("set_opener")
 	app:set_state("test_open_links", "external")
 	app:frames(5)
-	local url = "https://github.com/zeronsh/example/pull/1"
+	local url = "https://github.com/sandyhq/example/pull/1"
 	local target = `role:link "{url}"`
 	local before = app:state("calls")
 
@@ -175,7 +175,7 @@ test("external links bypass an internal opener, including pull requests", functi
 	expect(app:state("calls")).to_contain(`panel:{url}`)
 
 	-- Switching back lets the internal opener take the same link again.
-	app:set_state("test_open_links", "zeron")
+	app:set_state("test_open_links", "zend")
 	app:frames(5)
 	app:click(target)
 	app:frames(5)
@@ -218,13 +218,13 @@ test("a file link: Open, Reveal in Finder on this computer, Copy path", function
 	expect(app:error()).to_be(nil)
 end)
 
-test("a chat mentioned: Open, Copy link (its Zeron link)", function()
+test("a chat mentioned: Open, Copy link (its Zend link)", function()
 	local app = setup()
 	menu(app, 'role:link ~"Long chat"')
 	expect(shows(app, "Open")).to_be(true)
 	expect(shows(app, "Copy path")).to_be(false)
 	pick(app, "Copy link")
-	expect(app:clipboard()).to_be("zeron://open/chat/s1?workspace=w1")
+	expect(app:clipboard()).to_be("zend://open/chat/s1?workspace=w1")
 	local _, before = string.gsub(app:state("calls"), "open:s1", "")
 	menu(app, 'role:link ~"Long chat"')
 	pick(app, "Open")
@@ -253,12 +253,12 @@ test("a settings link (About's rows): Open, as its click, and Copy link", functi
 	expect(shows(app, "Open in browser panel")).to_be(false)
 	expect(shows(app, "Open in default browser")).to_be(false)
 	pick(app, "Copy link")
-	expect(app:clipboard()).to_be("https://zeron.sh")
+	expect(app:clipboard()).to_be("https://zend.invalid")
 	menu(app, '#settings-page >> role:button "Release notes"')
 	pick(app, "Open")
 	local asked = false
 	for _, c in (app:state("settings_stub_calls") :: any) or {} do
-		asked = asked or c == "open_url:https://github.com/zeronsh/comet/releases/tag/v0.2.131"
+		asked = asked or c == "open_url:https://github.com/sandyhq/comet/releases/tag/v0.2.131"
 	end
 	expect(asked).to_be(true)
 	expect(app:error()).to_be(nil)

@@ -1,4 +1,4 @@
-//! Zeron's interface in zgx, starting with onboarding: the intro plays over
+//! Zend's interface in zgx, starting with onboarding: the intro plays over
 //! the desktop (zgx's `agents_intro`), then setup opens in a window of its
 //! own.
 //!
@@ -20,9 +20,9 @@
 //! does finishing setup; signed out, or new, it is setup again.
 //!
 //! Run: cargo run --release -- [intro | onboarding | main | gallery] [--inspect]
-//! `ZERON_ZGX_STEP=<step>` starts onboarding at a step (signin, appearance,
+//! `ZEND_ZGX_STEP=<step>` starts onboarding at a step (signin, appearance,
 //! username, card, org, invite, github, providers, done).
-//! `ZERON_ZGX_REPLAY=1` shows every page, as if none were finished.
+//! `ZEND_ZGX_REPLAY=1` shows every page, as if none were finished.
 //! `--inspect` (or `ZGX_INSPECT_SOCKET=1`) serves devtools to `zgx inspect`.
 
 #![cfg_attr(all(windows, feature = "beta"), windows_subsystem = "windows")]
@@ -145,9 +145,9 @@ use zgx_desktop::{
 };
 use zgx_script::{ScriptHost, Shared, Value};
 
-/// Where `ui.persist` keeps its files: the Zeron app's (the beta), apart from
+/// Where `ui.persist` keeps its files: the Zend app's (the beta), apart from
 /// development builds', which are staging's.
-const APP_ID: &str = if cfg!(feature = "beta") { "zeron" } else { "zeron-zgx" };
+const APP_ID: &str = if cfg!(feature = "beta") { "zend" } else { "zend-zgx" };
 
 /// Setup's window, in points: room for a step and its footer, no more.
 const ONBOARDING_SIZE: (f64, f64) = (680., 500.);
@@ -178,7 +178,7 @@ fn raise_open_files() {
         }
         limit.rlim_cur = WANTED.min(limit.rlim_max);
         if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
-            eprintln!("zeron-zgx: couldn't raise the open file limit: {}", std::io::Error::last_os_error());
+            eprintln!("zend-zgx: couldn't raise the open file limit: {}", std::io::Error::last_os_error());
         }
     }
 }
@@ -192,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if argv.get(1).map(String::as_str) == Some("terminal-bridge") {
         std::process::exit(terminal::bridge(&argv[2..]));
     }
-    // This launch as it started, for Reload Zeron (src/relaunch.rs), before
+    // This launch as it started, for Reload Zend (src/relaunch.rs), before
     // anything below sets a variable; started by one, the launch it
     // replaces waited out first.
     relaunch::remember();
@@ -217,37 +217,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // SAFETY: first thing in main, before any thread is started.
         unsafe { std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1") };
     }
-    // `zeron`'s command line (crates/cli), as the Zeron app's: help,
+    // `zend`'s command line (crates/cli), as the Zend app's: help,
     // `--version`, `update`, `daemon` here; `headless`, `login`, `status`,
     // `plugin` and the engine's other subcommands in the engine helper beside
     // this app (which doesn't link the engine), with the same arguments. A
     // development build keeps its own launch words (intro, gallery, a
     // fixture, --inspect) and its bare launch, which would otherwise log as
-    // the Zeron app does (in ~/.zeron).
+    // the Zend app does (in ~/.zend).
     let mut open_url = None;
-    // (This app's own version for crates/update, before `zeron update` or
+    // (This app's own version for crates/update, before `zend update` or
     // the app's updater compares releases with it: a beta's isn't the
     // workspace's.)
-    zeron_update::set_app_version(about::APP_VERSION);
-    // The Zeron app's updater follows the channel on record on every
+    zend_update::set_app_version(about::APP_VERSION);
+    // The Zend app's updater follows the channel on record on every
     // platform, a stable build's too (crates/update `follows_channels`).
     #[cfg(feature = "beta")]
-    zeron_update::set_app_follows_channels();
-    // On Windows this app's engine is a whole Zeron `zeron.exe`, in this
+    zend_update::set_app_follows_channels();
+    // On Windows this app's engine is a whole Zend `zend.exe`, in this
     // version's folder (scripts/package-windows.ps1), which an older updater
     // may not have brought: bring it in first (src/windows_install.rs).
     #[cfg(all(windows, feature = "beta"))]
     {
         windows_install::complete_if_needed(&argv);
-        if let Some(dir) = std::env::current_exe().ok().as_deref().and_then(zeron_update::windows::install_directory) {
-            zeron_launch::set_full_app_engine(
-                zeron_update::windows::version_files(&dir, about::APP_VERSION).join("engine").join("zeron.exe"),
+        if let Some(dir) = std::env::current_exe().ok().as_deref().and_then(zend_update::windows::install_directory) {
+            zend_launch::set_full_app_engine(
+                zend_update::windows::version_files(&dir, about::APP_VERSION).join("engine").join("zend.exe"),
             );
         }
     }
     if cfg!(feature = "beta") || !dev_launch(&argv[1..]) {
-        match zeron_cli::run(about::APP_VERSION, zeron_cli::Engines::Helper) {
-            zeron_cli::Launch::Done(result) => {
+        match zend_cli::run(about::APP_VERSION, zend_cli::Engines::Helper) {
+            zend_cli::Launch::Done(result) => {
                 // (As a `main` returning it would: the error, exit status 1.)
                 if let Err(error) = result {
                     eprintln!("Error: {error:?}");
@@ -255,17 +255,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return Ok(());
             }
-            zeron_cli::Launch::Window { open_url: url, safe_mode } => {
+            zend_cli::Launch::Window { open_url: url, safe_mode } => {
                 open_url = url;
-                // Zeron's own interface (src/plugins/preview.rs safe mode):
+                // Zend's own interface (src/plugins/preview.rs safe mode):
                 // as Alt (⌥) held as it opens.
                 if safe_mode {
-                    plugins::ask_zeron_template();
+                    plugins::ask_zend_template();
                 }
             }
-            zeron_cli::Launch::Engine(_) => unreachable!("the helper runs the engine's commands"),
+            zend_cli::Launch::Engine(_) => unreachable!("the helper runs the engine's commands"),
             #[cfg(target_os = "linux")]
-            zeron_cli::Launch::Appshot => return Err("Appshots from the command line aren't in this app yet".into()),
+            zend_cli::Launch::Appshot => return Err("Appshots from the command line aren't in this app yet".into()),
         }
     }
     let mut screen = Screen::Intro;
@@ -281,17 +281,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "main" => screen = Screen::Main,
             "gallery" => screen = Screen::Gallery,
             "--inspect" => inspect = true,
-            // Zeron's own template, whatever was in use (src/plugins/live.rs):
+            // Zend's own template, whatever was in use (src/plugins/live.rs):
             // for one that breaks before its window can switch back.
-            "--zeron-template" | "--safe-mode" => plugins::ask_zeron_template(),
+            "--zend-template" | "--safe-mode" => plugins::ask_zend_template(),
             // (Development: a fixture under ui/ in a window of its own, as
-            // the gallery's; with `ZERON_ZGX_DEV_PLUGINS`, plugins in it.)
+            // the gallery's; with `ZEND_ZGX_DEV_PLUGINS`, plugins in it.)
             other if other.starts_with("fixture=") && other.ends_with(".luau") => {
                 screen = Screen::Fixture(other["fixture=".len()..].to_string());
             }
             other => {
                 return Err(format!(
-                    "unknown argument `{other}`: expected intro, onboarding, main, gallery, --inspect, --safe-mode or --zeron-template"
+                    "unknown argument `{other}`: expected intro, onboarding, main, gallery, --inspect, --safe-mode or --zend-template"
                 )
                 .into());
             }
@@ -333,11 +333,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for font in fonts() {
         application = application.font(font?);
     }
-    // The Zeron app's links (`zeron://`: a clicked banner, a chat's link),
-    // delivered to the app as Zeron.app's are (src/links.rs).
+    // The Zend app's links (`zend://`: a clicked banner, a chat's link),
+    // delivered to the app as Zend.app's are (src/links.rs).
     if cfg!(feature = "beta") {
         application = application
-            .application_id("sh.zeron.app")?
+            .application_id("sh.zend.app")?
             .on_application_event(|event, _| {
                 if let zgx_desktop::ApplicationEvent::OpenUrls(urls) = event {
                     for url in urls {
@@ -360,7 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Screen::Gallery => open(cx, "gallery.luau", inspect),
             Screen::Fixture(entry) => open(cx, entry, inspect),
         }
-        // Launched on a link (`zeron <url>`).
+        // Launched on a link (`zend <url>`).
         if let Some(url) = &open_url {
             links::open(url);
         }
@@ -368,16 +368,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Quitting: an update downloaded and never restarted for installs now,
     // so the next launch is on it (src/about.rs).
     about::install_on_quit();
-    // Reload Zeron: the windows closed, a fresh launch in this one's place.
+    // Reload Zend: the windows closed, a fresh launch in this one's place.
     relaunch::after_quit();
     Ok(())
 }
 
 /// Whether `args` are a development launch's own words (a screen, a
-/// fixture, devtools), or none: not `zeron`'s command line.
+/// fixture, devtools), or none: not `zend`'s command line.
 fn dev_launch(args: &[String]) -> bool {
     args.iter().all(|arg| {
-        matches!(arg.as_str(), "intro" | "onboarding" | "main" | "gallery" | "--inspect" | "--zeron-template" | "--safe-mode")
+        matches!(arg.as_str(), "intro" | "onboarding" | "main" | "gallery" | "--inspect" | "--zend-template" | "--safe-mode")
             || (arg.starts_with("fixture=") && arg.ends_with(".luau"))
     })
 }
@@ -517,10 +517,10 @@ fn intro(cx: &mut WindowContext, inspect: bool) {
 /// The script `entry` under `ui/` in the window.
 fn open(cx: &mut WindowContext, entry: &str, inspect: bool) {
     let host = script_host(cx, entry);
-    // (Development: `ZERON_ZGX_DEV_PLUGINS` loads plugin folders into a
+    // (Development: `ZEND_ZGX_DEV_PLUGINS` loads plugin folders into a
     // fixture's window, no engine. src/plugins `dev_plugins`.)
     plugins::dev_plugins(&host);
-    // (Development: `ZERON_ZGX_HOST_TOASTS=1` lays the host's toasts over a
+    // (Development: `ZEND_ZGX_HOST_TOASTS=1` lays the host's toasts over a
     // fixture, a template in preview and a notice of each kind.)
     let chrome = plugins::host_bar::dev_toasts(cx);
     let floor = chrome.is_some().then(|| host.shared("toast_floor", 16.));
@@ -533,7 +533,7 @@ fn open(cx: &mut WindowContext, entry: &str, inspect: bool) {
 /// The main window: app.luau as the shell (`window` = "main"), where setup
 /// is app.luau as onboarding.
 fn open_main(cx: &mut WindowContext, inspect: bool) {
-    // The active template laid over Zeron's own, in `<data>/templates/.live/`
+    // The active template laid over Zend's own, in `<data>/templates/.live/`
     // (src/plugins/live.rs): the host's file is fixed as it's made, so it's
     // that folder's, whichever template is in use.
     // (A beta: the sidebar as it was in the app it replaces.)
@@ -548,7 +548,7 @@ fn open_main(cx: &mut WindowContext, inspect: bool) {
     plugins::install(cx, &host);
     // The host's own toasts over it (a template in preview, a switch you
     // didn't make, signing keys, safe mode at launch).
-    let chrome = plugins::host_bar::view(cx, host.shared("zeron.locale", "en").signal());
+    let chrome = plugins::host_bar::view(cx, host.shared("zend.locale", "en").signal());
     // Where the app's toasts stand, over the host's (host_bar.rs `follow`).
     let floor = host.shared("toast_floor", 16.);
     let view = serve_with(cx, host, "app.luau", inspect, Some(chrome), menu_bar::Role::Bar);
@@ -566,10 +566,10 @@ fn onboarded_marker() -> Option<PathBuf> {
 }
 
 fn onboarded() -> bool {
-    onboarded_marker().is_some_and(|path| path.is_file()) || (cfg!(feature = "beta") && finished_in_zeron_app())
+    onboarded_marker().is_some_and(|path| path.is_file()) || (cfg!(feature = "beta") && finished_in_zend_app())
 }
 
-/// This launch welcomes someone who already had Zeron to this interface.
+/// This launch welcomes someone who already had Zend to this interface.
 static WELCOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Where that welcome having been seen on this computer is remembered.
@@ -581,9 +581,9 @@ fn welcomed() -> bool {
     welcomed_marker().is_some_and(|path| path.is_file())
 }
 
-/// Whether someone signed in had finished setup, here or in the Zeron app.
+/// Whether someone signed in had finished setup, here or in the Zend app.
 fn finished_setup_before() -> bool {
-    onboarded_marker().is_some_and(|path| path.is_file()) || finished_in_zeron_app()
+    onboarded_marker().is_some_and(|path| path.is_file()) || finished_in_zend_app()
 }
 
 /// Where a launch that asked for no screen opens.
@@ -624,11 +624,11 @@ fn welcome_due(finished_before: bool, welcomed: bool) -> bool {
     finished_before && !welcomed
 }
 
-/// Whether setup was finished in the Zeron app's own interface before this
+/// Whether setup was finished in the Zend app's own interface before this
 /// one replaced it (its `onboardingCompleted` in the data dir's
-/// ui-settings.json, crates/ui settings.rs): someone who has used Zeron isn't
+/// ui-settings.json, crates/ui settings.rs): someone who has used Zend isn't
 /// walked through it again.
-fn finished_in_zeron_app() -> bool {
+fn finished_in_zend_app() -> bool {
     engine::data_dir()
         .and_then(|dir| std::fs::read(dir.join("ui-settings.json")).ok())
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -644,7 +644,7 @@ fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
 /// `script_host`, its script at `path` (the main window's, in its template's
 /// folder).
 fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptHost {
-    // Zeron's design system, lent to the window's plugins (`@ds`).
+    // Zend's design system, lent to the window's plugins (`@ds`).
     let lent = path.clone();
     // A long chat's heap, past 32 MB, collected aiming for 150% of what's in
     // use rather than Luau's double: its rows' nodes, which the collector
@@ -676,7 +676,7 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
     // The platform the window is on ("macos", "linux", "windows"): what the
     // window's own buttons are (ds/title_bar: macOS's traffic lights).
     host.shared("platform", std::env::consts::OS);
-    if let Ok(step) = std::env::var("ZERON_ZGX_STEP") {
+    if let Ok(step) = std::env::var("ZEND_ZGX_STEP") {
         host.shared("onboarding.start", step.as_str());
     }
     // Their username and card only (`welcome_due`).
@@ -684,12 +684,12 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         host.shared("onboarding.welcome", true);
     }
     // Every page again, whatever the account and this Mac have finished.
-    if std::env::var_os("ZERON_ZGX_REPLAY").is_some() {
+    if std::env::var_os("ZEND_ZGX_REPLAY").is_some() {
         host.shared("onboarding.replay", true);
     }
-    // ds/transcript's trace (`ZERON_ZGX_TRACE_TRANSCRIPT=1`): the hover lane
+    // ds/transcript's trace (`ZEND_ZGX_TRACE_TRANSCRIPT=1`): the hover lane
     // and the rows' heights as they change, a line each on stdout.
-    if std::env::var("ZERON_ZGX_TRACE_TRANSCRIPT").is_ok_and(|v| v == "1") {
+    if std::env::var("ZEND_ZGX_TRACE_TRANSCRIPT").is_ok_and(|v| v == "1") {
         host.shared("debug.trace_transcript", true);
     }
     // How much the desktop blurs behind the glass (`window.blur`), for the
@@ -703,7 +703,7 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
     // bar's slide with it).
     let window = cx.window.clone();
     host.action("window.full_screen", move |on| window.set_fullscreen(matches!(on, Value::Bool(true))));
-    // Reload Zeron: the app quits and starts again, the same launch
+    // Reload Zend: the app quits and starts again, the same launch
     // (src/relaunch.rs).
     let windows = cx.windows.clone();
     host.action("app.relaunch", move |_| relaunch::ask(|| windows.quit()));
@@ -719,14 +719,14 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         if let Some(path) = onboarded_marker() {
             let _ = path.parent().map(std::fs::create_dir_all);
             if let Err(error) = std::fs::write(&path, b"") {
-                eprintln!("zeron-zgx: setup's end wasn't remembered: {error}");
+                eprintln!("zend-zgx: setup's end wasn't remembered: {error}");
             }
         }
         // (Through setup in this interface, however they came: no welcome after.)
         if let Some(path) = welcomed_marker() {
             let _ = path.parent().map(std::fs::create_dir_all);
             if let Err(error) = std::fs::write(&path, b"") {
-                eprintln!("zeron-zgx: the welcome wasn't remembered: {error}");
+                eprintln!("zend-zgx: the welcome wasn't remembered: {error}");
             }
         }
         windows.open(main_window(), move |cx| open_main(cx, false));
@@ -759,7 +759,7 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
             && !url.chars().any(char::is_control)
             && let Err(error) = open::that_detached(&*url)
         {
-            eprintln!("zeron-zgx: the browser didn't open: {error}");
+            eprintln!("zend-zgx: the browser didn't open: {error}");
         }
     });
     // Scripts can't reach the text selection (zgx gives Luau no API for it):
@@ -844,7 +844,7 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         // Settings → About & updates: versions and the engine's updater
         // (src/about.rs).
         about::install(cx, &host);
-        // `zeron://` links the system handed the app (src/links.rs).
+        // `zend://` links the system handed the app (src/links.rs).
         links::install(&host);
         // Your imported VS Code themes (src/themes.rs).
         themes::install(cx, &host);
@@ -1031,11 +1031,11 @@ fn serve_with(
         let tasks = cx.tasks.clone();
         match zgx_script::inspect::serve(session, entry, move |task| tasks.spawn(task)) {
             Ok(server) => {
-                eprintln!("zeron-zgx: devtools for {entry} at {}", server.path().display());
+                eprintln!("zend-zgx: devtools for {entry} at {}", server.path().display());
                 Some(server)
             }
             Err(error) => {
-                eprintln!("zeron-zgx: devtools: {error}");
+                eprintln!("zend-zgx: devtools: {error}");
                 None
             }
         }
@@ -1056,7 +1056,7 @@ fn serve_with(
             if let Some(host) = host
                 && let Err(error) = host.reload()
             {
-                eprintln!("zeron-zgx: reload interface: {error}");
+                eprintln!("zend-zgx: reload interface: {error}");
             }
         });
     });
@@ -1155,7 +1155,7 @@ fn serve_commands(cx: &mut WindowContext, host: &ScriptHost, role: menu_bar::Rol
     let served = menu_bar::of(&cx.windows).serve(&cx.ui.runtime, host, preview, role);
     let run = host.clone();
     cx.on_menu_action(move |action| {
-        // The host's own items (no script's: `zeron.` is the host's, and the
+        // The host's own items (no script's: `zend.` is the host's, and the
         // bar leaves the scripts' out): a way back from any template, and
         // keeping the one in preview, from any window.
         if action.0.starts_with(menu_bar::HOST_COMMANDS) {
@@ -1168,7 +1168,7 @@ fn serve_commands(cx: &mut WindowContext, host: &ScriptHost, role: menu_bar::Rol
             return;
         }
         if !run.run_command(&action.0) {
-            eprintln!("zeron-zgx: menus: {} chosen, but no command of this window runs it", action.0);
+            eprintln!("zend-zgx: menus: {} chosen, but no command of this window runs it", action.0);
         }
     });
     (served, listing)
@@ -1186,7 +1186,7 @@ fn palette_commands(bar: &[zgx_desktop::AppMenu], all: &[zgx_script::Command]) -
                     let key = accelerator.as_ref().and_then(|_| match all.iter().find(|c| c.id == action.0) {
                         Some(command) => command.key.clone(),
                         // The host's own way back has its key too.
-                        None => (action.0 == plugins::USE_ZERON_TEMPLATE).then(|| menu_bar::DEFAULT_INTERFACE_KEY.to_string()),
+                        None => (action.0 == plugins::USE_ZEND_TEMPLATE).then(|| menu_bar::DEFAULT_INTERFACE_KEY.to_string()),
                     });
                     let mut fields = vec![("id", Value::from(action.0.as_str())), ("title", Value::from(label.as_str())), ("menu", Value::from(menu))];
                     if let Some(key) = key {
@@ -1208,17 +1208,17 @@ fn palette_commands(bar: &[zgx_desktop::AppMenu], all: &[zgx_script::Command]) -
 
 /// A menu item run from the command palette (`app.run_menu_command`, the
 /// id `palette_commands` gave it), on the next turn, as its menu item would:
-/// the host's way back to Zeron v3, or a script's command. A plugin's waits
+/// the host's way back to Zend v3, or a script's command. A plugin's waits
 /// until a template in preview is kept, as the host's dangerous actions do.
 fn run_menu_command(host: &ScriptHost, id: &str) {
     if id.starts_with(menu_bar::HOST_COMMANDS) {
-        if id == plugins::USE_ZERON_TEMPLATE {
+        if id == plugins::USE_ZEND_TEMPLATE {
             plugins::host_command(id);
         }
         return;
     }
     if id.contains('/') && plugins::preview::current().is_some() {
-        eprintln!("zeron-zgx: {id} waits until the template in preview is kept");
+        eprintln!("zend-zgx: {id} waits until the template in preview is kept");
         return;
     }
     host.run_command(id);
@@ -1226,7 +1226,7 @@ fn run_menu_command(host: &ScriptHost, id: &str) {
 
 fn intro_window() -> WindowOptions {
     WindowOptions {
-        title: "Zeron".into(),
+        title: "Zend".into(),
         transparent: true,
         decorations: false,
         resizable: false,
@@ -1237,8 +1237,8 @@ fn intro_window() -> WindowOptions {
     }
 }
 
-/// The glass under Zeron's window: the under-window blur alone, untinted
-/// (`plain`), which the theme's frost (`glass.tint`, Zeron's `glass` at
+/// The glass under Zend's window: the under-window blur alone, untinted
+/// (`plain`), which the theme's frost (`glass.tint`, Zend's `glass` at
 /// 0.80) tints, on every platform. On Windows that's the acrylic accent's
 /// blur of what's behind the window (zgx #1495), gpui's `Blurred`, as the
 /// shipping app's: the frost values are that app's, made for it. The
@@ -1246,22 +1246,22 @@ fn intro_window() -> WindowOptions {
 /// the frost); Acrylic, a transient material's, adds the system's tint
 /// under it and goes solid whenever the window isn't active. With
 /// Transparency effects off, plain glass goes solid (zgx #1496).
-fn zeron_glass() -> Glass {
+fn zend_glass() -> Glass {
     Glass::new(GlassMaterial::UnderWindowBackground).plain()
 }
 
-/// Zeron's window: an inset title bar over the colourless under-window
+/// Zend's window: an inset title bar over the colourless under-window
 /// blur, which the theme's `background` tints (the shipping app's glass).
-fn zeron_window(width: f64, height: f64) -> WindowOptions {
+fn zend_window(width: f64, height: f64) -> WindowOptions {
     WindowOptions {
-        title: "Zeron".into(),
+        title: "Zend".into(),
         width,
         height,
         decorations: cfg!(target_os = "macos"),
         titlebar: Titlebar::Inset,
-        glass: Some(zeron_glass()),
+        glass: Some(zend_glass()),
         // (Windows: the caption buttons keep to the title row at any zoom,
-        // the bar's whole 38, as Zeron's: shell.rs
+        // the bar's whole 38, as Zend's: shell.rs
         // `render_windows_caption_controls`, `Theme::TITLEBAR_HEIGHT`.)
         caption_height: Some(38.),
         ..Default::default()
@@ -1274,7 +1274,7 @@ fn zeron_window(width: f64, height: f64) -> WindowOptions {
 fn onboarding_window() -> WindowOptions {
     WindowOptions {
         resizable: false,
-        ..zeron_window(ONBOARDING_SIZE.0, ONBOARDING_SIZE.1)
+        ..zend_window(ONBOARDING_SIZE.0, ONBOARDING_SIZE.1)
     }
 }
 
@@ -1282,17 +1282,17 @@ fn onboarding_window() -> WindowOptions {
 fn main_window() -> WindowOptions {
     placed(WindowOptions {
         min_size: Some((760., 500.)),
-        frame_autosave: Some("zeron-zgx-main".into()),
-        ..zeron_window(1240., 820.)
+        frame_autosave: Some("zend-zgx-main".into()),
+        ..zend_window(1240., 820.)
     })
 }
 
-/// A window put where `ZERON_ZGX_FRAME` says (`x,y,w,h,scale`: its corner
+/// A window put where `ZEND_ZGX_FRAME` says (`x,y,w,h,scale`: its corner
 /// and size in physical pixels, and the display's scale), its frame neither
 /// read from nor kept for the person's own window: scripts/smoke.sh's small
 /// corner window.
 fn placed(mut options: WindowOptions) -> WindowOptions {
-    let Some(frame) = std::env::var("ZERON_ZGX_FRAME").ok() else {
+    let Some(frame) = std::env::var("ZEND_ZGX_FRAME").ok() else {
         return options;
     };
     let n: Vec<f64> = frame.split(',').filter_map(|v| v.trim().parse().ok()).collect();
@@ -1311,17 +1311,17 @@ fn placed(mut options: WindowOptions) -> WindowOptions {
 fn gallery_window() -> WindowOptions {
     WindowOptions {
         min_size: Some((900., 560.)),
-        frame_autosave: Some("zeron-zgx-gallery".into()),
-        ..zeron_window(1240., 820.)
+        frame_autosave: Some("zend-zgx-gallery".into()),
+        ..zend_window(1240., 820.)
     }
 }
 
-/// The scripts: this folder's `ui/`, or `ZERON_ZGX_UI` (scripts/smoke.sh's
+/// The scripts: this folder's `ui/`, or `ZEND_ZGX_UI` (scripts/smoke.sh's
 /// frozen copy, which other saves under ui/ can't reload mid-run), or, in
-/// an installed Zeron app (the beta), the copy packaged with it (with
+/// an installed Zend app (the beta), the copy packaged with it (with
 /// `plugins-builtin` beside it).
 fn ui_dir() -> PathBuf {
-    match dev::smoke_switch("ZERON_ZGX_UI") {
+    match dev::smoke_switch("ZEND_ZGX_UI") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => bundled_ui().unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui")),
     }
@@ -1352,7 +1352,7 @@ fn bundled_ui() -> Option<PathBuf> {
 /// This version's own folder beside the executable on Windows.
 fn windows_version_files(dir: &std::path::Path) -> Option<PathBuf> {
     #[cfg(windows)]
-    return Some(zeron_update::windows::version_files(dir, about::APP_VERSION));
+    return Some(zend_update::windows::version_files(dir, about::APP_VERSION));
     #[cfg(not(windows))]
     {
         let _ = dir;
@@ -1361,7 +1361,7 @@ fn windows_version_files(dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// Geist (the iOS app's, copied into `fonts/` so this folder builds on its
-/// own) for the interface, Instrument Serif (zeron.sh's) for display type.
+/// own) for the interface, Instrument Serif (zend.invalid's) for display type.
 fn fonts() -> impl Iterator<Item = Result<FontData, Box<dyn std::error::Error>>> {
     [
         &include_bytes!("../fonts/Geist.ttf")[..],
@@ -1385,7 +1385,7 @@ mod glass_tests {
     /// frost was made for, not Mica, which blurs nothing.
     #[test]
     fn the_window_s_glass_is_plain_everywhere() {
-        let glass = super::zeron_glass();
+        let glass = super::zend_glass();
         assert_eq!(glass.material, super::GlassMaterial::UnderWindowBackground);
         assert!(glass.plain);
     }

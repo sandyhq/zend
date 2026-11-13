@@ -1,16 +1,16 @@
 //! The window's fit in the real shell (ui/shell_fixture.luau, as the shell
-//! lays out at each window width) against Zeron's own policy: which columns
+//! lays out at each window width) against Zend's own policy: which columns
 //! show, the sidebar's width and the panel's, as a window narrows from wide
 //! to narrow and back.
 
 use zgx_script::{ScriptHost, testing::TestApp};
 
-// Zeron's widths and policy, verbatim (crates/ui settings.rs,
+// Zend's widths and policy, verbatim (crates/ui settings.rs,
 // shell/panel_layout.rs `horizontal_panel_fit`), the
 // reference this checks against.
 const SIDEBAR_MIN: f32 = 242.0;
 const RIGHT_PANE_MIN: f32 = 360.0;
-// (Files' least: Zeron's is 220; here nothing (screens/shell/fit `TREE`): the
+// (Files' least: Zend's is 220; here nothing (screens/shell/fit `TREE`): the
 // tree stands beside the file inside the panel, whatever the panel's width.)
 const FILES_PANEL_MIN: f32 = 0.0;
 const CHAT_PANEL_MIN: f32 = 300.0;
@@ -94,11 +94,11 @@ fn mount() -> TestApp {
 
 /// The sidebar (opened first) and a session's panel (opened after), the
 /// window narrowed 10 points at a time from 1800 to 480 and widened back:
-/// at each width the shell shows what Zeron's policy shows, the sidebar at
+/// at each width the shell shows what Zend's policy shows, the sidebar at
 /// its limit, the panel at its share. Where each column goes and comes back
 /// is printed (`--nocapture`).
 #[test]
-fn a_resize_walk_shows_the_columns_zerons_policy_shows() {
+fn a_resize_walk_shows_the_columns_zends_policy_shows() {
     let mut app = mount();
     app.click("#shell-sidebar >> role:button \"Fix the build\"");
     app.frames(20);
@@ -115,16 +115,16 @@ fn a_resize_walk_shows_the_columns_zerons_policy_shows() {
         app.frames(30);
         let side = app.bounds("#shell-sidebar").width;
         let panel = app.bounds("#shell-files").width;
-        // (The sidebar opened first, then the panel: the tree, Zeron's Files, is
+        // (The sidebar opened first, then the panel: the tree, Zend's Files, is
         // open with it and takes no room of its own.)
         let want = horizontal_panel_fit(w, sidebar_width, (true, 1), (true, 3), (true, 0), false);
         let shows = (side > 0.5, panel > 0.5);
         if shows != (want.sidebar, want.right) {
-            faults.push(format!("{w}: shows sidebar {} panel {}, Zeron's {} {}", shows.0, shows.1, want.sidebar, want.right));
+            faults.push(format!("{w}: shows sidebar {} panel {}, Zend's {} {}", shows.0, shows.1, want.sidebar, want.right));
         }
         let tree = want.right && want.files;
         if want.sidebar && (side - SIDEBAR_EDGE - want.sidebar_limit).abs() > 0.5 {
-            faults.push(format!("{w}: the sidebar is {side}, Zeron's {} and the window's edge", want.sidebar_limit));
+            faults.push(format!("{w}: the sidebar is {side}, Zend's {} and the window's edge", want.sidebar_limit));
         }
         if want.right {
             // (Its width at its share, the chat keeping its least; see
@@ -139,7 +139,7 @@ fn a_resize_walk_shows_the_columns_zerons_policy_shows() {
             && was != now
         {
             let way = if step < widths.len() / 2 { "narrowing" } else { "widening" };
-            drops.push(format!("{way} to {w}: sidebar {} tree {} panel {} (Zeron's sidebar {} files {} right {})", now.0, now.1, now.2, want.sidebar, want.files, want.right));
+            drops.push(format!("{way} to {w}: sidebar {} tree {} panel {} (Zend's sidebar {} files {} right {})", now.0, now.1, now.2, want.sidebar, want.files, want.right));
         }
         last = Some(now);
     }
@@ -292,39 +292,39 @@ fn x_of(app: &mut TestApp, selector: &str) -> Option<(f32, f32)> {
 }
 
 /// The most a column's ease moves anything in one 60 Hz frame, past the window's
-/// own step: the sidebar's on Zeron's column motion (CSS ease,
+/// own step: the sidebar's on Zend's column motion (CSS ease,
 /// cubic-bezier(.25,.1,.25,1), its steepest about 2.25 times its mean), over
 /// its 261 in its ≈191 ms.
 const EASE_STEP: f32 = 57.0;
 
-/// Zeron's share of `available` for the panel (shell/panel_layout.rs
+/// Zend's share of `available` for the panel (shell/panel_layout.rs
 /// `content_split`): half, each side keeping its least.
 fn content_split(available: f32) -> f32 {
     (available / 2.).max(RIGHT_PANE_MIN).min((available - CHAT_PANEL_MIN).max(RIGHT_PANE_MIN))
 }
 
 /// The panel's share in a window `vw` wide beside a sidebar `side` wide
-/// (its card's width; 0 folded): Zeron's split of what the sidebar and the
+/// (its card's width; 0 folded): Zend's split of what the sidebar and the
 /// window's gaps round the cards leave the chat and the panel. (The window's
 /// gap before the sidebar's card and the gap between cards after it, or the
 /// window's edge alone; the gap before the panel and the window's edge
-/// after it. Zeron's columns had none.)
+/// after it. Zend's columns had none.)
 fn share_of(vw: f32, side: f32) -> f32 {
     let gaps = if side > 0.5 { SIDEBAR_EDGE + 4. } else { 5. } + 4. + 5.;
     content_split(vw - side - gaps)
 }
 
 /// A window resized continuously keeps the chat and the panel at half each,
-/// as Zeron's does (`observe_viewport_width`), at once: the change shared
+/// as Zend's does (`observe_viewport_width`), at once: the change shared
 /// between them, each keeping its least. Everything in it moves one way,
 /// with the window: the panel's edge, its first tab, the file's header and
 /// tree and text, the chat, the sidebar's width; and what stands at the
 /// panel's right (the file's "…") keeps its distance from the window's
-/// right edge. Slow and fast, narrowing and widening, across where Zeron's
+/// right edge. Slow and fast, narrowing and widening, across where Zend's
 /// fit hides or shows a column (those frames alone step, as the column goes
 /// or comes, the panel easing to its new share). (This was the chat taking
 /// the whole change, the panel moving only at the chat's least; Gaël asked
-/// for Zeron's balance back.)
+/// for Zend's balance back.)
 #[test]
 fn a_window_resize_keeps_the_chat_and_the_panel_at_half_each() {
     let mut app = mount();
@@ -493,7 +493,7 @@ fn a_narrow_panel_keeps_its_tree_beside_the_file() {
 }
 
 /// The sidebar folding or coming back splits the chat and the panel again,
-/// 50/50, as Zeron's `toggle_sidebar` did (`resplit_panels`), a width dragged
+/// 50/50, as Zend's `toggle_sidebar` did (`resplit_panels`), a width dragged
 /// on the panel's edge forgotten as there; and it eases there on the
 /// sidebar's own clock, so the chat between them only ever widens (or
 /// narrows) a frame at a time, never the other way first, and the panel
@@ -558,10 +558,10 @@ fn the_panel_opening_never_closes_the_sidebar_for_its_tree() {
 }
 
 /// A panel width you chose (its edge dragged) holds only until the panel's
-/// next toggle, as Zeron's `right_pane_width` does: the window resized, it
+/// next toggle, as Zend's `right_pane_width` does: the window resized, it
 /// stays where it was dragged; closed and opened again, it comes back at its
 /// share. And while it's opening, its edge is out of reach: a drag there does
-/// nothing (Zeron's handle is gone while the panel moves).
+/// nothing (Zend's handle is gone while the panel moves).
 #[test]
 fn a_dragged_panel_width_holds_until_the_panel_is_toggled() {
     let mut app = mount();
@@ -620,7 +620,7 @@ fn double_click(app: &mut TestApp, (x, y): (f32, f32)) {
 /// Double-clicking a seam puts it back, easing there as a toggle does: the
 /// sidebar's edge to its default width, the chat and the panel splitting
 /// again with it, and the panel's to its share (either forgetting a width
-/// dragged), as Zeron's `reset_panel_widths`. The panel's seam takes the pointer 10 points
+/// dragged), as Zend's `reset_panel_widths`. The panel's seam takes the pointer 10 points
 /// either side of its middle, under the top bar; the sidebar's, 10 inside
 /// its gap's middle to the gap's far side (on its own side: the top bar's
 /// first tabs reach over its head).
@@ -693,7 +693,7 @@ fn seam_light(app: &mut TestApp, label: &str) -> f32 {
 }
 
 /// A seam dragged past its limit bounces: what it moves goes a few points
-/// further (at most 5) and comes back, once, as Zeron's resize-edge bounce;
+/// further (at most 5) and comes back, once, as Zend's resize-edge bounce;
 /// its light, which fades in under the pointer, dims while the drag is held
 /// there, and comes back as it's dragged inside again. The panel's edge past
 /// its least and the sidebar's past its most.

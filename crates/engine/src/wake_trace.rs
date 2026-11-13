@@ -136,7 +136,7 @@ impl Timeline {
 
 struct Reporter {
     edge_url: String,
-    tokens: Arc<dyn zeron_rpc::TokenSource>,
+    tokens: Arc<dyn zend_rpc::TokenSource>,
 }
 
 /// Carries a wake's timeline across the restart into an update.
@@ -195,7 +195,7 @@ fn merged(
     process_start: Option<i64>,
     now: i64,
 ) -> Timeline {
-    let version = Some(zeron_update::current_version().to_owned());
+    let version = Some(zend_update::current_version().to_owned());
     match earlier {
         Some(mut timeline) => {
             timeline.version = version;
@@ -258,7 +258,7 @@ pub fn note_updating(version: &str) {
     let now = now_ms();
     with_trace(|trace| {
         trace.timeline.update_started.get_or_insert(now);
-        trace.timeline.updated_from = Some(zeron_update::current_version().to_owned());
+        trace.timeline.updated_from = Some(zend_update::current_version().to_owned());
         trace.timeline.updated_to = Some(version.to_owned());
     });
 }
@@ -282,7 +282,7 @@ pub fn updated_to() -> Option<String> {
         return None;
     }
     with_trace(|trace| trace.timeline.updated_to.clone())
-        .filter(|version| version == zeron_update::current_version())
+        .filter(|version| version == zend_update::current_version())
 }
 
 /// Tell the edge how far this wake has got, so a longer one reads as what it is.
@@ -304,7 +304,7 @@ pub fn announce_stage(stage: Option<&'static str>) {
 }
 
 /// Where the report goes, once the runner has its edge and tokens.
-pub fn report_to(edge_url: &str, tokens: Arc<dyn zeron_rpc::TokenSource>) {
+pub fn report_to(edge_url: &str, tokens: Arc<dyn zend_rpc::TokenSource>) {
     let edge_url = edge_url.trim_end_matches('/').to_owned();
     with_trace(|trace| trace.reporter = Some(Reporter { edge_url, tokens }));
 }
@@ -360,7 +360,7 @@ pub fn note_agent_event(session_started: bool) {
 }
 
 /// Best effort, and never in a run's way.
-async fn send(url: String, tokens: Arc<dyn zeron_rpc::TokenSource>, body: impl Serialize) {
+async fn send(url: String, tokens: Arc<dyn zend_rpc::TokenSource>, body: impl Serialize) {
     let http = crate::runner::http_client();
     for attempt in 0..3 {
         if attempt > 0 {
@@ -469,7 +469,7 @@ mod tests {
         assert_eq!(merged.update_started, Some(110));
         assert_eq!(
             merged.version.as_deref(),
-            Some(zeron_update::current_version())
+            Some(zend_update::current_version())
         );
 
         // Some earlier wake's, left by a restart that never happened.
@@ -502,9 +502,9 @@ mod tests {
         // pid (comm) state ppid pgrp session tty_nr tpgid flags minflt cminflt
         // majflt cmajflt utime stime cutime cstime priority nice threads
         // itrealvalue starttime …
-        let stat = "42 (zeron (a) b) S 1 42 42 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 8 0 350 12345";
+        let stat = "42 (zend (a) b) S 1 42 42 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 8 0 350 12345";
         assert_eq!(process_start_at(stat, 1_000), Some(4_500));
         assert_eq!(process_start_at("garbage", 1_000), None);
-        assert_eq!(process_start_at("42 (zeron) S 1 2", 1_000), None);
+        assert_eq!(process_start_at("42 (zend) S 1 2", 1_000), None);
     }
 }

@@ -42,7 +42,7 @@ export type Props = {
 	settings: (() -> Node)?,
 }
 
--- The title bar's height (Zeron's): the pages start under it, the
+-- The title bar's height (Zend's): the pages start under it, the
 -- wallpaper runs under it to the window's top.
 local TITLE_H = 38
 -- The top bar over the cards: a tab on the bar's line, the window's gap over
@@ -62,13 +62,13 @@ local TITLE_RIGHT = 64
 local TITLE_ROW_PAD = 10
 -- How wide a session's files stand beside it: at least, and by default
 -- (room for the tree beside a file, ds/files_pane's 288 + 360).
--- The panel's least (Zeron's surface host's: screens/shell/fit) and its
+-- The panel's least (Zend's surface host's: screens/shell/fit) and its
 -- width until it's first split or dragged.
 local FILES_MIN, FILES_W = fit.RIGHT_PANE_MIN, 660
 -- The page and its panel are cards set into the window under the
 -- title bar, the window showing this much round and between them
--- (`zeron.inset.gap`, ds/tokens).
-local INSET = (ui.theme.get("zeron.inset.gap") :: number?) or 4
+-- (`zend.inset.gap`, ds/tokens).
+local INSET = (ui.theme.get("zend.inset.gap") :: number?) or 4
 -- A split pane's ×: its size.
 local CLOSE = 22
 -- Whether the panel's tabs show in groups (screens/panel sets it).
@@ -199,7 +199,7 @@ return function(props: Props): Node
 	-- pane's card, letting the pointer through to it but for the composer.)
 	-- (Whole corners: the cards' token, which follows the window's own corner
 	-- where the host says it: ds/tokens.)
-	pane.rounded = "$zeron.inset.radius"
+	pane.rounded = "$zend.inset.radius"
 	-- (Its edge's room; the edge itself is drawn with the fill, below.)
 	pane.border = 1
 	pane.border_color = "#00000000"
@@ -219,10 +219,10 @@ return function(props: Props): Node
 		top = ui.raw(-1, "over the card's 1-point edge"),
 		bottom = ui.raw(-1, "over the card's 1-point edge"),
 		pointer_events = "none",
-		bg = "$zeron.inset.bg",
+		bg = "$zend.inset.bg",
 		border = 1,
-		border_color = "$zeron.inset.edge",
-		rounded = "$zeron.inset.radius",
+		border_color = "$zend.inset.edge",
+		rounded = "$zend.inset.radius",
 		opacity = card_shown,
 	})
 	pane.pointer_events = function(): any
@@ -241,7 +241,7 @@ return function(props: Props): Node
 	-- A new chat's wallpaper: your picture (Settings → Appearance), or what
 	-- a plugin draws in `#new-chat-background` while it's used as the
 	-- wallpaper (it replaces that box, and reads where the pointer is as
-	-- `pointer`); Zeron's effect over either.
+	-- `pointer`); Zend's effect over either.
 	table.insert(
 		pane,
 		ds.Wallpaper {
@@ -272,11 +272,11 @@ return function(props: Props): Node
 				if string.find(key, "^image:") and image then
 					return ds.wallpaper.Picture { src = image.path, w = image.w, h = image.h, x = image.x, y = image.y, zoom = image.zoom }
 				end
-				-- Where a plugin draws: nothing of Zeron's own.
+				-- Where a plugin draws: nothing of Zend's own.
 				return ui.div { id = "new-chat-background", absolute = true, left = 0, right = 0, top = 0, bottom = 0 }
 			end,
 			-- (A record, not two numbers: a plugin reading it follows it
-			-- with `zeron.live`, never built again as the pointer moves.)
+			-- with `zend.live`, never built again as the pointer moves.)
 			provide = {
 				pointer = ui.computed(function(): { x: number, y: number }
 					return { x = px:get(), y = py:get() }
@@ -324,7 +324,7 @@ return function(props: Props): Node
 	local chat_screen = boundary.load("@app/screens/chat")
 	if chat_screen and chat_screen.Composer then
 		-- (Not while a new chat has nowhere to work: its page asks for a
-		-- project instead, as Zeron's. The composer hides itself then: a
+		-- project instead, as Zend's. The composer hides itself then: a
 		-- `ui.show` round it would be a box over the whole pane, taking the
 		-- pointer and the wheel from the page, as boundary's pass explains.)
 		table.insert(pane, boundary.screen(boundary.named("shell.boundary.screen.composer"), "@app/screens/chat", function(c): Node
@@ -366,7 +366,7 @@ return function(props: Props): Node
 		return if c then c.title else ""
 	end)
 	local inset = (ui.theme.get("space.4") :: number?) or 16
-	-- (Collapsed, past the bar's controls by as much as Zeron's title
+	-- (Collapsed, past the bar's controls by as much as Zend's title
 	-- stands past its last control's glyph.)
 	-- Where a pane's title starts in its card: past the title bar's
 	-- controls when they stand over it (the sidebar collapsed, the pane at
@@ -443,7 +443,7 @@ return function(props: Props): Node
 			color = "$text.secondary",
 			rounded = "$radius.md",
 			bg = function(): string
-				return if ds.material.see_through() then "$zeron.composer.tint" else "$zeron.composer.solid"
+				return if ds.material.see_through() then "$zend.composer.tint" else "$zend.composer.solid"
 			end,
 			backdrop_blur = function(): number
 				return if ds.material.see_through() then 16 else 0
@@ -473,7 +473,7 @@ return function(props: Props): Node
 				held:set(false)
 				splits.dragging:set(false)
 			end,
-			ds.Icon { name = "grip-horizontal", size = (ui.theme.get("zeron.menu.glyph.size") :: number?) or 16 },
+			ds.Icon { name = "grip-horizontal", size = (ui.theme.get("zend.menu.glyph.size") :: number?) or 16 },
 		}
 		return ui.row {
 			absolute = true,
@@ -563,7 +563,7 @@ return function(props: Props): Node
 					end
 					return ui.raw(TITLE_RIGHT - TITLE_ROW_PAD + ds.TitleBar.actions_right(), "the title bar's controls at the right, and their room")
 				end,
-				gap = "$zeron.space.tight",
+				gap = "$zend.space.tight",
 				items = "center",
 				pointer_events = "none",
 				ui.row {
@@ -641,7 +641,7 @@ return function(props: Props): Node
 	-- A session's files, beside it: its card growing in from the window's
 	-- edge as the toggle opens them, what's in it standing still at its own width as the card's edge
 	-- uncovers it (nothing re-lays out on the way).
-	-- Its docked tree's room while the window's fit shows Zeron's Files:
+	-- Its docked tree's room while the window's fit shows Zend's Files:
 	-- the tree's own width, so that as the tree goes to float over the file
 	-- the panel narrows by just that, and the file stays where it was.
 	local TREE = fit.TREE
@@ -651,7 +651,7 @@ return function(props: Props): Node
 	-- Whether a width was chosen (its edge dragged, or keyed) since it was
 	-- last opened or closed: until its toggle, it holds that width (another
 	-- chat's panel, a relaunch), the fit narrowing it only as it must. Its
-	-- toggle forgets it, as Zeron's does: it opens at its share again, and
+	-- toggle forgets it, as Zend's does: it opens at its share again, and
 	-- keeps to its share as the window is resized.
 	local chosen = ui.persist("shell_panel_width_chosen", false)
 	local from_x, from_w, resizing = 0, 0, false
@@ -686,7 +686,7 @@ return function(props: Props): Node
 	-- wide (none: the window's edge before the page; one: its gap before
 	-- the sidebar's card and the gap between cards after it; then the gap
 	-- before the panel's card and the window's edge after it): what the
-	-- chat's card and the panel split 50/50. Zeron's columns had no gaps;
+	-- chat's card and the panel split 50/50. Zend's columns had no gaps;
 	-- left in, they all came off the chat, its card 18 points short of the
 	-- panel at "half" each. (The leasts count them already: the chat's 300
 	-- and a split's floor are its column's, gaps and all, as Wing set them.)
@@ -710,7 +710,7 @@ return function(props: Props): Node
 		end
 	end)
 	-- Its part beside the tree as it stands. A window resize shares its
-	-- change between the chat and this equally, as Zeron's does, so a panel
+	-- change between the chat and this equally, as Zend's does, so a panel
 	-- at its share stays at half of the room (each keeping its least; a
 	-- column the fit hides or shows is shared out too). Its width dragged
 	-- since its toggle, it holds instead, moving only when it must:
@@ -753,7 +753,7 @@ return function(props: Props): Node
 		local toggled = (side > 0) ~= (was.side > 0) and vw == was.vw and floor == was.floor
 		if toggled and floor <= fit.CHAT_PANEL_MIN and not shell_view.expanded:peek() then
 			-- The sidebar folded or back: the chat and this split again, as
-			-- Zeron's `toggle_sidebar` re-split them (`resplit_panels`), a
+			-- Zend's `toggle_sidebar` re-split them (`resplit_panels`), a
 			-- width dragged forgotten as there. Below, it eases there.
 			if chosen:peek() then
 				chosen:set(false)
@@ -814,7 +814,7 @@ return function(props: Props): Node
 			right_w:set(r)
 		end
 	end)
-	-- Its share, as Zeron's: its tree's allowance and half of what the
+	-- Its share, as Zend's: its tree's allowance and half of what the
 	-- sidebar and the tree leave the chat and it. Beside a split, its least:
 	-- the room is the panes'. (Dragged wider there, it stays so until it
 	-- closes; the width chosen is kept for a chat alone.)
@@ -849,7 +849,7 @@ return function(props: Props): Node
 	-- (its edge dragged, then another chat's panel shown, or the fit hiding
 	-- it for room and bringing it back). Its toggle, opening or closing it,
 	-- forgets that width. (The sidebar folding or coming back splits them
-	-- again too, above, as Zeron's does: Gaël's call over Wing's earlier
+	-- again too, above, as Zend's does: Gaël's call over Wing's earlier
 	-- rule, where the chat took all the sidebar gave and the panel held.)
 	local split = { on = shown:peek(), open = props.files:peek(), owner = owner(true) }
 	ui.effect(function()
@@ -878,7 +878,7 @@ return function(props: Props): Node
 		end
 	end)
 	-- The sidebar's edge double-clicked (its width put back): the chat and
-	-- this split again, the width chosen forgotten, as Zeron's
+	-- this split again, the width chosen forgotten, as Zend's
 	-- `reset_panel_widths` (a seam's reset restores the whole layout).
 	local resets = shell_view.seam_reset:peek()
 	ui.effect(function()
@@ -957,7 +957,7 @@ return function(props: Props): Node
 	-- Its width is where it's going (`base`, which a window resize moves at
 	-- once) and, after a step (opened, closed, expanded, a column going or
 	-- coming beside it, a neighbour's share), what's left of that step
-	-- (`off`), easing to nothing on its own clock (Zeron's column motion,
+	-- (`off`), easing to nothing on its own clock (Zend's column motion,
 	-- ds/motion). So a step glides whatever the window does meanwhile, and
 	-- is over in its time; nothing lags the window's edge.
 	local base = open_w:peek()
@@ -1068,7 +1068,7 @@ return function(props: Props): Node
 			end
 			-- (Opening or closing, what's in it holds still under its edge. Between
 			-- two open widths (expanding, collapsing), it follows its edge, as
-			-- Zeron's `panel_content_tween` eases it: laid out at the far width
+			-- Zend's `panel_content_tween` eases it: laid out at the far width
 			-- from the first frame, a home centred in it jumped half the way at
 			-- once, and collapsing left the card empty beside it.)
 			if now.shown ~= was.shown then
@@ -1081,7 +1081,7 @@ return function(props: Props): Node
 			off:set(showing - to)
 			-- (Split again as the sidebar folds or comes back: on the sidebar's
 			-- own clock, its curve and its time for its column's travel, so the
-			-- chat between them only ever widens or narrows, as in Zeron, where
+			-- chat between them only ever widens or narrows, as in Zend, where
 			-- both rode one tween. On the panel's quicker curve, the chat
 			-- narrowed a little first as the sidebar folded, then widened.)
 			local params = if now.sidebar ~= was.sidebar and not opened
@@ -1268,7 +1268,7 @@ return function(props: Props): Node
 	-- for it, and the card clips what's its own, so this stands beside it.
 	-- (Pressed itself, so it keeps the pointer as it's dragged. Not while
 	-- expanded: it's as wide as it goes. While the panel moves a press there
-	-- does nothing, as Zeron's handle; the pointer stays its own all along,
+	-- does nothing, as Zend's handle; the pointer stays its own all along,
 	-- so a hand resting on it finds it lit once the panel lands.)
 	local panel_edge = ui.div {
 			absolute = true,
@@ -1530,12 +1530,12 @@ return function(props: Props): Node
 			overflow = "hidden",
 			-- (The focused pane lifted, the others sunk.)
 			bg = function(): string
-				return if focused() then "$zeron.inset.active" else "$zeron.inset.inactive"
+				return if focused() then "$zend.inset.active" else "$zend.inset.inactive"
 			end,
-			rounded = "$zeron.inset.radius",
+			rounded = "$zend.inset.radius",
 			border = 1,
 			border_color = function(): string
-				return if focused() then "$zeron.inset.focus_edge" else "$zeron.inset.edge"
+				return if focused() then "$zend.inset.focus_edge" else "$zend.inset.edge"
 			end,
 			on_hover = function(inside: boolean)
 				hovered:set(inside)
@@ -1650,7 +1650,7 @@ return function(props: Props): Node
 					if focused() then
 						return "#00000000"
 					end
-					return if hovered:get() then "$zeron.inset.dim_hover" else "$zeron.inset.dim"
+					return if hovered:get() then "$zend.inset.dim_hover" else "$zend.inset.dim"
 				end,
 			},
 			-- What's carried over it, while it isn't focused (focused, the
@@ -1677,7 +1677,7 @@ return function(props: Props): Node
 			provide = { session = id },
 			pointer_events = "none",
 			-- (Opening, its edge clips its card, in the card's corners.)
-			rounded = "$zeron.inset.radius",
+			rounded = "$zend.inset.radius",
 			overflow = function(): string
 				return if splits.opening_size(id) then "hidden" else "visible"
 			end,
@@ -1716,10 +1716,10 @@ return function(props: Props): Node
 				return (HALF[held()] or HALF.left).bottom
 			end,
 			pointer_events = "none",
-			bg = "$zeron.inset.drop",
+			bg = "$zend.inset.drop",
 			border = 2,
-			border_color = "$zeron.inset.drop_edge",
-			rounded = "$zeron.inset.radius",
+			border_color = "$zend.inset.drop_edge",
+			rounded = "$zend.inset.radius",
 		})
 		-- (The sides last: over the top's and bottom's ends, they own the
 		-- corners.)
@@ -1892,7 +1892,7 @@ return function(props: Props): Node
 		overflow = function(): string
 			return if page_hold:get() then "hidden" else "visible"
 		end,
-		rounded = "$zeron.inset.radius",
+		rounded = "$zend.inset.radius",
 		ui.div {
 			id = "shell-page-room",
 			absolute = true,
@@ -2028,7 +2028,7 @@ return function(props: Props): Node
 				if sidebar_settled() <= 0 then
 					return past
 				end
-				local button = (ui.theme.get("zeron.icon_button.md") :: number?) or 24
+				local button = (ui.theme.get("zend.icon_button.md") :: number?) or 24
 				return past + button + 8
 			end,
 			-- (Clear of the panel toggle, and of Expand while the panel's open.)

@@ -16,17 +16,17 @@ use futures::stream::BoxStream;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use zeron_doc::{
+use zend_doc::{
     MessagePart, MessageRole, MessageStatus, QueuedMessage, SessionCommandEntry,
     SessionCommandPayload, SessionCommandStatus,
 };
-use zeron_engine::{EdgeConfig, EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use zend_engine::{EdgeConfig, EngineCore, HarnessRegistry};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_proto::{
     AgentEvent, Device, DoneStatus, HarnessId, HeldSendStatus, Model, ReasoningLevel, RunRequest,
     SandboxLevel, SteeringMode,
 };
-use zeron_rpc::methods;
+use zend_rpc::methods;
 
 const CHAT: &str = "chat-cloud-att";
 const HOST: &str = "cloud-machine";
@@ -164,7 +164,7 @@ async fn serve(mut stream: tokio::net::TcpStream, state: Arc<Mutex<EdgeState>>) 
         match name.trim().to_ascii_lowercase().as_str() {
             "content-length" => length = value.trim().parse().unwrap_or(0),
             "authorization" => bearer = value.trim() == "Bearer test-token",
-            "x-zeron-sha256" => checksum = Some(value.trim().to_string()),
+            "x-zend-sha256" => checksum = Some(value.trim().to_string()),
             _ => {}
         }
     }
@@ -234,7 +234,7 @@ async fn serve(mut stream: tokio::net::TcpStream, state: Arc<Mutex<EdgeState>>) 
         (404, Vec::new(), None)
     };
     let extra = sum
-        .map(|sum| format!("x-zeron-sha256: {sum}\r\n"))
+        .map(|sum| format!("x-zend-sha256: {sum}\r\n"))
         .unwrap_or_default();
     let head = format!(
         "HTTP/1.1 {status} X\r\ncontent-length: {}\r\n{extra}connection: close\r\n\r\n",
@@ -292,7 +292,7 @@ impl Harness for AckHarness {
                 tools: vec![],
                 cwd: request.cwd.clone(),
                 session_id: "sess".into(),
-                assistant_message_id: format!("a-{}", zeron_engine_id()),
+                assistant_message_id: format!("a-{}", zend_engine_id()),
             }),
             Ok(AgentEvent::TextDelta { text: "ack".into() }),
             Ok(AgentEvent::Done {
@@ -306,7 +306,7 @@ impl Harness for AckHarness {
     }
 }
 
-fn zeron_engine_id() -> u64 {
+fn zend_engine_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
@@ -332,7 +332,7 @@ fn assemble(dir: &Path, device_id: &str, edge: Option<&FakeEdge>) -> EngineCore 
 }
 
 async fn create_chat(core: &EngineCore, host: &str) {
-    zeron_rpc::memory_client(core.rpc_service())
+    zend_rpc::memory_client(core.rpc_service())
         .call(
             methods::MUTATE,
             serde_json::json!({ "op": "createChat", "chatId": CHAT, "deviceId": host }),
@@ -355,9 +355,9 @@ async fn sender(dir: &Path, edge: Option<&FakeEdge>, host: &str, capable: bool) 
         version: Some("0.2.138".into()),
         cursor_sdk_version: None,
         capabilities: if capable {
-            zeron_proto::capabilities::current()
+            zend_proto::capabilities::current()
         } else {
-            vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.to_string()]
+            vec![zend_proto::capabilities::MESSAGE_QUEUE_V1.to_string()]
         },
     });
     create_chat(&core, host).await;
@@ -480,7 +480,7 @@ fn user_text(core: &EngineCore) -> String {
 
 /// The UI's first step of a send: the bytes commit to the local engine.
 async fn stage(core: &EngineCore, upload_id: &str) {
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     client
         .call(
             methods::UPLOAD_CHUNK,
@@ -499,7 +499,7 @@ async fn stage(core: &EngineCore, upload_id: &str) {
 
 /// The UI's second step: `QueueCommand` naming what to deliver.
 async fn send(core: &EngineCore, message_id: &str, upload_id: &str) -> String {
-    let reply = zeron_rpc::memory_client(core.rpc_service())
+    let reply = zend_rpc::memory_client(core.rpc_service())
         .call(
             methods::QUEUE_COMMAND,
             serde_json::json!({
@@ -515,7 +515,7 @@ async fn send(core: &EngineCore, message_id: &str, upload_id: &str) -> String {
 
 /// A send during a live turn: `QueueMessage` naming what to deliver.
 async fn queue_row_with_image(core: &EngineCore, upload_id: &str) -> String {
-    let reply = zeron_rpc::memory_client(core.rpc_service())
+    let reply = zend_rpc::memory_client(core.rpc_service())
         .call(
             methods::QUEUE_MESSAGE,
             serde_json::json!({
@@ -532,7 +532,7 @@ async fn queue_row_with_image(core: &EngineCore, upload_id: &str) -> String {
 }
 
 async fn send_text(core: &EngineCore, message_id: &str, text: &str) {
-    zeron_rpc::memory_client(core.rpc_service())
+    zend_rpc::memory_client(core.rpc_service())
         .call(
             methods::QUEUE_COMMAND,
             serde_json::json!({
@@ -738,10 +738,10 @@ async fn a_row_on_a_cloud_machines_disk_goes_out_when_it_comes_back() {
     before.shutdown().await;
     drop(before);
 
-    let doc = zeron_doc::SessionDoc::init(CHAT).unwrap();
+    let doc = zend_doc::SessionDoc::init(CHAT).unwrap();
     doc.push_queued(&QueuedMessage::new("row-1", "and then this", "phone"))
         .unwrap();
-    let store = zeron_sync::DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+    let store = zend_sync::DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
     store
         .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
         .unwrap();
@@ -768,8 +768,8 @@ async fn a_row_on_a_machines_disk_waits_for_the_turn_the_kill_cut_off() {
     drop(before);
 
     let now = now();
-    let doc = zeron_doc::SessionDoc::init(CHAT).unwrap();
-    doc.push_message(&zeron_doc::SessionMessageEntry {
+    let doc = zend_doc::SessionDoc::init(CHAT).unwrap();
+    doc.push_message(&zend_doc::SessionMessageEntry {
         id: "m1".into(),
         role: MessageRole::User,
         parts: vec![MessagePart::Text {
@@ -783,7 +783,7 @@ async fn a_row_on_a_machines_disk_waits_for_the_turn_the_kill_cut_off() {
         duration_ms: None,
     })
     .unwrap();
-    doc.push_message(&zeron_doc::SessionMessageEntry {
+    doc.push_message(&zend_doc::SessionMessageEntry {
         id: "a1".into(),
         role: MessageRole::Assistant,
         parts: vec![MessagePart::Text {
@@ -800,12 +800,12 @@ async fn a_row_on_a_machines_disk_waits_for_the_turn_the_kill_cut_off() {
     doc.push_queued(&QueuedMessage::new("row-1", "and then this", "phone"))
         .unwrap();
     let store_dir = dir.join("orgs/dev-org/dev-user");
-    let store = zeron_sync::DocsStore::open(&store_dir).unwrap();
+    let store = zend_sync::DocsStore::open(&store_dir).unwrap();
     store
         .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
         .unwrap();
     drop(store);
-    zeron_engine::RunJournal::open(store_dir.join("journals"))
+    zend_engine::RunJournal::open(store_dir.join("journals"))
         .unwrap()
         .append(
             CHAT,
@@ -1389,7 +1389,7 @@ async fn waiting_messages_say_how_old_each_is() {
     let edge = FakeEdge::start().await;
     edge.fail_puts(&[413]);
     let core = sender(&tmp.path().join("laptop"), Some(&edge), HOST, true).await;
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     let mut stream = client
         .subscribe(
             methods::WATCH_WAITING_MESSAGES,
@@ -1454,7 +1454,7 @@ async fn waiting_messages_say_how_old_each_is() {
 // ---- only its person removes a send
 
 async fn remove_held(core: &EngineCore, id: &str) -> bool {
-    zeron_rpc::memory_client(core.rpc_service())
+    zend_rpc::memory_client(core.rpc_service())
         .call(
             methods::REMOVE_HELD_SEND,
             serde_json::json!({ "chatId": CHAT, "id": id }),
@@ -1557,13 +1557,13 @@ async fn sends_weeks_old_are_kept_and_still_tried() {
     drop(core);
 
     // Thirty days in the outbox: one failed, one that never got through.
-    let store = zeron_sync::DocsStore::open(store_dir(&dir)).unwrap();
+    let store = zend_sync::DocsStore::open(store_dir(&dir)).unwrap();
     let month_ago = now() - 30 * DAY_MS;
-    let payload = |message: &str, upload: &str| zeron_sync::attachment_store::HeldPayload {
-        body: zeron_sync::attachment_store::HeldBody::Command {
+    let payload = |message: &str, upload: &str| zend_sync::attachment_store::HeldPayload {
+        body: zend_sync::attachment_store::HeldBody::Command {
             payload: run_payload(message, upload),
         },
-        uploads: vec![zeron_sync::attachment_store::HeldUpload {
+        uploads: vec![zend_sync::attachment_store::HeldUpload {
             upload_id: upload.into(),
             file_name: "photo.png".into(),
         }],

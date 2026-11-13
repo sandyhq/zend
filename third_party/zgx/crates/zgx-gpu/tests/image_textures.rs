@@ -369,7 +369,7 @@ fn pixelated_images_take_the_nearest_pixel() {
 
 /// A script's picture (a kept file, decoded as drawn) drawn pixelated takes
 /// the nearest pixel too, once its pixels are decoded: a 4 by 4 checker at
-/// 64 by 64 is 16 hard squares (Zeron's lightbox at 300%). Said of the box
+/// 64 by 64 is 16 hard squares (Zend's lightbox at 300%). Said of the box
 /// around it, as an image view's style is (its picture a node inside):
 /// inherited, as CSS's `image-rendering` is.
 #[test]

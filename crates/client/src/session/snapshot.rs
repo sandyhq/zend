@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
-use zeron_proto::{ChatIndicator, ContextUsage, UserInputQuestion};
+use zend_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+use zend_proto::{ChatIndicator, ContextUsage, UserInputQuestion};
 
 use crate::connectivity::SendState;
 
@@ -332,7 +332,7 @@ pub(crate) fn transcript_load(i: LoadInputs) -> TranscriptLoad {
         return if i.waited_too_long { TranscriptLoad::Reconnecting } else { TranscriptLoad::Syncing };
     }
     // A stored chat's room has told it everything.
-    if i.generation < zeron_proto::relay_gen::RELAY_ROOM_GEN {
+    if i.generation < zend_proto::relay_gen::RELAY_ROOM_GEN {
         return TranscriptLoad::Ready;
     }
     // A relayed chat's room stores nothing, so only its host can fill this copy.

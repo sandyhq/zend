@@ -23,7 +23,7 @@
 -- control, so nothing moves.
 --
 -- What a real one needs that isn't here: a public page for a card
--- (zeron.sh/<something>/1378) with its picture as the post's preview, the
+-- (zend.invalid/<something>/1378) with its picture as the post's preview, the
 -- X post intent that opens with that link, the clipboard, and a way to
 -- write the card to a PNG.
 
@@ -95,7 +95,7 @@ local function failure(align: TextAlign?, lines: number?): Node
 		h = line * (lines or 1),
 		text_size = "$font.size.md",
 		line_height = "$font.line.md",
-		color = "$zeron.tone.danger.ink",
+		color = "$zend.tone.danger.ink",
 		wrap = true,
 	}
 end
@@ -141,7 +141,7 @@ local function glow(box: { left: number, right: number, top: number, bottom: num
 			w_full = true,
 			h_full = true,
 			blur = GLOW_BLUR,
-			opacity = "$zeron.card.glow",
+			opacity = "$zend.card.glow",
 			ui.image { src = SKY, w_full = true, h_full = true, fit = "cover" },
 		},
 	}
@@ -168,7 +168,7 @@ end
 -- the card, what the ways to share it share.
 local function address(align: TextAlign?): Node
 	return ui.text {
-		`zeron.sh/c/{YOU.username}`,
+		`zend.invalid/c/{YOU.username}`,
 		align = align,
 		text_size = "$font.size.sm",
 		line_height = "$font.line.sm",

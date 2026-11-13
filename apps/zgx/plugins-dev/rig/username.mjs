@@ -17,7 +17,7 @@ if (!engine || !wanted) {
 const ipc = await Ipc.open(Number(port), engine.data);
 const { token } = await ipc.call("AccessToken", {});
 ipc.close();
-const edge = "https://staging.zeron.sh";
+const edge = "https://staging.zend.invalid";
 const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
 const now = await (await fetch(`${edge}/username`, { headers })).json();
 if (now.username) {

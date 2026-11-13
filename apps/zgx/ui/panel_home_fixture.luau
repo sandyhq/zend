@@ -48,7 +48,7 @@ for _, scheme in { "light", "dark" } do
 		menu = "Fixture",
 		run = function()
 			ui.theme.follow_system(false)
-			ui.theme.current:set(`zeron-{scheme}`)
+			ui.theme.current:set(`zend-{scheme}`)
 		end,
 	}
 end
@@ -76,7 +76,7 @@ local function publish()
 			}
 			else { { id = "p1", name = "comet-native", device = "d", path = "/Users/me/comet-native", git = true } },
 		chats = {
-			{ id = "chat-1", title = "Parent", project = "p1", device = "d", branch = "zeron/panel-home", cwd = "/proj", status = "idle", updated = NOW, created = NOW - 3600, side_chats = #children },
+			{ id = "chat-1", title = "Parent", project = "p1", device = "d", branch = "zend/panel-home", cwd = "/proj", status = "idle", updated = NOW, created = NOW - 3600, side_chats = #children },
 			{ id = "chat-2", title = "On the devbox", device = "box", branch = "main", cwd = "/srv", updated = NOW, created = NOW - 3600 },
 		},
 		archived = {},
@@ -128,7 +128,7 @@ stub_lanes.watch = function(slot: string, id: string?, frozen: boolean?, _chat: 
 end
 
 -- The home's host calls: a project with one action and one to import from
--- its zeron.json; the branch +324962 −151 over main.
+-- its zend.json; the branch +324962 −151 over main.
 local home_api = require("@app/screens/panel/home_api") :: any
 local actions_fail = false
 local snapshot = {
@@ -138,7 +138,7 @@ local snapshot = {
 home_api.actions = function(space: string, device: string?): any
 	note(`actions:{space}:{device or ""}`)
 	if actions_fail then
-		return settled(false, { message = "The engine couldn't read zeron.json" })
+		return settled(false, { message = "The engine couldn't read zend.json" })
 	end
 	return settled(true, table.clone(snapshot))
 end
@@ -337,7 +337,7 @@ local generation = ui.state("test_home_generation", 1)
 return ui.column {
 	w_full = true,
 	h_full = true,
-	bg = "$zeron.window",
+	bg = "$zend.window",
 	-- (As the shell's root: every focus, and every key nothing took.)
 	on_focus = function()
 		Panel.focus_moved()

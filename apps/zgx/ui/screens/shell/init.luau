@@ -1,4 +1,4 @@
--- The main window, after setup: Zeron's shell. The sidebar (your sessions,
+-- The main window, after setup: Zend's shell. The sidebar (your sessions,
 -- grouped, sorted, pinned, in your sections) runs to the window's top; the
 -- page beside it shows where the route is (a new chat, a session, settings)
 -- with the window's one composer travelling between a new chat and a
@@ -178,9 +178,9 @@ return function(): Node
 		ui.invoke("close")
 	end
 	-- The next and previous session, in the sidebar's order, round from the
-	-- end (from a new chat, its first or last). (Zeron's, shell/tabs.rs.)
+	-- end (from a new chat, its first or last). (Zend's, shell/tabs.rs.)
 	local function step(by: number)
-		-- (While the panel has the keyboard, its tabs, as Zeron's right pane.)
+		-- (While the panel has the keyboard, its tabs, as Zend's right pane.)
 		local panel: any = boundary.load("@app/screens/panel")
 		if panel and panel.step_tab and (panel.step_tab :: any)(by) then
 			return
@@ -202,8 +202,8 @@ return function(): Node
 	end
 	-- A web link in a chat (ds/markdown's): the panel's browser tab beside
 	-- the session showing (or the plugin page showing: its own panel), with
-	-- Settings → Links "Open links in" Zeron (the shipping app's
-	-- `open_web_links_in_zeron`); else, or with neither open, the default
+	-- Settings → Links "Open links in" Zend (the shipping app's
+	-- `open_web_links_in_zend`); else, or with neither open, the default
 	-- browser.
 	-- (`panel`: that tab whatever the setting, a link's menu's "Open in
 	-- browser panel"; `in_app`: where its Open goes.)
@@ -217,7 +217,7 @@ return function(): Node
 		return (panel.open_url :: any)(session, url, route.project:peek(), page) == true
 	end
 	Links.in_app = function(): boolean
-		return prefs.open_links:peek() == "zeron"
+		return prefs.open_links:peek() == "zend"
 	end
 	Links.panel_ready = function(): boolean
 		return route.session:peek() ~= nil or route.page:peek() ~= nil
@@ -226,13 +226,13 @@ return function(): Node
 		if plugin_links.take(route.session:peek(), url) then
 			return true
 		end
-		if prefs.open_links:peek() ~= "zeron" then
+		if prefs.open_links:peek() ~= "zend" then
 			return false
 		end
 		return (Links.panel :: (string) -> boolean)(url)
 	end
 	-- ⌘E, ⌘J: the session's panel on its files, on its terminal (open there,
-	-- or closed if that's what it shows). (Zeron's Files and terminal.)
+	-- or closed if that's what it shows). (Zend's Files and terminal.)
 	local function panel_call(name: string): () -> ()
 		return function()
 			local panel: any = boundary.load("@app/screens/panel")
@@ -273,7 +273,7 @@ return function(): Node
 			end
 		end
 	end
-	-- ⌘1–9: the sidebar's first nine sessions, as it shows them (Zeron's
+	-- ⌘1–9: the sidebar's first nine sessions, as it shows them (Zend's
 	-- jumps, shell.rs), its hints kept up through them (screens/shell/sidebar
 	-- `jump_hints`).
 	for i = 1, 9 do
@@ -286,7 +286,7 @@ return function(): Node
 		end
 	end
 	-- ⌘⇧N: New project's palette, or closed if it's open (not on settings,
-	-- as Zeron's).
+	-- as Zend's).
 	runs["shell.new_project"] = function()
 		if route.current:peek().name == "settings" then
 			return
@@ -300,7 +300,7 @@ return function(): Node
 			end
 		end
 	end
-	-- Reload Zeron: the app quits and starts again, the same launch, its
+	-- Reload Zend: the app quits and starts again, the same launch, its
 	-- engine left running (src/relaunch.rs). Reload interface: every script
 	-- evaluated again in place, as a save does (src/main.rs `serve`).
 	-- (Through settings' host calls, which a fixture answers.)
@@ -417,7 +417,7 @@ return function(): Node
 				in_settings,
 				ui.column {
 					id = "shell-settings",
-					-- Zeron's Settings are no plugin's to change or add to: what you
+					-- Zend's Settings are no plugin's to change or add to: what you
 					-- allow plugins and templates is decided here (Settings →
 					-- Plugins and Templates). Sealed, with all it holds.
 					hook = false,
@@ -464,7 +464,7 @@ return function(): Node
 		end,
 		-- What plugins anywhere in the window read (plain values, never
 		-- records): the look, where the window is. (Not who's signed in:
-		-- your account is "profile.read"'s, its id in `zeron.profile_id`.)
+		-- your account is "profile.read"'s, its id in `zend.profile_id`.)
 		provide = {
 			appearance = ui.computed(function(): string
 				local kind = ui.theme.kind()
@@ -524,7 +524,7 @@ return function(): Node
 			end
 		end,
 		-- The window's glass, or (opaque) its colour.
-		bg = ui.tween(frosted, { from = "$zeron.window", to = "$background", duration = 320, ease = "outQuad" }),
+		bg = ui.tween(frosted, { from = "$zend.window", to = "$background", duration = 320, ease = "outQuad" }),
 		-- The chats: the sidebar, the page (its composer, a session's files),
 		-- the rail and the title bar. Kept while settings shows, out of
 		-- sight and out of the way, so they come back as they were (scroll,
@@ -578,7 +578,7 @@ return function(): Node
 				}
 			end, { pass = true }),
 		},
-		-- A session's card, its row rested on (Zeron's hover card): over the
+		-- A session's card, its row rested on (Zend's hover card): over the
 		-- window beside the row, one surface of the menus' glass blurring
 		-- what's under it. (Not zgx's tooltip, whose popup frames it again
 		-- and blurs nothing.)

@@ -7232,7 +7232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
-name = "zeron-cli"
+name = "zend-cli"
 version = "0.3.4"
 dependencies = [
  "anyhow",
@@ -7242,12 +7242,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
- "zeron-launch",
- "zeron-update",
+ "zend-launch",
+ "zend-update",
 ]
 
 [[package]]
-name = "zeron-launch"
+name = "zend-launch"
 version = "0.3.4"
 dependencies = [
  "libc",
@@ -7255,7 +7255,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-notify"
+name = "zend-notify"
 version = "0.3.4"
 dependencies = [
  "objc",
@@ -7264,18 +7264,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-plugin-guard"
+name = "zend-plugin-guard"
 version = "0.3.4"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
-name = "zeron-preview-label"
+name = "zend-preview-label"
 version = "0.3.4"
 
 [[package]]
-name = "zeron-proto"
+name = "zend-proto"
 version = "0.3.4"
 dependencies = [
  "chrono",
@@ -7286,7 +7286,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-theme"
+name = "zend-theme"
 version = "0.3.4"
 dependencies = [
  "anyhow",
@@ -7300,7 +7300,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-update"
+name = "zend-update"
 version = "0.3.4"
 dependencies = [
  "anyhow",
@@ -7317,7 +7317,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-visual"
+name = "zend-visual"
 version = "0.3.4"
 dependencies = [
  "base64 0.22.1",
@@ -7329,17 +7329,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-visual-gpu"
+name = "zend-visual-gpu"
 version = "0.3.4"
 dependencies = [
  "pollster",
  "tracing",
  "wgpu",
- "zeron-visual",
+ "zend-visual",
 ]
 
 [[package]]
-name = "zeron-voice"
+name = "zend-voice"
 version = "0.3.4"
 dependencies = [
  "anyhow",
@@ -7356,7 +7356,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-zgx"
+name = "zend-zgx"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
@@ -7395,18 +7395,18 @@ dependencies = [
  "usvg",
  "windows-sys 0.61.2",
  "zatex",
- "zeron-cli",
- "zeron-launch",
- "zeron-notify",
- "zeron-plugin-guard",
- "zeron-preview-label",
- "zeron-proto",
- "zeron-theme",
- "zeron-update",
- "zeron-visual",
- "zeron-visual-gpu",
- "zeron-voice",
- "zeron-zgx-pixels",
+ "zend-cli",
+ "zend-launch",
+ "zend-notify",
+ "zend-plugin-guard",
+ "zend-preview-label",
+ "zend-proto",
+ "zend-theme",
+ "zend-update",
+ "zend-visual",
+ "zend-visual-gpu",
+ "zend-voice",
+ "zend-zgx-pixels",
  "zgx",
  "zgx-desktop",
  "zgx-gpu",
@@ -7415,7 +7415,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeron-zgx-pixels"
+name = "zend-zgx-pixels"
 version = "0.0.0"
 
 [[package]]

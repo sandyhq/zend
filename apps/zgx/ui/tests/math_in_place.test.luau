@@ -23,10 +23,10 @@ test("display math becomes a math block, inline math inline code, prices stay te
 end)
 
 test("skills invoked in a prompt stay links, never a formula between their dollars", function()
-	local sent = "run [$commit](zeron-invoke:7b22) and [$gh-pr](zeron-invoke:7b23) to main"
+	local sent = "run [$commit](zend-invoke:7b22) and [$gh-pr](zend-invoke:7b23) to main"
 	expect(Source.prepare(sent)).to_be(sent)
 	-- math beside them is still math
-	expect(Source.prepare("[$a](zeron-invoke:7b) costs $x^2$")).to_be("[$a](zeron-invoke:7b) costs `$x^2$`")
+	expect(Source.prepare("[$a](zend-invoke:7b) costs $x^2$")).to_be("[$a](zend-invoke:7b) costs `$x^2$`")
 end)
 
 local function open(): any

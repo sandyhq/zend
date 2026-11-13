@@ -5,9 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-zeron-rpc = { path = "../../../crates/rpc" }
+zend-rpc = { path = "../../../crates/rpc" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 
-# Its own workspace: a test tool, not part of Zeron's build.
+# Its own workspace: a test tool, not part of Zend's build.
 [workspace]

@@ -168,7 +168,7 @@ export type Props = {
 -- A row of the panel: compact, full width. Actions wash under the pointer;
 -- items wash where the highlight is (the pointer's or the keys'), so the
 -- two never disagree.
--- (ROW is the menus' row, `zeron.menu.row`, here as a number: the list's
+-- (ROW is the menus' row, `zend.menu.row`, here as a number: the list's
 -- geometry is worked out from it.)
 local ROW = 28
 local function row(props: Merge<ContainerProps, { tall: boolean? }>, hover: boolean?): Node
@@ -188,11 +188,11 @@ end
 -- first row, and the room kept between the highlight and either edge as
 -- the keys move it (a row: what comes next always shows).
 local VIEW, INSET, GUTTER = 220, 4, ROW
--- Between rows: the theme's list gap (`zeron.list.gap`, read as the list
+-- Between rows: the theme's list gap (`zend.list.gap`, read as the list
 -- lays out: the themes load after this module); and a row's step down the
 -- list.
 local function gap(): number
-	return (ui.theme.get("zeron.list.gap") :: number?) or 2
+	return (ui.theme.get("zend.list.gap") :: number?) or 2
 end
 local function step(): number
 	return ROW + gap()
@@ -243,7 +243,7 @@ local function tile(item: Item): Node
 		h = 18,
 		shrink = 0,
 		rounded = "$radius.sm",
-		bg = "$zeron.secondary.bg",
+		bg = "$zend.secondary.bg",
 		items = "center",
 		justify = "center",
 		ui.text {
@@ -266,18 +266,18 @@ local TRIGGER = {
 		gap = "$space.1",
 		rounded = "$radius.md",
 		text_size = "$font.size.sm",
-		bg = "$zeron.secondary.bg",
+		bg = "$zend.secondary.bg",
 		color = "$text.secondary",
-		hover = { bg = "$zeron.secondary.hover", color = "$text.primary" },
-		active = { bg = "$zeron.secondary.active", color = "$text.primary" },
+		hover = { bg = "$zend.secondary.hover", color = "$text.primary" },
+		active = { bg = "$zend.secondary.active", color = "$text.primary" },
 		label = "$text.primary",
 		detail = "$text.tertiary",
 		glyph = 14,
 	},
 	ghost = {
 		h = 32,
-		px = "$zeron.space.tight",
-		gap = "$zeron.space.tight",
+		px = "$zend.space.tight",
+		gap = "$zend.space.tight",
 		rounded = "$radius.md",
 		text_size = "$font.size.sm",
 		bg = "#00000000",
@@ -292,14 +292,14 @@ local TRIGGER = {
 		-- (The composer's footer chips: its 24 and 8, its glyph 6 in all
 		-- round.)
 		h = 24,
-		px = "$zeron.space.tight",
-		gap = "$zeron.space.tight",
+		px = "$zend.space.tight",
+		gap = "$zend.space.tight",
 		rounded = "$radius.lg",
 		text_size = "$font.size.sm",
 		-- Its words lifted a point: centred by their capitals, their
 		-- lowercase (most of what a chip says) reads low beside its glyph.
 		-- (A margin under them of twice that.)
-		lift = "$zeron.space.hair",
+		lift = "$zend.space.hair",
 		bg = "#00000000",
 		color = "$text.tertiary",
 		hover = { bg = "$hover", color = "$text.secondary" },
@@ -934,7 +934,7 @@ return ui.component(function(props: Props): Node
 		open = open,
 		anchor = trigger,
 		placement = props.placement or { side = "bottom", align = "start", offset = 6 },
-		w = props.width or "$zeron.menu.width",
+		w = props.width or "$zend.menu.width",
 		build = function()
 			-- The keys: up and down move the highlight, Enter takes it.
 			-- The search field, once made: where the keys go as the panel is
@@ -1106,7 +1106,7 @@ return ui.component(function(props: Props): Node
 								-- sidebar's row), the highlight (pointer or keys) a
 								-- wash on the rest.
 								if value:get() == item.value then
-									return "$zeron.menu.selected"
+									return "$zend.menu.selected"
 								end
 								return if hi:get() == item.value then "$hover" else "#00000000"
 							end,
@@ -1136,7 +1136,7 @@ return ui.component(function(props: Props): Node
 								then ui.column {
 									grow = 1,
 									min_w = 0,
-									gap = "$zeron.space.hair",
+									gap = "$zend.space.hair",
 									if item.private
 										then PrivateText {
 											item.label,
@@ -1173,7 +1173,7 @@ return ui.component(function(props: Props): Node
 								}
 								else nil,
 							-- Out of reach: Wi-Fi off, in the warning's ink (a glyph,
-							-- not the word, as Zeron's device menu shows it).
+							-- not the word, as Zend's device menu shows it).
 							if item.warn
 								then ui.div { self = "center", shrink = 0, color = "$warning", Icon { name = "wifi-off", size = 12 } }
 								else nil,
@@ -1233,7 +1233,7 @@ return ui.component(function(props: Props): Node
 						return #shown:get() == 0 and props.loading ~= nil and props.loading()
 					end, ui.column {
 						w_full = true,
-						gap = "$zeron.list.gap",
+						gap = "$zend.list.gap",
 						Skeleton.Bar { w_full = true, h = ROW, rounded = Menu.row_radius() },
 						Skeleton.Bar { w_full = true, h = ROW, rounded = Menu.row_radius() },
 						Skeleton.Bar { w_full = true, h = ROW, rounded = Menu.row_radius() },
@@ -1258,7 +1258,7 @@ return ui.component(function(props: Props): Node
 						-- The field thins out toward the list's top and foot.
 						fade = { 16, 16 },
 						px = "$space.4",
-						gap = "$zeron.space.tight",
+						gap = "$zend.space.tight",
 						items = "center",
 						justify = "center",
 						ui.div {
@@ -1301,7 +1301,7 @@ return ui.component(function(props: Props): Node
 				if listless then
 					-- (Nothing to list.)
 				elseif props.search == false then
-					table.insert(rows, gated(ui.column { w_full = true, p = "$space.1", gap = "$zeron.list.gap", table.unpack(items) }))
+					table.insert(rows, gated(ui.column { w_full = true, p = "$space.1", gap = "$zend.list.gap", table.unpack(items) }))
 				else
 					local list = ui.scroll {
 						w_full = true,
@@ -1327,7 +1327,7 @@ return ui.component(function(props: Props): Node
 						ui.column {
 							w_full = true,
 							p = "$space.1",
-							gap = "$zeron.list.gap",
+							gap = "$zend.list.gap",
 							on_resize = function(size: { w: number, h: number })
 								if math.abs(size.h - content_h:peek()) >= 0.5 then
 									content_h:set(size.h)
@@ -1408,7 +1408,7 @@ return ui.component(function(props: Props): Node
 						}, false)
 						table.insert(acts, if action.shown then ui.show(action.shown, made) else made)
 					end
-					table.insert(rows, ui.column { w_full = true, p = "$space.1", gap = "$zeron.list.gap", table.unpack(acts) })
+					table.insert(rows, ui.column { w_full = true, p = "$space.1", gap = "$zend.list.gap", table.unpack(acts) })
 				end
 				if bottom_up then
 					place_top()

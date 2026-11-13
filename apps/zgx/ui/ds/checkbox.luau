@@ -43,15 +43,15 @@ local function box(on: () -> boolean, mixed: () -> boolean, hovered: () -> boole
 		rounded = "$radius.sm",
 		border = 1,
 		bg = function()
-			return if filled:get() then "$zeron.check.on" else "$zeron.check.bg"
+			return if filled:get() then "$zend.check.on" else "$zend.check.bg"
 		end,
 		border_color = function()
 			if filled:get() then
-				return "$zeron.check.on"
+				return "$zend.check.on"
 			end
-			return if hovered() then "$text.tertiary" else "$zeron.check.edge"
+			return if hovered() then "$text.tertiary" else "$zend.check.edge"
 		end,
-		color = "$zeron.check.mark",
+		color = "$zend.check.mark",
 		items = "center",
 		justify = "center",
 		-- The check: springing in from a little smaller as it turns on.
@@ -85,7 +85,7 @@ local function box(on: () -> boolean, mixed: () -> boolean, hovered: () -> boole
 			w = 8,
 			h = 2,
 			rounded = "$radius.full",
-			bg = "$zeron.check.mark",
+			bg = "$zend.check.mark",
 			opacity = ui.tween(ui.computed(function(): number
 				return if mixed() then 1 else 0
 			end), { duration = 120 }),
@@ -130,7 +130,7 @@ local Checkbox = ui.component(function(props: Props): Node
 	local text: Node? = nil
 	if label then
 		text = ui.column {
-			gap = "$zeron.space.hair",
+			gap = "$zend.space.hair",
 			min_w = 0,
 			grow = 1,
 			ui.text {
@@ -157,7 +157,7 @@ local Checkbox = ui.component(function(props: Props): Node
 		checked = on,
 		focusable = not props.disabled,
 		disabled = props.disabled,
-		opacity = if props.disabled then "$zeron.disabled" else nil,
+		opacity = if props.disabled then "$zend.disabled" else nil,
 		cursor = if props.disabled then nil else "pointer",
 		gap = "$space.2",
 		-- The box sits on the label's first line (18 high at md).

@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::{TimeZone, Utc};
-use zeron_proto::{
+use zend_proto::{
     AccessMode, AgentUsageWindow, ModelOption, ModelOptionChoice, NativeTurnOutcome, SandboxLevel,
 };
 
@@ -179,7 +179,7 @@ impl AgentHost for Host {
     }
 
     fn pin_mechanism(&self, account: &AgentAccount) -> Option<&'static str> {
-        lock(&self.mechanisms).get(&account.harness).copied().filter(|_| account.auth_kind != Some(zeron_proto::AgentAuthKind::ApiKey))
+        lock(&self.mechanisms).get(&account.harness).copied().filter(|_| account.auth_kind != Some(zend_proto::AgentAuthKind::ApiKey))
     }
 
     fn pins(&self) -> Vec<Pin> {
@@ -1013,7 +1013,7 @@ async fn a_pin_is_refused_for_what_cant_be_pinned() {
     assert_eq!(f.op("p", json!({ "op": "pin_account", "chat": "c1", "account": "a2" })).await.unwrap_err().reason, reason::BAD_CALL);
     assert_eq!(f.op("p", json!({ "op": "pin_account", "provider": "claude-code", "account": "a2" })).await.unwrap_err().reason, reason::BAD_CALL);
     // An API key bills per token: spreading over it saves nothing.
-    lock(&f.host.snapshot).accounts[1].auth_kind = Some(zeron_proto::AgentAuthKind::ApiKey);
+    lock(&f.host.snapshot).accounts[1].auth_kind = Some(zend_proto::AgentAuthKind::ApiKey);
     let refused = f.op("p", pin("c1", "a2")).await.unwrap_err();
     assert_eq!(refused.reason, reason::FAILED);
     assert!(lock(&f.host.pinned).is_empty());

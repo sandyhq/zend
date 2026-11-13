@@ -676,7 +676,7 @@ fn a_fade_inside_a_fade_takes_both() {
     }
 }
 
-/// Pictures stacked in a clip fading at its top and its bottom (Zeron's
+/// Pictures stacked in a clip fading at its top and its bottom (Zend's
 /// wallpaper, a plugin's scene of layered pictures): each band draws into a
 /// texture of its own, the band's size, not one over both (the page's), and
 /// once the host goes idle (`trim`) the renderer holds none.

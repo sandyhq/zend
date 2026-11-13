@@ -17,13 +17,13 @@ use chrono::Utc;
 use futures::future::BoxFuture;
 use loro::{ExportMode, LoroDoc, VersionVector};
 use support::mock_edge::MockEdge;
-use zeron_client::events::NullListener;
-use zeron_client::{Client, ClientConfig, Credentials, MessageRole, SendRequest, SessionHandle, TranscriptLoad};
-use zeron_doc::{MessagePart, RegistryDoc, SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry};
-use zeron_proto::{Chat, Device, Space};
-use zeron_sync::chat_client::{ChatClient, ChatDocSink, ChatTransport, CheckpointFetcher, RowImportOutcome};
-use zeron_sync::chat_relay::{RelayHandle, RelayImport, RelayPolicy};
-use zeron_sync::{DocsStore, RegistryClient, StaticUrl, SyncError};
+use zend_client::events::NullListener;
+use zend_client::{Client, ClientConfig, Credentials, MessageRole, SendRequest, SessionHandle, TranscriptLoad};
+use zend_doc::{MessagePart, RegistryDoc, SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry};
+use zend_proto::{Chat, Device, Space};
+use zend_sync::chat_client::{ChatClient, ChatDocSink, ChatTransport, CheckpointFetcher, RowImportOutcome};
+use zend_sync::chat_relay::{RelayHandle, RelayImport, RelayPolicy};
+use zend_sync::{DocsStore, RegistryClient, StaticUrl, SyncError};
 
 const HOST: &str = "dev-mac";
 const PHONE: &str = "ios-relay";
@@ -45,9 +45,9 @@ async fn eventually(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
 fn device_row(relay: bool) -> Device {
     let now = Utc::now();
     let mut capabilities: Vec<String> =
-        zeron_client::rpc::capability::ALL_QUEUE.iter().map(|c| (*c).to_owned()).collect();
+        zend_client::rpc::capability::ALL_QUEUE.iter().map(|c| (*c).to_owned()).collect();
     if relay {
-        capabilities.push(zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY.to_owned());
+        capabilities.push(zend_proto::relay_gen::CHAT_RELAY_CAPABILITY.to_owned());
     }
     Device {
         id: HOST.into(),
@@ -268,7 +268,7 @@ fn message(id: &str, role: MessageRole, device: &str, text: &str) -> SessionMess
         parts: vec![MessagePart::Text { id: "t0".into(), text: text.into() }],
         created_at: Utc::now().timestamp_millis(),
         device_id: device.into(),
-        status: Some(zeron_doc::MessageStatus::Complete),
+        status: Some(zend_doc::MessageStatus::Complete),
         continuation_of: None,
         duration_ms: None,
     }
@@ -349,13 +349,13 @@ fn journal(dir: &Path, chat: &str) -> usize {
 ///
 /// ```sh
 /// (cd edge && npx wrangler dev --port 27653 --var AUTH_MODE:dev)
-/// ZERON_PLAIN_EDGE=http://127.0.0.1:27653 cargo test -p zeron-client --test relay -- --ignored
+/// ZEND_PLAIN_EDGE=http://127.0.0.1:27653 cargo test -p zend-client --test relay -- --ignored
 /// ```
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires a live edge without the layer: set ZERON_PLAIN_EDGE"]
+#[ignore = "requires a live edge without the layer: set ZEND_PLAIN_EDGE"]
 async fn a_phone_with_the_layer_works_on_an_edge_without_it() {
     let _serial = SERIAL.lock().await;
-    let edge = std::env::var("ZERON_PLAIN_EDGE").expect("ZERON_PLAIN_EDGE");
+    let edge = std::env::var("ZEND_PLAIN_EDGE").expect("ZEND_PLAIN_EDGE");
     let user = format!("plain-{}", uuid::Uuid::new_v4().simple());
     let chat = uuid::Uuid::new_v4().to_string();
     let token = format!("{user}@org1");
@@ -777,7 +777,7 @@ async fn a_chats_generation_decides_where_each_send_goes_and_none_is_lost() {
     registry.write(|doc| doc.upsert_device(&device_row(false)).unwrap());
     eventually("the capability to go", 10, || {
         client.workspace().device(HOST).is_some_and(|d| {
-            !d.capabilities.iter().any(|c| c == zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY)
+            !d.capabilities.iter().any(|c| c == zend_proto::relay_gen::CHAT_RELAY_CAPABILITY)
         })
     })
     .await;
@@ -972,7 +972,7 @@ async fn a_turn_saved_mid_stream_doesnt_claim_to_be_running_with_nobody_to_hear_
     // What a kill left: a reply still streaming when the last frame came.
     let doc = LoroDoc::new();
     let mut tail = message("tail", MessageRole::Assistant, HOST, "half a sen");
-    tail.status = Some(zeron_doc::MessageStatus::Streaming);
+    tail.status = Some(zend_doc::MessageStatus::Streaming);
     SessionDoc::from_doc(doc.clone()).push_message(&tail).unwrap();
     doc.commit();
     DocsStore::open(dir.path())

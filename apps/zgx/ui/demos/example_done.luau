@@ -8,7 +8,7 @@ local kit = require("@demos/example_kit")
 return {
 	id = "ex_done",
 	title = "All set",
-	about = "The last step of setup: the organization made, what was set up in three lines, and the way in. After it the window closes and Zeron opens on the organization.",
+	about = "The last step of setup: the organization made, what was set up in three lines, and the way in. After it the window closes and Zend opens on the organization.",
 	demo = function()
 		return kit.stage {
 			w = 680,
@@ -24,7 +24,7 @@ return {
 					ds.Settings.Group {
 						ds.Settings.Row {
 							label = "Halcyon Labs",
-							description = "zeron.sh/halcyon-labs",
+							description = "zend.invalid/halcyon-labs",
 							lead = ds.Tile { label = "Halcyon Labs", hue = "violet", size = 32 },
 							badge = ds.Badge { "Owner" },
 						},
@@ -43,8 +43,8 @@ return {
 								items = "center",
 								justify = "center",
 								rounded = "$radius.full",
-								bg = "$zeron.tone.success.wash",
-								color = "$zeron.tone.success.ink",
+								bg = "$zend.tone.success.wash",
+								color = "$zend.tone.success.ink",
 								ds.Icon { name = "check-circle", size = 16 },
 							},
 						},

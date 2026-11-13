@@ -1,7 +1,7 @@
 //! What a Cloud machine says it is doing while a message waits for it.
 //!
 //! A machine woken by a message may install a release before it answers
-//! (`CloudSession::stage` reads [`zeron_proto::CLOUD_STAGE_UPDATING`]). Its
+//! (`CloudSession::stage` reads [`zend_proto::CLOUD_STAGE_UPDATING`]). Its
 //! heartbeat is back by then, so it doesn't read as starting: only the edge's
 //! session list says so. While one of this phone's sends waits on a Cloud
 //! machine, the list is read every [`POLL_MS`], and for [`WATCH_MS`] after
@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zeron_proto::CloudSessions;
+use zend_proto::CloudSessions;
 
 /// How often the session list is read while a send waits on a machine.
 pub(crate) const POLL_MS: i64 = 5_000;
@@ -143,13 +143,13 @@ impl CloudStages {
         let updating: HashSet<String> = sessions
             .sessions
             .iter()
-            .filter(|s| s.stage.as_deref() == Some(zeron_proto::CLOUD_STAGE_UPDATING))
+            .filter(|s| s.stage.as_deref() == Some(zend_proto::CLOUD_STAGE_UPDATING))
             .map(|s| s.device_id.clone())
             .collect();
         let slow: HashSet<String> = sessions
             .sessions
             .iter()
-            .filter(|s| s.stage.as_deref() == Some(zeron_proto::CLOUD_STAGE_SLOW))
+            .filter(|s| s.stage.as_deref() == Some(zend_proto::CLOUD_STAGE_SLOW))
             .map(|s| s.device_id.clone())
             .collect();
         let restored: HashMap<String, i64> = sessions
@@ -168,7 +168,7 @@ impl CloudStages {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{CloudSession, CloudState};
+    use zend_proto::{CloudSession, CloudState};
 
     fn wait(booting: bool) -> MachineWait {
         MachineWait {
@@ -275,7 +275,7 @@ mod tests {
             &mut stages,
             &[wait(false)],
             95_000,
-            Some(zeron_proto::CLOUD_STAGE_UPDATING)
+            Some(zend_proto::CLOUD_STAGE_UPDATING)
         ));
         assert!(stages.updating("cloud-s1"));
         // Installing takes a while: followed as long as it says so.
@@ -283,7 +283,7 @@ mod tests {
             &mut stages,
             &[wait(false)],
             200_000,
-            Some(zeron_proto::CLOUD_STAGE_UPDATING)
+            Some(zend_proto::CLOUD_STAGE_UPDATING)
         ));
         assert!(poll(&mut stages, &[wait(false)], 250_000, None));
         assert!(!stages.updating("cloud-s1"));
@@ -308,7 +308,7 @@ mod tests {
         assert!(poll(&mut stages, &[wait(true)], 1_000, None));
         assert!(!stages.wants_read(&[], 10_000));
         // And what it last said is forgotten: the next send reads it afresh.
-        stages.record(Some(&sessions(Some(zeron_proto::CLOUD_STAGE_UPDATING))));
+        stages.record(Some(&sessions(Some(zend_proto::CLOUD_STAGE_UPDATING))));
         assert!(stages.updating("cloud-s1"));
         assert!(!stages.wants_read(&[], 20_000));
         assert!(!stages.updating("cloud-s1"));
@@ -317,11 +317,11 @@ mod tests {
     #[test]
     fn a_wake_the_edge_says_is_slow_is_noted_and_followed() {
         let mut stages = CloudStages::default();
-        assert!(poll(&mut stages, &[wait(true)], 1_000, Some(zeron_proto::CLOUD_STAGE_SLOW)));
+        assert!(poll(&mut stages, &[wait(true)], 1_000, Some(zend_proto::CLOUD_STAGE_SLOW)));
         assert!(stages.slow("cloud-s1"));
         assert!(!stages.updating("cloud-s1"));
         // Its heartbeat back but still slow (no engine yet): still followed.
-        assert!(poll(&mut stages, &[wait(false)], 90_000, Some(zeron_proto::CLOUD_STAGE_SLOW)));
+        assert!(poll(&mut stages, &[wait(false)], 90_000, Some(zend_proto::CLOUD_STAGE_SLOW)));
         assert!(poll(&mut stages, &[wait(false)], 95_000, None));
         assert!(!stages.slow("cloud-s1"));
     }
@@ -339,9 +339,9 @@ mod tests {
     #[test]
     fn any_read_of_the_list_counts() {
         let mut stages = CloudStages::default();
-        assert!(stages.record(Some(&sessions(Some(zeron_proto::CLOUD_STAGE_UPDATING)))));
+        assert!(stages.record(Some(&sessions(Some(zend_proto::CLOUD_STAGE_UPDATING)))));
         assert!(stages.updating("cloud-s1"));
-        assert!(!stages.record(Some(&sessions(Some(zeron_proto::CLOUD_STAGE_UPDATING)))));
+        assert!(!stages.record(Some(&sessions(Some(zend_proto::CLOUD_STAGE_UPDATING)))));
         // A stage from a newer edge is just not this one.
         assert!(stages.record(Some(&sessions(Some("something-new")))));
         assert!(!stages.updating("cloud-s1"));

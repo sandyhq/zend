@@ -1,12 +1,12 @@
 # The member card on the web
 
-Zeron's member card (`apps/zgx/ui/ds/member_card.luau`, the native one) as a
+Zend's member card (`apps/zgx/ui/ds/member_card.luau`, the native one) as a
 web page: a canvas that draws the same card from the same numbers, a share
 page whose meta tags make X show it inside a post as a Player Card, and a
 still picture of it for everywhere else. The native card is the source of
 truth; this folder ports it and measures the port against it.
 
-A member's page is `zeron.sh/@username`, served by the edge worker
+A member's page is `zend.invalid/@username`, served by the edge worker
 (`edge/src/card-routes.ts`). It shows only the public card
 (`edge/src/user-directory.ts`'s `PublicCard`: `username`, `firstName`,
 `userNumber`, `joinedOn`, `badges`, `scene`, `holo`, `sky`) and embeds
@@ -58,7 +58,7 @@ pngjs; headless Chrome comes from `/Applications/Google Chrome.app`, or set
 `CHROME`).
 
 ```sh
-node tools/build.mjs                      # dist/ (add --site https://zeron.sh for absolute URLs)
+node tools/build.mjs                      # dist/ (add --site https://zend.invalid for absolute URLs)
 node tools/images.mjs                     # dist/@*/card.png
 node tools/serve.mjs 8787                 # http://127.0.0.1:8787/
 ```
@@ -105,7 +105,7 @@ public card doesn't carry).
 ## Comparing with the native card
 
 The acceptance test is pixel difference, not a look. The rig captures the
-gallery's Member card page (`./target/release/zeron-zgx gallery --inspect`
+gallery's Member card page (`./target/release/zend-zgx gallery --inspect`
 from `apps/zgx`, `zgx inspect snapshot` of the page pane) and the same card
 on the web at the same size (300×420 points at 2×), pose and foil position
 (the fixtures in `tools/fixtures/gallery.json`, served at

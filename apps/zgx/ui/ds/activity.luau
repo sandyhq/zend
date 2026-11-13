@@ -1,10 +1,10 @@
--- What an agent did on its way to a reply, as Zeron's transcript draws its
+-- What an agent did on its way to a reply, as Zend's transcript draws its
 -- tools (transcript.rs, `activity_rail`): a quiet summary ("Ran 3 commands ·
 -- read 2 files"), the working loader before it while it works, and under it,
 -- open (a click on the summary), a
 -- row a tool: a hairline trunk down the gutter, a rounded elbow off it to
 -- each tool's glyph, then what it did. The sidebar's groups draw the same
--- tree (`$zeron.tree`, 1 point, 6-point elbows).
+-- tree (`$zend.tree`, 1 point, 6-point elbows).
 --
 -- While the agent works the tree is open and its rows arrive one by one,
 -- each sliding in under the last as the trunk reaches down to it; the
@@ -46,7 +46,7 @@ export type Tool = {
 	-- Its call is prose (a thought's words), not code.
 	prose: boolean?,
 	-- Being written now (a thought's words still coming): its fold shows
-	-- the latest lines, as Zeron's streaming thought keeps its tail.
+	-- the latest lines, as Zend's streaming thought keeps its tail.
 	live: boolean?,
 	added: number?,
 	removed: number?,
@@ -71,7 +71,7 @@ export type Props = {
 	live: (() -> boolean)?,
 	-- How long it worked, in seconds, once it is done ("Worked for 42s").
 	worked: (() -> number?)?,
-	-- Its line, as the caller words it (Zeron's grouping, the host's); by
+	-- Its line, as the caller words it (Zend's grouping, the host's); by
 	-- default, counted from its tools here.
 	summary: (() -> string?)?,
 	-- A name to keep whether the reader opened or folded it under, across
@@ -116,11 +116,11 @@ local GLYPH: { [Kind]: Icon.Name } = {
 }
 
 -- The tree, in points: the trunk's x (under the working loader's middle, so
--- the trunk runs down from it), the elbow's radius (Zeron's), where the
+-- the trunk runs down from it), the elbow's radius (Zend's), where the
 -- branch ends, the glyph's place and size, and the gutter they take before
--- the words. Zeron hangs its tree off a chevron 12 points in; with no
+-- the words. Zend hangs its tree off a chevron 12 points in; with no
 -- chevron the tree starts at the reply's own left edge. Rows are a little
--- tighter than Zeron's 32: a long run of tools reads as one list, not a
+-- tighter than Zend's 32: a long run of tools reads as one list, not a
 -- column of chips.
 local LOADER = 16
 local TRUNK, BEND, BRANCH_END = LOADER / 2 + 0.5, 6, 20
@@ -203,7 +203,7 @@ local function call_block(now: () -> Tool): Node
 		px = "$space.3",
 		py = "$space.2",
 		rounded = "$radius.md",
-		bg = "$zeron.code.wash",
+		bg = "$zend.code.wash",
 		ui.text {
 			function(): string
 				return now().call or ""
@@ -308,7 +308,7 @@ local GROUPS_CHOSEN = ui.state("activity_groups_chosen", {} :: { [string]: boole
 -- nothing rewraps as it opens.
 --
 -- Being written or settled, the fold is the same: its first lines, fading
--- out at the foot, "Show all N lines" under them. (Zeron's streaming thought
+-- out at the foot, "Show all N lines" under them. (Zend's streaming thought
 -- keeps its tail, the fade at the top; the user wanted one fold, faded at
 -- the foot, Nov 2 2026.)
 local THOUGHT_LINES = 4
@@ -387,7 +387,7 @@ local function thought_row(
 	resized: ((size: { w: number, h: number }) -> ())?
 ): Node
 	local id = now().id
-	local line = ui.theme.get("zeron.prose.small.line") :: number
+	local line = ui.theme.get("zend.prose.small.line") :: number
 	local folded_h = THOUGHT_LINES * line
 	local body = ui.ref()
 	local function is_open(): boolean
@@ -463,7 +463,7 @@ local function thought_row(
 			pointer_events = "none",
 			draw = function(c, _, h)
 				if below() then
-					c:rect(TRUNK - 0.5, 0, 1, h, "$zeron.tree")
+					c:rect(TRUNK - 0.5, 0, 1, h, "$zend.tree")
 				end
 			end,
 		},
@@ -621,7 +621,7 @@ local function row(
 			pointer_events = "none",
 			draw = function(c, _, h)
 				local mid = ROW / 2
-				c:fill(branch_of(h, below()), "$zeron.tree")
+				c:fill(branch_of(h, below()), "$zend.tree")
 			end,
 		},
 		ui.button {
@@ -846,7 +846,7 @@ return ui.component(function(props: Props): Node
 	-- was last laid out if opened; a thought, as it was if it's short or
 	-- opened, else its four lines folded before it knows it's long (its
 	-- button's room comes a frame on, as the words are measured).
-	local line = ui.theme.get("zeron.prose.small.line") :: number
+	local line = ui.theme.get("zend.prose.small.line") :: number
 	local first_folded = THOUGHT_LINES * line + (ROW - line)
 	local function height_of(t: Tool): number
 		local h = MEASURED[`{own_key}:{t.id}`]

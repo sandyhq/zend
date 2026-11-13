@@ -1,5 +1,5 @@
 //! The engine's side of the relay layer (docs/design/relay-layer.md). On against
-//! every edge unless `ZERON_RELAY_LAYER` turns it off ([`relay_layer_on`]). On, the
+//! every edge unless `ZEND_RELAY_LAYER` turns it off ([`relay_layer_on`]). On, the
 //! edge decides who relays, and a room that doesn't offer it (an edge without the
 //! layer, or with its switch off) leaves everything on stored rows. Off, nothing here runs: no chat handle carries relay state, no
 //! capability is advertised and no stream service is registered.
@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use zeron_proto::relay_gen::{RELAY_ROOM_GEN, STORED_ROOM_GEN};
-use zeron_sync::chat_relay::{RelayEvent, RelayHandle, RelayPolicy};
+use zend_proto::relay_gen::{RELAY_ROOM_GEN, STORED_ROOM_GEN};
+use zend_sync::chat_relay::{RelayEvent, RelayHandle, RelayPolicy};
 
 use super::{ChatDocHandle, DocHost, lock};
 
@@ -46,14 +46,14 @@ const LINGER_AFTER_PEER: Duration = Duration::from_secs(15);
 const RELAY_SNAPSHOT_LIMIT: usize = 24 * 1024 * 1024;
 
 /// The engine-wide switch, read once: [`relay_layer_on`] for this engine's
-/// `ZERON_RELAY_LAYER`.
+/// `ZEND_RELAY_LAYER`.
 pub fn relay_layer_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| relay_layer_on(std::env::var("ZERON_RELAY_LAYER").ok().as_deref()))
+    *ENABLED.get_or_init(|| relay_layer_on(std::env::var("ZEND_RELAY_LAYER").ok().as_deref()))
 }
 
 /// Whether an engine runs the relay layer: yes, whatever its edge, unless
-/// `ZERON_RELAY_LAYER` is set to anything but `1` (the kill switch). Whether a chat
+/// `ZEND_RELAY_LAYER` is set to anything but `1` (the kill switch). Whether a chat
 /// relays is still the room's call: an edge that doesn't offer the layer leaves
 /// every chat on stored rows, exactly as before it.
 pub fn relay_layer_on(flag: Option<&str>) -> bool {
@@ -352,7 +352,7 @@ impl DocHost {
         &self,
         handle: &Weak<ChatDocHandle>,
         device: &str,
-        sink: Arc<dyn zeron_sync::chat_client::ChatDocSink>,
+        sink: Arc<dyn zend_sync::chat_client::ChatDocSink>,
     ) -> Option<Arc<ChatRelayState>> {
         let handle = handle.upgrade()?;
         let state = lock(&handle.relay)
@@ -553,7 +553,7 @@ impl DocHost {
         // the generation it wrote, but its device row no longer says it can.
         let host_reads_queue = workspace.read_devices().is_ok_and(|devices| {
             devices.iter().any(|device| {
-                device.id == chat.device_id && device.supports(zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY)
+                device.id == chat.device_id && device.supports(zend_proto::relay_gen::CHAT_RELAY_CAPABILITY)
             })
         });
         // On the relay handle, not the client: a client that dials and pushes before
@@ -702,11 +702,11 @@ pub(super) fn posts_checkpoint(reason: &str, room_gen: u32, is_host: bool) -> bo
     is_host || room_gen < RELAY_ROOM_GEN || reason.starts_with("relay-")
 }
 
-/// [`RELAY_SNAPSHOT_LIMIT`]. A debug build takes `ZERON_RELAY_SNAPSHOT_LIMIT`, so the
+/// [`RELAY_SNAPSHOT_LIMIT`]. A debug build takes `ZEND_RELAY_SNAPSHOT_LIMIT`, so the
 /// two-engine smoke can make a chat too big to relay without making it huge.
 fn legacy_hold() -> Duration {
     #[cfg(debug_assertions)]
-    if let Some(secs) = std::env::var("ZERON_RELAY_LEGACY_HOLD_SECS").ok().and_then(|v| v.parse().ok()) {
+    if let Some(secs) = std::env::var("ZEND_RELAY_LEGACY_HOLD_SECS").ok().and_then(|v| v.parse().ok()) {
         return Duration::from_secs(secs);
     }
     LEGACY_HOLD
@@ -714,7 +714,7 @@ fn legacy_hold() -> Duration {
 
 fn relay_snapshot_limit() -> usize {
     #[cfg(debug_assertions)]
-    if let Some(limit) = std::env::var("ZERON_RELAY_SNAPSHOT_LIMIT").ok().and_then(|v| v.parse().ok()) {
+    if let Some(limit) = std::env::var("ZEND_RELAY_SNAPSHOT_LIMIT").ok().and_then(|v| v.parse().ok()) {
         return limit;
     }
     RELAY_SNAPSHOT_LIMIT
@@ -766,9 +766,9 @@ mod tests {
 
     fn state() -> Arc<ChatRelayState> {
         struct NoDoc;
-        impl zeron_sync::chat_client::ChatDocSink for NoDoc {
-            fn apply_row(&self, _: &[u8], _: u64) -> zeron_sync::chat_client::RowImportOutcome {
-                zeron_sync::chat_client::RowImportOutcome::Applied
+        impl zend_sync::chat_client::ChatDocSink for NoDoc {
+            fn apply_row(&self, _: &[u8], _: u64) -> zend_sync::chat_client::RowImportOutcome {
+                zend_sync::chat_client::RowImportOutcome::Applied
             }
             fn apply_checkpoint(&self, _: &[u8], _: u64) -> Result<(), String> {
                 Ok(())
@@ -893,13 +893,13 @@ mod tests {
         (url, posts)
     }
 
-    fn host_on(url: &str, dir: &std::path::Path) -> (DocHost, Arc<zeron_sync::DocsStore>) {
-        let store = Arc::new(zeron_sync::DocsStore::open(dir).unwrap());
+    fn host_on(url: &str, dir: &std::path::Path) -> (DocHost, Arc<zend_sync::DocsStore>) {
+        let store = Arc::new(zend_sync::DocsStore::open(dir).unwrap());
         let host = DocHost::new(
             store.clone(),
             crate::doc_host::DocHostConfig {
                 device_id: "host".into(),
-                default_harness: zeron_proto::HarnessId::Mock,
+                default_harness: zend_proto::HarnessId::Mock,
                 edge: Some(crate::doc_host::EdgeConfig::with_static_token(url, "test")),
             },
         );
@@ -985,12 +985,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn what_came_by_relay_survives_a_crash_before_the_save() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap());
+        let store = Arc::new(zend_sync::DocsStore::open(dir.path()).unwrap());
         let host = DocHost::new(
             store.clone(),
             crate::doc_host::DocHostConfig {
                 device_id: "viewer".into(),
-                default_harness: zeron_proto::HarnessId::Mock,
+                default_harness: zend_proto::HarnessId::Mock,
                 edge: None,
             },
         );
@@ -1030,12 +1030,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_viewer_knows_to_use_the_queue_before_its_first_dial() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap());
+        let store = Arc::new(zend_sync::DocsStore::open(dir.path()).unwrap());
         let host = DocHost::new(
             store.clone(),
             crate::doc_host::DocHostConfig {
                 device_id: "viewer".into(),
-                default_harness: zeron_proto::HarnessId::Mock,
+                default_harness: zend_proto::HarnessId::Mock,
                 edge: None,
             },
         );
@@ -1052,7 +1052,7 @@ mod tests {
             },
         )
         .unwrap();
-        workspace.upsert_device_row(&zeron_proto::Device {
+        workspace.upsert_device_row(&zend_proto::Device {
             id: "host".into(),
             name: "host".into(),
             platform: "linux".into(),
@@ -1060,7 +1060,7 @@ mod tests {
             created_at: None,
             version: None,
             cursor_sdk_version: None,
-            capabilities: vec![zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY.into()],
+            capabilities: vec![zend_proto::relay_gen::CHAT_RELAY_CAPABILITY.into()],
         });
         workspace.create_chat("chat", None, Some("host"), None, None).unwrap();
         let mut row = workspace.chat("chat").unwrap().unwrap();
@@ -1127,7 +1127,7 @@ mod tests {
     async fn room_without_the_layer() -> (String, Arc<Mutex<OldRoomSeen>>) {
         use futures::{SinkExt, StreamExt};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use zeron_sync::chat_frames::{decode, encode, frame_type};
+        use zend_sync::chat_frames::{decode, encode, frame_type};
 
         let seen = Arc::new(Mutex::new(OldRoomSeen::default()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

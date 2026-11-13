@@ -5,7 +5,7 @@
 //! frame of the scroll, the script's instructions (`ZGX_PROFILE`) and the
 //! runs it made, by name; a steady scroll's frames should run none.
 //!
-//!   cargo test --release --bin zeron-zgx scroll_script -- --ignored --nocapture
+//!   cargo test --release --bin zend-zgx scroll_script -- --ignored --nocapture
 //!
 //! (`SCROLL_TURNS`, 60 unless set: how many prompt-and-reply turns;
 //! `SCROLL_STEPS`, 120: how many frames of the scroll.)
@@ -145,7 +145,7 @@ fn scroll_script() {
 /// A steady scroll, a fling and jumps (to the top, the end, the middle): run
 /// on two trees, the lists the same is the transcript drawing the same.
 ///
-///   SCROLL_PIXELS=<dir> cargo test --release --bin zeron-zgx scroll_pixels -- --ignored --nocapture
+///   SCROLL_PIXELS=<dir> cargo test --release --bin zend-zgx scroll_pixels -- --ignored --nocapture
 #[test]
 #[ignore = "a comparison: run it --release"]
 fn scroll_pixels() {

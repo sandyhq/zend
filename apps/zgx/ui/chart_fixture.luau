@@ -147,11 +147,11 @@ for _, w in { 240, 320, 360, 480, 640 } do
 end
 ui.command { id = "theme_light", title = "Light", run = function()
 	ui.theme.follow_system(false)
-	ui.theme.current:set("zeron-light")
+	ui.theme.current:set("zend-light")
 end }
 ui.command { id = "theme_dark", title = "Dark", run = function()
 	ui.theme.follow_system(false)
-	ui.theme.current:set("zeron-dark")
+	ui.theme.current:set("zend-dark")
 end }
 
 local kids: { Node } = {}

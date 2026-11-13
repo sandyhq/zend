@@ -14,18 +14,18 @@ use std::time::Duration;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zeron_doc::{QueuedMessage, SessionCommandPayload};
+use zend_doc::{QueuedMessage, SessionCommandPayload};
 
 /// The edge's cap (attachment-blobs.ts) and the engine's assembled-upload cap
 /// (uploads.rs `MAX_BYTES`).
 pub const MAX_STORED_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Carries the object's hex SHA-256 both ways.
-pub const SHA256_HEADER: &str = "x-zeron-sha256";
+pub const SHA256_HEADER: &str = "x-zend-sha256";
 
 /// A held send never stops trying on its own: only its person removes it. After
 /// this long it tries less often ([`held_backoff_cap`]).
-pub const HELD_SEND_SLOW_AFTER_MS: i64 = zeron_doc::CLOUD_COMMAND_TTL_MS;
+pub const HELD_SEND_SLOW_AFTER_MS: i64 = zend_doc::CLOUD_COMMAND_TTL_MS;
 /// The longest wait between tries for a send older than [`HELD_SEND_SLOW_AFTER_MS`].
 pub const HELD_SEND_SLOW_BACKOFF: Duration = Duration::from_secs(15 * 60);
 

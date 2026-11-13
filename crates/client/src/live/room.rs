@@ -15,11 +15,11 @@ use futures::future::BoxFuture;
 use loro::VersionVector;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use zeron_doc::SessionDoc;
-use zeron_proto::relay_gen::RELAY_ROOM_GEN;
-use zeron_sync::chat_client::{ChatTransport, RowImportOutcome};
-use zeron_sync::chat_relay::{RelayHandle, RelayImport, RelayPolicy};
-use zeron_sync::{
+use zend_doc::SessionDoc;
+use zend_proto::relay_gen::RELAY_ROOM_GEN;
+use zend_sync::chat_client::{ChatTransport, RowImportOutcome};
+use zend_sync::chat_relay::{RelayHandle, RelayImport, RelayPolicy};
+use zend_sync::{
     ChatClient, ChatDocSink, ChatEvent, CheckpointFetcher, DocsStore, SyncError, UrlProvider,
 };
 
@@ -335,7 +335,7 @@ impl ChatDocSink for ViewerSink {
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|(id, bytes)| {
-                !rejected.contains(id) && bytes.len() <= zeron_sync::chat_client::MAX_PUSH_BYTES
+                !rejected.contains(id) && bytes.len() <= zend_sync::chat_client::MAX_PUSH_BYTES
             })
             .collect())
     }
@@ -542,8 +542,8 @@ impl CheckpointFetcher for ChatHttp {
             let mut seen_seq: Option<String> = None;
             let mut last_failure = None;
             for _attempt in 0..4 {
-                let _permit = zeron_sync::budget::shared()
-                    .http(zeron_sync::budget::Priority::Interactive)
+                let _permit = zend_sync::budget::shared()
+                    .http(zend_sync::budget::Priority::Interactive)
                     .await?;
                 let token = bearer.get().await?;
                 let mut request = crate::auth::http()
@@ -605,8 +605,8 @@ impl ChatHttp {
         let bearer = self.bearer.clone();
         let url = urls::chat_rows(&self.edge, &self.chat_id, after, &self.device_id, reader);
         Box::pin(async move {
-            let _permit = zeron_sync::budget::shared()
-                .http(zeron_sync::budget::Priority::Interactive)
+            let _permit = zend_sync::budget::shared()
+                .http(zend_sync::budget::Priority::Interactive)
                 .await?;
             let token = bearer.get().await?;
             let response = crate::auth::http()
@@ -650,8 +650,8 @@ impl ChatTransport for ChatHttp {
             urls::encode(&lock(&self.host))
         );
         Box::pin(async move {
-            let _permit = zeron_sync::budget::shared()
-                .http(zeron_sync::budget::Priority::Interactive)
+            let _permit = zend_sync::budget::shared()
+                .http(zend_sync::budget::Priority::Interactive)
                 .await?;
             let token = bearer.get().await?;
             let response = crate::auth::http()

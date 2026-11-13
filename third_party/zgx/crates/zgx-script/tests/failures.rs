@@ -235,7 +235,7 @@ return ui.column {
     assert!(h.0.host.warnings().is_empty(), "{:?}", h.0.host.warnings());
 }
 
-/// An 8×8 GIF of two frames (Zeron's `blink.gif`).
+/// An 8×8 GIF of two frames (Zend's `blink.gif`).
 const GIF: &[u8] = &[
     71, 73, 70, 56, 57, 97, 8, 0, 8, 0, 129, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 255, 11,
     78, 69, 84, 83, 67, 65, 80, 69, 50, 46, 48, 3, 1, 0, 0, 0, 33, 249, 4, 0, 20, 0, 0, 0, 44, 0,

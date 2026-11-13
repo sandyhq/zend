@@ -373,7 +373,7 @@ impl Reader {
         let (by_itself, shared, root) = (stopped.clone(), shared.clone(), root.to_path_buf());
         let stop_value = stop as usize;
         let spawned = std::thread::Builder::new()
-            .name("zeron-zgx templates".into())
+            .name("zend-zgx templates".into())
             .spawn(move || read(io, stop_value as HANDLE, &root, &shared, &by_itself));
         match spawned {
             Ok(thread) => Some(Self { stop: stop_value, stopped, thread: Some(thread) }),
@@ -532,7 +532,7 @@ mod tests {
     const QUIET: Duration = Duration::from_millis(300);
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zeron-zgx-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("zend-zgx-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -634,14 +634,14 @@ mod tests {
     #[test]
     fn a_folder_not_made_yet_is_heard_once_it_is() {
         let dir = scratch("later");
-        let templates = dir.join("data").join("zeron").join("templates");
+        let templates = dir.join("data").join("zend").join("templates");
         let watch = |events: &mut FileEvents| events.watch(vec![templates.join(".active")], vec![templates.clone()]);
         let mut events = FileEvents::new().unwrap();
         watch(&mut events);
         quiet(&mut events);
         std::fs::write(dir.join("engine.log"), "busy").unwrap();
         assert!(!heard(&mut events, QUIET), "a file beside the missing folders woke it");
-        for made in [dir.join("data"), dir.join("data").join("zeron"), templates.clone()] {
+        for made in [dir.join("data"), dir.join("data").join("zend"), templates.clone()] {
             std::fs::create_dir(&made).unwrap();
             assert!(heard(&mut events, SOON), "{} made", made.display());
             // Watched again (as the loop does), from the folder now there.

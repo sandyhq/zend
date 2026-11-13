@@ -13,7 +13,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use zeron_proto::CheckoutChangeRequestStatus;
+use zend_proto::CheckoutChangeRequestStatus;
 
 use crate::repos::{CheckoutIdentity, Repos};
 use crate::source_control::{
@@ -452,7 +452,7 @@ struct SemanticStatus {
     device_id: String,
     cwd: String,
     branch: String,
-    change_request: Option<zeron_proto::ChangeRequestSummary>,
+    change_request: Option<zend_proto::ChangeRequestSummary>,
 }
 
 impl From<&CheckoutChangeRequestStatus> for SemanticStatus {
@@ -502,7 +502,7 @@ mod tests {
 
     use async_trait::async_trait;
     use futures::StreamExt;
-    use zeron_proto::{ChangeRequestState, ChangeRequestSummary};
+    use zend_proto::{ChangeRequestState, ChangeRequestSummary};
 
     use super::*;
     use crate::source_control::BranchHeadContext;
@@ -572,7 +572,7 @@ mod tests {
                 branch,
                 Some(&format!("origin/{branch}")),
                 Some("origin"),
-                Some("git@github.com:acme/zeron.git"),
+                Some("git@github.com:acme/zend.git"),
             ),
             default_branch: Some("main".into()),
         }
@@ -583,7 +583,7 @@ mod tests {
             provider: "github".into(),
             number,
             title: format!("Pull request {number}"),
-            url: format!("https://github.com/acme/zeron/pull/{number}"),
+            url: format!("https://github.com/acme/zend/pull/{number}"),
             state: ChangeRequestState::Open,
             base_ref: "main".into(),
             head_ref: "feature/status".into(),

@@ -6,9 +6,9 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use zeron_engine::{EdgeConfig, EngineCore, HarnessId, default_registry};
-use zeron_proto::{CloudState, CloudStatus, CloudUsage, VaultStatus};
-use zeron_rpc::{memory_client, methods};
+use zend_engine::{EdgeConfig, EngineCore, HarnessId, default_registry};
+use zend_proto::{CloudState, CloudStatus, CloudUsage, VaultStatus};
+use zend_rpc::{memory_client, methods};
 
 /// Request lines (`METHOD /path`) + their Authorization headers.
 type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
@@ -240,7 +240,7 @@ async fn waking_on_a_size_and_the_default_size_reach_the_edge() {
     let client = memory_client(core.rpc_service());
     let org = core.workspace.org_id().to_string();
 
-    let woke: zeron_proto::CloudSession = client
+    let woke: zend_proto::CloudSession = client
         .call_as(
             methods::CLOUD_SESSION_WAKE,
             serde_json::json!({ "chatId": "chat-1", "machine": "xlarge" }),
@@ -250,14 +250,14 @@ async fn waking_on_a_size_and_the_default_size_reach_the_edge() {
     assert_eq!(woke.state, CloudState::Starting);
     assert_eq!(woke.machine.as_deref(), Some("xlarge"));
     // A caller from before sizes (only a chat id) still wakes it as it is.
-    let _: zeron_proto::CloudSession = client
+    let _: zend_proto::CloudSession = client
         .call_as(
             methods::CLOUD_SESSION_WAKE,
             serde_json::json!({ "chatId": "chat-1" }),
         )
         .await
         .unwrap();
-    let fresh: zeron_proto::CloudSession = client
+    let fresh: zend_proto::CloudSession = client
         .call_as(
             methods::CLOUD_SESSION_RETRY,
             serde_json::json!({ "chatId": "chat-1", "machine": "large" }),
@@ -266,7 +266,7 @@ async fn waking_on_a_size_and_the_default_size_reach_the_edge() {
         .unwrap();
     assert_eq!(fresh.state, CloudState::Provisioning);
     let refused = client
-        .call_as::<zeron_proto::CloudSession>(
+        .call_as::<zend_proto::CloudSession>(
             methods::CLOUD_SESSION_WAKE,
             serde_json::json!({ "chatId": "chat-1", "machine": "small" }),
         )
@@ -451,9 +451,9 @@ fn cloud_edge(request: &str, body: &str) -> (u16, String) {
 
 /// `Mutate createChat` with `body`'s fields.
 async fn create(
-    client: &zeron_rpc::RpcClient,
+    client: &zend_rpc::RpcClient,
     body: serde_json::Value,
-) -> Result<serde_json::Value, zeron_rpc::RpcError> {
+) -> Result<serde_json::Value, zend_rpc::RpcError> {
     let mut op = serde_json::json!({ "op": "createChat" });
     op.as_object_mut()
         .unwrap()
@@ -467,7 +467,7 @@ async fn create(
 /// would), optionally with a GitHub origin.
 async fn local_project(
     core: &EngineCore,
-    client: &zeron_rpc::RpcClient,
+    client: &zend_rpc::RpcClient,
     dir: &std::path::Path,
     space_id: &str,
     github_repo: Option<&str>,
@@ -633,7 +633,7 @@ async fn cloud_branches_are_github_branches_default_first() {
     )
     .unwrap();
     let client = memory_client(core.rpc_service());
-    let refs: Vec<zeron_proto::RepoRef> = client
+    let refs: Vec<zend_proto::RepoRef> = client
         .call_as(
             methods::LIST_CLOUD_BRANCHES,
             serde_json::json!({ "repo": "acme/app", "defaultBranch": "main" }),
@@ -665,7 +665,7 @@ async fn catalogs_for_cloud_devices_are_answered_here() {
         Some(EdgeConfig::with_static_token(edge_url, "dev-user")),
     )
     .unwrap();
-    core.workspace.upsert_device_row(&zeron_proto::Device {
+    core.workspace.upsert_device_row(&zend_proto::Device {
         id: "cloud-acct".into(),
         name: "Cloud".into(),
         platform: "cloud".into(),
@@ -673,7 +673,7 @@ async fn catalogs_for_cloud_devices_are_answered_here() {
         created_at: None,
         version: None,
         cursor_sdk_version: None,
-        capabilities: vec![zeron_proto::CLOUD_ACCOUNT_CAPABILITY.into()],
+        capabilities: vec![zend_proto::CLOUD_ACCOUNT_CAPABILITY.into()],
     });
     let client = memory_client(core.rpc_service());
 
@@ -861,7 +861,7 @@ async fn provider_switch_is_refused_for_a_host_that_cannot_switch() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("newer Zeron"), "{refused}");
+    assert!(refused.contains("newer Zend"), "{refused}");
     // The same provider (a model or effort change) still goes through.
     switch("old-host-chat", "claude-code").await.unwrap();
     // This engine hosts its own chats and switches them.
@@ -1023,7 +1023,7 @@ async fn github_logins_are_listed_and_changed_one_at_a_time() {
 /// now. One still within its time is left to go as it is.
 #[tokio::test]
 async fn a_message_that_waited_days_for_its_machine_goes_once_when_woken() {
-    use zeron_doc::{SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
+    use zend_doc::{SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
     let (edge_url, seen) = scripted_edge(|request, _| {
         if request.contains("/wake") {
             return (
@@ -1052,7 +1052,7 @@ async fn a_message_that_waited_days_for_its_machine_goes_once_when_woken() {
     const DAY: i64 = 24 * 60 * 60 * 1000;
     let now = chrono::Utc::now().timestamp_millis();
     let run = |prompt: &str, message: &str| SessionCommandPayload::Run {
-        request: zeron_proto::RunRequest {
+        request: zend_proto::RunRequest {
             mcp: None,
             prompt: prompt.into(),
             harness: None,
@@ -1060,7 +1060,7 @@ async fn a_message_that_waited_days_for_its_machine_goes_once_when_woken() {
             reasoning: None,
             model_options: Default::default(),
             cwd: "/tmp".into(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
             auto_approve: true,
             access: Default::default(),
             plan: false,
@@ -1105,7 +1105,7 @@ async fn a_message_that_waited_days_for_its_machine_goes_once_when_woken() {
             .collect()
     };
     let wake = || async {
-        let _: zeron_proto::CloudSession = client
+        let _: zend_proto::CloudSession = client
             .call_as(
                 methods::CLOUD_SESSION_WAKE,
                 serde_json::json!({ "chatId": "cloud-chat", "machine": "xlarge" }),

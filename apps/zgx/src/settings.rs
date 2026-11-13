@@ -520,7 +520,7 @@ fn play_file(data: &[u8]) {
     };
     #[cfg(target_os = "macos")]
     if let Err(error) = crate::system_sound::play_file(&path) {
-        eprintln!("zeron-zgx: sound: {error}");
+        eprintln!("zend-zgx: sound: {error}");
     }
     #[cfg(not(target_os = "macos"))]
     let _ = std::process::Command::new("paplay")
@@ -536,7 +536,7 @@ fn play_file(data: &[u8]) {
 fn sound_file(data: &[u8]) -> Option<std::path::PathBuf> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("zeron-zgx-sound-{}-{id}.wav", std::process::id()));
+    let path = std::env::temp_dir().join(format!("zend-zgx-sound-{}-{id}.wav", std::process::id()));
     std::fs::write(&path, data).ok()?;
     Some(path)
 }
@@ -588,7 +588,7 @@ async fn delete_signed_in(confirm: &str) -> Result<(), Outcome> {
         return Err("failed");
     }
     if let Err(error) = crate::auth::open_sign_in(url) {
-        eprintln!("zeron-zgx: account: the browser didn't open: {error}");
+        eprintln!("zend-zgx: account: the browser didn't open: {error}");
         return Err("failed");
     }
     let until = std::time::Instant::now() + STEP_UP_WAIT;
@@ -706,7 +706,7 @@ fn photo_file(dir: &std::path::Path, url: &str) -> Result<std::path::PathBuf, St
     if path.is_file() {
         return Ok(path);
     }
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).user_agent("zeron-zgx").build();
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).user_agent("zend-zgx").build();
     let response = agent.get(url).call().map_err(|_| "failed".to_string())?;
     if !response.content_type().to_ascii_lowercase().starts_with("image/") {
         return Err("invalid".into());
@@ -867,7 +867,7 @@ mod tests {
         eprintln!("played in {} ms", before.elapsed().as_millis());
         #[cfg(not(windows))]
         {
-            let prefix = format!("zeron-zgx-sound-{}-", std::process::id());
+            let prefix = format!("zend-zgx-sound-{}-", std::process::id());
             let left = std::fs::read_dir(std::env::temp_dir())
                 .unwrap()
                 .flatten()
@@ -984,10 +984,10 @@ mod tests {
     #[test]
     fn an_image_key_is_only_the_edge_s() {
         let key = "0123456789abcdef0123456789abcdef";
-        assert_eq!(image_key(&format!("https://edge.zeron.sh/auth/avatars/{key}")), Some(key));
-        assert_eq!(image_key(&format!("http://edge.zeron.sh/auth/avatars/{key}")), None);
-        assert_eq!(image_key("https://edge.zeron.sh/auth/avatars/../me"), None);
-        assert_eq!(image_key(&format!("https://edge.zeron.sh/auth/avatars/{key}x")), None);
+        assert_eq!(image_key(&format!("https://edge.zend.invalid/auth/avatars/{key}")), Some(key));
+        assert_eq!(image_key(&format!("http://edge.zend.invalid/auth/avatars/{key}")), None);
+        assert_eq!(image_key("https://edge.zend.invalid/auth/avatars/../me"), None);
+        assert_eq!(image_key(&format!("https://edge.zend.invalid/auth/avatars/{key}x")), None);
         assert_eq!(image_key("https://example.net/icon.png"), None);
     }
 

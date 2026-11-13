@@ -62,7 +62,7 @@ export interface Env {
    * key id. Unset ⇒ session notifications are decided and logged, not sent. */
   APNS_KEY_P8?: string;
   APNS_KEY_ID?: string;
-  /** Apple team id and the app's bundle id (defaults: the Zeron iOS app). */
+  /** Apple team id and the app's bundle id (defaults: the Zend iOS app). */
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
 
@@ -77,7 +77,7 @@ export interface Env {
   CLOUD_WAKE?: Workflow<LifecycleParams>;
   CLOUD_SLEEP?: Workflow<LifecycleParams>;
   CLOUD_DELETE?: Workflow<LifecycleParams>;
-  /** zeron-vault's `VaultApi` entrypoint (service binding; no HTTP). */
+  /** zend-vault's `VaultApi` entrypoint (service binding; no HTTP). */
   VAULT?: VaultRpc;
   /** Provider for NEW Cloud sandboxes (cloud/providers): "boat" (default)
    * or "fake" (in-memory, local dev only). */
@@ -161,38 +161,38 @@ export const apnsConfig = (env: Env) =>
         keyP8: env.APNS_KEY_P8,
         keyId: env.APNS_KEY_ID,
         teamId: env.APNS_TEAM_ID ?? "5XY3M483YQ",
-        topic: env.APNS_TOPIC ?? "sh.zeron.ios"
+        topic: env.APNS_TOPIC ?? "sh.zend.ios"
       }
     : undefined;
 
 /** Header the Worker stamps on requests it forwards into DOs after verifying
  * the caller's JWT. DOs trust it blindly — they are only reachable through
  * the Worker (design §2: "DO never sees an unauthenticated frame"). */
-export const AUTH_USER_HEADER = "x-zeron-auth-user";
+export const AUTH_USER_HEADER = "x-zend-auth-user";
 /** Worker-controlled, like the user header: the caller's org, for a chat room
  * that has to ask the registry who hosts its chat. */
-export const AUTH_ORG_HEADER = "x-zeron-auth-org";
+export const AUTH_ORG_HEADER = "x-zend-auth-org";
 
 /** Header the Worker stamps on requests forwarded into workspace-doc rooms
  * (`ws/{orgId}`). Membership (JWT org claim == orgId) is enforced at the
  * Worker; the SessionRoom DO sees this and skips its per-chat
  * claim-on-first-join ownership discipline for the room. */
-export const ROOM_KIND_HEADER = "x-zeron-room-kind";
+export const ROOM_KIND_HEADER = "x-zend-room-kind";
 
 /** Header the Worker stamps on every DO forward made with a RUNNER bearer
  * (the Cloud device): the verified device id from the runner JWT's `dev`
  * claim. Always stripped from inbound requests first, so only the Worker can
  * assert it. RegistryRoom restricts such callers to rows their device owns
  * (registry-runner.ts). */
-export const RUNNER_DEVICE_HEADER = "x-zeron-runner-device";
+export const RUNNER_DEVICE_HEADER = "x-zend-runner-device";
 
 /** Companion of RUNNER_DEVICE_HEADER: the runner's account (logical Cloud
  * device, JWT `cld`). A session runner may read its account's project
  * spaces. Same strip-then-stamp discipline. */
-export const RUNNER_ACCOUNT_HEADER = "x-zeron-runner-account";
+export const RUNNER_ACCOUNT_HEADER = "x-zend-runner-account";
 
 /** Header the Worker stamps on a device-room client dial whose calling device
  * it verified (device-link.ts): a runner's own device, or a device that
  * proved possession of its registered plugin key. DeviceRoom puts it on every
  * frame that client relays (`fromDevice`). Same strip-then-stamp discipline. */
-export const CALLER_DEVICE_HEADER = "x-zeron-caller-device";
+export const CALLER_DEVICE_HEADER = "x-zend-caller-device";

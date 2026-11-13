@@ -64,7 +64,7 @@ fn claude_slot(uuid: &str, email: &str, access: &str, expires_at: i64) -> Slot {
     }
 }
 
-fn request() -> zeron_proto::RunRequest {
+fn request() -> zend_proto::RunRequest {
     serde_json::from_str(
         r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#,
     )
@@ -120,7 +120,7 @@ async fn fixed_server(status: &'static str, body: &'static str) -> (String, Arc<
     (url, hits)
 }
 
-async fn prepared(env: &PinRunEnvironment, chat: &str) -> Result<zeron_proto::RunRequest, String> {
+async fn prepared(env: &PinRunEnvironment, chat: &str) -> Result<zend_proto::RunRequest, String> {
     let mut request = request();
     env.prepare(HarnessId::ClaudeCode, Some(chat), &mut request).await?;
     Ok(request)
@@ -169,7 +169,7 @@ async fn the_run_credential_follows_the_pin_so_a_parked_session_is_replaced() {
     let pinned = env.credential(HarnessId::ClaudeCode, Some("c1")).await.expect("a credential");
     assert!(pinned.starts_with("claude:"), "{pinned}");
     assert_eq!(env.credential(HarnessId::ClaudeCode, Some("c1")).await, Some(pinned.clone()), "stable");
-    // A token Zeron has since refreshed is another credential.
+    // A token Zend has since refreshed is another credential.
     let mut slot = d.accounts.read_slot(HarnessId::ClaudeCode, &d.saved).unwrap();
     slot.credentials["claudeAiOauth"]["accessToken"] = "at-b2".into();
     d.accounts.write_slot(&slot).unwrap();

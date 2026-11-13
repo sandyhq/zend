@@ -1,6 +1,6 @@
 //! Pins: one chat runs on a saved account of its own while the live login
 //! stays as it is, so other chats and the user's own terminals keep running
-//! on it. Plugins decide *which* account (`zeron.pin_account`, and the
+//! on it. Plugins decide *which* account (`zend.pin_account`, and the
 //! `run.preparing` hook that answers a chat's first run); the engine only
 //! holds the table and delivers the credential.
 //!
@@ -16,11 +16,11 @@
 //!
 //! Every other harness reports `pinnable = false` until it has a mechanism.
 //! A chat's run credential is a fingerprint of what it was started with, so a
-//! session parked on another account (or a token Zeron has since refreshed)
+//! session parked on another account (or a token Zend has since refreshed)
 //! is replaced, and resumed, before its next turn.
 //!
 //! **Claude Code.** The CLI neither refreshes nor writes a token it got from
-//! the environment, so the live login can't be touched. Zeron owns the saved
+//! the environment, so the live login can't be touched. Zend owns the saved
 //! login's refresh: a run starting with less than [`CLAUDE_REFRESH_MARGIN`]
 //! left on the token refreshes the saved login first (the slot is the only
 //! holder of its refresh token). Claude Code treats an environment token as
@@ -34,7 +34,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zeron_proto::{AgentAccount, AgentAuthKind, HarnessId};
+use zend_proto::{AgentAccount, AgentAuthKind, HarnessId};
 
 use super::muse::OWN_LOGIN;
 use super::{AgentAccounts, MuseRunEnvironment, lock, now_ms, str_field, write_file_atomic};
@@ -245,7 +245,7 @@ impl AgentAccounts {
 }
 
 /// The agent accounts' spawn-time environment: a pinned chat's account, and
-/// Muse's zeron-kept account ([`MuseRunEnvironment`]) for the chats that
+/// Muse's zend-kept account ([`MuseRunEnvironment`]) for the chats that
 /// aren't pinned.
 pub struct PinRunEnvironment(pub AgentAccounts);
 
@@ -255,7 +255,7 @@ impl crate::registry::RunEnvironment for PinRunEnvironment {
         &self,
         harness: HarnessId,
         chat_id: Option<&str>,
-        request: &mut zeron_proto::RunRequest,
+        request: &mut zend_proto::RunRequest,
     ) -> Result<(), String> {
         if pinnable(harness)
             && let Some(chat) = chat_id
@@ -296,7 +296,7 @@ impl crate::registry::RunEnvironment for PinRunEnvironment {
         &self,
         harness: HarnessId,
         credential: &str,
-        windows: Vec<zeron_proto::AgentUsageWindow>,
+        windows: Vec<zend_proto::AgentUsageWindow>,
         plan_label: Option<String>,
     ) {
         MuseRunEnvironment(self.0.clone())

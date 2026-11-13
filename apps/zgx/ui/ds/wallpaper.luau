@@ -1,5 +1,5 @@
--- A new chat's wallpaper, as Zeron's: whatever stands in it (a picture of
--- your own, or what a plugin draws there) under one of Zeron's effects,
+-- A new chat's wallpaper, as Zend's: whatever stands in it (a picture of
+-- your own, or what a plugin draws there) under one of Zend's effects,
 -- drawn over it as one picture (dither, ASCII, halftone, scanlines), faded
 -- from the top, full, to nothing at its foot. The main window's new chat
 -- draws it in its page's card; the gallery's App shell shows it (and every
@@ -27,7 +27,7 @@
 -- layer's shader, given as it is made); `intensity`, `density` and `faded`
 -- change in place.
 --
--- `Picture { src, w, h, x, y, zoom }` is a picture laid in it as Zeron lays
+-- `Picture { src, w, h, x, y, zoom }` is a picture laid in it as Zend lays
 -- its new-thread background: covering the box, `zoom` times that (1 to 4),
 -- the overflow cut at `x`, `y` (0 to 1: from the left or top edge, 0.5
 -- centred). `w`, `h` are its size in pixels.
@@ -70,13 +70,13 @@ export type Props = {
 
 export type Picture = { src: string, w: number, h: number, x: number?, y: number?, zoom: number? }
 
--- The effects, in the order Settings lists them (Zeron's).
+-- The effects, in the order Settings lists them (Zend's).
 M.EFFECTS = { "none", "dither", "ascii", "halftone", "scanlines" }
 
--- The zoom a picture takes, at least and at most (Zeron's).
+-- The zoom a picture takes, at least and at most (Zend's).
 M.MIN_ZOOM, M.MAX_ZOOM = 1, 4
 
--- How strongly an effect draws over the picture: "medium" is Zeron's
+-- How strongly an effect draws over the picture: "medium" is Zend's
 -- whole effect; "subtle" lets some of the picture through, "strong" pushes
 -- past it.
 M.INTENSITY = { subtle = 0.6, medium = 1, strong = 1.3 } :: { [string]: number }

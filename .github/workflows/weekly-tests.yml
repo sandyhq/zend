@@ -1,7 +1,7 @@
 name: Weekly coverage
 
 # Tests no other workflow runs, so they don't rot unnoticed:
-#   - zeron-engine's integration test binaries outside scripts/ci/test-core.sh
+#   - zend-engine's integration test binaries outside scripts/ci/test-core.sh
 #     (e2e, cloud_runner, run_recovery, m5_repos_diffs_terminals, ...); live ones
 #     stay #[ignore]d;
 #   - the crates whose own tests have no runner: term, syntax, theme, veil,
@@ -24,8 +24,8 @@ jobs:
       - uses: ./.github/actions/linux-ci
         with:
           rust-cache: core # saved by core-tests (ci.yml); same dependency graph
-      - name: Every zeron-engine test binary
-        run: cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast -p zeron-engine --tests
+      - name: Every zend-engine test binary
+        run: cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast -p zend-engine --tests
 
   crates:
     runs-on: ubuntu-24.04
@@ -43,5 +43,5 @@ jobs:
       - name: Crates without a runner
         run: >-
           cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast
-          -p zeron-term -p zeron-syntax -p zeron-theme -p zeron-veil -p zeron-visual
-          -p zeron-visual-gpu -p zatex -p zeron-notify --lib --tests
+          -p zend-term -p zend-syntax -p zend-theme -p zend-veil -p zend-visual
+          -p zend-visual-gpu -p zatex -p zend-notify --lib --tests

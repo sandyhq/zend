@@ -1,8 +1,8 @@
-//! How a Zeron app starts its engine: the engine executable beside the app's
-//! ("Zeron Engine" in a macOS bundle, `zeron-engine` elsewhere), else the app
+//! How a Zend app starts its engine: the engine executable beside the app's
+//! ("Zend Engine" in a macOS bundle, `zend-engine` elsewhere), else the app
 //! binary's [`ENGINE_SUBCOMMAND`]; the environment it's given; detached, so
 //! it outlives the app. The engine's `managed` module, the command line
-//! (`zeron headless` and the other engine subcommands, run in the helper) and
+//! (`zend headless` and the other engine subcommands, run in the helper) and
 //! the zgx app all start it through here, without linking the engine.
 
 use std::ffi::OsString;
@@ -16,17 +16,17 @@ pub const ENGINE_SUBCOMMAND: &str = "engine";
 
 /// The separate engine executable's name next to the app's.
 #[cfg(target_os = "macos")]
-pub const ENGINE_EXECUTABLES: &[&str] = &["Zeron Engine", "zeron-engine"];
+pub const ENGINE_EXECUTABLES: &[&str] = &["Zend Engine", "zend-engine"];
 #[cfg(windows)]
-pub const ENGINE_EXECUTABLES: &[&str] = &["zeron-engine.exe"];
+pub const ENGINE_EXECUTABLES: &[&str] = &["zend-engine.exe"];
 #[cfg(not(any(target_os = "macos", windows)))]
-pub const ENGINE_EXECUTABLES: &[&str] = &["zeron-engine"];
+pub const ENGINE_EXECUTABLES: &[&str] = &["zend-engine"];
 
 /// Set on the background engine's environment by the app that started it.
-pub const MANAGED_ENV: &str = "ZERON_MANAGED_ENGINE";
+pub const MANAGED_ENV: &str = "ZEND_MANAGED_ENGINE";
 /// The app to open for a clicked banner: its bundle on macOS, its
 /// executable elsewhere.
-pub const APP_ENV: &str = "ZERON_APP";
+pub const APP_ENV: &str = "ZEND_APP";
 
 static FULL_APP_ENGINE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -105,20 +105,20 @@ pub fn launch(config: &LaunchConfig, app_exe: &Path) -> std::io::Result<Child> {
     command
         .env(MANAGED_ENV, "1")
         .env(APP_ENV, app_path(app_exe))
-        .env("ZERON_DATA_DIR", &config.data_dir)
-        .env("ZERON_IPC_PORT", config.ipc_port.to_string())
-        .env("ZERON_EDGE_URL", &config.edge_url)
+        .env("ZEND_DATA_DIR", &config.data_dir)
+        .env("ZEND_IPC_PORT", config.ipc_port.to_string())
+        .env("ZEND_EDGE_URL", &config.edge_url)
         // Empty selects development auth, exactly as `None` does in-process.
         .env(
-            "ZERON_WORKOS_CLIENT_ID",
+            "ZEND_WORKOS_CLIENT_ID",
             config.workos_client_id.as_deref().unwrap_or(""),
         );
     match &config.edge_token {
-        Some(token) => command.env("ZERON_EDGE_TOKEN", token),
-        None => command.env_remove("ZERON_EDGE_TOKEN"),
+        Some(token) => command.env("ZEND_EDGE_TOKEN", token),
+        None => command.env_remove("ZEND_EDGE_TOKEN"),
     };
     if let Some(org) = &config.org_id {
-        command.env("ZERON_ORG_ID", org);
+        command.env("ZEND_ORG_ID", org);
     }
     spawn_detached(&mut command)
 }
@@ -192,11 +192,11 @@ pub fn reap(mut child: Child) {
 }
 
 /// Become the engine helper beside the app at `app_exe`, given `args` (this
-/// process's own, `zeron headless`'s `headless` and on): the standard helper
+/// process's own, `zend headless`'s `headless` and on): the standard helper
 /// pattern for an app whose interface binary doesn't link the engine. On
 /// Unix the helper replaces this process (`exec`), so the pid, signals,
 /// standard streams and exit status are the helper's own — a service
-/// manager watching `zeron headless` watches the engine. Elsewhere it runs
+/// manager watching `zend headless` watches the engine. Elsewhere it runs
 /// as a child with the same streams, and its exit status is passed on.
 /// Returns only when it couldn't start.
 pub fn exec_helper(app_exe: &Path, args: impl IntoIterator<Item = OsString>) -> std::io::Error {
@@ -223,11 +223,11 @@ pub fn exec_helper(app_exe: &Path, args: impl IntoIterator<Item = OsString>) -> 
             Ok(child) => child,
             Err(error) => return error,
         };
-        // Only for an update's trial (`ZERON_INSTALLED_AT`, crates/update):
+        // Only for an update's trial (`ZEND_INSTALLED_AT`, crates/update):
         // otherwise this one must outlive the helper's own clean shutdown
         // (Ctrl+C reaches both, and a job would cut the helper's short).
         #[cfg(windows)]
-        if std::env::var_os("ZERON_INSTALLED_AT").is_some() {
+        if std::env::var_os("ZEND_INSTALLED_AT").is_some() {
             ends_with_this_process(&child);
         }
         match child.wait() {
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn engine_command_prefers_the_engine_beside_the_app() {
         let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("zeron");
+        let app = dir.path().join("zend");
         std::fs::write(&app, "").unwrap();
         // Only the app: it runs the engine as a subcommand.
         let command = engine_command(&app);
@@ -306,12 +306,12 @@ mod tests {
     #[test]
     fn app_path_is_the_bundle_on_macos_layouts() {
         assert_eq!(
-            app_path(Path::new("/Applications/Zeron.app/Contents/MacOS/zeron")),
-            PathBuf::from("/Applications/Zeron.app")
+            app_path(Path::new("/Applications/Zend.app/Contents/MacOS/zend")),
+            PathBuf::from("/Applications/Zend.app")
         );
         assert_eq!(
-            app_path(Path::new("/home/me/.zeron/app/current/zeron")),
-            PathBuf::from("/home/me/.zeron/app/current/zeron")
+            app_path(Path::new("/home/me/.zend/app/current/zend")),
+            PathBuf::from("/home/me/.zend/app/current/zend")
         );
     }
 
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn a_missing_helper_is_an_error_not_a_hang() {
         let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("zeron");
+        let app = dir.path().join("zend");
         let error = exec_helper(&app, [OsString::from("headless")]);
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }

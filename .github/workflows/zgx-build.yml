@@ -1,6 +1,6 @@
 name: zgx build
 
-# The Zeron app (apps/zgx, its `beta` feature) built and packaged for every
+# The Zend app (apps/zgx, its `beta` feature) built and packaged for every
 # platform, with the engine from this same commit inside: on macOS
 # (scripts/package-zgx-macos.sh), Linux (scripts/package-linux.sh) and Windows
 # (scripts/package-windows.ps1). Called by release.yml for a stable release
@@ -25,7 +25,7 @@ on:
         type: string
         default: macos linux windows
       windows-feed:
-        description: zeron-update.json's releases_url for Windows installs.
+        description: zend-update.json's releases_url for Windows installs.
         type: string
         required: true
 
@@ -67,12 +67,12 @@ jobs:
             apps/zgx -> target
       - name: the engine, from this commit
         env:
-          ZERON_ENGINE_VERSION: ${{ inputs.version }}
+          ZEND_ENGINE_VERSION: ${{ inputs.version }}
           # Luau without its asserts (a fifth of script time). Here, not in a
           # root .cargo/config.toml, so test builds keep them; the package
           # refuses an engine that has them.
           LUAU_CXXFLAGS: -DNDEBUG
-        run: cargo build --release --locked -p zeron --bin zeron-engine
+        run: cargo build --release --locked -p zend --bin zend-engine
       - name: import Developer ID certificate
         if: env.MACOS_CERT_P12 != ''
         run: |
@@ -104,14 +104,14 @@ jobs:
       - name: package dmg
         env:
           CARGO_FLAGS: --locked
-        run: ZGX_ENGINE="$GITHUB_WORKSPACE/target/release/zeron-engine" scripts/package-zgx-macos.sh
+        run: ZGX_ENGINE="$GITHUB_WORKSPACE/target/release/zend-engine" scripts/package-zgx-macos.sh
       - name: inspect the bundle
         run: |
-          app="target/package-zgx/Zeron.app"
+          app="target/package-zgx/Zend.app"
           plist="$app/Contents/Info.plist"
           plutil -p "$plist"
-          test "$(plutil -extract CFBundleIdentifier raw "$plist")" = sh.zeron.app
-          test "$(plutil -extract ZeronVersion raw "$plist")" = "$ZGX_VERSION"
+          test "$(plutil -extract CFBundleIdentifier raw "$plist")" = sh.zend.app
+          test "$(plutil -extract ZendVersion raw "$plist")" = "$ZGX_VERSION"
           test "$(plutil -extract LSMinimumSystemVersion raw "$plist")" = 13.0
           # Always up (scripts/package-zgx-macos.sh): <x.y.z>.<n> for beta n,
           # <x.y.z>.9999 for the release.
@@ -120,8 +120,8 @@ jobs:
             *) want="$ZGX_VERSION.9999" ;;
           esac
           test "$(plutil -extract CFBundleVersion raw "$plist")" = "$want"
-          test "$("$app/Contents/MacOS/zeron" --version)" = "zeron $ZGX_VERSION"
-          test -x "$app/Contents/MacOS/Zeron Engine"
+          test "$("$app/Contents/MacOS/zend" --version)" = "zend $ZGX_VERSION"
+          test -x "$app/Contents/MacOS/Zend Engine"
           test -f "$app/Contents/Resources/ui/app.luau"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -d --entitlements - "$app"
@@ -129,7 +129,7 @@ jobs:
             spctl --assess --type execute --verbose=2 "$app"
             xcrun stapler validate "$app"
           fi
-          test "$(plutil -extract ZeronEngineVersion raw "$plist")" = "$ZGX_VERSION"
+          test "$(plutil -extract ZendEngineVersion raw "$plist")" = "$ZGX_VERSION"
           du -sh "$app"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -171,30 +171,30 @@ jobs:
             apps/zgx -> target
       - name: the engine, from this commit
         env:
-          ZERON_ENGINE_VERSION: ${{ inputs.version }}
+          ZEND_ENGINE_VERSION: ${{ inputs.version }}
           # Luau without its asserts (a fifth of script time). Here, not in a
           # root .cargo/config.toml, so test builds keep them; the package
           # refuses an engine that has them.
           LUAU_CXXFLAGS: -DNDEBUG
-        run: cargo build --release --locked -p zeron --bin zeron-engine
+        run: cargo build --release --locked -p zend --bin zend-engine
       - name: package
-        run: ZGX_ENGINE="$GITHUB_WORKSPACE/target/release/zeron-engine" scripts/package-linux.sh
+        run: ZGX_ENGINE="$GITHUB_WORKSPACE/target/release/zend-engine" scripts/package-linux.sh
       - name: inspect and install the tarball
         run: |
           home="$RUNNER_TEMP/home"
           mkdir -p "$RUNNER_TEMP/unpacked" "$home"
-          tar -xzf "target/package/zeron-$ZGX_VERSION-linux-$(uname -m).tar.gz" -C "$RUNNER_TEMP/unpacked"
-          dir="$RUNNER_TEMP/unpacked/zeron-$ZGX_VERSION-linux-$(uname -m)"
-          test "$("$dir/zeron" --version)" = "zeron $ZGX_VERSION"
-          test "$("$dir/zeron-engine" --version)" = "zeron-engine $ZGX_VERSION"
+          tar -xzf "target/package/zend-$ZGX_VERSION-linux-$(uname -m).tar.gz" -C "$RUNNER_TEMP/unpacked"
+          dir="$RUNNER_TEMP/unpacked/zend-$ZGX_VERSION-linux-$(uname -m)"
+          test "$("$dir/zend" --version)" = "zend $ZGX_VERSION"
+          test "$("$dir/zend-engine" --version)" = "zend-engine $ZGX_VERSION"
           test -f "$dir/ui/app.luau"
           test -d "$dir/plugins-builtin"
           test ! -e "$dir/ui/tests"
-          # A headless server or Cloud machine runs this `zeron` too (`zeron
+          # A headless server or Cloud machine runs this `zend` too (`zend
           # headless`): it may need no library the old app didn't.
-          readelf -d "$dir/zeron" | grep NEEDED
-          if readelf -d "$dir/zeron" | grep NEEDED | grep -qvE 'lib(c|m|gcc_s|stdc\+\+|asound|z|xcb|xkbcommon|xkbcommon-x11)\.so|ld-linux'; then
-            echo "zeron needs a library the old app didn't"; exit 1
+          readelf -d "$dir/zend" | grep NEEDED
+          if readelf -d "$dir/zend" | grep NEEDED | grep -qvE 'lib(c|m|gcc_s|stdc\+\+|asound|z|xcb|xkbcommon|xkbcommon-x11)\.so|ld-linux'; then
+            echo "zend needs a library the old app didn't"; exit 1
           fi
           # Its install.sh, in a home of its own: the version's directory
           # (a beta's is named apart, crates/update `managed_dir`), `current` on it.
@@ -203,8 +203,8 @@ jobs:
             *-beta.*) want="beta-$ZGX_VERSION" ;;
             *) want="$ZGX_VERSION" ;;
           esac
-          test "$(basename "$(readlink "$home/.zeron/app/current")")" = "$want"
-          test "$("$home/.zeron/app/current/zeron" --version)" = "zeron $ZGX_VERSION"
+          test "$(basename "$(readlink "$home/.zend/app/current")")" = "$want"
+          test "$("$home/.zend/app/current/zend" --version)" = "zend $ZGX_VERSION"
           du -sh "$dir"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -239,18 +239,18 @@ jobs:
           workspaces: |
             . -> target
             apps/zgx -> target
-      # (A Windows release has no separate engine: it runs as `zeron.exe engine`.)
+      # (A Windows release has no separate engine: it runs as `zend.exe engine`.)
       - name: the engine, from this commit
         env:
-          ZERON_ENGINE_VERSION: ${{ inputs.version }}
+          ZEND_ENGINE_VERSION: ${{ inputs.version }}
           # Luau without its asserts (a fifth of script time). Here, not in a
           # root .cargo/config.toml, so test builds keep them; the package
           # refuses an engine that has them.
           LUAU_CXXFLAGS: -DNDEBUG
         run: |
-          cargo build --release --locked -p zeron
+          cargo build --release --locked -p zend
           if ($LASTEXITCODE -ne 0) { throw 'the engine failed to build' }
-          "ZGX_ENGINE=$((Resolve-Path -LiteralPath './target/release/zeron.exe').Path)" >> $env:GITHUB_ENV
+          "ZGX_ENGINE=$((Resolve-Path -LiteralPath './target/release/zend.exe').Path)" >> $env:GITHUB_ENV
       - name: package installer and portable app
         env:
           FEED: ${{ inputs.windows-feed }}
@@ -260,30 +260,30 @@ jobs:
           FEED: ${{ inputs.windows-feed }}
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'unpacked'
-          Expand-Archive -LiteralPath "target/package/zeron-$env:ZGX_VERSION-windows-x86_64.zip" -DestinationPath $dir
-          $interface = (& "$dir/zeron.exe" --version | Out-String).Trim()
-          if ($interface -ne "zeron $env:ZGX_VERSION") { throw "the interface says '$interface'" }
+          Expand-Archive -LiteralPath "target/package/zend-$env:ZGX_VERSION-windows-x86_64.zip" -DestinationPath $dir
+          $interface = (& "$dir/zend.exe" --version | Out-String).Trim()
+          if ($interface -ne "zend $env:ZGX_VERSION") { throw "the interface says '$interface'" }
           $beta = $env:ZGX_VERSION -match '-beta\.\d+$'
           $files = "$dir/beta/$env:ZGX_VERSION"
-          $engine = (& "$files/engine/zeron.exe" --version | Out-String).Trim()
-          if ($engine -ne "zeron $env:ZGX_VERSION") { throw "the engine says '$engine'" }
-          foreach ($path in @("$files/ui/app.luau", "$files/plugins-builtin", "$dir/zeron-update.json")) {
+          $engine = (& "$files/engine/zend.exe" --version | Out-String).Trim()
+          if ($engine -ne "zend $env:ZGX_VERSION") { throw "the engine says '$engine'" }
+          foreach ($path in @("$files/ui/app.luau", "$files/plugins-builtin", "$dir/zend-update.json")) {
             if (-not (Test-Path -LiteralPath $path)) { throw "no $path in the package" }
           }
           if (Test-Path -LiteralPath "$files/ui/tests") { throw 'the tests are in the package' }
-          $feed = (Get-Content -Raw "$dir/zeron-update.json" | ConvertFrom-Json).releases_url
+          $feed = (Get-Content -Raw "$dir/zend-update.json" | ConvertFrom-Json).releases_url
           if ($feed -ne $env:FEED) { throw "the feed is $feed" }
           # A stable release's standalone .exe (all the old app's updater
-          # installs) is the zip's own zeron.exe, and answers its version
+          # installs) is the zip's own zend.exe, and answers its version
           # without its folder.
-          $standalone = "target/package/zeron-$env:ZGX_VERSION-windows-x86_64.exe"
+          $standalone = "target/package/zend-$env:ZGX_VERSION-windows-x86_64.exe"
           if (-not $beta) {
-            if ((Get-FileHash $standalone).Hash -ne (Get-FileHash "$dir/zeron.exe").Hash) { throw 'the standalone .exe is not the zip''s' }
+            if ((Get-FileHash $standalone).Hash -ne (Get-FileHash "$dir/zend.exe").Hash) { throw 'the standalone .exe is not the zip''s' }
             $alone = Join-Path $env:RUNNER_TEMP 'alone'
             New-Item -ItemType Directory -Force -Path $alone | Out-Null
-            Copy-Item -LiteralPath $standalone -Destination "$alone/zeron.exe"
-            $said = (& "$alone/zeron.exe" --version | Out-String).Trim()
-            if ($said -ne "zeron $env:ZGX_VERSION") { throw "the standalone .exe says '$said'" }
+            Copy-Item -LiteralPath $standalone -Destination "$alone/zend.exe"
+            $said = (& "$alone/zend.exe" --version | Out-String).Trim()
+            if ($said -ne "zend $env:ZGX_VERSION") { throw "the standalone .exe says '$said'" }
           } elseif (Test-Path -LiteralPath $standalone) { throw 'a beta has no standalone .exe' }
           Get-ChildItem target/package -File | Select-Object Name, Length
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

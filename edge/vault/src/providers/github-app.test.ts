@@ -56,6 +56,6 @@ describe("repository names", () => {
   });
 
   it("builds the install link from the slug", () => {
-    expect(installUrl("zeron")).toBe("https://github.com/apps/zeron/installations/new");
+    expect(installUrl("zend")).toBe("https://github.com/apps/zend/installations/new");
   });
 });

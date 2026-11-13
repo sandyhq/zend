@@ -4,7 +4,7 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use zeron_sync::DocsStore;
+use zend_sync::DocsStore;
 
 const PAGE: u64 = 4096;
 
@@ -112,11 +112,11 @@ fn a_marker_from_a_running_engine_asks_for_a_full_check_and_goes_once_clean() {
     let dir = tempfile::tempdir().unwrap();
     store_with_data(dir.path());
     let path = dir.path().join("docs.sqlite3");
-    zeron_sync::request_store_check(&path);
-    assert!(zeron_sync::store_check_marker(&path).exists());
+    zend_sync::request_store_check(&path);
+    assert!(zend_sync::store_check_marker(&path).exists());
     let store = DocsStore::open(dir.path()).unwrap();
     assert!(store.recovery().is_none());
-    assert!(!zeron_sync::store_check_marker(&path).exists());
+    assert!(!zend_sync::store_check_marker(&path).exists());
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn a_read_that_hits_damage_while_running_is_noticed() {
     }
     failed |= store.pending_chat_updates("filler").is_err();
     assert!(failed, "the damage was read");
-    assert!(zeron_sync::corruption_seen());
+    assert!(zend_sync::corruption_seen());
 }
 
 #[test]

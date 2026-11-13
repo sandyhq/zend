@@ -46,7 +46,7 @@ end)
 M.signed_in = ui.computed(function(): boolean
 	return M.state:get() == "signed_in"
 end)
--- Which Zeron it signs into: "staging", "production" or "custom".
+-- Which Zend it signs into: "staging", "production" or "custom".
 M.env = ui.computed(function(): string
 	return (M.account:get() :: Account).env
 end)

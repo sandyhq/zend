@@ -1,4 +1,4 @@
-//! A `.zeron-plugin` file sent here from another of your devices
+//! A `.zend-plugin` file sent here from another of your devices
 //! (`StagePluginPackage`), piece by piece, then installed by `InstallPlugin
 //! {upload}` as a file on this device would be: verified, then waiting for
 //! a consent window like any other.
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use zeron_rpc::RpcError;
+use zend_rpc::RpcError;
 
 use super::package;
 use super::reviews::Origin;
@@ -70,7 +70,7 @@ impl Uploads {
                     };
                     self.open.remove(&oldest);
                 }
-                let id = zeron_rpc::ipc_auth::generate_token().map_err(|e| failed(format!("Couldn't take the file: {e}")))?;
+                let id = zend_rpc::ipc_auth::generate_token().map_err(|e| failed(format!("Couldn't take the file: {e}")))?;
                 self.open.insert(id.clone(), Upload { origin, bytes: Vec::new(), at: Instant::now() });
                 id
             }

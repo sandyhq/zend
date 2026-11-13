@@ -400,7 +400,7 @@ shown heavy dashboard costs what it did, and covered it fell from 14.0 points to
 Stopping a window someone can see is far worse than drawing one nobody can, so
 whatever may show what's behind it covers nothing: layered, click-through and
 tool windows (overlays, the taskbar), those composed by their own swap chain
-(`WS_EX_NOREDIRECTIONBITMAP`: WinUI apps, Windows Terminal, Zeron), an acrylic
+(`WS_EX_NOREDIRECTIONBITMAP`: WinUI apps, Windows Terminal, Zend), an acrylic
 backdrop, a
 shaped region, and the window's own owned windows. Mica, as on File Explorer,
 shows the wallpaper and no window behind it, so it covers. A framed

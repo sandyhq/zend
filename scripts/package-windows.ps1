@@ -1,16 +1,16 @@
 # The zgx app (release.yml's stable, zgx-beta.yml's beta), with -ZgxVersion
 # and -ZgxEngine: the zgx interface (apps/zgx, its `beta` feature) as
-# zeron.exe, and beside it beta\<version>\ (the name for every release:
+# zend.exe, and beside it beta\<version>\ (the name for every release:
 # crates/update/src/windows.rs `BETA`) with its scripts, plugins and the
-# zeron.exe it's given, built from the same commit, as engine\zeron.exe (a Windows release has no separate engine: it
-# runs as `zeron.exe engine`). Users keep their data and device. The engine
+# zend.exe it's given, built from the same commit, as engine\zend.exe (a Windows release has no separate engine: it
+# runs as `zend.exe engine`). Users keep their data and device. The engine
 # must be built with LUAU_CXXFLAGS=-DNDEBUG (checked below).
 #
 # A stable release also gets the standalone .exe, which is all the old app's
-# updater installs: that zeron.exe brings in its folder from the zip when it
+# updater installs: that zend.exe brings in its folder from the zip when it
 # first runs (apps/zgx/src/windows_install.rs). A beta has none.
 #
-# Without -ZgxVersion: the old app (apps/zeron), one self-contained zeron.exe,
+# Without -ZgxVersion: the old app (apps/zend), one self-contained zend.exe,
 # kept for a release that has to go back to it.
 param(
     [Parameter(Mandatory)][string]$ReleasesUrl,
@@ -20,7 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $ReleasesUrl.StartsWith('https://')) { throw 'Release feed must use HTTPS' }
 if ($ZgxVersion -and -not (Test-Path -LiteralPath $ZgxEngine -PathType Leaf)) {
-    throw "-ZgxEngine: the engine's zeron.exe"
+    throw "-ZgxEngine: the engine's zend.exe"
 }
 $beta = $ZgxVersion -match '-beta\.\d+$'
 
@@ -41,7 +41,7 @@ function Find-InnoSetupCompiler {
 }
 
 function Get-WindowsPackageArch([string]$Path) {
-    # Match zeron-update's `std::env::consts::ARCH` so the standalone .exe
+    # Match zend-update's `std::env::consts::ARCH` so the standalone .exe
     # name agrees with crates/update/src/windows.rs::artifact. Read the built
     # executable's PE machine type rather than this PowerShell process's
     # architecture: x64 PowerShell under ARM64 emulation reports X64 no matter
@@ -61,7 +61,7 @@ function Get-WindowsPackageArch([string]$Path) {
     }
 }
 
-function Get-ZeronVersion([string]$Path) {
+function Get-ZendVersion([string]$Path) {
     # Explicit pipes also work for the GUI-subsystem executable in CI. A
     # PowerShell collection match does not populate the scalar $Matches map.
     $probe = [Diagnostics.ProcessStartInfo]::new()
@@ -79,7 +79,7 @@ function Get-ZeronVersion([string]$Path) {
             $process.Kill()
             throw 'Executable version probe timed out'
         }
-        $versionMatch = [regex]::Match($stdout.Result.Trim(), '\Azeron (\d+\.\d+\.\d+(?:-beta\.\d+)?)\z')
+        $versionMatch = [regex]::Match($stdout.Result.Trim(), '\Azend (\d+\.\d+\.\d+(?:-beta\.\d+)?)\z')
         if ($process.ExitCode -ne 0 -or -not $versionMatch.Success) {
             throw "Cannot read executable version: $($stderr.Result)"
         }
@@ -101,26 +101,26 @@ try {
         # folder: cargo reads .cargo/config.toml by where it runs, not by the
         # manifest, and the build's flags are there (Luau's NDEBUG), as
         # scripts/package-zgx-macos.sh. Its target stays apps/zgx/target.
-        $env:ZERON_BETA_VERSION = $ZgxVersion
+        $env:ZEND_BETA_VERSION = $ZgxVersion
         Push-Location (Join-Path $root 'apps/zgx')
         try {
             cargo build --release --locked --features beta --manifest-path Cargo.toml --target-dir target
         } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
-        $built = (Resolve-Path -LiteralPath './apps/zgx/target/release/zeron-zgx.exe').Path
+        $built = (Resolve-Path -LiteralPath './apps/zgx/target/release/zend-zgx.exe').Path
     } else {
         # Luau (the engine's visuals and plugin services) without its asserts.
         $env:LUAU_CXXFLAGS = '-DNDEBUG'
-        cargo build --release --locked -p zeron
+        cargo build --release --locked -p zend
         if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
-        $built = (Resolve-Path -LiteralPath './target/release/zeron.exe').Path
+        $built = (Resolve-Path -LiteralPath './target/release/zend.exe').Path
     }
-    $version = Get-ZeronVersion $built
+    $version = Get-ZendVersion $built
     if ($ZgxVersion) {
         if ($version -ne $ZgxVersion) { throw "$built isn't the $ZgxVersion app (it says $version)" }
         # Production's only, and an engine with the shared command line, as
         # scripts/package-zgx-macos.sh requires of macOS's.
-        $stagingMarks = 'staging\.zeron\.sh|zeron-edge-staging|client_01KWD0E9SYPV2WE4QN9TP9DP0W'
+        $stagingMarks = 'staging\.zend\.sh|zend-edge-staging|client_01KWD0E9SYPV2WE4QN9TP9DP0W'
         foreach ($binary in @($built, $ZgxEngine)) {
             $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($binary))
             if ($text -match $stagingMarks) { throw "$binary carries staging's edge or sign-in client: $($Matches[0])" }
@@ -138,7 +138,7 @@ try {
     # The engine's Luau (visuals, plugin services) without its asserts: with
     # them, each LUAU_ASSERT keeps its Luau source file's path (Luau/Common.h's
     # __FILE__), VM\src\l*.cpp; with NDEBUG, none. The zgx app's engine is
-    # the zeron.exe it's given; the old app's is the zeron.exe built here.
+    # the zend.exe it's given; the old app's is the zend.exe built here.
     $engine = if ($ZgxVersion) { $ZgxEngine } else { $built }
     $engineText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($engine))
     if ($engineText -match 'VM[\\/]src[\\/]l[a-z]+\.cpp') {
@@ -147,11 +147,11 @@ try {
     $engineText = $null
     $out = Join-Path $root 'target/package'
     $arch = Get-WindowsPackageArch $built
-    $stage = Join-Path $out "zeron-$version-windows-$arch"
+    $stage = Join-Path $out "zend-$version-windows-$arch"
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    Copy-Item -LiteralPath $built -Destination (Join-Path $stage 'zeron.exe')
-    @{ releases_url = $ReleasesUrl } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $stage 'zeron-update.json')
+    Copy-Item -LiteralPath $built -Destination (Join-Path $stage 'zend.exe')
+    @{ releases_url = $ReleasesUrl } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $stage 'zend-update.json')
     Copy-Item -LiteralPath 'LICENSE','THIRD_PARTY_NOTICES.md' -Destination $stage
     $licenses = Join-Path $stage 'licenses/fonts'
     New-Item -ItemType Directory -Force -Path $licenses | Out-Null
@@ -164,26 +164,26 @@ try {
         Copy-Scripts 'apps/zgx/plugins-builtin' (Join-Path $files 'plugins-builtin')
         # Each ships the canonical SDK, as scripts/package-zgx-macos.sh.
         foreach ($dir in Get-ChildItem -Directory -LiteralPath (Join-Path $files 'plugins-builtin')) {
-            Copy-Item -LiteralPath 'apps/zgx/plugins-sdk/zeron.luau' -Destination (Join-Path $dir.FullName 'zeron.luau') -Force
+            Copy-Item -LiteralPath 'apps/zgx/plugins-sdk/zend.luau' -Destination (Join-Path $dir.FullName 'zend.luau') -Force
         }
         New-Item -ItemType Directory -Force -Path (Join-Path $files 'engine') | Out-Null
-        Copy-Item -LiteralPath $ZgxEngine -Destination (Join-Path $files 'engine/zeron.exe')
+        Copy-Item -LiteralPath $ZgxEngine -Destination (Join-Path $files 'engine/zend.exe')
         Copy-Item -Path 'apps/zgx/fonts/*-OFL.txt' -Destination $licenses
     }
     Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force
     if (-not $beta) {
         Copy-Item -LiteralPath $built -Destination "$stage.exe"
     }
-    # The per-user installer wraps the same staged directory (zeron-update.json
+    # The per-user installer wraps the same staged directory (zend-update.json
     # included), so installed copies update in place like the portable zip.
     $iscc = Find-InnoSetupCompiler
     $zgxDefines = if ($ZgxVersion) { @('/DZgx=1', "/DFileVersion=$(($version -split '-')[0])") } else { @() }
     & $iscc /Qp "/DAppVersion=$version" "/DArch=$arch" @zgxDefines `
         "/DPackageDir=$([IO.Path]::GetFullPath($stage))" `
         "/DOutputDir=$([IO.Path]::GetFullPath($out))" `
-        ([IO.Path]::GetFullPath((Join-Path $root 'dist/windows/zeron.iss')))
+        ([IO.Path]::GetFullPath((Join-Path $root 'dist/windows/zend.iss')))
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
-    $setup = Join-Path $out "zeron-$version-windows-$arch-setup.exe"
+    $setup = Join-Path $out "zend-$version-windows-$arch-setup.exe"
     if (-not (Test-Path -LiteralPath $setup)) { throw "Installer not produced: $setup" }
     if (-not $beta) {
         $file = Split-Path "$stage.exe" -Leaf

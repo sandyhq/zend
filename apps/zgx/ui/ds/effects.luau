@@ -5,7 +5,7 @@
 -- `ui.div { layer_shader = effects.shader("dither"), layer_params = effects.params { … }, … }`
 --
 -- Each works in linear light on the picture's own grid (the picture fitted
--- to 2048 a side, as Zeron's proxy of it, so the cells hold to the picture
+-- to 2048 a side, as Zend's proxy of it, so the cells hold to the picture
 -- and grow and shrink with it). Halftone and scanlines print each cell
 -- with ink on paper so that, seen from a step back, the cell is the
 -- picture's own colour there:
@@ -24,7 +24,7 @@
 
 local M = {}
 
--- The longer side of the picture's grid (Zeron's proxy of the picture).
+-- The longer side of the picture's grid (Zend's proxy of the picture).
 M.GRID_MAX = 2048
 
 -- The paper, by scheme (sRGB): near black, warm white. Fixed, not the
@@ -180,7 +180,7 @@ fn fx_effect(input:LayerInput,g:vec3<f32>,q:vec2<f32>,fp:f32)->vec3<f32> {
 
 -- ASCII: glyphs of the 5 by 7 font in cells of 6 by 8 font pixels, each
 -- `FX_PX` points (snapped to the device's pixels), anchored to the art's box (still as a sidebar or panel
--- moves). A cell's glyph, of ` .:-=+*#@` (Zeron's ramp less `%`, whose
+-- moves). A cell's glyph, of ` .:-=+*#@` (Zend's ramp less `%`, whose
 -- diagonal hatches), rises with the brightness at its centre (in the
 -- light, its darkness); cells under the density's threshold hold none.
 -- The glyph takes the cell's colour halfway to its full value, lifted a
@@ -250,7 +250,7 @@ fn fx_effect(input:LayerInput,g:vec3<f32>,q:vec2<f32>,fp:f32)->vec3<f32> {
 end
 
 -- Halftone: a rounded square in each cell of a screen 7 of the picture's
--- pixels apart, as the cells of Zeron's mark, its area what the colour
+-- pixels apart, as the cells of Zend's mark, its area what the colour
 -- there takes.
 local HALFTONE = [[
 const FX_PITCH:f32=7.;
@@ -326,7 +326,7 @@ export type Params = {
 	picture: Grid?,
 }
 
--- The picture's grid: its pixels as Zeron's proxy of it has them (the
+-- The picture's grid: its pixels as Zend's proxy of it has them (the
 -- picture fitted to 2048 a side, made larger as well as smaller).
 function M.grid(p: Grid?): (number, number)
 	if not p or p.w <= 0 or p.h <= 0 then

@@ -1,6 +1,6 @@
 //! Dictation: hold to talk, release to transcribe, the words in the draft
 //! (ui/screens/chat/dictation.luau, Settings → Voice). Everything happens in
-//! this window with `zeron_voice`: no engine, audio files or transcript logs.
+//! this window with `zend_voice`: no engine, audio files or transcript logs.
 //! The weights stay in `<data>/models`, where the shipping app keeps them too.
 use serde_json::{Value as Json, json};
 use std::{
@@ -26,20 +26,20 @@ const MODEL: &str = "parakeet-tdt-0.6b-v3-int8";
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    fn zeron_microphone_permission() -> i32;
-    fn zeron_request_microphone();
+    fn zend_microphone_permission() -> i32;
+    fn zend_request_microphone();
 }
 fn authorize() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    match unsafe { zeron_microphone_permission() } {
+    match unsafe { zend_microphone_permission() } {
         1 => (),
         0 => {
-            unsafe { zeron_request_microphone() };
+            unsafe { zend_request_microphone() };
             return Err("Allow microphone access, then hold to dictate again.".into());
         }
-        -2 => return Err("Microphone access requires a packaged Zeron app.".into()),
+        -2 => return Err("Microphone access requires a packaged Zend app.".into()),
         _ => return Err(
-            "Allow Zeron microphone access in System Settings → Privacy & Security → Microphone."
+            "Allow Zend microphone access in System Settings → Privacy & Security → Microphone."
                 .into(),
         ),
     }
@@ -48,13 +48,13 @@ fn authorize() -> Result<(), String> {
 
 /// One recording. Dropping it stops capture and throws away its result.
 trait Recording {
-    fn poll(&mut self) -> Option<zeron_voice::Event>;
+    fn poll(&mut self) -> Option<zend_voice::Event>;
     fn finish(&mut self);
     /// Peak microphone RMS since the previous take.
     fn take_level(&self) -> f32;
 }
-impl Recording for zeron_voice::Session {
-    fn poll(&mut self) -> Option<zeron_voice::Event> {
+impl Recording for zend_voice::Session {
+    fn poll(&mut self) -> Option<zend_voice::Event> {
         self.poll()
     }
     fn finish(&mut self) {
@@ -149,25 +149,25 @@ impl Service {
     fn dir(&self) -> Result<PathBuf, String> {
         self.dir
             .clone()
-            .ok_or_else(|| "Zeron's data folder isn't known".to_string())
+            .ok_or_else(|| "Zend's data folder isn't known".to_string())
     }
     fn idle(&self) -> Result<(), String> {
-        if self.needs_poll() || zeron_voice::busy() || DOWNLOADING.load(Ordering::Acquire) {
+        if self.needs_poll() || zend_voice::busy() || DOWNLOADING.load(Ordering::Acquire) {
             return Err("Dictation is busy; try again when it finishes".into());
         }
         Ok(())
     }
     fn status(&self) -> Result<Json, String> {
         Ok(json!({
-            "installed": zeron_voice::installed(&self.dir()?),
-            "size": zeron_voice::download_size(),
+            "installed": zend_voice::installed(&self.dir()?),
+            "size": zend_voice::download_size(),
         }))
     }
     fn start(&mut self, args: &Json) -> Result<Json, String> {
         let dir = self.dir()?;
         self.idle()?;
         // (The page says what to do about it: no words for the composer.)
-        if !zeron_voice::installed(&dir) {
+        if !zend_voice::installed(&dir) {
             return Err("no_model".into());
         }
         authorize()?;
@@ -175,7 +175,7 @@ impl Service {
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
-        let session = zeron_voice::Session::start(dir, device).map_err(|e| e.to_string())?;
+        let session = zend_voice::Session::start(dir, device).map_err(|e| e.to_string())?;
         self.session = Some(Box::new(session));
         self.clear_levels();
         self.serial += 1;
@@ -192,7 +192,7 @@ impl Service {
         let worker_cancel = cancel.clone();
         let (tell, events) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = zeron_voice::download(&dir, &worker_cancel, |n| {
+            let result = zend_voice::download(&dir, &worker_cancel, |n| {
                 let _ = tell.send(Download::Progress(n));
             })
             .map_err(|e| e.to_string());
@@ -201,13 +201,13 @@ impl Service {
         });
         self.download = Some(DownloadJob { cancel, events });
         self.state =
-            json!({"phase":"downloading", "bytes":0, "total":zeron_voice::download_size()});
+            json!({"phase":"downloading", "bytes":0, "total":zend_voice::download_size()});
         Ok(self.state.clone())
     }
     fn remove(&mut self) -> Result<(), String> {
         let dir = self.dir()?;
         self.idle()?;
-        zeron_voice::unload();
+        zend_voice::unload();
         if dir.exists() {
             std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -247,25 +247,25 @@ impl Service {
         if let Some(session) = &mut self.session {
             while let Some(event) = session.poll() {
                 match event {
-                    zeron_voice::Event::Listening => {
+                    zend_voice::Event::Listening => {
                         if self.deadline.is_none() {
                             self.state["phase"] = json!("listening");
                             self.meter.start(Instant::now());
                             session.take_level();
                         }
                     }
-                    zeron_voice::Event::Finalizing => {
+                    zend_voice::Event::Finalizing => {
                         self.state["phase"] = json!("finalizing");
                         self.meter.freeze(Instant::now());
                         self.deadline
                             .get_or_insert_with(|| Instant::now() + Duration::from_secs(30));
                     }
-                    zeron_voice::Event::Final(text) => {
+                    zend_voice::Event::Final(text) => {
                         self.state["phase"] = json!("final");
                         self.state["text"] = json!(text);
                         ended = true;
                     }
-                    zeron_voice::Event::Failed(error) => {
+                    zend_voice::Event::Failed(error) => {
                         self.state["phase"] = json!("failed");
                         self.state["error"] = json!(error);
                         ended = true;
@@ -370,7 +370,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             let args = value_json(&asked);
             let result = match args["op"].as_str() {
                 Some("inputs") => {
-                    let inputs = off_thread(zeron_voice::input_devices)
+                    let inputs = off_thread(zend_voice::input_devices)
                         .await
                         .ok_or("Could not list microphones")?;
                     let list: Vec<_> = inputs
@@ -442,7 +442,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
 mod tests {
     use super::*;
     use std::{cell::Cell, collections::VecDeque};
-    use zeron_voice::Event;
+    use zend_voice::Event;
     struct Fake {
         events: Rc<RefCell<VecDeque<Event>>>,
         cancelled: Rc<Cell<bool>>,

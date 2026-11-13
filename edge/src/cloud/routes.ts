@@ -10,7 +10,7 @@
  *   POST   /cloud/{orgId}/billing/checkout         {kind: subscription, plan} | {kind: credits, packs} → {url}
  *   POST   /cloud/{orgId}/billing/portal           → {url} (Stripe Billing Portal)
  *   POST   /stripe/webhook                         pre-bearer: Stripe-signed events
- *   GET    /billing/done                           pre-bearer: "return to Zeron" after Checkout
+ *   GET    /billing/done                           pre-bearer: "return to Zend" after Checkout
  *   GET    /cloud/{orgId}/projects                 Cloud projects (user)
  *   PUT    /cloud/{orgId}/projects/{spaceId}       add/update a project (user)
  *   DELETE /cloud/{orgId}/projects/{spaceId}       remove a project + its sessions (user)
@@ -81,7 +81,7 @@ const unavailable = () => jsonError(503, "unavailable", "Cloud is not available 
  * engines must never receive `data_expired`. A client that sends nothing gets the
  * nearest state it knows, plus a field for anything newer reading it.
  */
-const CLOUD_STATES_HEADER = "x-zeron-cloud-states";
+const CLOUD_STATES_HEADER = "x-zend-cloud-states";
 
 const understandsDataExpired = (request: Request): boolean =>
   (request.headers.get(CLOUD_STATES_HEADER) ?? "")
@@ -190,11 +190,11 @@ const billingDonePage = (url: URL): Response => {
   const result = url.searchParams.get("result");
   const [title, body] =
     result === "success"
-      ? ["You're all set", "Your purchase is complete. Head back to Zeron — your credits are on their way."]
+      ? ["You're all set", "Your purchase is complete. Head back to Zend — your credits are on their way."]
       : result === "canceled"
-        ? ["Checkout canceled", "Nothing was charged. You can head back to Zeron."]
-        : ["Done", "You can head back to Zeron."];
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · Zeron</title>
+        ? ["Checkout canceled", "Nothing was charged. You can head back to Zend."]
+        : ["Done", "You can head back to Zend."];
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · Zend</title>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Inter",system-ui,sans-serif;background:#0d0d0f;color:#ededef}
 @media (prefers-color-scheme:light){body{background:#f7f7f8;color:#18181b}.card{background:#fff;border-color:#e4e4e7}p{color:#52525b}}
 .card{max-width:380px;padding:40px 32px;border:1px solid #27272a;border-radius:14px;background:#161618;text-align:center}

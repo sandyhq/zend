@@ -1,9 +1,9 @@
 --!strict
--- Git's service: run by Zeron's engine on each device that has the plugin,
+-- Git's service: run by Zend's engine on each device that has the plugin,
 -- with no window open. It is where a session's checkout is (this Mac, or a
 -- devbox), and it does every piece of git work there with that device's
 -- own `git` ("commands": ["git"]), for the plugin's windows on this device
--- or another of yours. Nothing here is Zeron's: it is git, asked plainly.
+-- or another of yours. Nothing here is Zend's: it is git, asked plainly.
 --
 -- The work tree's state, as one id: a snapshot of every file in it (the
 -- tracked ones and the new ones git doesn't ignore) written as a tree into
@@ -18,14 +18,14 @@
 -- (`not_a_repo`, `rejected`, `conflicts`, `dirty`, …) to say it plainly,
 -- and git's own words where nothing better fits.
 
-local zeron = require("./zeron")("git")
+local zend = require("./zend")("git")
 
 -- Every run: git's words untranslated (they are read), no prompt for a
 -- password (a push waits for none), and `status` taking no lock an agent's
 -- git could trip over.
 local ENV = { LC_ALL = "C", GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" }
 -- What git prints and the plugin reads: never its colours or a pager, and
--- no filesystem monitor a repository's config names. (Hooks are Zeron's
+-- no filesystem monitor a repository's config names. (Hooks are Zend's
 -- runner's to decide: a commit, merge or push in a chat's or project's
 -- checkout runs its hooks, as git does for you; nothing else does.)
 local BASE = {
@@ -56,7 +56,7 @@ local function run(cwd: string, args: { string }, opts: { stdin: string?, timeou
 		table.insert(all, a)
 	end
 	local o = opts or {}
-	return zeron.run("git", all, { stdin = o.stdin, timeout = o.timeout or 30, env = merged(ENV, o.env) }):await()
+	return zend.run("git", all, { stdin = o.stdin, timeout = o.timeout or 30, env = merged(ENV, o.env) }):await()
 end
 
 -- git's own words for a failure, on one line.
@@ -124,7 +124,7 @@ local function trim(s: string): string
 end
 
 -- The folders git may work in: this device's chats' and projects'
--- (`zeron.folders`), asked again when one isn't among those last heard.
+-- (`zend.folders`), asked again when one isn't among those last heard.
 local folders: { string } = {}
 local function among(cwd: string): boolean
 	for _, f in folders do
@@ -150,7 +150,7 @@ local function check_cwd(cwd: any): string
 	end
 	cwd = if #cwd > 1 and string.sub(cwd, -1) == "/" then string.sub(cwd, 1, -2) else cwd
 	if not among(cwd) then
-		folders = zeron.folders():await() or {}
+		folders = zend.folders():await() or {}
 	end
 	if not among(cwd) then
 		error("not_a_checkout: That folder isn't one of this device's chats or projects", 0)
@@ -182,7 +182,7 @@ end
 local held: { [string]: boolean } = {}
 local function exclusive<T>(cwd: string, fn: () -> T): T
 	while held[cwd] do
-		zeron.sleep(0.02):await()
+		zend.sleep(0.02):await()
 	end
 	held[cwd] = true
 	local ok, value = pcall(fn)
@@ -229,7 +229,7 @@ end
 -- repository's, so only what changed is read again).
 local function snapshot(cwd: string, head: string?): string
 	local r = repo(cwd)
-	local index = r.dir .. "/zeron-git.index"
+	local index = r.dir .. "/zend-git.index"
 	local own = { GIT_INDEX_FILE = index }
 	local seeded = if head
 		then run(cwd, { "read-tree", "--index-output=" .. index, "-m", head })
@@ -394,7 +394,7 @@ local function status(cwd: string): any
 	return exclusive(cwd, function(): any
 		local head, _files = status_now(cwd)
 		head.tree = snapshot(cwd, head.oid)
-		head.device = zeron.device.name
+		head.device = zend.device.name
 		local base = base_of(cwd)
 		head.base = base
 		head.who = repo(cwd).who
@@ -478,7 +478,7 @@ end
 
 -- The turns this device saw start, by chat: where each one's work tree
 -- stood (kept on this device; the newest 200).
-local turns = zeron.store("turns", {})
+local turns = zend.store("turns", {})
 
 local function changes(args: any): any
 	local cwd = check_cwd(args.cwd)
@@ -528,7 +528,7 @@ local function changes(args: any): any
 		elseif scope == "turn" then
 			local turn = (turns:get() or {})[args.chat or ""]
 			if not turn or turn.cwd ~= cwd then
-				error("no_turn: No turn has started here since Zeron was set up", 0)
+				error("no_turn: No turn has started here since Zend was set up", 0)
 			end
 			out.a = turn.tree
 			out.at = turn.at
@@ -873,7 +873,7 @@ local function commit(args: any): any
 				error("nothing_staged: Nothing is staged to commit", 0)
 			end
 			if string.find(words, "Please tell me who you are", 1, true) or string.find(words, "user.email", 1, true) then
-				error("no_identity: git doesn't know who you are on " .. zeron.device.name, 0)
+				error("no_identity: git doesn't know who you are on " .. zend.device.name, 0)
 			end
 			error(classified(words), 0)
 		end
@@ -1064,7 +1064,7 @@ end
 -- and what in its git folders says the branch, the index or a ref moved
 -- (HEAD, index, refs, packed-refs; a linked worktree's own git folder and
 -- the repository's shared one). A burst of changes that matters is told
--- once (`zeron.emit("changed", { cwds })`), and windows ask again; nothing
+-- once (`zend.emit("changed", { cwds })`), and windows ask again; nothing
 -- is asked here meanwhile.
 --
 -- What the plugin does itself is never told: reads aren't changes, `git
@@ -1276,7 +1276,7 @@ local function keep_watched(cwd: string)
 		end
 	end
 	local made: Watched = { root = root, dir = dir, common = common, stop = function() end, cwds = { [cwd] = now }, ignored = {} }
-	made.stop = zeron.watch(folders, function(changed: any)
+	made.stop = zend.watch(folders, function(changed: any)
 		if watched[root] ~= made then
 			return
 		end
@@ -1286,14 +1286,14 @@ local function keep_watched(cwd: string)
 			for c in made.cwds do
 				table.insert(cwds, c)
 			end
-			zeron.emit("changed", { root = root, cwds = cwds })
+			zend.emit("changed", { root = root, cwds = cwds })
 		end
 	end, { quiet = QUIET })
 	watched[root] = made
 end
 
 -- Reading only, safe to run again; the rest change the checkout.
-zeron.serve("status", function(args: any): any
+zend.serve("status", function(args: any): any
 	local cwd = check_cwd(args.cwd)
 	local s = status(cwd)
 	if args.watch then
@@ -1304,18 +1304,18 @@ zeron.serve("status", function(args: any): any
 	end
 	return s
 end, { safe = true })
-zeron.serve("changes", changes, { safe = true })
-zeron.serve("diff", diff, { safe = true })
-zeron.serve("history", history, { safe = true })
-zeron.serve("branches", branches, { safe = true })
-zeron.serve("commit_info", commit_of, { safe = true })
-zeron.serve("branch_totals", branch_totals, { safe = true })
-zeron.serve("stage", stage)
-zeron.serve("unstage", unstage)
-zeron.serve("discard", discard)
-zeron.serve("commit", commit)
-zeron.serve("push", push)
-zeron.serve("pull", pull)
-zeron.serve("fetch", fetch)
-zeron.serve("switch", switch)
-zeron.serve("turn_start", turn_start)
+zend.serve("changes", changes, { safe = true })
+zend.serve("diff", diff, { safe = true })
+zend.serve("history", history, { safe = true })
+zend.serve("branches", branches, { safe = true })
+zend.serve("commit_info", commit_of, { safe = true })
+zend.serve("branch_totals", branch_totals, { safe = true })
+zend.serve("stage", stage)
+zend.serve("unstage", unstage)
+zend.serve("discard", discard)
+zend.serve("commit", commit)
+zend.serve("push", push)
+zend.serve("pull", pull)
+zend.serve("fetch", fetch)
+zend.serve("switch", switch)
+zend.serve("turn_start", turn_start)

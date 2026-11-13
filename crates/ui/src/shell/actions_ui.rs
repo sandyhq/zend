@@ -1,6 +1,6 @@
 use super::*;
 
-use zeron_proto::{
+use zend_proto::{
     ProjectAction, ProjectActionDraft, ProjectActionIcon, ProjectActionRun, ProjectActionsSnapshot,
 };
 

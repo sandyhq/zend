@@ -2,7 +2,7 @@
 # The apps/zgx tests CI runs (.github/workflows/zgx-tests.yml), with the known
 # failures in scripts/ci/zgx-known-failures.txt let through:
 #
-#   scripts/ci/test-zgx.sh rust      cargo test --bin zeron-zgx (its unit tests,
+#   scripts/ci/test-zgx.sh rust      cargo test --bin zend-zgx (its unit tests,
 #                                    src/plugins/*_tests.rs among them), the
 #                                    known ones skipped by exact name
 #   scripts/ci/test-zgx.sh ui [zgx]  zgx test ui (the Luau UI tests), with the
@@ -23,7 +23,7 @@ case "${1:-}" in
     cd "$root/apps/zgx"
     # (`${a[@]+…}`: an empty list under `set -u`, which macOS's bash 3.2
     # calls unbound.)
-    exec cargo test --locked --bin zeron-zgx -- --exact ${skips[@]+"${skips[@]}"}
+    exec cargo test --locked --bin zend-zgx -- --exact ${skips[@]+"${skips[@]}"}
     ;;
   ui)
     zgx="${2:-zgx}"

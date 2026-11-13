@@ -38,7 +38,7 @@ enum Verdict {
     },
 }
 const NOT_HTTP_INITIAL_BACKOFF: Duration = Duration::from_secs(4);
-/// How often discovery scans while something Zeron started is alive.
+/// How often discovery scans while something Zend started is alive.
 const SCAN_CADENCE: Duration = Duration::from_secs(2);
 const NOT_HTTP_MAX_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -180,8 +180,8 @@ fn candidates(
         listeners
             .into_iter()
             .filter(|l| {
-                l.zeron_owned
-                    && l.address.port() != zeron_proto::PREVIEW_PROXY_PORT
+                l.zend_owned
+                    && l.address.port() != zend_proto::PREVIEW_PROXY_PORT
                     && !reserved_ports.contains(&l.address.port())
                     && l.pid != std::process::id()
                     && !l.is_authentication_command()
@@ -267,7 +267,7 @@ impl PreviewService {
         &self.0.catalog
     }
     /// Scan for development servers now: a run or terminal here started or
-    /// changed state. Discovery parks while nothing Zeron started is alive,
+    /// changed state. Discovery parks while nothing Zend started is alive,
     /// and only this wakes it.
     pub fn rescan(&self) {
         self.0.scan_wake.notify_one();
@@ -361,7 +361,7 @@ impl PreviewService {
                     Err(error) => {
                         tracing::warn!(%error, "local previews could not start; retrying");
                         proxy_catalog.set_proxy_status(
-                            zeron_proto::PREVIEW_PROXY_PORT,
+                            zend_proto::PREVIEW_PROXY_PORT,
                             Some(format!("Local previews could not start: {error}")),
                         )
                     }
@@ -373,7 +373,7 @@ impl PreviewService {
         let catalog = self.0.catalog.clone();
         let stop = self.0.stop.clone();
         let wake = self.0.scan_wake.clone();
-        // Every 2 s while anything Zeron started here is alive (a run, a
+        // Every 2 s while anything Zend started here is alive (a run, a
         // terminal, or a process either left running): a server one starts
         // is listed within one cadence, as before. With none alive no
         // listener could be listed, so the scan parks until a run or
@@ -514,7 +514,7 @@ impl Connector for LocalConnector {
 
 
 /// The local preview proxy, listening: on its usual port, or, with that
-/// taken (another Zeron engine on this computer has it: the app's and a
+/// taken (another Zend engine on this computer has it: the app's and a
 /// development one, say), on one the system picks. Every preview address is
 /// built from the port it got (`PreviewSnapshot::proxy_port`), so nothing
 /// that opens a preview depends on which.
@@ -522,10 +522,10 @@ async fn serve_proxy(
     router: proxy::Router,
     stop: &CancellationToken,
 ) -> anyhow::Result<(u16, Vec<tokio::task::JoinHandle<()>>)> {
-    match proxy::serve(router.clone(), zeron_proto::PREVIEW_PROXY_PORT, stop.child_token()).await {
+    match proxy::serve(router.clone(), zend_proto::PREVIEW_PROXY_PORT, stop.child_token()).await {
         Err(error) if address_in_use(&error) => {
             tracing::info!(
-                port = zeron_proto::PREVIEW_PROXY_PORT,
+                port = zend_proto::PREVIEW_PROXY_PORT,
                 "the preview proxy's port is taken; listening on another"
             );
             proxy::serve(router, 0, stop.child_token()).await
@@ -551,7 +551,7 @@ mod tests {
             args: vec!["node".into()],
             started_at: 1_000,
             address: ([127, 0, 0, 1], port).into(),
-            zeron_owned: true,
+            zend_owned: true,
             origin: Some("chat:chat".into()),
             chat_id: Some("chat".into()),
             signing_in: false,
@@ -595,8 +595,8 @@ mod tests {
         assert!(known.is_empty());
         assert_eq!(probe.len(), 1);
     }
-    /// A chat's development server is found by the scan of what Zeron
-    /// started, and with nothing Zeron started alive the scan finds nothing
+    /// A chat's development server is found by the scan of what Zend
+    /// started, and with nothing Zend started alive the scan finds nothing
     /// to do: the loop parks instead of scanning again.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
@@ -630,7 +630,7 @@ mod tests {
                 "import socket,sys,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen()\nprint(s.getsockname()[1],flush=True)\ntime.sleep(60)",
             ])
             .current_dir(folder.path())
-            .env(zeron_proto::ORIGIN_ENV, zeron_proto::chat_origin(&chat))
+            .env(zend_proto::ORIGIN_ENV, zend_proto::chat_origin(&chat))
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();

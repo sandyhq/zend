@@ -1,4 +1,4 @@
--- Zeron's composer, from the design system's parts: a pill holding the
+-- Zend's composer, from the design system's parts: a pill holding the
 -- draft, + on the left to attach, the microphone and Send on the right;
 -- under it a footer of chips the same size: the access mode (with plan
 -- mode's switch in its panel) and where it works (a folder or worktree,
@@ -9,7 +9,7 @@
 -- the chips sit on the composer rather than on the art. The
 -- footer keeps to one line: short of room, it folds a step at a time:
 -- "Plan" goes, then the access mode's name (leaving its icon, in the accent
--- while plan mode is on), then the branch's, leaving its icon at the left. Its geometry is Zeron's
+-- while plan mode is on), then the branch's, leaving its icon at the left. Its geometry is Zend's
 -- (crates/ui/src/composer.rs): 26-point corners, 28-point round controls,
 -- one 49-point line while the draft fits beside the controls.
 --
@@ -145,7 +145,7 @@ export type Props = {
 	-- Or what it holds (tokens and window, as the agent reports them): the
 	-- ring shows only once a window is reported (an agent that never says
 	-- one has none), and hovering or focusing it opens a card saying the
-	-- numbers, as Zeron's does (crates/ui/src/context_usage.rs).
+	-- numbers, as Zend's does (crates/ui/src/context_usage.rs).
 	usage: (() -> Usage?)?,
 	-- The footer stands over a wallpaper (a new chat's art): the pill's glass
 	-- continues under it as a tray, the chips on it rather than on the art,
@@ -293,7 +293,7 @@ export type Props = {
 	mention_sections: { [string]: { { id: string, label: any } } }?,
 }
 
--- Zeron's geometry. The one line: 47 points inside the hairline, the text
+-- Zend's geometry. The one line: 47 points inside the hairline, the text
 -- centred in it. Opened out: the text box (16 above the text, 4 below)
 -- between its floor and cap, then the controls' row (2, a 32-point chip
 -- zone, 8). Round controls are 28 across, concentric with the pill's
@@ -309,11 +309,11 @@ local HAIRLINES = 2
 local CONTROL = 28
 local INSET_LINE = (ONE_LINE - CONTROL) / 2
 local function open_inset(): number
-	return control.nest("$zeron.composer.radius", 1) - CONTROL / 2
+	return control.nest("$zend.composer.radius", 1) - CONTROL / 2
 end
 -- The controls' row opened out: its 42 points, or more where a rounder
 -- pill (a template's) sets its controls further in from the foot, so they
--- keep the room over them they have at Zeron's own corner (its controls'
+-- keep the room over them they have at Zend's own corner (its controls'
 -- top 3 under the row's) rather than rising into the text.
 local ACTIONS_OVER = 3
 local function actions(): number
@@ -350,14 +350,14 @@ local CHIP_H, CHIP_RADIUS = 24, "$radius.lg"
 -- Its words lifted a point, as the footer's other chips' are (ds/dropdown's
 -- chip): centred by their capitals, lowercase reads low beside a glyph. (A
 -- margin under them of twice that: their box stays centred, a point up.)
-local LIFT = "$zeron.space.hair"
+local LIFT = "$zend.space.hair"
 type Folded = { level: number, access_at: { [string]: number }, where_icon: number?, model_at: { [string]: number }? }
 local FOOTER_SIDES, FOOTER_GAP = 20, 4
 -- With cargo or a question over the draft, the draft keeps the strip's
 -- `below` over it (the theme's; read as the composer is built) rather than
 -- the open text box's own top.
 local function head_gap(): number
-	local v = ui.theme.get("zeron.composer.chip.below")
+	local v = ui.theme.get("zend.composer.chip.below")
 	return if type(v) == "number" then v else 12
 end
 -- A pill narrower than this is short of room: the trays' rows fold their
@@ -381,7 +381,7 @@ local function worded(t: { [string]: any }, words: { [string]: string }): any
 	return out
 end
 
--- The access modes, as Zeron offers them; their icons (Central Icons,
+-- The access modes, as Zend offers them; their icons (Central Icons,
 -- centralicons.com, round outlined, radius 2, stroke 1.5) say what each
 -- does: it waits for you (a raised hand), edits go through (a pencil with
 -- sparkles), nothing is held back (an open padlock). (Made as they're
@@ -415,7 +415,7 @@ local function plan_row(plan: State<boolean>): Node
 		ui.column {
 			grow = 1,
 			min_w = 0,
-			gap = "$zeron.space.hair",
+			gap = "$zend.space.hair",
 			ui.text {
 				locale.t("ds.composer.plan.mode"),
 				text_size = "$font.size.md",
@@ -442,7 +442,7 @@ end
 -- out of reach).
 type Choice = Dropdown.Item
 
--- The checkouts, as Zeron offers them (made as they're read).
+-- The checkouts, as Zend offers them (made as they're read).
 local function CHECKOUTS(): { Choice }
 	return {
 	worded({ value = "local", icon = "folder" }, {
@@ -766,7 +766,7 @@ local function ring(used: number | () -> number, usage: (() -> Usage?)?, side: (
 		return ui.row {
 			id = "composer-context",
 			h = CHIP_H,
-			px = "$zeron.space.tight",
+			px = "$zend.space.tight",
 			items = "center",
 			rounded = CHIP_RADIUS,
 			hover = { bg = "$hover" },
@@ -993,7 +993,7 @@ return ui.component(function(props: Props): Node
 	-- On the tray, the step under the pill and above the tray's foot (one
 	-- token: the footer's margins and the tray's height both read it), and
 	-- how far the tray tucks up behind the pill, its top hidden there.
-	local TRAY_GAP, TRAY_TUCK = "zeron.space.tight", 40
+	local TRAY_GAP, TRAY_TUCK = "zend.space.tight", 40
 	local function tray_gap(): number
 		local _ = ui.theme.current:get()
 		return (ui.theme.get(TRAY_GAP) :: number?) or 6
@@ -1547,7 +1547,7 @@ return ui.component(function(props: Props): Node
 		icon = true,
 		label = locale.t("ds.composer.stop"),
 		on_click = props.on_stop,
-		ui.div { w = 10, h = 10, rounded = ui.raw(3, "the stop glyph's corner"), bg = "$zeron.primary.text" },
+		ui.div { w = 10, h = 10, rounded = ui.raw(3, "the stop glyph's corner"), bg = "$zend.primary.text" },
 	}
 	-- A question's way through: Back (from the second page), then Submit
 	-- (or Next, with pages to come), dimmed until something is picked or
@@ -1661,7 +1661,7 @@ return ui.component(function(props: Props): Node
 			left = by_open(INSET_LINE + CONTROL + 8, INSET_OPEN + CONTROL + 8),
 			right = by_open(INSET_LINE + CONTROL * 2 + 8 + 8, INSET_OPEN + CONTROL * 2 + 8 + 8),
 			bottom = by_open(INSET_LINE, INSET_OPEN),
-			h = "$zeron.composer.voice.h",
+			h = "$zend.composer.voice.h",
 			ref = track_w,
 			overflow = "hidden",
 			rounded = "$radius.full",
@@ -1682,13 +1682,13 @@ return ui.component(function(props: Props): Node
 					gap = "$space.2",
 					items = "center",
 					rounded = "$radius.full",
-					bg = "$zeron.composer.voice.bg",
+					bg = "$zend.composer.voice.bg",
 					ui.div {
 						w = 8,
 						h = 8,
 						shrink = 0,
 						rounded = "$radius.full",
-						bg = "$zeron.composer.voice.ink",
+						bg = "$zend.composer.voice.ink",
 						opacity = ui.loop { from = 0.35, to = 1, duration = 900, fps = 30 },
 					},
 					if spoken and spoken.levels and spoken.phase then VoiceWave { levels = spoken.levels, phase = spoken.phase } else ui.div {
@@ -1701,7 +1701,7 @@ return ui.component(function(props: Props): Node
 						-- (Its ink as a colour, not a token: a clocked shader's parameters
 						-- drop theme tokens, zgx 4809bcce. Its presence's key holds the
 						-- theme, so the bar is made again as that changes.)
-						shader_params = { ui.theme.get("zeron.composer.voice.ink"), { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
+						shader_params = { ui.theme.get("zend.composer.voice.ink"), { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
 					},
 					ui.text {
 						clock,
@@ -1791,7 +1791,7 @@ return ui.component(function(props: Props): Node
 						if props.on_open_cargo then
 							return nil
 						end
-						local radius = ui.theme.get("zeron.composer.chip.radius")
+						local radius = ui.theme.get("zend.composer.chip.radius")
 						return Lightbox.source(group, item.id, if type(radius) == "number" then radius else 0)
 					end,
 				},
@@ -1841,7 +1841,7 @@ return ui.component(function(props: Props): Node
 		-- over it: one surface. Its own corner only clips what's in it, and
 		-- its edge, clear, keeps the room the frame's takes, so everything in
 		-- it sits where it always has.)
-		rounded = "$zeron.composer.radius",
+		rounded = "$zend.composer.radius",
 		border = 1,
 		border_color = "#00000000",
 		-- (Neither `on_files` nor its overlay: files are what's around it to
@@ -1882,8 +1882,8 @@ return ui.component(function(props: Props): Node
 			top = 0,
 			opacity = 0,
 			pointer_events = "none",
-			text_size = "$zeron.composer.text",
-			line_height = "$zeron.composer.line",
+			text_size = "$zend.composer.text",
+			line_height = "$zend.composer.line",
 			function()
 				return value:get()
 			end,
@@ -1897,8 +1897,8 @@ return ui.component(function(props: Props): Node
 			opacity = 0,
 			pointer_events = "none",
 			wrap = true,
-			text_size = "$zeron.composer.text",
-			line_height = "$zeron.composer.line",
+			text_size = "$zend.composer.text",
+			line_height = "$zend.composer.line",
 			function()
 				return value:get() .. "\u{200B}"
 			end,
@@ -1927,12 +1927,12 @@ return ui.component(function(props: Props): Node
 				bg = "#00000000",
 				focus = { border = 0, outline = 0 },
 				wrap = true,
-				text_size = "$zeron.composer.text",
-				line_height = "$zeron.composer.line",
+				text_size = "$zend.composer.text",
+				line_height = "$zend.composer.line",
 				color = "$text.primary",
-				-- The caret: the accent, two points wide, as Zeron's.
-				caret_color = "$zeron.composer.caret",
-				caret_width = ui.theme.get("zeron.composer.caret_width"),
+				-- The caret: the accent, two points wide, as Zend's.
+				caret_color = "$zend.composer.caret",
+				caret_width = ui.theme.get("zend.composer.caret_width"),
 				-- Markdown as it is typed: its markers greyed, bold, italic
 				-- and struck text in their faces, code washed; and a wash
 				-- behind each file, command or skill mentioned.
@@ -2089,7 +2089,7 @@ return ui.component(function(props: Props): Node
 			}),
 		},
 		-- Files over it: the pill says what a drop does, over everything, as
-		-- Zeron's drop overlay does (shell.rs `attachment_drop_overlay`): the
+		-- Zend's drop overlay does (shell.rs `attachment_drop_overlay`): the
 		-- scrim, the words in the text's ink, there while files are over it.
 		-- (Not when the caller covers more than the pill with its own.)
 		if props.drop_overlay ~= false
@@ -2204,8 +2204,8 @@ return ui.component(function(props: Props): Node
 					return ui.button {
 						label = locale.t("ds.composer.branch.label"),
 						h = CHIP_H,
-						px = "$zeron.space.tight",
-						gap = "$zeron.space.tight",
+						px = "$zend.space.tight",
+						gap = "$zend.space.tight",
 						items = "center",
 						min_w = 0,
 						rounded = CHIP_RADIUS,
@@ -2235,8 +2235,8 @@ return ui.component(function(props: Props): Node
 			local static: Node? = if fixed
 				then ui.row {
 					h = CHIP_H,
-					px = "$zeron.space.tight",
-					gap = "$zeron.space.tight",
+					px = "$zend.space.tight",
+					gap = "$zend.space.tight",
 					items = "center",
 					min_w = 0,
 					text_size = "$font.size.sm",
@@ -2303,7 +2303,7 @@ return ui.component(function(props: Props): Node
 				return if on_tray() then `${TRAY_GAP}` else 0
 			end :: any,
 			px = function(): any
-				return if on_tray() then ui.raw(TRAY_INSET, "the pill's controls' inset") else "$zeron.space.snug"
+				return if on_tray() then ui.raw(TRAY_INSET, "the pill's controls' inset") else "$zend.space.snug"
 			end :: any,
 			items = "center",
 			gap = "$space.1",
@@ -2435,7 +2435,7 @@ return ui.component(function(props: Props): Node
 		w_full = true,
 		relative = true,
 		opacity = function(): number
-			return if disabled() then (ui.theme.get("zeron.disabled") :: number?) or 0.4 else 1
+			return if disabled() then (ui.theme.get("zend.disabled") :: number?) or 0.4 else 1
 		end,
 		-- The tray (over a wallpaper): the pill's glass continued under the
 		-- footer, tucked behind the pill (its top hidden under it, its sides
@@ -2459,11 +2459,11 @@ return ui.component(function(props: Props): Node
 				-- its own anywhere: it is the pill's glass continued (the pill
 				-- keeps its edge). A rounded top, or a hairline, showed a second
 				-- curve against the pill's own.
-				rounded = "$zeron.composer.tray.radius",
+				rounded = "$zend.composer.tray.radius",
 				rounded_tl = 0,
 				rounded_tr = 0,
 				bg = function(): string
-					return if material.see_through() then "$zeron.composer.tint" else "$zeron.composer.solid"
+					return if material.see_through() then "$zend.composer.tint" else "$zend.composer.solid"
 				end,
 				backdrop_blur = function(): number
 					return if material.see_through() then 16 else 0
@@ -2496,17 +2496,17 @@ return ui.component(function(props: Props): Node
 				top = 0,
 				bottom = 0,
 				pointer_events = "none",
-				rounded = "$zeron.composer.radius",
+				rounded = "$zend.composer.radius",
 				border = 1,
-				border_color = "$zeron.composer.edge",
+				border_color = "$zend.composer.edge",
 				bg = function()
-					return if material.see_through() then "$zeron.composer.tint" else "$zeron.composer.solid"
+					return if material.see_through() then "$zend.composer.tint" else "$zend.composer.solid"
 				end,
 				backdrop_blur = function()
 					return if material.see_through() then 16 else 0
 				end,
 				shadow = function()
-					return if material.see_through() then "$zeron.composer.rest" else "$zeron.composer.shadow"
+					return if material.see_through() then "$zend.composer.rest" else "$zend.composer.shadow"
 				end,
 			},
 			trays,

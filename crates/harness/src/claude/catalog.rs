@@ -1,4 +1,4 @@
-//! Model catalog + effort mapping for Claude Code, ported from zeron's
+//! Model catalog + effort mapping for Claude Code, ported from zend's
 //! `packages/harness/src/claude.ts` (which itself mirrors Claude Code's own
 //! picker via t3code's catalog).
 //!
@@ -8,7 +8,7 @@
 //! CLI can under-report supported modes. The shared initialize probe also supplies
 //! slash commands and is cached by credential and binary context.
 
-use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel};
+use zend_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel};
 
 /// The ultrathink directive rides every user message as a prompt prefix — that
 /// is how the mode actually works in Claude Code (a prompt convention, not an
@@ -17,7 +17,7 @@ pub(crate) const ULTRATHINK_PREFIX: &str = "Ultrathink:\n";
 
 pub(crate) fn apply_ultrathink(reasoning: Option<ReasoningLevel>, text: &str) -> String {
     if reasoning == Some(ReasoningLevel::Ultrathink)
-        && zeron_proto::invocation::leading_command(text).is_none()
+        && zend_proto::invocation::leading_command(text).is_none()
     {
         format!("{ULTRATHINK_PREFIX}{text}")
     } else {
@@ -108,7 +108,7 @@ pub(crate) fn context_window() -> ModelOption {
 /// The Context Window select for models whose plain id already runs with the
 /// 1M window (the Fable models, Opus 4.7+, Sonnet 5+). Left unset, they run
 /// at 1M, so the select says so; 200K is an explicit choice that the launch
-/// enforces with `CLAUDE_CODE_DISABLE_1M_CONTEXT` (zeronsh/zeron#1083).
+/// enforces with `CLAUDE_CODE_DISABLE_1M_CONTEXT` (sandyhq/zend#1083).
 fn native_1m_context_window() -> ModelOption {
     ModelOption {
         default_choice: "1m".into(),

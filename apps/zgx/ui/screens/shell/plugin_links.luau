@@ -1,11 +1,11 @@
 -- A web link a built-in plugin can show itself: a pull request's, in the GitHub
 -- plugin's tab beside the chat, while that plugin is on and its "Open pull request
--- links in Zeron" setting is. Anything else goes where links go.
+-- links in Zend" setting is. Anything else goes where links go.
 --
 --   plugin_links.take(session, url)   true when a plugin's tab took it
 --   plugin_links.unclaimed(open)      runs `open` with no tab taking its link
 --
--- A link a plugin opens itself (`zeron.open_url`) is never taken: its pull
+-- A link a plugin opens itself (`zend.open_url`) is never taken: its pull
 -- request viewer's Open on GitHub would only bring that viewer forward.
 
 local boundary = require("@app/screens/shell/boundary")

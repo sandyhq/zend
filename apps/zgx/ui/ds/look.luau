@@ -1,5 +1,5 @@
--- The accent Zeron is drawn in: the theme's own, or one of Zeron's presets
--- (crates/theme AccentPreset), each the theme's (`zeron.accents`, lighter
+-- The accent Zend is drawn in: the theme's own, or one of Zend's presets
+-- (crates/theme AccentPreset), each the theme's (`zend.accents`, lighter
 -- on dark, deeper on light, as AccentPreset::color has them). One setting
 -- for the whole app, kept across launches, as the material is
 -- (ds/material); a window takes it through `theme` (`look.theme()`).
@@ -13,22 +13,22 @@ export type Accent = { value: string, label: string, preset: boolean? }
 
 -- An accent, its name read as a string in the locale shown (`a.label`,
 -- through its message as it's asked for: read in a function, it follows).
--- Zeron's own is its name in every language.
+-- Zend's own is its name in every language.
 local function accent(value: string, preset: boolean?): Accent
 	return setmetatable({ value = value, preset = preset }, {
 		__index = function(_, field: string): string?
 			if field == "label" then
-				return if value == "zeron" then "Zeron" else locale.s(`ds.look.accent.{value}`)
+				return if value == "zend" then "Zend" else locale.s(`ds.look.accent.{value}`)
 			end
 			return nil
 		end,
 	}) :: any
 end
 
--- In Zeron's order: the theme's own, then the presets.
+-- In Zend's order: the theme's own, then the presets.
 M.ACCENTS = {
 	accent("default"),
-	accent("zeron", true),
+	accent("zend", true),
 	accent("orange", true),
 	accent("amber", true),
 	accent("green", true),
@@ -49,10 +49,10 @@ function M.find(value: string): Accent
 end
 
 -- An accent's ink, in whichever scheme draws it. The theme's own is its
--- own token (`zeron.accents.default`, the theme's `accent` as written), so
+-- own token (`zend.accents.default`, the theme's `accent` as written), so
 -- it keeps its colour inside a window that wears another.
 function M.ink(a: Accent): string
-	return `$zeron.accents.{a.value}`
+	return `$zend.accents.{a.value}`
 end
 
 -- The tokens a window overrides to wear `value` (the chosen accent by
@@ -63,12 +63,12 @@ function M.theme(value: string?): { [string]: any }?
 	if not a.preset then
 		return nil
 	end
-	return { accent = `$zeron.accents.{a.value}` }
+	return { accent = `$zend.accents.{a.value}` }
 end
 
 -- The interface's text size: its body size in points (the theme's
 -- `font.size.md`, 13, by default), every other text size and line height
--- scaled with it, the conversation's too (`zeron.prose.*`). Code has its
+-- scaled with it, the conversation's too (`zend.prose.*`). Code has its
 -- own (Settings → Appearance). Kept across launches, for the main window.
 M.TEXT_SIZES = { 12, 13, 14, 15, 16 }
 M.text_size = ui.persist("text_size", 13)
@@ -77,11 +77,11 @@ M.text_size = ui.persist("text_size", 13)
 local SIZED = {
 	"font.size.xs", "font.size.sm", "font.size.md", "font.size.lg", "font.size.xl", "font.size.xxl",
 	"font.line.xs", "font.line.sm", "font.line.md", "font.line.lg", "font.line.xl", "font.line.xxl",
-	"zeron.prose.size", "zeron.prose.line",
-	"zeron.prose.h1.size", "zeron.prose.h1.line",
-	"zeron.prose.h2.size", "zeron.prose.h2.line",
-	"zeron.prose.h3.size", "zeron.prose.h3.line",
-	"zeron.prose.small.size", "zeron.prose.small.line",
+	"zend.prose.size", "zend.prose.line",
+	"zend.prose.h1.size", "zend.prose.h1.line",
+	"zend.prose.h2.size", "zend.prose.h2.line",
+	"zend.prose.h3.size", "zend.prose.h3.line",
+	"zend.prose.small.size", "zend.prose.small.line",
 }
 
 -- The text tokens a window overrides for `size` (the chosen one by
@@ -151,7 +151,7 @@ end
 -- was. On by default; kept across launches.
 M.accented = ui.persist("accent_throughout", true)
 
--- What a window overrides while it's on (ds/tokens' `zeron.accented.*`,
+-- What a window overrides while it's on (ds/tokens' `zend.accented.*`,
 -- each following the accent worn); nothing while it's off. (Links and
 -- inline code: `accented_ink`.)
 function M.accented_theme(on: boolean?): { [string]: any }?
@@ -162,14 +162,14 @@ function M.accented_theme(on: boolean?): { [string]: any }?
 		return nil
 	end
 	return {
-		["zeron.status.working"] = "$zeron.accented.ink",
-		["zeron.status.dot.working"] = "$zeron.accented.ink",
-		["zeron.editor.match"] = "$zeron.accented.find",
-		["zeron.editor.match_current"] = "$zeron.accented.find_current",
-		["zeron.composer.token.file"] = "$zeron.accented.ink",
-		["zeron.prose.marker"] = "$zeron.accented.ink",
-		["zeron.prose.quote_rail"] = "$zeron.accented.rail",
-		["zeron.prose.code_wash"] = "$zeron.accented.code_wash",
+		["zend.status.working"] = "$zend.accented.ink",
+		["zend.status.dot.working"] = "$zend.accented.ink",
+		["zend.editor.match"] = "$zend.accented.find",
+		["zend.editor.match_current"] = "$zend.accented.find_current",
+		["zend.composer.token.file"] = "$zend.accented.ink",
+		["zend.prose.marker"] = "$zend.accented.ink",
+		["zend.prose.quote_rail"] = "$zend.accented.rail",
+		["zend.prose.code_wash"] = "$zend.accented.code_wash",
 	}
 end
 
@@ -180,7 +180,7 @@ end
 function M.accented_ink(own: any): () -> any
 	return function(): any
 		if M.accented:get() then
-			return "$zeron.accented.ink"
+			return "$zend.accented.ink"
 		end
 		return if type(own) == "function" then own() else own
 	end

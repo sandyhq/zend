@@ -11,7 +11,7 @@ local url = ui.state("tf_url", "")
 local small = ui.state("tf_small", "")
 local large = ui.state("tf_large", "")
 local readonly = ui.state("tf_disabled", "Can't change this")
-local branch = ui.state("tf_branch", "zeron/primitives")
+local branch = ui.state("tf_branch", "zend/primitives")
 
 return {
 	id = "text_field",

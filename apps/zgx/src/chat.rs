@@ -38,7 +38,7 @@
 //! (whole lists), `WatchQueue`; runs, interrupts and answers through
 //! `QueueCommand`; config through `Mutate setChatConfig`; uploads through
 //! `UploadChunk` / `UploadCommit` (for a chat on a Cloud machine, staged here
-//! and sent by the engine through the edge's store: `WatchHeldSends`). `ZERON_ZGX_MOCK=1` offers the engine's
+//! and sent by the engine through the edge's store: `WatchHeldSends`). `ZEND_ZGX_MOCK=1` offers the engine's
 //! mock agent, for trying a turn without a paid one.
 
 use std::{
@@ -399,7 +399,7 @@ const FOLDED_AT_ONCE: usize = 64;
 fn folding(entries: Vec<(usize, String, Json)>, context: &RowContext) -> Folding {
     let (sender, results) = std::sync::mpsc::channel();
     let (doc, device, model) = (context.doc.clone(), context.device.clone(), context.model.clone());
-    let spawned = std::thread::Builder::new().name("zeron-fold".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("zend-fold".into()).spawn(move || {
         let mut batch = Vec::with_capacity(FOLDED_AT_ONCE);
         for (at, id, entry) in entries {
             batch.push(fold_off(at, id, &entry, &doc, device.as_deref(), model.as_deref()));
@@ -414,7 +414,7 @@ fn folding(entries: Vec<(usize, String, Json)>, context: &RowContext) -> Folding
         let _ = sender.send(batch);
     });
     if let Err(error) = spawned {
-        eprintln!("zeron-zgx: a chat's rows: no worker ({error})");
+        eprintln!("zend-zgx: a chat's rows: no worker ({error})");
     }
     Folding { results }
 }
@@ -468,11 +468,11 @@ fn room_to_keep() -> bool {
     true
 }
 
-/// `ZERON_ZGX_KEEP_CHATS=0`: chats let go of are kept as they were before
+/// `ZEND_ZGX_KEEP_CHATS=0`: chats let go of are kept as they were before
 /// (one, two seconds, for a split taking it), to compare what keeping costs.
 fn keeping_chats() -> bool {
     thread_local! {
-        static ON: bool = std::env::var("ZERON_ZGX_KEEP_CHATS").map_or(true, |v| v != "0");
+        static ON: bool = std::env::var("ZEND_ZGX_KEEP_CHATS").map_or(true, |v| v != "0");
     }
     ON.with(|on| *on)
 }
@@ -1202,7 +1202,7 @@ impl Chats {
         kept.push(LetGo { at: std::time::Instant::now(), bytes, id, entries, older_todo, built, built_model, context, context_usage });
         prune_let_go(&mut kept);
         eprintln!(
-            "zeron-zgx: chat: kept chats let go of: {}, {:.1} MB",
+            "zend-zgx: chat: kept chats let go of: {}, {:.1} MB",
             kept.len(),
             kept.iter().map(|held| held.bytes).sum::<usize>() as f64 / 1e6
         );
@@ -1218,7 +1218,7 @@ impl Chats {
             zgx::timer::sleep(LET_GO_SETTLE).await;
             if me.let_go_turn.get() == turn && !room_to_keep() && !me.let_go.borrow().is_empty() {
                 me.let_go.borrow_mut().clear();
-                eprintln!("zeron-zgx: chat: kept chats let go of: none (the app's footprint at rest is past its mark)");
+                eprintln!("zend-zgx: chat: kept chats let go of: none (the app's footprint at rest is past its mark)");
             }
         });
     }
@@ -1259,11 +1259,11 @@ impl Chats {
             return;
         }
         self.catalog_state.set(CatalogState::Loading);
-        let mock = std::env::var("ZERON_ZGX_MOCK").is_ok_and(|v| v == "1");
+        let mock = std::env::var("ZEND_ZGX_MOCK").is_ok_and(|v| v == "1");
         let list = match engine::get().call("ListHarnesses", json!({ "includeRegistry": true })).await {
             Ok(list) => list,
             Err(error) => {
-                eprintln!("zeron-zgx: chat: the agents didn't list: {error}");
+                eprintln!("zend-zgx: chat: the agents didn't list: {error}");
                 self.catalog_state.set(CatalogState::Looking);
                 return;
             }
@@ -1309,7 +1309,7 @@ impl Chats {
                             .borrow_mut()
                             .insert(id, list.as_array().cloned().unwrap_or_default());
                     }
-                    Err(error) => eprintln!("zeron-zgx: chat: {id}'s models didn't list: {error}"),
+                    Err(error) => eprintln!("zend-zgx: chat: {id}'s models didn't list: {error}"),
                 }
                 left.set(left.get() - 1);
                 if left.get() == 0 {
@@ -1440,7 +1440,7 @@ impl Chats {
                     // (Unreachable for now: its catalog settles with what it
                     // has, never this device's in its place, and it's asked
                     // again.)
-                    eprintln!("zeron-zgx: chat: {device}'s agents didn't list: {error}");
+                    eprintln!("zend-zgx: chat: {device}'s agents didn't list: {error}");
                     self.settle_remote(&device, turn);
                     zgx::timer::sleep(RETRY_AFTER[tries.min(RETRY_AFTER.len() - 1)]).await;
                     tries += 1;
@@ -1475,7 +1475,7 @@ impl Chats {
                     match list {
                         Ok(list) => break Some(list),
                         Err(error) => {
-                            eprintln!("zeron-zgx: chat: {id}'s models on {device} didn't list: {error}");
+                            eprintln!("zend-zgx: chat: {id}'s models on {device} didn't list: {error}");
                             if tries == MODEL_RETRIES {
                                 break None;
                             }
@@ -2519,7 +2519,7 @@ impl View {
         // the chat keeps the config it was made with: a side chat's, its
         // parent's.)
         if fresh && config["harness"].is_null() {
-            eprintln!("zeron-zgx: chat: {id}: no agent to send with (the chat isn't known here yet)");
+            eprintln!("zend-zgx: chat: {id}: no agent to send with (the chat isn't known here yet)");
             self.mark_failed(&id, &message_id, None);
             return Err("missing");
         }
@@ -2528,7 +2528,7 @@ impl View {
                 .call("Mutate", json!({ "op": "setChatConfig", "chatId": id, "config": config }))
                 .await
                 .map_err(|e| {
-                    eprintln!("zeron-zgx: chat: a new chat's config wasn't set: {e}");
+                    eprintln!("zend-zgx: chat: a new chat's config wasn't set: {e}");
                     self.mark_failed(&id, &message_id, None);
                     engine::outcome(&e)
                 })?;
@@ -2588,7 +2588,7 @@ impl View {
                 .call("Mutate", json!({ "op": "setChatConfig", "chatId": id, "config": config }))
                 .await
             {
-                eprintln!("zeron-zgx: chat: a sent pick didn't reach the chat's config: {e}");
+                eprintln!("zend-zgx: chat: a sent pick didn't reach the chat's config: {e}");
             }
         }
         self.publish_messages();
@@ -3104,7 +3104,7 @@ async fn command_with(chat: &str, command: Json, transfers: &[Json]) -> Result<(
         .await
         .map(|_| ())
         .map_err(|e| {
-            eprintln!("zeron-zgx: chat: {} for {chat} wasn't taken: {e}", command["kind"]);
+            eprintln!("zend-zgx: chat: {} for {chat} wasn't taken: {e}", command["kind"]);
             engine::outcome(&e)
         })
 }
@@ -3132,14 +3132,14 @@ const ATTACHMENT_STORE_V1: &str = "attachment-store-v1";
 /// asleep, so they can't wait on reaching it. Any other chat, or an engine
 /// that doesn't know the store, uploads straight to the host.
 fn store_takes_files(target: Option<&str>, capabilities: &Json) -> bool {
-    target.is_some_and(|device| zeron_proto::is_cloud_device(device, ""))
+    target.is_some_and(|device| zend_proto::is_cloud_device(device, ""))
         && capabilities
             .as_array()
             .is_some_and(|list| list.iter().any(|c| c.as_str() == Some(ATTACHMENT_STORE_V1)))
 }
 
 async fn goes_through_store(target: Option<&str>) -> bool {
-    if !target.is_some_and(|device| zeron_proto::is_cloud_device(device, "")) {
+    if !target.is_some_and(|device| zend_proto::is_cloud_device(device, "")) {
         return false;
     }
     match engine::get().call("EngineInfo", json!({})).await {
@@ -3510,9 +3510,9 @@ fn quote_chip(place: &str, body: &str) -> Value {
 }
 
 /// The shipping app's browser annotation token (crates/proto annotation.rs):
-/// `[Annotation N](zeron-annotation:<hex JSON>)`, as ds/annotation.luau
+/// `[Annotation N](zend-annotation:<hex JSON>)`, as ds/annotation.luau
 /// writes it after a prompt's words.
-const ANNOTATION_SCHEME: &str = "](zeron-annotation:";
+const ANNOTATION_SCHEME: &str = "](zend-annotation:";
 
 /// An element picked on a page, as a sent message shows it (the composer's
 /// chip, ds/composer_cargo): its page, then its number and what it says.
@@ -3621,7 +3621,7 @@ fn annotation_chip(pick: &Pick) -> Value {
 }
 
 /// The block the composer adds for other chats attached (screens/chat/
-/// carried.luau `with_chats`): its header, then `- [title](zeron-chat:id)`.
+/// carried.luau `with_chats`): its header, then `- [title](zend-chat:id)`.
 /// The links stay in the prompt (the engine reads each out to the agent);
 /// the sent message shows each as a card, as the composer did.
 const CHATS_HEADER: &str = "Chats attached:";
@@ -3635,7 +3635,7 @@ fn split_chats(words: &str) -> (String, Vec<(String, String)>) {
     }
     let mut chats = Vec::new();
     for bullet in &bullets {
-        let links = zeron_proto::chat_mentions::chat_mention_links(bullet);
+        let links = zend_proto::chat_mentions::chat_mention_links(bullet);
         // Each line one canonical link and nothing else, or it's words.
         match links.as_slice() {
             [link] if link.range == (0..bullet.len()) => chats.push((link.title.clone(), link.chat_id.clone())),
@@ -4518,7 +4518,7 @@ pub(crate) fn message(entry: &Json, model: Option<&str>) -> Option<Value> {
                 .join("\n\n");
             // A message from another chat: its routing header is the agent's to
             // read; the transcript shows who sent it, over its words.
-            let sender = zeron_proto::agent_messages::agent_message_sender(&text);
+            let sender = zend_proto::agent_messages::agent_message_sender(&text);
             let body = sender.as_ref().map_or(text.as_str(), |(_, body)| *body);
             let sender = sender.as_ref().map_or(Value::Nil, |(from, _)| {
                 Value::record([("chat", Value::from(from.chat_id.as_str())), ("title", Value::from(from.title.as_str()))])
@@ -4885,7 +4885,7 @@ fn compact_blocks(entry: &Json) -> Option<Value> {
 const DISPLAY_TOOLS: &[&str] = &["show_image", "show_visual"];
 
 /// Whether `part` is a display tool's call: an MCP tool by its name, bare or
-/// as a harness names it (`mcp__zeron__show_visual`).
+/// as a harness names it (`mcp__zend__show_visual`).
 fn display_tool(part: &Json) -> bool {
     if part["kind"].as_str() != Some("tool") {
         return false;
@@ -5186,7 +5186,7 @@ impl GroupTally {
     /// the first letter raised.
     fn text(&self) -> String {
         // A Cloud machine's setup alone reads as what happened to the machine,
-        // as the shipping app's (zeron_proto `tool_group_summary`).
+        // as the shipping app's (zend_proto `tool_group_summary`).
         if self.calls > 0 && self.cloud == self.calls && self.thoughts == 0 {
             let mut line = if self.woke > 0 { "Woke the Cloud machine" } else { "Set up the Cloud machine" }.to_owned();
             if self.failed > 0 {
@@ -5326,13 +5326,13 @@ fn live_tool(id: &str, part: &Json, live: bool) -> Option<Value> {
 }
 
 /// The Cloud machine setup step a tool part records ("start", "wake",
-/// "clone", "branch"), if it is one (zeron_proto `cloud_setup_step`).
+/// "clone", "branch"), if it is one (zend_proto `cloud_setup_step`).
 fn cloud_setup_step(part: &Json) -> Option<&str> {
     let call = &part["call"];
     if call["kind"].as_str() != Some("unknown") {
         return None;
     }
-    call["input"][zeron_proto::CLOUD_SETUP_KEY].as_str()
+    call["input"][zend_proto::CLOUD_SETUP_KEY].as_str()
 }
 
 fn tool_row(part: &Json, live: bool) -> Option<Value> {
@@ -5960,7 +5960,7 @@ fn stale(updated: &Json) -> bool {
 
 /// Whether marking `chat` seen at `now` changes anything a viewport reads
 /// from it (`session`: its live state, or null). Every reader of a chat's
-/// `lastSeenAt` compares it with one of three stamps (zeron_proto's status
+/// `lastSeenAt` compares it with one of three stamps (zend_proto's status
 /// and sleep rules): its last message, its terminal activity's report, and
 /// when its sleep ended. Once the mark is at or past all three, a newer one
 /// changes nothing on any device, yet it is a synced write: every window
@@ -7022,7 +7022,7 @@ mod tests {
     fn a_message_from_another_chat_says_who_over_its_words() {
         let id = "cd27c5c2-0000-4000-8000-000000000000";
         let said = |text: String| json!({ "id": "u", "role": "user", "parts": [{ "kind": "text", "id": "t", "text": text }] });
-        let m = message(&said(zeron_proto::agent_messages::agent_message("Layout pass (cd27c5c2)", id, "All done.")), None).unwrap();
+        let m = message(&said(zend_proto::agent_messages::agent_message("Layout pass (cd27c5c2)", id, "All done.")), None).unwrap();
         let sender = m.field("sender").unwrap();
         let is = |v: Option<&Value>, want: &str| matches!(v, Some(Value::Str(s)) if s.as_ref() == want);
         assert!(is(sender.field("chat"), id));
@@ -7031,7 +7031,7 @@ mod tests {
         assert!(is(m.field("text"), "All done."));
         assert!(is(m.field("copy"), "All done."));
         // A person's that merely starts alike is theirs, as written.
-        let typed = "[Message from Zeron chat x]\n\nhi";
+        let typed = "[Message from Zend chat x]\n\nhi";
         let m = message(&said(typed.to_owned()), None).unwrap();
         assert!(m.field("sender").is_none_or(|s| matches!(s, Value::Nil)));
         assert!(is(m.field("text"), typed));
@@ -7043,7 +7043,7 @@ mod tests {
     /// chat linked in the words themselves (an @ mention) stays there.
     #[test]
     fn attached_chats_are_cards_and_mentioned_ones_stay_in_the_words() {
-        let block = format!("{CHATS_HEADER}\n- [Fix the build](zeron-chat:c1)\n- [Write \\[docs\\]](zeron-chat:c2)");
+        let block = format!("{CHATS_HEADER}\n- [Fix the build](zend-chat:c1)\n- [Write \\[docs\\]](zend-chat:c2)");
         let (words, chats) = split_chats(&format!("look at these\n\n{block}"));
         assert_eq!(words, "look at these");
         assert_eq!(
@@ -7054,11 +7054,11 @@ mod tests {
         let (words, chats) = split_chats(&block);
         assert_eq!((words.as_str(), chats.len()), ("", 2));
         // A chat mentioned in the words is left in them.
-        let mention = "ask [Fix the build](zeron-chat:c1) about it";
+        let mention = "ask [Fix the build](zend-chat:c1) about it";
         assert_eq!(split_chats(mention), (mention.to_owned(), Vec::new()));
         // A block line that isn't one chat link alone: the words, untouched.
         for odd in [
-            format!("hi\n\n{CHATS_HEADER}\n- see [Fix](zeron-chat:c1)"),
+            format!("hi\n\n{CHATS_HEADER}\n- see [Fix](zend-chat:c1)"),
             format!("hi\n\n{CHATS_HEADER}\n- [site](https://example.com)"),
         ] {
             assert_eq!(split_chats(&odd), (odd.clone(), Vec::new()), "{odd}");
@@ -7402,7 +7402,7 @@ mod tests {
     #[test]
     fn a_row_plainly_there_is_one_building_it_makes() {
         let tool = |id: &str| json!({ "kind": "tool", "id": id, "resolved": true, "call": { "kind": "exec", "command": "ls" } });
-        let show = json!({ "kind": "tool", "id": "s", "resolved": true, "call": { "kind": "mcp", "server": "zeron", "tool": "show_visual", "input": {} } });
+        let show = json!({ "kind": "tool", "id": "s", "resolved": true, "call": { "kind": "mcp", "server": "zend", "tool": "show_visual", "input": {} } });
         let thought = |text: &str| json!({ "kind": "reasoning", "id": "r", "text": text });
         let reply = |parts: Vec<Json>| json!({ "id": "a", "role": "assistant", "status": "done", "parts": parts });
         let cases = [
@@ -7446,7 +7446,7 @@ mod tests {
     fn display_tools_are_their_output_alone() {
         let mcp = |id: &str, tool: &str, resolved: bool, error: bool| {
             json!({ "kind": "tool", "id": id, "resolved": resolved, "isError": error, "output": "no such file: chart.png",
-                    "call": { "kind": "mcp", "server": "zeron", "tool": tool, "input": {} } })
+                    "call": { "kind": "mcp", "server": "zend", "tool": tool, "input": {} } })
         };
         let exec = |id: &str| json!({ "kind": "tool", "id": id, "resolved": true, "isError": false, "call": { "kind": "exec", "command": "ls" } });
         let reply = |parts: Vec<Json>| json!({ "id": "a1", "role": "assistant", "status": "complete", "parts": parts });
@@ -7456,7 +7456,7 @@ mod tests {
         assert_eq!(shown.list().len(), 1, "one group round it");
         assert_eq!(shown.list()[0].field("summary"), Some(&Value::from("Ran 2 commands")));
         assert_eq!(shown.list()[0].field("tools").unwrap().list().len(), 2);
-        let running = reply(vec![mcp("s1", "mcp__zeron__show_image", false, false)]);
+        let running = reply(vec![mcp("s1", "mcp__zend__show_image", false, false)]);
         assert!(blocks(&running).list().is_empty());
         let message = message(&entry, None).unwrap();
         assert_eq!(message.field("tools").unwrap().list().len(), 2, "the message's tools leave it out");
@@ -7479,7 +7479,7 @@ mod tests {
     fn pictures_an_agent_shows_sit_in_the_reply_in_place() {
         let mcp = |id: &str, error: bool| {
             json!({ "kind": "tool", "id": id, "resolved": true, "isError": error, "output": "visual:2: attempt to index nil",
-                    "call": { "kind": "mcp", "server": "zeron", "tool": "mcp__zeron__show_image", "input": {} } })
+                    "call": { "kind": "mcp", "server": "zend", "tool": "mcp__zend__show_image", "input": {} } })
         };
         let image = |id: &str, name: &str| json!({ "kind": "image", "id": id, "path": format!("/u/{name}"), "name": name, "mimeType": "image/png" });
         let exec = |id: &str| json!({ "kind": "tool", "id": id, "resolved": true, "isError": false, "call": { "kind": "exec", "command": "ls" } });
@@ -7609,7 +7609,7 @@ mod tests {
     /// and all of it showing at once. The opening tail is taken into the
     /// rows it holds, the changes after it counted against the tail.
     /// A real long chat's whole copy, taken in on the main thread: how long
-    /// each frame holds it. Set ZERON_RESET_FRAME to a frame file (a
+    /// each frame holds it. Set ZEND_RESET_FRAME to a frame file (a
     /// `TranscriptUpdate` reset) to run it.
     #[test]
     fn a_long_chats_whole_copy_on_the_main_thread() {
@@ -7617,7 +7617,7 @@ mod tests {
         use std::cell::{Cell, RefCell};
         use std::rc::Rc;
         use zgx_script::{ScriptHost, Value, testing::TestApp};
-        let Ok(path) = std::env::var("ZERON_RESET_FRAME") else { return };
+        let Ok(path) = std::env::var("ZEND_RESET_FRAME") else { return };
         let bytes = std::fs::read(&path).unwrap();
         let start = std::time::Instant::now();
         let whole: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -7656,7 +7656,7 @@ mod tests {
         eprintln!("dropping the frame's JSON: {:?}", start.elapsed());
     }
 
-    /// The app's entry sums are the engine's (`zeron_doc::entry_sum`): a
+    /// The app's entry sums are the engine's (`zend_doc::entry_sum`): a
     /// reopen says what it holds by them. Pinned in both crates.
     #[test]
     fn entry_sums_match_the_engines() {
@@ -7664,7 +7664,7 @@ mod tests {
         let b: serde_json::Value = serde_json::from_str(r#"{"p":[{"v":null,"k":"t"}],"n":1.5,"id":"x"}"#).unwrap();
         assert_eq!(super::sum_of(&a), 0xec67_0b99_244f_a276);
         assert_eq!(super::sum_of(&b), super::sum_of(&a));
-        // And the order digest (`zeron_doc::order_sum`).
+        // And the order digest (`zend_doc::order_sum`).
         assert_eq!(super::order_sum(["a", "b"]), 0xab40_d782_0d40_8076);
     }
 
@@ -7914,7 +7914,7 @@ mod tests {
     /// long one (some 7,900 entries, about 28 MB as JSON whole), each built as
     /// a view builds it (its settled rows folded), kept one after another; the
     /// process's footprint (what Activity Monitor shows) after each.
-    ///   cargo test --release --bin zeron-zgx kept_chats_cost -- --ignored --nocapture
+    ///   cargo test --release --bin zend-zgx kept_chats_cost -- --ignored --nocapture
     #[test]
     #[ignore = "a measurement"]
     #[cfg(target_os = "macos")]

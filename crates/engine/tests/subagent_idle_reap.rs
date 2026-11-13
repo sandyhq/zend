@@ -15,10 +15,10 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::{Mutex, mpsc};
 
-use zeron_doc::{MessagePart, SessionMessageEntry, SubagentStatus};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use zend_doc::{MessagePart, SessionMessageEntry, SubagentStatus};
+use zend_engine::{EngineCore, HarnessRegistry};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SessionStatus, SteeringMode, ToolCall,
 };
@@ -34,7 +34,7 @@ fn init_env() {
     ONCE.call_once(|| {
         // SAFETY: called before any engine (and thus any reader of the var)
         // exists in this test process; all tests share the one value.
-        unsafe { std::env::set_var("ZERON_SESSION_IDLE_MS", IDLE_MS.to_string()) };
+        unsafe { std::env::set_var("ZEND_SESSION_IDLE_MS", IDLE_MS.to_string()) };
     });
 }
 
@@ -82,7 +82,7 @@ struct FeedHarness {
     main_prompt: String,
     feed: Mutex<Option<mpsc::UnboundedReceiver<AgentEvent>>>,
     /// The main run's turn control, for a test to report background work.
-    turn: Arc<std::sync::Mutex<Option<zeron_harness::TurnControl>>>,
+    turn: Arc<std::sync::Mutex<Option<zend_harness::TurnControl>>>,
 }
 
 #[async_trait]
@@ -187,7 +187,7 @@ where
 struct Parked {
     core: EngineCore,
     feed: mpsc::UnboundedSender<AgentEvent>,
-    turn: Arc<std::sync::Mutex<Option<zeron_harness::TurnControl>>>,
+    turn: Arc<std::sync::Mutex<Option<zend_harness::TurnControl>>>,
     _dir: tempfile::TempDir,
 }
 

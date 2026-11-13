@@ -1,9 +1,9 @@
-//! A Zeron-style agent transcript: a scripted session that streams assistant
-//! text and dozens of tool calls. Layout, colours and motion follow Zeron's
+//! A Zend-style agent transcript: a scripted session that streams assistant
+//! text and dozens of tool calls. Layout, colours and motion follow Zend's
 //! `crates/ui/src/transcript.rs`: tool groups with a connector tree, rows that
 //! grow in with a staggered branch, a shimmering group title while tools run,
 //! a fading veil on streamed text, and groups that fold when the turn ends.
-//! Icons are from the Solar icon set (CC BY 4.0), as bundled with Zeron.
+//! Icons are from the Solar icon set (CC BY 4.0), as bundled with Zend.
 //!
 //! Animations read a clock that only ticks while something moves, so the
 //! page costs nothing once a replay settles.
@@ -30,13 +30,13 @@ use zgx::{
 
 use super::{Tween, ease_out_expo, eyebrow, header, pill_button, smoothstep};
 
-// White at Zeron's text/muted/faint contrast, as alpha so glass shows through.
+// White at Zend's text/muted/faint contrast, as alpha so glass shows through.
 const TEXT: Color = Color(255, 255, 255, 230);
 const MUTED: Color = Color(255, 255, 255, 158);
 const FAINT: Color = Color(255, 255, 255, 112);
 /// Output bodies open and close over the same curve as group folds.
 const OPEN: f32 = 0.2;
-/// Thoughts wrap at this many columns, like Zeron's 96 at a wider width,
+/// Thoughts wrap at this many columns, like Zend's 96 at a wider width,
 /// so a body's height is known before layout and can animate.
 const THOUGHT_COLUMNS: usize = 76;
 const DANGER: Color = Color(255, 100, 103, 255);
@@ -631,7 +631,7 @@ pub fn section(cx: &mut Context, page: &Signal<f32>) -> View {
         .child(header(
             "Transcript",
             &[
-                "Replay streams a scripted agent session styled after Zeron's transcript.",
+                "Replay streams a scripted agent session styled after Zend's transcript.",
                 "Tool rows grow in one after another; the group title shimmers while tools run.",
                 "New text fades in word by word; groups fold into a summary when a turn ends.",
                 "Click a group title to unfold it, and a tool row to see its output.",
@@ -852,7 +852,7 @@ fn tool_group(anim: &Anim, group: &Rc<Group>) -> View {
             if !group.live.get() {
                 return vec![text_span(text)];
             }
-            // Zeron's 3.4 s sweep: a soft peak of `TEXT` crossing `MUTED`.
+            // Zend's 3.4 s sweep: a soft peak of `TEXT` crossing `MUTED`.
             let phase = (anim.clock.get() / 3.4).rem_euclid(1.);
             let centre = -0.4 + 1.8 * phase;
             let last = (text.chars().count().max(2) - 1) as f32;
@@ -903,7 +903,7 @@ fn tool_group(anim: &Anim, group: &Rc<Group>) -> View {
 }
 
 fn tool_row(anim: &Anim, group: &Rc<Group>, row_: Shared<ToolRow>) -> View {
-    // Zeron's row entrance: height over 360 ms expo; the connector over
+    // Zend's row entrance: height over 360 ms expo; the connector over
     // 480 ms quint, then the branch; content fades and rises with the branch.
     let grown = {
         let (anim, group, row_) = (anim.clone(), group.clone(), row_.clone());

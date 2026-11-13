@@ -170,7 +170,7 @@ export const handleAdminRoute = async (
     return new Response(usageCsv(data), {
       headers: {
         "content-type": "text/csv; charset=utf-8",
-        "content-disposition": `attachment; filename="zeron-cloud-usage-${month}.csv"`
+        "content-disposition": `attachment; filename="zend-cloud-usage-${month}.csv"`
       }
     });
   }

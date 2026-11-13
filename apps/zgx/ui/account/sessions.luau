@@ -30,7 +30,7 @@
 --   sessions.delete(id)    gone for good: a promise
 --   sessions.deleted_with(id)  what its delete takes with it: a promise of
 --                          { subagents, sides } (theirs in turn; archived too)
---   sessions.link(id)      its Zeron conversation link: a promise
+--   sessions.link(id)      its Zend conversation link: a promise
 --   sessions.collapse(id, folded)  a section of yours folded, everywhere
 --   sessions.seen(id)      its finished state seen, on every device
 --   sessions.sleep(id, until?)  asleep until `until` (Unix seconds), on every
@@ -90,7 +90,7 @@ export type Child = {
 	created: number,
 	harness: string?,
 	agent: string?,
-	-- Started by a Zeron chat (through Zeron's tools), as a subagent or a
+	-- Started by a Zend chat (through Zend's tools), as a subagent or a
 	-- side chat: "subagent" | "side"; nil for one the person started.
 	child_kind: string?,
 }
@@ -216,7 +216,7 @@ function M.rename_project_or_say(id: string, name: string): any
 	return ui.call("sessions.rename_project", { id = id, name = name })
 end
 
--- Its Zeron conversation link (`zeron://open/chat/…`, the shipping app's,
+-- Its Zend conversation link (`zend://open/chat/…`, the shipping app's,
 -- so either opens it): a promise; refused while it can't be known yet.
 function M.link(id: string): any
 	return ui.call("sessions.link", id)

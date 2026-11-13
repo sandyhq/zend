@@ -75,7 +75,7 @@ from it, and the Metal backend keeps the module's naga IR (module and
 validation info) so it can write MSL as a pipeline is made. zgx compiles each
 app shader (a fill, a layer shader, a blend, an effect's pass) into a module
 holding the whole quad shader, makes one pipeline from it and drops it, and
-yet each pipeline kept about 250 KB of IR. A heavy session in Zeron held
+yet each pipeline kept about 250 KB of IR. A heavy session in Zend held
 29 MB of it.
 
 `metal::zgx_single_use_next_module(Some(wgsl))` says the next module the

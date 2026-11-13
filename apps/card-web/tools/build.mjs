@@ -3,7 +3,7 @@
 // share page (/@u), the player (/@u/player), the public card (/cards/u) and
 // a place for its picture (/@u/card.png, made by images.mjs). Plus the index,
 // the embed test page and a _headers file (Cloudflare's format) with the
-// headers the player needs. `node tools/build.mjs [--site https://zeron.sh]`.
+// headers the player needs. `node tools/build.mjs [--site https://zend.invalid]`.
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,7 +45,7 @@ export async function build({ site = "" } = {}) {
     const urls = urlsFor(card, site);
     const dir = join(dist, `@${m.username}`);
     await mkdir(join(dir, "player"), { recursive: true });
-    await writeFile(join(dir, "index.html"), renderShare(card, urls, { site: "@zeron" }));
+    await writeFile(join(dir, "index.html"), renderShare(card, urls, { site: "@zend" }));
     await writeFile(join(dir, "player", "index.html"), renderPlayer(card, urls));
     await writeFile(join(dist, "cards", `${m.username}.json`), JSON.stringify(card));
   }

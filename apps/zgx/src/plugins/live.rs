@@ -1,7 +1,7 @@
-//! What the main window runs: Zeron's own interface, with the active template
+//! What the main window runs: Zend's own interface, with the active template
 //! laid over it. A template is a whole app (its `app.luau`, `screens/`,
 //! `ds/`, `assets/`…, like a WordPress theme), and any file it doesn't have
-//! is Zeron's, as a child theme inherits.
+//! is Zend's, as a child theme inherits.
 //!
 //! zgx fixes a host's app file when the host is made, and keys each module's
 //! state by its path from the app's folder (`screens/shell/sidebar.luau::…`).
@@ -11,17 +11,17 @@
 //!
 //! ```text
 //! <data>/templates/
-//!   .zeron/        Zeron's own, as this build has it (`sync_zeron`), with
-//!                  zeron-template.json, .hashes.json, .catalog.json
-//!   .live/         .zeron with the active template on top (`compose`)
-//!   .active        the active template's id ("zeron", Zeron's own)
+//!   .zend/        Zend's own, as this build has it (`sync_zend`), with
+//!                  zend-template.json, .hashes.json, .catalog.json
+//!   .live/         .zend with the active template on top (`compose`)
+//!   .active        the active template's id ("zend", Zend's own)
 //!   .status.json   what failed, per template
-//!   <id>/          a template: zeron-template.json, any of .zeron's files
+//!   <id>/          a template: zend-template.json, any of .zend's files
 //! ```
 //!
 //! Files are copied, never linked, and rewritten only where their bytes
 //! differ (zgx reloads for any file whose time moves). Some paths are never a
-//! template's, whatever it holds (`NEVER_TEMPLATED`): Zeron's own always.
+//! template's, whatever it holds (`NEVER_TEMPLATED`): Zend's own always.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -29,15 +29,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const ZERON: &str = ".zeron";
+pub const ZEND: &str = ".zend";
 pub const LIVE: &str = ".live";
 pub const ACTIVE: &str = ".active";
 pub const STATUS: &str = ".status.json";
-/// Zeron's own template's id.
-pub const BUILTIN: &str = "zeron";
-/// This Zeron's version (the root workspace's, from build.rs): what `.zeron`
+/// Zend's own template's id.
+pub const BUILTIN: &str = "zend";
+/// This Zend's version (the root workspace's, from build.rs): what `.zend`
 /// is stamped with, and what a template made from it records.
-pub const ZERON_VERSION: &str = env!("ZERON_VERSION");
+pub const ZEND_VERSION: &str = env!("ZEND_VERSION");
 
 /// Paths no template replaces: allowing plugins, your account and signing
 /// in, and the aliases every module resolves by. A template's copies of them
@@ -46,7 +46,7 @@ pub const NEVER_TEMPLATED: &[&str] = &["screens/plugins/", "screens/templates/",
 
 /// What of `ui/` isn't the main window's interface: the gallery and its
 /// demos, tests and their fixtures, the intro, the consent windows (each
-/// its own host, always Zeron's own), and the official templates' files
+/// its own host, always Zend's own), and the official templates' files
 /// (`official`: each installed as a template of its own).
 fn not_the_app(rel: &str) -> bool {
     let first = rel.split('/').next().unwrap_or(rel);
@@ -56,11 +56,11 @@ fn not_the_app(rel: &str) -> bool {
 }
 
 /// Compared as a case-insensitive filesystem (macOS's, Windows') names
-/// files (`zeron_plugin_guard::path::fold`): `Screens/Plugins/page.luau`,
+/// files (`zend_plugin_guard::path::fold`): `Screens/Plugins/page.luau`,
 /// `ſcreens/plugins/page.luau` (U+017F folds to s) and
-/// `screens/plugins./page.luau` are Zeron's plugins page there too.
+/// `screens/plugins./page.luau` are Zend's plugins page there too.
 pub fn never_templated(rel: &str) -> bool {
-    use zeron_plugin_guard::path::fold;
+    use zend_plugin_guard::path::fold;
     let rel = fold(rel);
     NEVER_TEMPLATED.iter().any(|p| {
         let p = fold(p);
@@ -71,7 +71,7 @@ pub fn never_templated(rel: &str) -> bool {
 /// A template's own files that aren't part of its interface (its README
 /// links the authoring guide).
 pub fn template_meta(rel: &str) -> bool {
-    matches!(rel, "zeron-template.json" | "preview.png" | "README.md")
+    matches!(rel, "zend-template.json" | "preview.png" | "README.md")
 }
 
 pub fn hash(bytes: &[u8]) -> String {
@@ -153,14 +153,14 @@ pub fn mirror(to: &Path, want: &BTreeMap<String, PathBuf>, keep: impl Fn(&str) -
     Ok(changed)
 }
 
-/// `.zeron`, as `ui/` has it now: the app's files, their hashes, the catalog
-/// of screens (what each draws, the hooks it declares) and Zeron's manifest;
+/// `.zend`, as `ui/` has it now: the app's files, their hashes, the catalog
+/// of screens (what each draws, the hooks it declares) and Zend's manifest;
 /// and the official templates beside it, as this build ships them
-/// (`official::install`). How many of `.zeron`'s files changed.
-pub fn sync_zeron(ui: &Path, templates: &Path) -> std::io::Result<usize> {
-    let dir = templates.join(ZERON);
+/// (`official::install`). How many of `.zend`'s files changed.
+pub fn sync_zend(ui: &Path, templates: &Path) -> std::io::Result<usize> {
+    let dir = templates.join(ZEND);
     let want = files(ui, |rel| !not_the_app(rel));
-    let changed = mirror(&dir, &want, |rel| rel == "zeron-template.json")?;
+    let changed = mirror(&dir, &want, |rel| rel == "zend-template.json")?;
     let hashes: BTreeMap<String, String> = want
         .iter()
         .filter_map(|(rel, path)| std::fs::read(path).ok().map(|b| (rel.clone(), hash(&b))))
@@ -169,22 +169,22 @@ pub fn sync_zeron(ui: &Path, templates: &Path) -> std::io::Result<usize> {
     put(&dir.join(".hashes.json"), &json(serde_json::json!(hashes)))?;
     put(&dir.join(".catalog.json"), &json(super::templates::catalog(ui)))?;
     put(
-        &dir.join("zeron-template.json"),
+        &dir.join("zend-template.json"),
         &json(serde_json::json!({
             "id": BUILTIN,
             "name": super::official::DEFAULT_NAME,
             "description": super::official::DEFAULT_DESCRIPTION,
-            "author": "Zeron",
-            "version": ZERON_VERSION,
-            "zeron_version": ZERON_VERSION,
+            "author": "Zend",
+            "version": ZEND_VERSION,
+            "zend_version": ZEND_VERSION,
         })),
     )?;
     super::official::install(ui, templates);
     Ok(changed)
 }
 
-/// The active template's id, from `.active` (Zeron's own if none, or if it's
-/// gone or isn't a plain id), and Zeron's own whatever it says in safe mode
+/// The active template's id, from `.active` (Zend's own if none, or if it's
+/// gone or isn't a plain id), and Zend's own whatever it says in safe mode
 /// (`preview::safe`): no template re-selects itself from there.
 pub fn active(templates: &Path) -> String {
     if super::preview::safe() {
@@ -199,7 +199,7 @@ pub fn chosen(templates: &Path) -> String {
     let id = id.trim();
     let ok = !id.is_empty()
         && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        && templates.join(id).join("zeron-template.json").is_file();
+        && templates.join(id).join("zend-template.json").is_file();
     if ok { id.to_string() } else { BUILTIN.to_string() }
 }
 
@@ -211,30 +211,30 @@ pub fn set_active(templates: &Path, id: &str) -> std::io::Result<bool> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overlay {
     pub template: String,
-    /// Files the template supplies (its own, or its version of Zeron's).
+    /// Files the template supplies (its own, or its version of Zend's).
     pub from_template: BTreeSet<String>,
 }
 
-/// `.live` as `.zeron` with template `id` on top, leaving out the template's
-/// `failed` files (Zeron's show in their place) and the paths never templated.
-/// Zeron's own alone for `BUILTIN`, or `whole_failed`. How many files changed.
+/// `.live` as `.zend` with template `id` on top, leaving out the template's
+/// `failed` files (Zend's show in their place) and the paths never templated.
+/// Zend's own alone for `BUILTIN`, or `whole_failed`. How many files changed.
 pub fn compose(templates: &Path, id: &str, failed: &BTreeSet<String>, whole_failed: bool) -> std::io::Result<(usize, Overlay)> {
-    let mut want = files(&templates.join(ZERON), |rel| !template_meta(rel));
+    let mut want = files(&templates.join(ZEND), |rel| !template_meta(rel));
     let mut from_template = BTreeSet::new();
     if id != BUILTIN && !whole_failed {
         // Each file is written under one spelling: a template's `App.luau`
-        // stands in for Zeron's `app.luau` (one file on a case-insensitive
+        // stands in for Zend's `app.luau` (one file on a case-insensitive
         // filesystem), never both written, whichever sorts last winning.
-        let mut spelled: BTreeMap<String, String> = want.keys().map(|rel| (zeron_plugin_guard::path::fold(rel), rel.clone())).collect();
+        let mut spelled: BTreeMap<String, String> = want.keys().map(|rel| (zend_plugin_guard::path::fold(rel), rel.clone())).collect();
         for (rel, path) in files(&templates.join(id), |rel| !template_meta(rel)) {
             if never_templated(&rel) || failed.contains(&rel) {
                 continue;
             }
-            if let Some(zeron_s) = spelled.insert(zeron_plugin_guard::path::fold(&rel), rel.clone())
-                && zeron_s != rel
+            if let Some(zend_s) = spelled.insert(zend_plugin_guard::path::fold(&rel), rel.clone())
+                && zend_s != rel
             {
-                want.remove(&zeron_s);
-                from_template.remove(&zeron_s);
+                want.remove(&zend_s);
+                from_template.remove(&zend_s);
             }
             from_template.insert(rel.clone());
             want.insert(rel, path);
@@ -293,8 +293,8 @@ pub fn named(error: &str, templates: &Path) -> Vec<String> {
 }
 
 /// Whom an error is on: the first file it names that the template supplies
-/// (a template file required by Zeron's, or Zeron's called from the
-/// template's), else none (Zeron's own error).
+/// (a template file required by Zend's, or Zend's called from the
+/// template's), else none (Zend's own error).
 pub fn blame(error: &str, templates: &Path, overlay: &Overlay) -> Option<String> {
     named(error, templates).into_iter().find(|rel| overlay.from_template.contains(rel))
 }
@@ -331,7 +331,7 @@ pub fn template_stamp(dir: &Path) -> String {
 }
 
 /// `ui/`'s app files (and the official templates') as they stand:
-/// unchanged, `.zeron` needn't be copied again.
+/// unchanged, `.zend` needn't be copied again.
 pub fn ui_stamp(ui: &Path) -> String {
     stamp(ui, synced)
 }
@@ -341,13 +341,13 @@ fn synced(rel: &str) -> bool {
     !not_the_app(rel) || super::official::source_file(rel)
 }
 
-/// What a look found, off the UI thread: `.zeron` brought up to date (only
+/// What a look found, off the UI thread: `.zend` brought up to date (only
 /// when `ui/` changed since the last look), the active template, and its
 /// files as they stand.
 #[derive(Debug)]
 pub struct Survey {
     pub ui_stamp: String,
-    /// `.zeron` copied again: how many files changed (none when `ui/` hadn't),
+    /// `.zend` copied again: how many files changed (none when `ui/` hadn't),
     /// or why it failed.
     pub synced: Result<usize, String>,
     pub id: String,
@@ -358,10 +358,10 @@ pub struct Survey {
 
 pub fn survey(ui: &Path, templates: &Path, last_ui_stamp: Option<&str>) -> Survey {
     let ui_stamp = ui_stamp(ui);
-    // (An official template gone, deleted by hand: put back, as `.zeron` is.)
+    // (An official template gone, deleted by hand: put back, as `.zend` is.)
     let current =
-        last_ui_stamp == Some(ui_stamp.as_str()) && templates.join(ZERON).join(".hashes.json").is_file() && !super::official::missing(ui, templates);
-    let synced = if current { Ok(0) } else { sync_zeron(ui, templates).map_err(|e| e.to_string()) };
+        last_ui_stamp == Some(ui_stamp.as_str()) && templates.join(ZEND).join(".hashes.json").is_file() && !super::official::missing(ui, templates);
+    let synced = if current { Ok(0) } else { sync_zend(ui, templates).map_err(|e| e.to_string()) };
     let id = active(templates);
     let (template_stamp, files_) = if id == BUILTIN {
         (String::new(), Vec::new())
@@ -374,7 +374,7 @@ pub fn survey(ui: &Path, templates: &Path, last_ui_stamp: Option<&str>) -> Surve
 }
 
 /// What `.live` was last laid down from: the same again needs no compose
-/// (which reads every file of Zeron's and the template's).
+/// (which reads every file of Zend's and the template's).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Laid {
     pub ui_stamp: String,
@@ -386,7 +386,7 @@ pub struct Laid {
 
 /// What to watch so a change reaches the window: the templates folder
 /// (`.active`, a template made or removed), the active template's files and
-/// folders, and Zeron's own `ui/` (a save while developing).
+/// folders, and Zend's own `ui/` (a save while developing).
 ///
 /// `ui/` (over a thousand files, most of them art) is watched by its
 /// folders, which hear a file made, removed or saved by replacing it, plus
@@ -445,25 +445,25 @@ pub struct Installed {
     pub description: String,
     pub author: String,
     pub version: String,
-    /// The Zeron it was made from (its manifest's `zeron_version`).
-    pub zeron_version: String,
-    /// It was made from another version of Zeron than this one (its
-    /// manifest's `zeron_version` against `.zeron`'s): only a real update
+    /// The Zend it was made from (its manifest's `zend_version`).
+    pub zend_version: String,
+    /// It was made from another version of Zend than this one (its
+    /// manifest's `zend_version` against `.zend`'s): only a real update
     /// says so, never a save while developing. Which files changed is
-    /// `template_status`'s (`.base.json` against `.zeron/.hashes.json`).
+    /// `template_status`'s (`.base.json` against `.zend/.hashes.json`).
     pub out_of_date: bool,
     /// Installed from someone's signed package: `.imported.json`'s
     /// `{key, author}` (the engine's `template_packages`).
     pub imported: Option<serde_json::Value>,
-    /// One of Zeron's official templates, exactly as this build wrote it
+    /// One of Zend's official templates, exactly as this build wrote it
     /// (`official::verified`): built in, as the default is.
     pub official: Option<super::official::Official>,
 }
 
-/// Whether a template made for Zeron `made_for` is out of date in Zeron
+/// Whether a template made for Zend `made_for` is out of date in Zend
 /// `now`: both known, and not the same. One with no version recorded (written
 /// by hand) never is, nor one stamped "0.0.0" (what development builds
-/// stamped before Zeron's version reached them: no real Zeron's).
+/// stamped before Zend's version reached them: no real Zend's).
 pub fn version_out_of_date(made_for: &str, now: &str) -> bool {
     let known = |v: &str| !v.is_empty() && v != "0.0.0";
     let (made_for, now) = (made_for.trim(), now.trim());
@@ -474,25 +474,25 @@ fn read_json(path: &Path) -> serde_json::Value {
     std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-/// The default first, then the official templates in Zeron's order, then
+/// The default first, then the official templates in Zend's order, then
 /// every other template, by name.
 pub fn installed(templates: &Path) -> Vec<Installed> {
-    let zeron = read_json(&templates.join(ZERON).join("zeron-template.json"));
-    let now = zeron["zeron_version"].as_str().unwrap_or("").to_string();
+    let zend = read_json(&templates.join(ZEND).join("zend-template.json"));
+    let now = zend["zend_version"].as_str().unwrap_or("").to_string();
     let manifest = |dir: &Path, id: &str| -> Option<Installed> {
-        let m = read_json(&dir.join("zeron-template.json"));
+        let m = read_json(&dir.join("zend-template.json"));
         if !m.is_object() {
             return None;
         }
         let text = |k: &str| m[k].as_str().unwrap_or("").to_string();
-        let out_of_date = id != BUILTIN && version_out_of_date(&text("zeron_version"), &now);
+        let out_of_date = id != BUILTIN && version_out_of_date(&text("zend_version"), &now);
         Some(Installed {
             id: id.to_string(),
             name: if text("name").is_empty() { id.to_string() } else { text("name") },
             description: text("description"),
             author: text("author"),
             version: text("version"),
-            zeron_version: text("zeron_version"),
+            zend_version: text("zend_version"),
             out_of_date,
             imported: (id != BUILTIN)
                 .then(|| read_json(&dir.join(".imported.json")))
@@ -500,7 +500,7 @@ pub fn installed(templates: &Path) -> Vec<Installed> {
             official: (id != BUILTIN).then(|| super::official::verified(dir)).flatten(),
         })
     };
-    let mut out: Vec<Installed> = manifest(&templates.join(ZERON), BUILTIN).into_iter().collect();
+    let mut out: Vec<Installed> = manifest(&templates.join(ZEND), BUILTIN).into_iter().collect();
     let mut rest: Vec<Installed> = std::fs::read_dir(templates)
         .into_iter()
         .flatten()
@@ -527,7 +527,7 @@ pub fn pending(templates: &Path) -> Vec<serde_json::Value> {
         .filter_map(|e| {
             let file = e.file_name().to_string_lossy().into_owned();
             let name = file.strip_suffix(".json")?.to_string();
-            if !plain(&name) || !dir.join(format!("{name}.zeron-template")).is_file() {
+            if !plain(&name) || !dir.join(format!("{name}.zend-template")).is_file() {
                 return None;
             }
             let mut about = read_json(&e.path());
@@ -552,7 +552,7 @@ pub fn pending(templates: &Path) -> Vec<serde_json::Value> {
 }
 
 /// A new template's id from the name it's given: lowercase letters, digits
-/// and dashes (a template id), never Zeron's, and free (`<slug>-2`…).
+/// and dashes (a template id), never Zend's, and free (`<slug>-2`…).
 pub fn new_id(templates: &Path, name: &str) -> String {
     let mut slug = String::new();
     for c in name.trim().chars().flat_map(char::to_lowercase) {
@@ -643,18 +643,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&templates);
     }
 
-    /// A templates folder with a small Zeron and a template `t`.
+    /// A templates folder with a small Zend and a template `t`.
     fn setup(name: &str) -> PathBuf {
         let root = dir(name);
         let t = root.join("templates");
-        let z = t.join(ZERON);
-        write(&z, "app.luau", "-- zeron app");
-        write(&z, "screens/shell/sidebar.luau", "-- zeron sidebar");
-        write(&z, "screens/plugins/page.luau", "-- zeron plugins page");
-        write(&z, "ds/tokens.luau", "-- zeron tokens");
+        let z = t.join(ZEND);
+        write(&z, "app.luau", "-- zend app");
+        write(&z, "screens/shell/sidebar.luau", "-- zend sidebar");
+        write(&z, "screens/plugins/page.luau", "-- zend plugins page");
+        write(&z, "ds/tokens.luau", "-- zend tokens");
         write(&z, ".luaurc", "{}");
-        write(&z, "zeron-template.json", "{}");
-        write(&t, "t/zeron-template.json", r#"{"id":"t"}"#);
+        write(&z, "zend-template.json", "{}");
+        write(&t, "t/zend-template.json", r#"{"id":"t"}"#);
         write(&t, "t/screens/shell/sidebar.luau", "-- t sidebar");
         write(&t, "t/screens/plugins/page.luau", "-- t's plugins page, never used");
         write(&t, "t/screens/extra.luau", "-- t only");
@@ -668,12 +668,12 @@ mod tests {
         let (_, overlay) = compose(&t, "t", &BTreeSet::new(), false).unwrap();
         let live = t.join(LIVE);
         assert_eq!(read(&live, "screens/shell/sidebar.luau"), "-- t sidebar");
-        assert_eq!(read(&live, "app.luau"), "-- zeron app", "inherited");
-        assert_eq!(read(&live, "ds/tokens.luau"), "-- zeron tokens", "inherited");
+        assert_eq!(read(&live, "app.luau"), "-- zend app", "inherited");
+        assert_eq!(read(&live, "ds/tokens.luau"), "-- zend tokens", "inherited");
         assert_eq!(read(&live, "screens/extra.luau"), "-- t only");
-        assert_eq!(read(&live, "screens/plugins/page.luau"), "-- zeron plugins page", "never templated");
+        assert_eq!(read(&live, "screens/plugins/page.luau"), "-- zend plugins page", "never templated");
         assert_eq!(read(&live, ".luaurc"), "{}", "never templated");
-        assert!(!live.join("zeron-template.json").exists());
+        assert!(!live.join("zend-template.json").exists());
         assert_eq!(
             overlay.from_template,
             BTreeSet::from(["screens/extra.luau".to_string(), "screens/shell/sidebar.luau".to_string()])
@@ -682,9 +682,9 @@ mod tests {
 
     /// R30: a protected path spelled as a case-insensitive filesystem reads
     /// it the same (`Screens/`, `ſcreens/` with U+017F, a trailing dot) is
-    /// still Zeron's, and never laid down over Zeron's own.
+    /// still Zend's, and never laid down over Zend's own.
     #[test]
-    fn a_protected_path_in_another_spelling_is_still_zeron_s() {
+    fn a_protected_path_in_another_spelling_is_still_zend_s() {
         for rel in ["Screens/Plugins/page.luau", "\u{17f}creens/plugins/page.luau", "screens/plugins./page.luau", "ACCOUNT/x.luau", ".LUAURC", "screens\\templates\\page.luau"] {
             assert!(never_templated(rel), "{rel}");
         }
@@ -696,9 +696,9 @@ mod tests {
         write(&t, "t/App.luau", "-- the template's app");
         let (_, overlay) = compose(&t, "t", &BTreeSet::new(), false).unwrap();
         let live = t.join(LIVE);
-        assert_eq!(read(&live, "screens/plugins/page.luau"), "-- zeron plugins page");
+        assert_eq!(read(&live, "screens/plugins/page.luau"), "-- zend plugins page");
         assert!(!overlay.from_template.iter().any(|r| r.contains("plugins")), "{:?}", overlay.from_template);
-        // One spelling of a file written: the template's, in Zeron's place.
+        // One spelling of a file written: the template's, in Zend's place.
         assert!(overlay.from_template.contains("App.luau"));
         let names: Vec<String> = files(&live, |_| true).into_keys().filter(|r| r.eq_ignore_ascii_case("app.luau")).collect();
         assert_eq!(names.len(), 1, "{names:?}");
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(mtime(&live.join("ds/tokens.luau")), tokens, "an unchanged file isn't touched");
         let (again, _) = compose(&t, "t", &BTreeSet::new(), false).unwrap();
         assert_eq!(again, 0, "nothing differs, nothing written");
-        // Back to Zeron: the template's file goes, its version reverts.
+        // Back to Zend: the template's file goes, its version reverts.
         let (back, overlay) = compose(&t, BUILTIN, &BTreeSet::new(), false).unwrap();
         assert_eq!(back, 2);
         assert!(!live.join("screens/extra.luau").exists());
@@ -725,11 +725,11 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_file_shows_zeron_s_and_a_failed_whole_shows_only_zeron() {
+    fn a_failed_file_shows_zend_s_and_a_failed_whole_shows_only_zend() {
         let t = setup("failed");
         let failed = BTreeSet::from(["screens/shell/sidebar.luau".to_string()]);
         let (_, overlay) = compose(&t, "t", &failed, false).unwrap();
-        assert_eq!(read(&t.join(LIVE), "screens/shell/sidebar.luau"), "-- zeron sidebar");
+        assert_eq!(read(&t.join(LIVE), "screens/shell/sidebar.luau"), "-- zend sidebar");
         assert_eq!(read(&t.join(LIVE), "screens/extra.luau"), "-- t only", "the rest stays the template's");
         assert!(!overlay.from_template.contains("screens/shell/sidebar.luau"));
         let (_, whole) = compose(&t, "t", &BTreeSet::new(), true).unwrap();
@@ -742,13 +742,13 @@ mod tests {
         let t = setup("blame");
         let (_, overlay) = compose(&t, "t", &BTreeSet::new(), false).unwrap();
         let live = t.join(LIVE).display().to_string();
-        // Zeron's shell required the template's sidebar, which failed.
+        // Zend's shell required the template's sidebar, which failed.
         let e = format!("app.luau: runtime error: {live}/app.luau:3: in require\n\t{live}/screens/shell/sidebar.luau:12: attempt to index nil");
         assert_eq!(blame(&e, &t, &overlay).as_deref(), Some("screens/shell/sidebar.luau"));
-        // The template's file called Zeron's tokens with something wrong: still the template's.
+        // The template's file called Zend's tokens with something wrong: still the template's.
         let e = format!("{live}/ds/tokens.luau:4: bad argument\nstack traceback:\n\t{live}/screens/extra.luau:9: in function");
         assert_eq!(blame(&e, &t, &overlay).as_deref(), Some("screens/extra.luau"));
-        // Zeron's own error: nobody's to drop.
+        // Zend's own error: nobody's to drop.
         assert_eq!(blame(&format!("{live}/ds/tokens.luau:4: oops"), &t, &overlay), None);
         // The app's modules are named from its folder; the VM's own name
         // (who ran it) isn't where it failed.
@@ -756,18 +756,18 @@ mod tests {
         assert_eq!(blame("app.luau: runtime error: ds/tokens.luau:3: oops", &t, &overlay), None);
     }
 
-    /// R12: safe mode runs Zeron's own whatever `.active` says, so a
+    /// R12: safe mode runs Zend's own whatever `.active` says, so a
     /// template re-selecting itself (from a timer, a terminal, an agent)
     /// changes nothing until you pick one on the Templates page.
     #[test]
-    fn safe_mode_holds_zeron_s_own_whatever_active_says() {
+    fn safe_mode_holds_zend_s_own_whatever_active_says() {
         let t = setup("safe");
         set_active(&t, "t").unwrap();
         super::super::preview::enter_safe_for_test(true);
         assert_eq!(active(&t), BUILTIN);
         assert_eq!(chosen(&t), "t", "what was chosen, still shown");
         set_active(&t, "t").unwrap();
-        assert_eq!(active(&t), BUILTIN, "re-selected from a timer: still Zeron's own");
+        assert_eq!(active(&t), BUILTIN, "re-selected from a timer: still Zend's own");
         super::super::preview::enter_safe_for_test(false);
         assert_eq!(active(&t), "t");
     }
@@ -786,27 +786,27 @@ mod tests {
     }
 
     #[test]
-    fn zeron_s_copy_holds_the_app_and_not_the_gallery_or_tests() {
-        let root = dir("zeron");
+    fn zend_s_copy_holds_the_app_and_not_the_gallery_or_tests() {
+        let root = dir("zend");
         let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
         let t = root.join("templates");
-        let first = sync_zeron(&ui, &t).unwrap();
+        let first = sync_zend(&ui, &t).unwrap();
         assert!(first > 10);
-        let z = t.join(ZERON);
+        let z = t.join(ZEND);
         assert!(z.join("app.luau").is_file() && z.join("screens/shell/sidebar.luau").is_file() && z.join("ds/init.luau").is_file());
         assert!(!z.join("gallery.luau").exists() && !z.join("tests").exists() && !z.join("demos").exists());
         assert!(!z.join("consent.luau").exists());
         assert!(z.join(".hashes.json").is_file() && z.join(".catalog.json").is_file());
-        // Stamped with Zeron's version, the root workspace's (build.rs).
-        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(z.join("zeron-template.json")).unwrap()).unwrap();
+        // Stamped with Zend's version, the root workspace's (build.rs).
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(z.join("zend-template.json")).unwrap()).unwrap();
         let root = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml")).unwrap();
-        assert!(!ZERON_VERSION.is_empty() && root.contains(&format!("version = \"{ZERON_VERSION}\"")));
-        assert_eq!(manifest["zeron_version"], ZERON_VERSION);
-        assert_eq!(sync_zeron(&ui, &t).unwrap(), 0, "nothing new, nothing written");
+        assert!(!ZEND_VERSION.is_empty() && root.contains(&format!("version = \"{ZEND_VERSION}\"")));
+        assert_eq!(manifest["zend_version"], ZEND_VERSION);
+        assert_eq!(sync_zend(&ui, &t).unwrap(), 0, "nothing new, nothing written");
     }
 
     #[test]
-    fn a_survey_copies_zeron_s_own_only_when_ui_changed() {
+    fn a_survey_copies_zend_s_own_only_when_ui_changed() {
         let root = dir("survey");
         let ui = root.join("ui");
         write(&ui, "app.luau", "-- app");
@@ -828,9 +828,9 @@ mod tests {
         let saved = survey(&ui, &t, Some(&first.ui_stamp));
         assert_ne!(saved.ui_stamp, first.ui_stamp);
         assert_eq!(saved.synced.unwrap(), 1);
-        assert_eq!(read(&t.join(ZERON), "screens/x.luau"), "-- x, saved");
+        assert_eq!(read(&t.join(ZEND), "screens/x.luau"), "-- x, saved");
         // A template in use: its files as they stand, and a stamp that follows them.
-        write(&t, "mine/zeron-template.json", r#"{"name":"Mine"}"#);
+        write(&t, "mine/zend-template.json", r#"{"name":"Mine"}"#);
         write(&t, "mine/screens/x.luau", "-- mine");
         set_active(&t, "mine").unwrap();
         let used = survey(&ui, &t, Some(&saved.ui_stamp));
@@ -860,18 +860,18 @@ mod tests {
     }
 
     #[test]
-    fn templates_are_listed_zeron_first_and_out_of_date_is_told() {
+    fn templates_are_listed_zend_first_and_out_of_date_is_told() {
         let t = setup("installed");
-        std::fs::write(t.join(ZERON).join("zeron-template.json"), r#"{"name":"Zeron","author":"Zeron","zeron_version":"0.3.0"}"#).unwrap();
-        std::fs::write(t.join(ZERON).join(".hashes.json"), r#"{"screens/shell/sidebar.luau":"now"}"#).unwrap();
-        // Made for an earlier Zeron: out of date.
-        write(&t, "t/zeron-template.json", r#"{"name":"Tidy","author":"you","zeron_version":"0.2.9"}"#);
+        std::fs::write(t.join(ZEND).join("zend-template.json"), r#"{"name":"Zend","author":"Zend","zend_version":"0.3.0"}"#).unwrap();
+        std::fs::write(t.join(ZEND).join(".hashes.json"), r#"{"screens/shell/sidebar.luau":"now"}"#).unwrap();
+        // Made for an earlier Zend: out of date.
+        write(&t, "t/zend-template.json", r#"{"name":"Tidy","author":"you","zend_version":"0.2.9"}"#);
         write(&t, "t/.base.json", r#"{"screens/shell/sidebar.luau":"then"}"#);
         // No version recorded: never out of date.
-        write(&t, "a/zeron-template.json", r#"{"name":"Airy"}"#);
-        // This Zeron's, though a file it copied has changed since (a save
+        write(&t, "a/zend-template.json", r#"{"name":"Airy"}"#);
+        // This Zend's, though a file it copied has changed since (a save
         // while developing): not out of date.
-        write(&t, "b/zeron-template.json", r#"{"name":"Brisk","zeron_version":"0.3.0"}"#);
+        write(&t, "b/zend-template.json", r#"{"name":"Brisk","zend_version":"0.3.0"}"#);
         write(&t, "b/.base.json", r#"{"screens/shell/sidebar.luau":"then"}"#);
         write(&t, "notatemplate/file.txt", "x");
         let list = installed(&t);
@@ -885,18 +885,18 @@ mod tests {
         assert_eq!((id.as_str(), name.as_str()), ("t-copy", "Tidy copy"));
         assert_eq!(new_id(&t, "My Dark  Theme!"), "my-dark-theme");
         assert_eq!(new_id(&t, "T"), "template-t");
-        assert_eq!(new_id(&t, "Zeron"), "template-zeron");
+        assert_eq!(new_id(&t, "Zend"), "template-zend");
         assert_eq!(new_id(&t, "  "), "template");
         std::fs::create_dir_all(t.join("airy")).unwrap();
         assert_eq!(new_id(&t, "Airy"), "airy-2");
-        assert_eq!(list[3].zeron_version, "0.2.9");
+        assert_eq!(list[3].zend_version, "0.2.9");
     }
 
     #[test]
     fn a_bundle_s_interface_isn_t_watched_file_by_file() {
         let root = dir("watched-bundle");
         let templates = root.join("templates");
-        let ui = root.join("Zeron.app/Contents/Resources/ui");
+        let ui = root.join("Zend.app/Contents/Resources/ui");
         write(&ui, "app.luau", "return 1");
         write(&ui, "screens/shell/page.luau", "return 2");
         std::fs::create_dir_all(&templates).unwrap();

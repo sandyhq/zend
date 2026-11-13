@@ -132,8 +132,8 @@ the desktop alone (each repeat's `desktop` baseline, about 0.6 mW on a quiet
 machine). It is the whole GPU, so it includes the window server compositing
 the app's window: a framework pays for the way it presents frames (an AV
 sample-buffer layer, a plain layer, a `CAMetalLayer`) as well as for drawing
-them. With Zeron or anything else drawing, it counts that too, which is why
-the suite hides Zeron and checks the desktop baseline.
+them. With Zend or anything else drawing, it counts that too, which is why
+the suite hides Zend and checks the desktop baseline.
 
 It replaced app GPU time (`gpu_mcycles_per_second`: the process's
 `accumulatedGPUTime` at the GPU's mean active clock), which the suite still
@@ -149,7 +149,7 @@ showed why it misleads for small, frequent frames:
   about 0.47 ms charged per submission beyond its work, the commit-to-start
   latency of a GPU waking from idle (about 0.6 ms for both apps). GPUI Fast's
   charge is 0.1–0.2 ms a frame beyond its work.
-- It moves with the desktop: with Zeron visible, which keeps the GPU awake,
+- It moves with the desktop: with Zend visible, which keeps the GPU awake,
   zgx read 11.2–11.7 and GPUI Fast 26.1–26.5 million cycles a second, where
   quiet they read 23.0 and 17.8.
 - GPU power, quiet: zgx 0.116–0.120 W, GPUI Fast 0.130–0.146 W.
@@ -209,7 +209,7 @@ Blank rows (`scripts/blankprobe.swift`): during a capture of the window, a
 run down the rows' left padding that is closer to the window's background
 than to either row colour, longer than 24 points, is a place no row was
 drawn. It needs Screen Recording permission, which it only checks (it never
-asks). Each run also records the agent app's own processes (`preflight.zeron`),
+asks). Each run also records the agent app's own processes (`preflight.zend`),
 whose UI drew frames while hidden on 2026-10-25.
 
 ## Microbenchmarks: one state change, one scroll step
@@ -445,11 +445,11 @@ anything heavy runs (compilers and linkers of any agent, VMs, Instruments,
 Spotlight indexing, Time Machine, software updates) or the rest of the
 machine uses more than 75% of a core (agents' resident engines idle near
 50%), logging what they find, and they hide
-Zeron's windows for the run. `audit.json` records what the preflight found
+Zend's windows for the run. `audit.json` records what the preflight found
 and the machine's state: displays (count, resolution, refresh), a live
 wallpaper, power mode, macOS build and uptime, beside the desktop-alone
 baseline each repeat measures. Those explain a shift between days in the
-desktop's own cost. With Zeron hidden, a window server above 2% of a core stops
+desktop's own cost. With Zend hidden, a window server above 2% of a core stops
 the run (`desktop_still`): a live wallpaper left drawing voids every
 WindowServer and GPU number, and only a person can decide to quit it.
 
@@ -458,7 +458,7 @@ rate (2 fps held it all, 2026-10-30). So a small declared loop (`anime.animate`
 with `loop = true` and a `frameRate`, on `opacity` or `shaderTime`) is drawn
 once into a sheet and played by Core Animation (`crates/zgx-gpu/src/loops.rs`):
 no frame is submitted while it plays. Measured on an M5 Max, 6 launches a
-cell, against the same round's desktop (window 42, 2026-10-30, the zeron-zgx
+cell, against the same round's desktop (window 42, 2026-10-30, the zend-zgx
 gallery's statuses and App shell pages; app + WindowServer CPU, then MiB):
 
 | | 120 Hz | 60 Hz | footprint |
@@ -521,7 +521,7 @@ Measured again in October 2026 (dist builds, instructions retired, the lab windo
 - **Memory:** private bytes (`mean_private_bytes`) and working set; each trial records the graphics API the app loaded (`graphics_modules`), since the driver's floor differs between Direct3D 11 and 12.
 - **Frame pacing:** Desktop Duplication (`framepace`, a zgx-gpu example, through `scripts/windows_framepace.py`): each frame the compositor put on screen in which the window's pixels changed, timed by its present time.
 - **No unfilled-row captures** in the list scene (macOS's `blankprobe` has no Windows counterpart yet).
-- **The machine:** it waits until no build runs and the rest of the machine uses under 75% of a core, holds the High performance plan and minimizes Zeron's windows (both restored after). `--source` names the checkout the binaries were built from: its commit and cleanliness go into each audit.
+- **The machine:** it waits until no build runs and the rest of the machine uses under 75% of a core, holds the High performance plan and minimizes Zend's windows (both restored after). `--source` names the checkout the binaries were built from: its commit and cleanliness go into each audit.
 
 ```powershell
 cargo build --release --locked -p zgx-gpu --example framepace
@@ -547,7 +547,7 @@ Startup and keystroke latency are measured apart:
 
 Each run also records whether a UI Automation client read zgx's window (zgx prints `accessibility: a client asked for the tree` when `ZGX_ACCESSIBILITY_LOG` is set, which the harness sets), and the summary says whether a screen reader ran (`SPI_GETSCREENREADER`) and which known UIA client processes did (the shell's touch keyboard host, Voice Access, Magnifier, test tools). Real desktops have such clients, so runs measure the machine as it is; zgx's accessibility work for them is part of its cost, and GPUI Fast and MyGo have no UI Automation provider. Compare only runs whose clients match. To size that work, `ZGX_ACCESSIBILITY=0` runs zgx with no provider at all: a diagnostic, never a figure to publish, since users get one.
 
-Each run's window is brought to the front and must be uncovered as sampling begins and ends (a window opened from a process in the background stays behind the foreground one, and a covered window cost the compositor about three times as much and its own process far less to present); Zeron's windows are minimized for the runs. Keep the machine otherwise idle and on mains power, and repeat a comparison: the same binary's cycles a frame have moved by 15% between sessions on one machine (`animation_workload`, 2.73, then 3.16 after a day of GPU driver stress tests, then 2.66 after a reboot), so compare only runs that alternate within one session. A process's private bytes include the graphics driver's floor, which differs between Direct3D 12 (zgx) and Direct3D 11 (GPUI Fast, MyGo): see `vendor/wgpu-hal/ZGX_PATCH.md` and [the Windows notes](windows.md).
+Each run's window is brought to the front and must be uncovered as sampling begins and ends (a window opened from a process in the background stays behind the foreground one, and a covered window cost the compositor about three times as much and its own process far less to present); Zend's windows are minimized for the runs. Keep the machine otherwise idle and on mains power, and repeat a comparison: the same binary's cycles a frame have moved by 15% between sessions on one machine (`animation_workload`, 2.73, then 3.16 after a day of GPU driver stress tests, then 2.66 after a reboot), so compare only runs that alternate within one session. A process's private bytes include the graphics driver's floor, which differs between Direct3D 12 (zgx) and Direct3D 11 (GPUI Fast, MyGo): see `vendor/wgpu-hal/ZGX_PATCH.md` and [the Windows notes](windows.md).
 
 The runner holds Windows' High performance power plan for its runs and restores the user's after (`--power-plan keep` leaves it). Under Balanced, Windows clocked a busy UI thread up and down from run to run, and since the cycles it counts are time, one binary's cycles a frame spread 30% (5% under High performance). Each run records the processors' clock against nominal (`processor_performance_percent`).
 

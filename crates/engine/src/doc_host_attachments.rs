@@ -18,12 +18,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use zeron_doc::{
+use zend_doc::{
     CLOUD_COMMAND_TTL_MS, CommandBasedOn, QueuedMessage, SessionCommandEntry,
     SessionCommandPayload, SessionCommandStatus,
 };
-use zeron_proto::{HeldSendStatus, WaitingMessage};
-use zeron_sync::attachment_store::{
+use zend_proto::{HeldSendStatus, WaitingMessage};
+use zend_sync::attachment_store::{
     self, Fetched, HeldBody, HeldPayload, HeldSend, HeldUpload, PutError,
 };
 
@@ -64,8 +64,8 @@ impl DocHost {
         let cloud = self
             .workspace()
             .and_then(|ws| ws.chat(chat_id).ok().flatten())
-            .is_some_and(|chat| zeron_proto::is_cloud_device(&chat.device_id, ""));
-        zeron_doc::command_ttl_ms(cloud)
+            .is_some_and(|chat| zend_proto::is_cloud_device(&chat.device_id, ""));
+        zend_doc::command_ttl_ms(cloud)
     }
 
     /// A chat's messages not yet taken by its agent: unresolved runs and steers
@@ -170,7 +170,7 @@ impl DocHost {
         let Some(target) = self.remote_host_for(chat_id) else {
             return AttachmentRoute::Peer;
         };
-        if !zeron_proto::is_cloud_device(&target, "") {
+        if !zend_proto::is_cloud_device(&target, "") {
             return AttachmentRoute::Peer;
         }
         let device = self
@@ -182,7 +182,7 @@ impl DocHost {
         match device {
             // A machine that has reported in says what it can do.
             Some(device) if device.version.is_some() => {
-                if device.supports(zeron_proto::capabilities::ATTACHMENT_STORE_V1) {
+                if device.supports(zend_proto::capabilities::ATTACHMENT_STORE_V1) {
                     AttachmentRoute::Store { also_peer: false }
                 } else {
                     AttachmentRoute::Peer
@@ -501,8 +501,8 @@ impl DocHost {
     }
 
     async fn run_held_sends(&self, chat: &str) {
-        let mut wake = zeron_sync::wake::subscribe();
-        let mut online = zeron_sync::wake::subscribe_online();
+        let mut wake = zend_sync::wake::subscribe();
+        let mut online = zend_sync::wake::subscribe_online();
         let mut backoff = TRANSFER_BACKOFF_BASE;
         loop {
             let send = match self.inner.store.next_held_send(chat) {
@@ -687,7 +687,7 @@ impl DocHost {
 
     fn fetches_from_store(&self) -> bool {
         self.inner.config.edge.is_some()
-            && zeron_proto::is_cloud_device(&self.inner.config.device_id, "")
+            && zend_proto::is_cloud_device(&self.inner.config.device_id, "")
     }
 
     /// A Cloud machine is missing these refs' bytes: look in the store, once
@@ -756,8 +756,8 @@ impl DocHost {
         let url = attachment_store::blob_url(&edge.url, chat, upload_id);
         let give_up =
             tokio::time::Instant::now() + Duration::from_millis(CLOUD_COMMAND_TTL_MS as u64);
-        let mut wake = zeron_sync::wake::subscribe();
-        let mut online = zeron_sync::wake::subscribe_online();
+        let mut wake = zend_sync::wake::subscribe();
+        let mut online = zend_sync::wake::subscribe_online();
         let mut backoff = TRANSFER_BACKOFF_BASE;
         loop {
             let found = match edge.bearer().await {

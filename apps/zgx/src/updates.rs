@@ -1,18 +1,18 @@
 //! What there is to update, on every device: each one's agents
 //! (`WatchHarnessUpdates`, as the shipping app's home island watches them,
-//! crates/ui/src/shell/harness_updates.rs) and, on another device, Zeron
+//! crates/ui/src/shell/harness_updates.rs) and, on another device, Zend
 //! itself (`UpdateStatus`; this Mac's is `about`'s: src/about.rs).
 //!
 //!   shared `updates`   { rows = { {
-//!       id, device, device_name, here, connected, kind ("agent" | "zeron"),
+//!       id, device, device_name, here, connected, kind ("agent" | "zend"),
 //!       harness?, name?, mark?, phase, installed?, latest?, message?,
 //!       action? ("update" | "steps" | "cancel" | "retry" | "check"), active,
 //!   } } }
 //!   action  `updates.run`  { device, harness, action }   an agent's
-//!   action  `updates.apply_zeron`  { device }            another device's Zeron
+//!   action  `updates.apply_zend`  { device }            another device's Zend
 //!
 //! A device gone quiet keeps its last rows, marked not `connected`: its
-//! actions wait for it. Zeron on another device updates from here when its
+//! actions wait for it. Zend on another device updates from here when its
 //! engine manages its own install (`ApplyUpdate`, a tarball's or the
 //! installer's, on Linux); elsewhere the app there does (no `action`). One that
 //! doesn't come back on a new version in time says so: a reconnect alone isn't
@@ -26,28 +26,28 @@ use std::{
 };
 
 use serde_json::{Value as Json, json};
-use zeron_proto::{HarnessId, HarnessUpdateFailureKind, HarnessUpdatePhase as Phase, HarnessUpdateStatus};
+use zend_proto::{HarnessId, HarnessUpdateFailureKind, HarnessUpdatePhase as Phase, HarnessUpdateStatus};
 use zgx_script::{ScriptHost, Shared, Value};
 
 use crate::auth::text;
 use crate::engine::{self, rpc::{Rpc, Watch}};
 
-/// How long a Zeron being updated stays so without word from it: its engine
+/// How long a Zend being updated stays so without word from it: its engine
 /// restarts, and says its new version once it's back.
-const ZERON_UPDATE_PATIENCE: Duration = Duration::from_secs(180);
+const ZEND_UPDATE_PATIENCE: Duration = Duration::from_secs(180);
 /// How long one that said it took the update stays so while it says nothing
 /// more: its engine may take 10 minutes and a minute per GB of databases to
 /// try the new version before it settles.
-const ZERON_TRIAL_PATIENCE: Duration = Duration::from_secs(30 * 60);
+const ZEND_TRIAL_PATIENCE: Duration = Duration::from_secs(30 * 60);
 const RETRY_MOST_SECS: u64 = 30;
-/// A Zeron asked to update that hasn't come back on a new version.
+/// A Zend asked to update that hasn't come back on a new version.
 const NOT_APPLIED: &str = "It didn't come back on the new version";
 /// One whose new version failed, when it doesn't say why.
 const WENT_BACK: &str = "The new version didn't start, so it went back";
 /// One that never got as far as the new version, when it doesn't say why.
 const DIDNT_UPDATE: &str = "It couldn't update";
 
-/// The latest update asked of a Zeron, as `UpdateStatus` reports it. (From
+/// The latest update asked of a Zend, as `UpdateStatus` reports it. (From
 /// an engine too old to report, nothing: its version is all there is to go by.)
 #[derive(Clone, PartialEq)]
 struct Report {
@@ -69,9 +69,9 @@ impl Report {
     }
 }
 
-/// Zeron on another device, as `UpdateStatus` says.
+/// Zend on another device, as `UpdateStatus` says.
 #[derive(Clone, Default, PartialEq)]
-struct Zeron {
+struct Zend {
     current: String,
     latest: Option<String>,
     available: bool,
@@ -94,13 +94,13 @@ struct Device {
     statuses: Vec<HarnessUpdateStatus>,
     /// Why an agent's update waits, in the engine's words, by harness.
     wait_reasons: BTreeMap<String, String>,
-    zeron: Option<Zeron>,
-    /// The version it was on as its Zeron was asked to update.
+    zend: Option<Zend>,
+    /// The version it was on as its Zend was asked to update.
     updating_from: Option<String>,
-    /// The update its Zeron said it took, to hear how that one went.
+    /// The update its Zend said it took, to hear how that one went.
     update_id: Option<String>,
-    /// Why its Zeron didn't update.
-    zeron_error: Option<String>,
+    /// Why its Zend didn't update.
+    zend_error: Option<String>,
     retries: u64,
     watches: Vec<Watch>,
 }
@@ -140,9 +140,9 @@ pub fn install(host: &ScriptHost) {
         async move { a.run(args).await }
     });
     let a = updates;
-    host.async_action("updates.apply_zeron", move |args| {
+    host.async_action("updates.apply_zend", move |args| {
         let a = a.clone();
-        async move { a.apply_zeron(args).await }
+        async move { a.apply_zend(args).await }
     });
 }
 
@@ -200,7 +200,7 @@ impl Updates {
                 device.platform = d["platform"].as_str().unwrap_or_default().to_owned();
                 device.reports_agents = here.as_deref() == Some(id)
                     || d["capabilities"].as_array().is_some_and(|c| {
-                        c.iter().any(|c| c.as_str() == Some(zeron_proto::capabilities::HARNESS_UPDATES_V1))
+                        c.iter().any(|c| c.as_str() == Some(zend_proto::capabilities::HARNESS_UPDATES_V1))
                     });
                 let seen = d["lastSeenAt"].as_str().and_then(crate::sessions::unix_seconds);
                 device.online = here.as_deref() == Some(id)
@@ -262,7 +262,7 @@ impl Updates {
                 },
             ));
         }
-        // (This Mac's Zeron is the app's own: `about`.)
+        // (This Mac's Zend is the app's own: `about`.)
         if self.here.borrow().as_deref() != Some(id) {
             // (Its stream ends as its engine restarts to update: watched again
             // from then on, or the new version would never be heard.)
@@ -273,7 +273,7 @@ impl Updates {
                 self.addressed(id, json!({})),
                 move |item| {
                     if let Some(me) = weak.upgrade() {
-                        me.heard_zeron(&device, &item);
+                        me.heard_zend(&device, &item);
                     }
                 },
                 move |why| {
@@ -297,7 +297,7 @@ impl Updates {
             d.connected = false;
             d.watches.clear();
             d.retries += 1;
-            eprintln!("zeron-zgx: updates: {} stopped answering: {why}", d.name);
+            eprintln!("zend-zgx: updates: {} stopped answering: {why}", d.name);
             (1u64 << d.retries.min(5)).min(RETRY_MOST_SECS)
         };
         self.publish();
@@ -312,9 +312,9 @@ impl Updates {
         });
     }
 
-    fn heard_zeron(&self, id: &str, item: &Json) {
+    fn heard_zend(&self, id: &str, item: &Json) {
         let usable = item["held"].is_null() && !item["switch"].as_bool().unwrap_or(false);
-        let zeron = Zeron {
+        let zend = Zend {
             // (A beta's app, which isn't its engine: `currentVersion` is the engine's.)
             current: item["appVersion"].as_str().or(item["currentVersion"].as_str()).unwrap_or_default().to_owned(),
             latest: item["latestVersion"].as_str().map(Into::into),
@@ -325,7 +325,7 @@ impl Updates {
             report: Report::of(item),
         };
         if let Some(d) = self.devices.borrow_mut().get_mut(id) {
-            d.zeron = Some(zeron);
+            d.zend = Some(zend);
             d.connected = true;
             d.settle();
         }
@@ -342,20 +342,20 @@ impl Updates {
             Ok(_) => Ok(Value::Nil),
             Err(error) => {
                 let error = error.to_string();
-                eprintln!("zeron-zgx: updates: {method} on {device}: {error}");
+                eprintln!("zend-zgx: updates: {method} on {device}: {error}");
                 Err(error)
             }
         }
     }
 
-    async fn apply_zeron(self: Rc<Self>, args: Value) -> Result<Value, String> {
+    async fn apply_zend(self: Rc<Self>, args: Value) -> Result<Value, String> {
         let device = args.field("device").map(text).unwrap_or_default();
         let from = {
             let mut devices = self.devices.borrow_mut();
             let d = devices.get_mut(&device).ok_or("unknown")?;
-            let from = d.zeron.as_ref().map(|z| z.current.clone()).ok_or("unknown")?;
+            let from = d.zend.as_ref().map(|z| z.current.clone()).ok_or("unknown")?;
             d.updating_from = Some(from.clone());
-            d.zeron_error = None;
+            d.zend_error = None;
             from
         };
         self.publish();
@@ -364,11 +364,11 @@ impl Updates {
             Ok(answer) => answer,
             Err(error) => {
                 let error = error.to_string();
-                eprintln!("zeron-zgx: updates: Zeron on {device}: {error}");
+                eprintln!("zend-zgx: updates: Zend on {device}: {error}");
                 if let Some(d) = self.devices.borrow_mut().get_mut(&device) {
                     d.updating_from = None;
                     d.update_id = None;
-                    d.zeron_error = Some(error.clone());
+                    d.zend_error = Some(error.clone());
                 }
                 self.publish();
                 return Err(error);
@@ -386,10 +386,10 @@ impl Updates {
         // that never comes shows its update again.)
         let me = self.clone();
         engine::get().spawn(async move {
-            zgx::timer::sleep(ZERON_UPDATE_PATIENCE).await;
+            zgx::timer::sleep(ZEND_UPDATE_PATIENCE).await;
             let tracked = me.devices.borrow().get(&device).is_some_and(|d| d.update_id.is_some());
             if tracked {
-                zgx::timer::sleep(ZERON_TRIAL_PATIENCE.saturating_sub(ZERON_UPDATE_PATIENCE)).await;
+                zgx::timer::sleep(ZEND_TRIAL_PATIENCE.saturating_sub(ZEND_UPDATE_PATIENCE)).await;
             }
             let late = me
                 .devices
@@ -399,7 +399,7 @@ impl Updates {
                 .map(|d| {
                     d.updating_from = None;
                     d.update_id = None;
-                    d.zeron_error = Some(NOT_APPLIED.into());
+                    d.zend_error = Some(NOT_APPLIED.into());
                 })
                 .is_some();
             if late {
@@ -425,10 +425,10 @@ impl Updates {
         let mut order: Vec<(&String, &Device)> = devices.iter().collect();
         order.sort_by_key(|(id, d)| (Some(id.as_str()) != here.as_deref(), d.name.clone()));
         let mut rows = Vec::new();
-        // (This Mac's Zeron is the app's own, whatever its engine says.)
+        // (This Mac's Zend is the app's own, whatever its engine says.)
         for (id, d) in &order {
             if Some(id.as_str()) != here.as_deref() {
-                rows.extend(zeron_row(id, d));
+                rows.extend(zend_row(id, d));
             }
         }
         for (id, d) in &order {
@@ -440,12 +440,12 @@ impl Updates {
 }
 
 impl Device {
-    /// What's known now of the update its Zeron was asked for. An engine that
+    /// What's known now of the update its Zend was asked for. An engine that
     /// reports says how it went, as reconnecting doesn't; an older one is
     /// done once its version moves.
     fn settle(&mut self) {
-        let Some(zeron) = &self.zeron else { return };
-        let report = zeron.report.as_ref();
+        let Some(zend) = &self.zend else { return };
+        let report = zend.report.as_ref();
         // Under way, though not asked here or its answer never came (the app
         // restarted, or the engine went before replying).
         if self.update_id.is_none()
@@ -453,12 +453,12 @@ impl Device {
         {
             self.update_id = Some(report.id.clone());
             self.updating_from.get_or_insert_with(|| report.from.clone());
-            self.zeron_error = None;
+            self.zend_error = None;
         }
         let Some(id) = &self.update_id else {
-            if self.updating_from.as_deref().is_some_and(|from| from != zeron.current) {
+            if self.updating_from.as_deref().is_some_and(|from| from != zend.current) {
                 self.updating_from = None;
-                self.zeron_error = None;
+                self.zend_error = None;
             }
             return;
         };
@@ -472,7 +472,7 @@ impl Device {
         };
         self.updating_from = None;
         self.update_id = None;
-        self.zeron_error = error;
+        self.zend_error = error;
     }
 }
 
@@ -498,48 +498,48 @@ fn method_of(action: &str) -> Option<&'static str> {
     })
 }
 
-/// Another device's Zeron with an update, or being updated.
-fn zeron_row(id: &str, d: &Device) -> Option<Value> {
-    let zeron = d.zeron.as_ref()?;
+/// Another device's Zend with an update, or being updated.
+fn zend_row(id: &str, d: &Device) -> Option<Value> {
+    let zend = d.zend.as_ref()?;
     let updating = d.updating_from.is_some();
-    if !updating && !zeron.available && d.zeron_error.is_none() {
+    if !updating && !zend.available && d.zend_error.is_none() {
         return None;
     }
     // As it says; an engine too old to say is tried where it can be (a Linux
     // service can, and says why not if it can't).
-    let can_apply = zeron.can_apply.unwrap_or(d.platform == "linux");
+    let can_apply = zend.can_apply.unwrap_or(d.platform == "linux");
     let phase = if updating {
         "installing"
-    } else if d.zeron_error.is_some() {
+    } else if d.zend_error.is_some() {
         "failed"
     } else {
         "available"
     };
     let mut fields = vec![
-        ("id", Value::from(format!("{id}:zeron").as_str())),
+        ("id", Value::from(format!("{id}:zend").as_str())),
         ("device", Value::from(id)),
         ("device_name", Value::from(d.name.as_str())),
         ("here", Value::Bool(false)),
         ("connected", Value::Bool(d.online && d.connected)),
-        ("kind", Value::from("zeron")),
+        ("kind", Value::from("zend")),
         ("phase", Value::from(phase)),
-        ("installed", Value::from(zeron.current.as_str())),
+        ("installed", Value::from(zend.current.as_str())),
         ("active", Value::Bool(updating)),
     ];
-    if let Some(latest) = &zeron.latest {
+    if let Some(latest) = &zend.latest {
         fields.push(("latest", Value::from(latest.as_str())));
     }
-    if let Some(error) = &d.zeron_error {
+    if let Some(error) = &d.zend_error {
         fields.push(("message", Value::from(error.as_str())));
     }
     if !updating && can_apply {
-        fields.push(("action", Value::from(if d.zeron_error.is_some() { "retry" } else { "update" })));
+        fields.push(("action", Value::from(if d.zend_error.is_some() { "retry" } else { "update" })));
     }
     if !updating && !can_apply {
-        if let Some(why) = &zeron.why_not {
+        if let Some(why) = &zend.why_not {
             fields.push(("why_not", Value::from(why.as_str())));
         }
-        if let Some(command) = &zeron.manual_command {
+        if let Some(command) = &zend.manual_command {
             fields.push(("manual_command", Value::from(command.as_str())));
             fields.push(("action", Value::from("copy")));
         }
@@ -707,34 +707,34 @@ mod tests {
     }
 
     #[test]
-    fn another_device_s_zeron_shows_only_with_an_update_and_updates_on_linux() {
+    fn another_device_s_zend_shows_only_with_an_update_and_updates_on_linux() {
         let mut d = Device { name: "metal".into(), platform: "linux".into(), online: true, connected: true, ..Device::default() };
-        assert!(zeron_row("m", &d).is_none());
-        d.zeron = Some(Zeron { current: "1".into(), latest: Some("2".into()), ..Zeron::default() });
-        assert!(zeron_row("m", &d).is_none());
-        d.zeron.as_mut().unwrap().available = true;
-        let row = zeron_row("m", &d).unwrap();
+        assert!(zend_row("m", &d).is_none());
+        d.zend = Some(Zend { current: "1".into(), latest: Some("2".into()), ..Zend::default() });
+        assert!(zend_row("m", &d).is_none());
+        d.zend.as_mut().unwrap().available = true;
+        let row = zend_row("m", &d).unwrap();
         assert_eq!(row.field("action").map(text).as_deref(), Some("update"));
         assert_eq!(row.field("latest").map(text).as_deref(), Some("2"));
         // A Mac's or a PC's app updates itself, there.
         d.platform = "macos".into();
-        assert!(zeron_row("m", &d).unwrap().field("action").is_none());
+        assert!(zend_row("m", &d).unwrap().field("action").is_none());
         // What it says of itself comes first.
-        d.zeron.as_mut().unwrap().can_apply = Some(true);
-        assert_eq!(zeron_row("m", &d).unwrap().field("action").map(text).as_deref(), Some("update"));
+        d.zend.as_mut().unwrap().can_apply = Some(true);
+        assert_eq!(zend_row("m", &d).unwrap().field("action").map(text).as_deref(), Some("update"));
         d.platform = "linux".into();
-        let z = d.zeron.as_mut().unwrap();
+        let z = d.zend.as_mut().unwrap();
         z.can_apply = Some(false);
         z.why_not = Some("It was started by hand".into());
-        z.manual_command = Some("zeron update".into());
-        let row = zeron_row("m", &d).unwrap();
+        z.manual_command = Some("zend update".into());
+        let row = zend_row("m", &d).unwrap();
         assert_eq!(row.field("action").map(text).as_deref(), Some("copy"));
         assert_eq!(row.field("why_not").map(text).as_deref(), Some("It was started by hand"));
-        d.zeron.as_mut().unwrap().can_apply = None;
+        d.zend.as_mut().unwrap().can_apply = None;
         // Being updated: nothing to press.
         d.platform = "linux".into();
         d.updating_from = Some("1".into());
-        let row = zeron_row("m", &d).unwrap();
+        let row = zend_row("m", &d).unwrap();
         assert!(row.field("action").is_none());
         assert_eq!(row.field("phase").map(text).as_deref(), Some("installing"));
     }
@@ -743,12 +743,12 @@ mod tests {
     fn a_held_or_channel_leaving_release_isn_t_offered() {
         let updates = Updates::default();
         updates.devices.borrow_mut().insert("m".into(), Device::default());
-        updates.heard_zeron("m", &json!({ "currentVersion": "1", "latestVersion": "2", "updateAvailable": true, "held": "older macOS" }));
-        assert!(!updates.devices.borrow()["m"].zeron.as_ref().unwrap().available);
-        updates.heard_zeron("m", &json!({ "currentVersion": "1", "latestVersion": "2", "updateAvailable": true, "switch": true }));
-        assert!(!updates.devices.borrow()["m"].zeron.as_ref().unwrap().available);
-        updates.heard_zeron("m", &json!({ "currentVersion": "1", "latestVersion": "2", "updateAvailable": true }));
-        assert!(updates.devices.borrow()["m"].zeron.as_ref().unwrap().available);
+        updates.heard_zend("m", &json!({ "currentVersion": "1", "latestVersion": "2", "updateAvailable": true, "held": "older macOS" }));
+        assert!(!updates.devices.borrow()["m"].zend.as_ref().unwrap().available);
+        updates.heard_zend("m", &json!({ "currentVersion": "1", "latestVersion": "2", "updateAvailable": true, "switch": true }));
+        assert!(!updates.devices.borrow()["m"].zend.as_ref().unwrap().available);
+        updates.heard_zend("m", &json!({ "currentVersion": "1", "latestVersion": "2", "updateAvailable": true }));
+        assert!(updates.devices.borrow()["m"].zend.as_ref().unwrap().available);
     }
 
     fn asked(from: &str) -> Updates {
@@ -766,7 +766,7 @@ mod tests {
     }
 
     fn heard(updates: &Updates, current: &str, id: &str, state: &str, reason: Option<&str>) {
-        updates.heard_zeron(
+        updates.heard_zend(
             "m",
             &json!({ "currentVersion": current, "latestVersion": "2",
                      "update": { "id": id, "fromVersion": "1", "targetVersion": "2", "state": state, "reason": reason } }),
@@ -774,12 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn a_zeron_s_update_ends_as_its_engine_says_not_as_it_reconnects() {
+    fn a_zend_s_update_ends_as_its_engine_says_not_as_it_reconnects() {
         let updates = asked("1");
         let device = |f: &dyn Fn(&Device)| f(&updates.devices.borrow()["m"]);
         // An older update's word says nothing of this one.
         heard(&updates, "1", "older", "rolledBack", Some("old news"));
-        device(&|d| assert!(d.updating_from.is_some() && d.zeron_error.is_none()));
+        device(&|d| assert!(d.updating_from.is_some() && d.zend_error.is_none()));
         // Back from a restart, on the new version, but still on trial.
         heard(&updates, "2", "u1", "inProgress", None);
         device(&|d| assert!(d.updating_from.is_some()));
@@ -787,22 +787,22 @@ mod tests {
         heard(&updates, "2", "u1", "someNewState", None);
         device(&|d| assert!(d.updating_from.is_some()));
         heard(&updates, "2", "u1", "updated", None);
-        device(&|d| assert!(d.updating_from.is_none() && d.update_id.is_none() && d.zeron_error.is_none()));
+        device(&|d| assert!(d.updating_from.is_none() && d.update_id.is_none() && d.zend_error.is_none()));
     }
 
     #[test]
-    fn a_zeron_that_went_back_says_so_and_offers_it_again() {
+    fn a_zend_that_went_back_says_so_and_offers_it_again() {
         let updates = asked("1");
         heard(&updates, "1", "u1", "rolledBack", Some("The new version crashed"));
         {
             let devices = updates.devices.borrow();
-            assert_eq!(devices["m"].zeron_error.as_deref(), Some("The new version crashed"));
+            assert_eq!(devices["m"].zend_error.as_deref(), Some("The new version crashed"));
             assert!(devices["m"].updating_from.is_none());
         }
         let mut devices = updates.devices.borrow_mut();
         let d = devices.get_mut("m").unwrap();
-        d.zeron.as_mut().unwrap().can_apply = Some(true);
-        let row = zeron_row("m", d).unwrap();
+        d.zend.as_mut().unwrap().can_apply = Some(true);
+        let row = zend_row("m", d).unwrap();
         assert_eq!(row.field("phase").map(text).as_deref(), Some("failed"));
         assert_eq!(row.field("action").map(text).as_deref(), Some("retry"));
         assert_eq!(row.field("message").map(text).as_deref(), Some("The new version crashed"));
@@ -810,7 +810,7 @@ mod tests {
         // Without a reason, plain words.
         let updates = asked("1");
         heard(&updates, "1", "u1", "failed", None);
-        assert_eq!(updates.devices.borrow()["m"].zeron_error.as_deref(), Some(DIDNT_UPDATE));
+        assert_eq!(updates.devices.borrow()["m"].zend_error.as_deref(), Some(DIDNT_UPDATE));
     }
 
     #[test]
@@ -824,32 +824,32 @@ mod tests {
             assert_eq!(devices["m"].updating_from.as_deref(), Some("1"));
         }
         heard(&updates, "1", "u9", "rolledBack", None);
-        assert_eq!(updates.devices.borrow()["m"].zeron_error.as_deref(), Some(WENT_BACK));
+        assert_eq!(updates.devices.borrow()["m"].zend_error.as_deref(), Some(WENT_BACK));
         // An update settled long ago, heard fresh, isn't news.
         let updates = Updates::default();
         updates.devices.borrow_mut().insert("m".into(), Device::default());
         heard(&updates, "1", "u0", "rolledBack", Some("old news"));
-        assert!(updates.devices.borrow()["m"].zeron_error.is_none());
+        assert!(updates.devices.borrow()["m"].zend_error.is_none());
     }
 
     #[test]
     fn an_engine_too_old_to_report_is_done_when_its_version_moves() {
         let updates = asked("1");
         updates.devices.borrow_mut().get_mut("m").unwrap().update_id = None;
-        updates.heard_zeron("m", &json!({ "currentVersion": "1" }));
+        updates.heard_zend("m", &json!({ "currentVersion": "1" }));
         assert!(updates.devices.borrow()["m"].updating_from.is_some());
-        updates.heard_zeron("m", &json!({ "currentVersion": "2" }));
+        updates.heard_zend("m", &json!({ "currentVersion": "2" }));
         assert!(updates.devices.borrow()["m"].updating_from.is_none());
     }
 
     #[test]
-    fn a_beta_s_zeron_goes_by_its_app_version_not_its_engine_s() {
+    fn a_beta_s_zend_goes_by_its_app_version_not_its_engine_s() {
         let updates = Updates::default();
         updates.devices.borrow_mut().insert("m".into(), Device::default());
-        updates.heard_zeron("m", &json!({ "currentVersion": "0.2.136", "appVersion": "0.2.137-beta.17" }));
-        assert_eq!(updates.devices.borrow()["m"].zeron.as_ref().unwrap().current, "0.2.137-beta.17");
-        updates.heard_zeron("m", &json!({ "currentVersion": "0.2.136" }));
-        assert_eq!(updates.devices.borrow()["m"].zeron.as_ref().unwrap().current, "0.2.136");
+        updates.heard_zend("m", &json!({ "currentVersion": "0.2.136", "appVersion": "0.2.137-beta.17" }));
+        assert_eq!(updates.devices.borrow()["m"].zend.as_ref().unwrap().current, "0.2.137-beta.17");
+        updates.heard_zend("m", &json!({ "currentVersion": "0.2.136" }));
+        assert_eq!(updates.devices.borrow()["m"].zend.as_ref().unwrap().current, "0.2.136");
     }
 
     #[test]

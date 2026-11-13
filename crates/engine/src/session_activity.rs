@@ -2,7 +2,7 @@
 //! Native execution state stays separate from terminal-reported activity.
 
 use super::*;
-use zeron_proto::TerminalActivity;
+use zend_proto::TerminalActivity;
 
 impl SessionsEngine {
     pub(crate) fn track_terminal_activity(
@@ -61,7 +61,7 @@ impl SessionsEngine {
                             .as_ref()
                             .is_some_and(|a| a.report.state.active())
                         && (now - old.updated_at).num_milliseconds()
-                            < zeron_proto::view::SESSION_HEARTBEAT_MS
+                            < zend_proto::view::SESSION_HEARTBEAT_MS
                     {
                         let native_at = native
                             .borrow()
@@ -199,7 +199,7 @@ fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{ProgramInputKind, ProgramState, ProgramStatus};
+    use zend_proto::{ProgramInputKind, ProgramState, ProgramStatus};
 
     /// A run can start before its chat's row reaches this workspace (it is
     /// created on another device, or the row is still syncing). Its status
@@ -210,7 +210,7 @@ mod tests {
         let core = crate::EngineCore::assemble(
             dir.path(),
             Arc::new(crate::HarnessRegistry::new()),
-            zeron_proto::HarnessId::Mock,
+            zend_proto::HarnessId::Mock,
             None,
         )
         .unwrap();

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use tokio_util::sync::CancellationToken;
-use zeron_doc::RegistryDoc;
-use zeron_proto::{Chat, ChatConfig, SidebarPinChange, SidebarSectionChange};
+use zend_doc::RegistryDoc;
+use zend_proto::{Chat, ChatConfig, SidebarPinChange, SidebarSectionChange};
 
 use crate::attachments::{self, AttachmentCache};
 use crate::auth::TokenProvider;
@@ -94,7 +94,7 @@ pub(crate) struct ClientInner {
     pub(crate) cloud_stages: Mutex<crate::cloud_stage::CloudStages>,
     /// Terminals on other devices: direct link or relay, switching
     /// mid-session (the desktop engine runs the same hub).
-    pub(crate) remote_terminals: zeron_term_link::remote::RemoteTerminals,
+    pub(crate) remote_terminals: zend_term_link::remote::RemoteTerminals,
     /// Wakes terminal streams waiting to reconnect (foreground, network back).
     pub(crate) terminals_wake: Arc<tokio::sync::Notify>,
     /// When the app last went to the background.
@@ -298,7 +298,7 @@ impl ClientInner {
 
     pub(crate) fn registry_write<R>(
         self: &Arc<Self>,
-        f: impl FnOnce(&mut RegistryDoc) -> std::result::Result<R, zeron_doc::DocError>,
+        f: impl FnOnce(&mut RegistryDoc) -> std::result::Result<R, zend_doc::DocError>,
     ) -> Result<R> {
         let result = self.workspace.mutate(f)?;
         self.after_registry_write();
@@ -428,7 +428,7 @@ impl ClientInner {
             queued_attachments: device
                 .version
                 .as_deref()
-                .and_then(zeron_proto::version_triple)
+                .and_then(zend_proto::version_triple)
                 .is_some_and(|v| v >= QUEUED_ATTACHMENTS_MIN),
             mid_turn_steering,
             provider_switch: has(capability::PROVIDER_SWITCH_V1),
@@ -669,7 +669,7 @@ impl ClientInner {
             .filter_map(|core| {
                 let sent_at_ms = core.oldest_pending_send_ms()?;
                 let row = workspace.session(&core.chat_id)?;
-                zeron_proto::is_cloud_device(&row.device_id, "").then(|| {
+                zend_proto::is_cloud_device(&row.device_id, "").then(|| {
                     crate::cloud_stage::MachineWait {
                         chat_id: core.chat_id.clone(),
                         device_id: row.device_id.clone(),
@@ -698,7 +698,7 @@ impl ClientInner {
 
     /// The session list was read: when a machine started or stopped saying
     /// it updates, the chats on it show it.
-    pub(crate) fn note_cloud_sessions(&self, sessions: &zeron_proto::CloudSessions) {
+    pub(crate) fn note_cloud_sessions(&self, sessions: &zend_proto::CloudSessions) {
         if !lock(&self.cloud_stages).record(Some(sessions)) {
             return;
         }
@@ -706,7 +706,7 @@ impl ClientInner {
         for core in self.cores() {
             let on_cloud = workspace
                 .session(&core.chat_id)
-                .is_some_and(|row| zeron_proto::is_cloud_device(&row.device_id, ""));
+                .is_some_and(|row| zend_proto::is_cloud_device(&row.device_id, ""));
             if on_cloud {
                 core.schedule_refresh();
             }
@@ -734,7 +734,7 @@ impl Client {
     pub async fn voice_transport(
         &self,
         device_id: &str,
-    ) -> Result<Arc<zeron_voice_session::RpcTransport>> {
+    ) -> Result<Arc<zend_voice_session::RpcTransport>> {
         let live = self.inner.live().ok_or_else(|| {
             ClientError::Unsupported("remote voice requires a connected account".into())
         })?;
@@ -829,7 +829,7 @@ impl Client {
         }
         // A previous account may have left the process at rest.
         if !inner.is_demo() {
-            zeron_sync::wake::set_resting(false);
+            zend_sync::wake::set_resting(false);
         }
         let ticker = Arc::downgrade(&inner);
         let cancel = inner.cancel.clone();
@@ -951,7 +951,7 @@ impl Client {
                     .iter()
                     .any(|c| c == crate::rpc::capability::PROJECTLESS_SCRATCH_V1)
                 {
-                    zeron_proto::projectless::scratch_cwd(&id, now)
+                    zend_proto::projectless::scratch_cwd(&id, now)
                 } else {
                     "~".to_owned()
                 };
@@ -1030,7 +1030,7 @@ impl Client {
             .inner
             .host_rpc(
                 &source.device_id,
-                zeron_rpc::methods::FORK_SIDE_CHAT,
+                zend_rpc::methods::FORK_SIDE_CHAT,
                 serde_json::json!({
                     "chatId": chat_id,
                     "sourceChatId": source.id,
@@ -1055,7 +1055,7 @@ impl Client {
     fn chat_write(
         &self,
         chat_id: &str,
-        f: impl FnOnce(&mut RegistryDoc) -> std::result::Result<bool, zeron_doc::DocError>,
+        f: impl FnOnce(&mut RegistryDoc) -> std::result::Result<bool, zend_doc::DocError>,
     ) -> Result<()> {
         if self.inner.registry_write(f)? {
             Ok(())
@@ -1101,7 +1101,7 @@ impl Client {
             .inner
             .host_rpc(
                 &chat.device_id,
-                zeron_rpc::methods::STOP_WAITING,
+                zend_rpc::methods::STOP_WAITING,
                 serde_json::json!({ "chatId": chat_id }),
             )
             .await?;
@@ -1130,7 +1130,7 @@ impl Client {
                 .provider_switch
         {
             return Err(ClientError::Unsupported(
-                "This chat's computer needs a newer Zeron to switch provider.".into(),
+                "This chat's computer needs a newer Zend to switch provider.".into(),
             ));
         }
         self.chat_write(chat_id, |doc| doc.set_chat_config(chat_id, config))
@@ -1142,7 +1142,7 @@ impl Client {
             .inner
             .workspace
             .chat(chat_id)
-            .is_some_and(|chat| zeron_proto::is_cloud_device(&chat.device_id, ""));
+            .is_some_and(|chat| zend_proto::is_cloud_device(&chat.device_id, ""));
         // A Cloud chat's children on Cloud go with it: its delegates (each on
         // a machine of its own, which would otherwise outlive the parent) and
         // its side chats (on its machine, now gone).
@@ -1153,7 +1153,7 @@ impl Client {
                 .iter()
                 .filter(|chat| {
                     chat.parent_chat_id.as_deref() == Some(chat_id)
-                        && zeron_proto::is_cloud_device(&chat.device_id, "")
+                        && zend_proto::is_cloud_device(&chat.device_id, "")
                 })
                 .map(|chat| chat.id.clone())
                 .collect()
@@ -1348,7 +1348,7 @@ impl Client {
         {
             return Ok(existing.id.clone());
         }
-        let space = zeron_proto::Space {
+        let space = zend_proto::Space {
             id: crate::new_id(),
             device_id: device_id.to_owned(),
             path: path.to_owned(),
@@ -1370,7 +1370,7 @@ impl Client {
                 .relay
                 .call(
                     device_id,
-                    zeron_rpc::methods::MUTATE,
+                    zend_rpc::methods::MUTATE,
                     serde_json::json!({
                         "op": "createSpace",
                         "spaceId": id,
@@ -1430,7 +1430,7 @@ impl Client {
                 .into_iter()
                 .filter(|chat| {
                     chat.space_id.as_deref() == Some(space_id)
-                        && zeron_proto::is_cloud_device(&chat.device_id, "")
+                        && zend_proto::is_cloud_device(&chat.device_id, "")
                 })
                 .map(|chat| chat.id)
                 .collect();
@@ -1484,7 +1484,7 @@ impl Client {
             .workspace
             .snapshot()
             .session(chat_id)
-            .is_some_and(|row| zeron_proto::is_cloud_device(&row.device_id, ""));
+            .is_some_and(|row| zend_proto::is_cloud_device(&row.device_id, ""));
         if on_cloud {
             self.inner.glance_cloud_sessions();
         }
@@ -1544,7 +1544,7 @@ impl Client {
                     .relay
                     .call(
                         device_id,
-                        zeron_rpc::methods::LIST_HARNESSES,
+                        zend_rpc::methods::LIST_HARNESSES,
                         serde_json::json!({}),
                     )
                     .await
@@ -1581,7 +1581,7 @@ impl Client {
     pub async fn list_models(&self, device_id: &str, harness: &str) -> Vec<ModelInfo> {
         match self.inner.backend() {
             Backend::Demo(demo) => demo.list_models(harness).await,
-            Backend::Live(_) if zeron_proto::is_cloud_device(device_id, "") => {
+            Backend::Live(_) if zend_proto::is_cloud_device(device_id, "") => {
                 self.cloud_models(harness).await
             }
             Backend::Live(live) => {
@@ -1590,7 +1590,7 @@ impl Client {
                     .relay
                     .call(
                         device_id,
-                        zeron_rpc::methods::LIST_MODELS,
+                        zend_rpc::methods::LIST_MODELS,
                         serde_json::json!({ "harness": harness }),
                     )
                     .await
@@ -1693,7 +1693,7 @@ impl Client {
                     .relay
                     .call(
                         device_id,
-                        zeron_rpc::methods::LIST_REFS,
+                        zend_rpc::methods::LIST_REFS,
                         serde_json::json!({ "repoPath": repo_path }),
                     )
                     .await?;
@@ -1710,7 +1710,7 @@ impl Client {
         chat_id: Option<String>,
         space_id: Option<String>,
         query: &str,
-    ) -> Result<Vec<zeron_proto::FileSearchMatch>> {
+    ) -> Result<Vec<zend_proto::FileSearchMatch>> {
         match self.inner.backend() {
             Backend::Demo(_) => {
                 const FILES: &[&str] = &[
@@ -1720,8 +1720,8 @@ impl Client {
                     "crates/text/src/layout.rs",
                     "crates/text/src/prepare.rs",
                     "crates/markdown/src/parser.rs",
-                    "apps/ios/Zeron/Transcript/TranscriptListView.swift",
-                    "apps/ios/Zeron/Composer/ComposerBar.swift",
+                    "apps/ios/Zend/Transcript/TranscriptListView.swift",
+                    "apps/ios/Zend/Composer/ComposerBar.swift",
                     "docs/mobile-rewrite.md",
                     "README.md",
                 ];
@@ -1729,7 +1729,7 @@ impl Client {
                 Ok(FILES
                     .iter()
                     .filter(|p| q.is_empty() || p.to_lowercase().contains(&q))
-                    .map(|p| zeron_proto::FileSearchMatch {
+                    .map(|p| zend_proto::FileSearchMatch {
                         path: (*p).to_owned(),
                         is_dir: false,
                     })
@@ -1740,7 +1740,7 @@ impl Client {
                     .relay
                     .call(
                         device_id,
-                        zeron_rpc::methods::SEARCH_FILES,
+                        zend_rpc::methods::SEARCH_FILES,
                         serde_json::json!({ "query": query, "chatId": chat_id, "spaceId": space_id }),
                     )
                     .await?;
@@ -1764,7 +1764,7 @@ impl Client {
                 };
                 let value = live
                     .relay
-                    .call(device_id, zeron_rpc::methods::LIST_FOLDERS, params)
+                    .call(device_id, zend_rpc::methods::LIST_FOLDERS, params)
                     .await?;
                 serde_json::from_value(value).map_err(|e| ClientError::HostError(e.to_string()))
             }
@@ -1779,7 +1779,7 @@ impl Client {
                 .relay
                 .call(
                     device_id,
-                    zeron_rpc::methods::SWITCH_REF,
+                    zend_rpc::methods::SWITCH_REF,
                     serde_json::json!({ "repoPath": repo_path, "refName": ref_name }),
                 )
                 .await
@@ -1804,7 +1804,7 @@ impl Client {
                 }
                 let value = live
                     .relay
-                    .call(device_id, zeron_rpc::methods::CREATE_WORKTREE, params)
+                    .call(device_id, zend_rpc::methods::CREATE_WORKTREE, params)
                     .await?;
                 value
                     .get("path")
@@ -1877,8 +1877,8 @@ impl Client {
             changed
         });
         if !self.inner.is_demo() {
-            // Parks/un-parks every sync backoff in the process (zeron-sync).
-            zeron_sync::wake::set_path_online(online);
+            // Parks/un-parks every sync backoff in the process (zend-sync).
+            zend_sync::wake::set_path_online(online);
         }
         if was != online {
             self.inner.recompute_connectivity();
@@ -1925,7 +1925,7 @@ impl Client {
     pub fn on_foreground(&self) {
         self.inner.foreground.store(true, Ordering::Release);
         if !self.inner.is_demo() {
-            zeron_sync::wake::set_resting(false);
+            zend_sync::wake::set_resting(false);
         }
         if let Some(direct) = self.inner.live().and_then(|live| live.direct()) {
             direct.rest(false);
@@ -1985,7 +1985,7 @@ impl Client {
         if self.inner.is_demo() || self.inner.foreground.load(Ordering::Acquire) {
             return;
         }
-        zeron_sync::wake::set_resting(true);
+        zend_sync::wake::set_resting(true);
         if let Some(live) = self.inner.live() {
             live.relay.release();
             if let Some(direct) = live.direct() {

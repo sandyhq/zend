@@ -1,4 +1,4 @@
-//! Release channels: `stable` (everyone) and `beta` (Zeron.app testers).
+//! Release channels: `stable` (everyone) and `beta` (Zend.app testers).
 //!
 //! The channel an install follows is kept in the data dir,
 //! `update-channel.json`, where every updater reads it on each check: the
@@ -74,7 +74,7 @@ impl Channel {
     }
 
     /// The release feed's base for this channel, under `stable` (the edge's
-    /// `/releases` or `ZERON_RELEASES_URL`).
+    /// `/releases` or `ZEND_RELEASES_URL`).
     pub fn base(self, stable: &str) -> String {
         let stable = stable.trim_end_matches('/');
         match self {
@@ -280,7 +280,7 @@ pub fn macos_at_least(system: &str, minimum: &str) -> bool {
 pub fn beta_unavailable() -> Option<String> {
     let install = crate::detect_install();
     if !install.follows_channels() {
-        return Some("Beta updates are for the Zeron app on a Mac.".into());
+        return Some("Beta updates are for the Zend app on a Mac.".into());
     }
     if !matches!(install, crate::InstallKind::MacApp { .. }) {
         return None;
@@ -288,9 +288,9 @@ pub fn beta_unavailable() -> Option<String> {
     match macos_version() {
         Some(version) if macos_at_least(version, BETA_MINIMUM_MACOS) => None,
         Some(version) => Some(format!(
-            "Zeron beta needs macOS {BETA_MINIMUM_MACOS} or later. This Mac has macOS {version}."
+            "Zend beta needs macOS {BETA_MINIMUM_MACOS} or later. This Mac has macOS {version}."
         )),
-        None => Some(format!("Zeron beta needs macOS {BETA_MINIMUM_MACOS} or later.")),
+        None => Some(format!("Zend beta needs macOS {BETA_MINIMUM_MACOS} or later.")),
     }
 }
 
@@ -307,8 +307,8 @@ mod tests {
 
     #[test]
     fn beta_reads_its_own_folder() {
-        assert_eq!(Channel::Stable.base("https://edge.zeron.sh/releases/"), "https://edge.zeron.sh/releases");
-        assert_eq!(Channel::Beta.base("https://edge.zeron.sh/releases"), "https://edge.zeron.sh/releases/beta");
+        assert_eq!(Channel::Stable.base("https://edge.zend.invalid/releases/"), "https://edge.zend.invalid/releases");
+        assert_eq!(Channel::Beta.base("https://edge.zend.invalid/releases"), "https://edge.zend.invalid/releases/beta");
     }
 
     #[test]

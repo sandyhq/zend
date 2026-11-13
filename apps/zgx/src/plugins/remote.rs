@@ -146,7 +146,7 @@ pub fn load(bridge: &Rc<Bridge>) {
                 watch(&b, &device, run);
             }
             Err(error) => {
-                eprintln!("zeron-zgx: plugins: {device}'s plugins unavailable: {error}");
+                eprintln!("zend-zgx: plugins: {device}'s plugins unavailable: {error}");
                 b.remote.state.set("offline");
                 b.remote.publish();
             }
@@ -181,7 +181,7 @@ pub const PIECE: usize = 384 << 10;
 /// The largest plugin file sent (the engine's package limit, rounded).
 const MAX_FILE: u64 = 64 << 20;
 
-/// Sends the `.zeron-plugin` file at `path` (on this device) to another,
+/// Sends the `.zend-plugin` file at `path` (on this device) to another,
 /// piece by piece through `stage` (`StagePluginPackage` there): the upload
 /// it's held as there, for `install_sent`.
 pub async fn send_file<F, Fut>(path: &str, stage: F) -> Result<String, String>
@@ -265,7 +265,7 @@ mod tests {
     fn a_file_goes_to_another_device_in_pieces() {
         use base64::Engine as _;
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("focus.zeron-plugin");
+        let path = dir.path().join("focus.zend-plugin");
         let raw: Vec<u8> = (0..(PIECE * 2 + 10)).map(|i| (i % 251) as u8).collect();
         std::fs::write(&path, &raw).unwrap();
         let sent = RefCell::new(Vec::<Json>::new());
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(back, raw);
         assert_eq!(
             install_sent(path.to_str().unwrap(), "u1"),
-            json!({ "upload": "u1", "name": "focus.zeron-plugin" })
+            json!({ "upload": "u1", "name": "focus.zend-plugin" })
         );
         // The device saying no stops it there.
         let refused = block_on(send_file(path.to_str().unwrap(), |_| async { Err("offline".to_string()) }));

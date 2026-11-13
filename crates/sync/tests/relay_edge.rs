@@ -6,7 +6,7 @@
 //!
 //! ```sh
 //! (cd edge && npx wrangler dev --port 27640 --var AUTH_MODE:dev --var CHAT_RELAY_LAYER:1)
-//! ZERON_EDGE_WS=ws://127.0.0.1:27640 cargo test -p zeron-sync --test relay_edge -- --ignored
+//! ZEND_EDGE_WS=ws://127.0.0.1:27640 cargo test -p zend-sync --test relay_edge -- --ignored
 //! ```
 
 use std::sync::Arc;
@@ -15,14 +15,14 @@ use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use loro::{ExportMode, LoroDoc, VersionVector};
-use zeron_sync::SyncError;
-use zeron_sync::chat_client::{ChatClient, ChatDocSink, ChatTransport, CheckpointFetcher, RowImportOutcome};
-use zeron_sync::chat_relay::{RelayEvent, RelayHandle, RelayImport, RelayPolicy};
+use zend_sync::SyncError;
+use zend_sync::chat_client::{ChatClient, ChatDocSink, ChatTransport, CheckpointFetcher, RowImportOutcome};
+use zend_sync::chat_relay::{RelayEvent, RelayHandle, RelayImport, RelayPolicy};
 
 const TOKEN: &str = "relay-e2e@org1";
 
 fn ws_base() -> String {
-    std::env::var("ZERON_EDGE_WS").unwrap_or_else(|_| "ws://127.0.0.1:27640".into())
+    std::env::var("ZEND_EDGE_WS").unwrap_or_else(|_| "ws://127.0.0.1:27640".into())
 }
 
 fn http_base() -> String {
@@ -162,7 +162,7 @@ impl Peer {
         let policy = RelayPolicy { confirm_queue: host };
         let relay = RelayHandle::spawn(name, sink.clone(), policy);
         let http = Arc::new(Http { chat: chat.into(), device: name.into() });
-        let url = Arc::new(zeron_sync::StaticUrl(format!(
+        let url = Arc::new(zend_sync::StaticUrl(format!(
             "{}/chat2/{chat}/ws?device={name}&token={TOKEN}",
             ws_base()
         )));

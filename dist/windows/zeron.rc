@@ -1,3 +1,0 @@
-// GPUI's Windows platform loads the application icon from resource ID 1;
-// zgx's (apps/zgx) takes the exe's first icon.
-1 ICON "zeron.ico"

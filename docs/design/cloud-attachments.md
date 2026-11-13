@@ -36,7 +36,7 @@ command's own expiry. An expired message can still be retried by the user.
 ## How long a message waits
 
 A command to a Cloud-hosted chat expires after **7 days**; every other chat keeps its day
-(`zeron_doc::command_ttl_ms`). A machine can be asleep, or waiting on its person to pick a
+(`zend_doc::command_ttl_ms`). A machine can be asleep, or waiting on its person to pick a
 size, for days, and the message should still run, once, when it comes back. The sender stamps
 the expiry, so a host of any version honors it. Past it, the message reads as expired in its
 chat, with a retry.
@@ -75,7 +75,7 @@ A send is only ever lost if its person removes it.
 | new | Cloud, `attachment-store-v1` | new | store only |
 | new | Cloud | old (404 on the PUT) | the message goes out and the bytes take the peer path |
 
-The capability is `zeron_proto::capabilities::ATTACHMENT_STORE_V1`. An old engine ignores it,
+The capability is `zend_proto::capabilities::ATTACHMENT_STORE_V1`. An old engine ignores it,
 and never looks in the store.
 
 ## Access
@@ -117,7 +117,7 @@ pass it together. The 32 MiB limit per file is unchanged.
 The rule is bucket configuration, not code, so it has to be applied once per bucket:
 
 ```sh
-npx wrangler r2 bucket lifecycle add zeron-staging-blobs attachments-expire attachments/ --expire-days 30
+npx wrangler r2 bucket lifecycle add zend-staging-blobs attachments-expire attachments/ --expire-days 30
 npx wrangler r2 bucket lifecycle add comet-native-blobs attachments-expire attachments/ --expire-days 30
 ```
 

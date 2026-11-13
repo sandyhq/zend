@@ -16,11 +16,11 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use zeron_engine::credentials::{BrokerConfig, CredentialBroker, GITHUB_NOT_CONNECTED};
-use zeron_engine::runner::{self, RunnerIdentity};
-use zeron_engine::{Auth, AuthConfig, AuthState, Engine};
-use zeron_proto::{HarnessId, RunRequest};
-use zeron_rpc::{TokenError, TokenSource};
+use zend_engine::credentials::{BrokerConfig, CredentialBroker, GITHUB_NOT_CONNECTED};
+use zend_engine::runner::{self, RunnerIdentity};
+use zend_engine::{Auth, AuthConfig, AuthState, Engine};
+use zend_proto::{HarnessId, RunRequest};
+use zend_rpc::{TokenError, TokenSource};
 
 // ---------------------------------------------------------------------------
 // Stub HTTP server
@@ -239,7 +239,7 @@ fn edge_handler(state: Arc<Mutex<Edge>>) -> impl FnMut(&Req) -> (u16, Value) + S
                 let device = b["deviceId"].as_str().unwrap();
                 let ts = b["ts"].as_i64().unwrap();
                 let message = format!(
-                    "zeron-runner-token\n{}\n{}\n{device}\n{ts}",
+                    "zend-runner-token\n{}\n{}\n{device}\n{ts}",
                     b["orgId"].as_str().unwrap(),
                     b["userId"].as_str().unwrap()
                 );
@@ -276,7 +276,7 @@ fn edge_handler(state: Arc<Mutex<Edge>>) -> impl FnMut(&Req) -> (u16, Value) + S
                 let device = b["deviceId"].as_str().unwrap();
                 let provider = b["provider"].as_str().unwrap();
                 let ts = b["ts"].as_i64().unwrap();
-                let message = format!("zeron-vault-grant\n{USER}\n{device}\n{provider}\n{ts}");
+                let message = format!("zend-vault-grant\n{USER}\n{device}\n{provider}\n{ts}");
                 let key = edge.public_keys.get(device).cloned().unwrap_or_default();
                 if !verify(&key, &message, b["sig"].as_str().unwrap()) {
                     return (401, json!({"error": "bad_signature"}));
@@ -585,7 +585,7 @@ async fn runner_auth_is_signed_in_and_mints_signed_monotonic_tokens() {
     assert!(!auth.workos_enabled());
     assert_eq!(
         Engine::initial_workspace_scope(&auth),
-        zeron_proto::WorkspaceScope::Synced
+        zend_proto::WorkspaceScope::Synced
     );
     // Sign-out is meaningless for a runner.
     auth.sign_out();
@@ -626,7 +626,7 @@ async fn runner_auth_is_signed_in_and_mints_signed_monotonic_tokens() {
     for req in rig.edge.requests("/runner/token") {
         let b = &req.body;
         let message = format!(
-            "zeron-runner-token\n{ORG}\n{USER}\ncloud-a\n{}",
+            "zend-runner-token\n{ORG}\n{USER}\ncloud-a\n{}",
             b["ts"].as_i64().unwrap()
         );
         assert!(verify(
@@ -662,18 +662,18 @@ async fn heartbeat_reports_active_runs_with_the_runner_bearer() {
     // machine from its idle sleep.
     struct Echo;
     #[async_trait::async_trait]
-    impl zeron_rpc::RpcService for Echo {
+    impl zend_rpc::RpcService for Echo {
         async fn handle(
             &self,
             _method: &str,
             params: Value,
-        ) -> Result<zeron_rpc::RpcReply, zeron_rpc::RpcError> {
-            zeron_rpc::RpcReply::value(&params)
+        ) -> Result<zend_rpc::RpcReply, zend_rpc::RpcError> {
+            zend_rpc::RpcReply::value(&params)
         }
     }
     let activity = runner::RelayActivity::default();
     let served = activity.wrap(Arc::new(Echo));
-    use zeron_rpc::methods;
+    use zend_rpc::methods;
     for (method, params) in [
         (methods::LIST_HARNESSES, json!({ "readinessProbe": true })),
         (methods::ENGINE_READY, json!({})),
@@ -695,7 +695,7 @@ async fn heartbeat_reports_active_runs_with_the_runner_bearer() {
             background: 1,
         }),
         Arc::new(|| {
-            Some(zeron_engine::cloud_disk::DiskUsage {
+            Some(zend_engine::cloud_disk::DiskUsage {
                 used_bytes: 1024,
                 total_bytes: 4096,
             })
@@ -859,7 +859,7 @@ async fn openai_key_backs_codex_when_no_chatgpt_grant_and_revocation_removes_it(
             .prepare(HarnessId::Codex, &mut request)
             .await
             .unwrap_err(),
-        zeron_engine::credentials::CODEX_NOT_SIGNED_IN
+        zend_engine::credentials::CODEX_NOT_SIGNED_IN
     );
     assert!(!request.env.contains_key("CODEX_HOME"));
     assert!(!auth_file.exists());
@@ -876,7 +876,7 @@ async fn openai_key_backs_codex_when_no_chatgpt_grant_and_revocation_removes_it(
 
 #[tokio::test]
 async fn a_boots_timeline_goes_to_the_edge_once_at_the_runs_first_output() {
-    use zeron_engine::wake_trace::{self, Stage};
+    use zend_engine::wake_trace::{self, Stage};
     let reports: Arc<Mutex<Vec<Value>>> = Default::default();
     let seen = reports.clone();
     let edge = Stub::start(move |req: &Req| {
@@ -1087,7 +1087,7 @@ async fn github_grant_sets_env_git_store_helper_and_gh_hosts() {
             .prepare(HarnessId::ClaudeCode, &mut request)
             .await
             .unwrap_err(),
-        zeron_engine::credentials::CLAUDE_NOT_SIGNED_IN
+        zend_engine::credentials::CLAUDE_NOT_SIGNED_IN
     );
     // Never in the run's environment: fixed at spawn, it would outlive the
     // hour-long token (and `gh` prefers it over the refreshed hosts.yml).
@@ -1281,7 +1281,7 @@ async fn a_run_on_a_login_that_cant_serve_its_session_fails_naming_it() {
         })
         .await;
         let broker = rig.broker(identity, &github.url());
-        let store = zeron_engine::credentials::git_credentials_path(&rig.data_dir);
+        let store = zend_engine::credentials::git_credentials_path(&rig.data_dir);
         broker
             .prepare(HarnessId::ClaudeCode, &mut run_request())
             .await
@@ -1317,7 +1317,7 @@ async fn a_run_without_a_github_grant_for_other_reasons_still_starts() {
     rig.grant(
         "github",
         404,
-        json!({"error": "not_found", "message": "github_app_not_installed: The Zeron GitHub App isn't installed on acme"}),
+        json!({"error": "not_found", "message": "github_app_not_installed: The Zend GitHub App isn't installed on acme"}),
     );
     let broker = rig.broker(identity, "http://127.0.0.1:9");
     let mut request = run_request();
@@ -1530,17 +1530,17 @@ async fn github_repos_without_a_grant_explain_how_to_connect() {
 #[tokio::test]
 async fn list_github_repos_on_a_local_engine_asks_for_a_signed_in_account() {
     let dir = tempfile::tempdir().unwrap();
-    let core = zeron_engine::EngineCore::assemble(
+    let core = zend_engine::EngineCore::assemble(
         dir.path(),
-        Arc::new(zeron_engine::default_registry()),
+        Arc::new(zend_engine::default_registry()),
         HarnessId::Mock,
         None,
     )
     .unwrap();
     let rpc = core.rpc_service();
-    let err = zeron_rpc::RpcService::handle(
+    let err = zend_rpc::RpcService::handle(
         rpc.as_ref(),
-        zeron_rpc::methods::LIST_GITHUB_REPOS,
+        zend_rpc::methods::LIST_GITHUB_REPOS,
         json!({"query": "x"}),
     )
     .await
@@ -1549,7 +1549,7 @@ async fn list_github_repos_on_a_local_engine_asks_for_a_signed_in_account() {
     // Laptops list through the edge's vault (they hold no GitHub grant); a
     // local profile has no edge, so it answers with the sign-in hint and
     // never pretends GitHub is merely disconnected.
-    assert!(err.to_string().contains("signed-in Zeron account"), "{err}");
+    assert!(err.to_string().contains("signed-in Zend account"), "{err}");
     assert!(!err.to_string().contains(GITHUB_NOT_CONNECTED), "{err}");
     core.shutdown().await;
 }

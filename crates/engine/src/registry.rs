@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use zeron_harness::{Harness, HarnessError, mock::MockHarness};
-use zeron_proto::{AccessMode, AgentEvent, DoneStatus, HarnessId, ReasoningLevel, SteeringMode};
+use zend_harness::{Harness, HarnessError, mock::MockHarness};
+use zend_proto::{AccessMode, AgentEvent, DoneStatus, HarnessId, ReasoningLevel, SteeringMode};
 
 /// What `ListHarnesses` reports per harness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,8 +140,8 @@ pub struct NativeSubagentSettings {
 type Factory = Box<dyn Fn() -> Result<Arc<dyn Harness>, HarnessError> + Send + Sync>;
 type InstalledProbe = Box<dyn Fn() -> bool + Send + Sync>;
 
-/// The harnesses a Cloud device (`ZERON_DEVICE_PLATFORM=cloud`) registers —
-/// the typed twin of [`zeron_proto::CLOUD_HARNESSES`]. Everything else is not
+/// The harnesses a Cloud device (`ZEND_DEVICE_PLATFORM=cloud`) registers —
+/// the typed twin of [`zend_proto::CLOUD_HARNESSES`]. Everything else is not
 /// merely disabled but absent: never probed (`--version`, install detection,
 /// model discovery, update checks). The rule is generic to the `cloud`
 /// platform; the motivating example is a hosted sandbox whose preinstalled
@@ -155,7 +155,7 @@ const RUN_ENVIRONMENT_WAIT: std::time::Duration = std::time::Duration::from_secs
 
 /// Host-side environment for agent spawns (the Cloud device's credential
 /// broker). Called right before a request reaches the harness; whatever it
-/// puts in [`zeron_proto::RunRequest::env`] is never persisted.
+/// puts in [`zend_proto::RunRequest::env`] is never persisted.
 #[async_trait::async_trait]
 pub trait RunEnvironment: Send + Sync {
     /// `Err` = the run can't start: no credential for `harness` (the
@@ -165,7 +165,7 @@ pub trait RunEnvironment: Send + Sync {
         &self,
         harness: HarnessId,
         chat_id: Option<&str>,
-        request: &mut zeron_proto::RunRequest,
+        request: &mut zend_proto::RunRequest,
     ) -> Result<(), String>;
 
     /// Which credential a run of `harness` for `chat_id` would use now (an
@@ -177,12 +177,12 @@ pub trait RunEnvironment: Send + Sync {
     }
 
     /// A run of `harness` that started with `credential` reported the
-    /// subscription's usage (see [`zeron_proto::AgentEvent::PlanUsage`]).
+    /// subscription's usage (see [`zend_proto::AgentEvent::PlanUsage`]).
     async fn record_usage(
         &self,
         _harness: HarnessId,
         _credential: &str,
-        _windows: Vec<zeron_proto::AgentUsageWindow>,
+        _windows: Vec<zend_proto::AgentUsageWindow>,
         _plan_label: Option<String>,
     ) {
     }
@@ -218,10 +218,10 @@ pub struct HarnessRegistry {
     run_environment: Mutex<Option<Arc<dyn RunEnvironment>>>,
     /// False from [`Self::expect_run_environment`] until it's installed.
     run_environment_ready: tokio::sync::watch::Sender<bool>,
-    /// Spawn-time environment of the agent accounts zeron keeps itself
+    /// Spawn-time environment of the agent accounts zend keeps itself
     /// (Muse's per-account roots); after the Cloud broker, never over it.
     account_environment: Mutex<Option<Arc<dyn RunEnvironment>>>,
-    /// Credits Zeron in agents' commits ([`crate::commit_credit`]).
+    /// Credits Zend in agents' commits ([`crate::commit_credit`]).
     commit_credit: std::sync::OnceLock<Arc<crate::commit_credit::CommitCredit>>,
 }
 
@@ -235,7 +235,7 @@ impl HarnessRegistry {
     pub async fn discover_models(
         &self,
         id: HarnessId,
-    ) -> Result<Vec<zeron_proto::Model>, HarnessError> {
+    ) -> Result<Vec<zend_proto::Model>, HarnessError> {
         let lease = Arc::new(self.execution_lease(id).await);
         self.discover_models_with_lease(id, lease).await
     }
@@ -246,7 +246,7 @@ impl HarnessRegistry {
         &self,
         id: HarnessId,
         lease: Arc<tokio::sync::OwnedRwLockReadGuard<()>>,
-    ) -> Result<Vec<zeron_proto::Model>, HarnessError> {
+    ) -> Result<Vec<zend_proto::Model>, HarnessError> {
         let harness = self.resolve(id)?;
         tokio::spawn(async move {
             // An RPC cancellation must not drop the gate before the probe's
@@ -262,7 +262,7 @@ impl HarnessRegistry {
         &self,
         id: HarnessId,
         cwd: &Path,
-    ) -> Result<Vec<zeron_proto::SlashCommand>, HarnessError> {
+    ) -> Result<Vec<zend_proto::SlashCommand>, HarnessError> {
         let cwd = cwd.to_owned();
         let lease = self.execution_lease(id).await;
         let harness = self.resolve(id)?;
@@ -280,7 +280,7 @@ impl HarnessRegistry {
         &self,
         id: HarnessId,
         cwd: &Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+    ) -> Result<Option<Vec<zend_proto::invocation::Skill>>, HarnessError> {
         let cwd = cwd.to_owned();
         let lease = self.execution_lease(id).await;
         let harness = self.resolve(id)?;
@@ -354,12 +354,12 @@ impl HarnessRegistry {
     }
 
     /// Fill `request.env` for a spawn of `harness` (no-op without a provider),
-    /// and credit Zeron in its commits when that's on.
+    /// and credit Zend in its commits when that's on.
     pub async fn prepare_run(
         &self,
         harness: HarnessId,
         chat_id: Option<&str>,
-        request: &mut zeron_proto::RunRequest,
+        request: &mut zend_proto::RunRequest,
     ) -> Result<(), String> {
         let mut ready = self.run_environment_ready.subscribe();
         if tokio::time::timeout(RUN_ENVIRONMENT_WAIT, ready.wait_for(|ready| *ready))
@@ -397,7 +397,7 @@ impl HarnessRegistry {
         &self,
         harness: HarnessId,
         credential: &str,
-        windows: Vec<zeron_proto::AgentUsageWindow>,
+        windows: Vec<zend_proto::AgentUsageWindow>,
         plan_label: Option<String>,
     ) {
         for environment in self.environments() {
@@ -638,7 +638,7 @@ impl HarnessRegistry {
 
     pub fn set_title_settings(&self, mut settings: TitleSettings) -> Result<(), String> {
         if let Some(id) = settings.harness {
-            if !zeron_harness::supports_titles(id) || !self.enabled_set().contains(&id) {
+            if !zend_harness::supports_titles(id) || !self.enabled_set().contains(&id) {
                 return Err("Choose an enabled harness that supports title generation".into());
             }
         } else if settings.model.is_some() {
@@ -653,7 +653,7 @@ impl HarnessRegistry {
     /// Whether runs of `id` keep the provider's own subagent tools. Off only
     /// by the user's choice, for a driver that can launch without them.
     pub fn native_subagents(&self, id: HarnessId) -> bool {
-        !(zeron_harness::switches_native_subagents(id)
+        !(zend_harness::switches_native_subagents(id)
             && self.prefs().native_subagents_off.contains(&id))
     }
 
@@ -662,7 +662,7 @@ impl HarnessRegistry {
         NativeSubagentSettings {
             switchable: registered
                 .into_iter()
-                .filter(|id| zeron_harness::switches_native_subagents(*id))
+                .filter(|id| zend_harness::switches_native_subagents(*id))
                 .collect(),
             off: self.prefs().native_subagents_off.clone(),
         }
@@ -672,7 +672,7 @@ impl HarnessRegistry {
     /// the change up at its next turn once its background work is done: a
     /// parked session still holding some is kept as it started.
     pub fn set_native_subagents(&self, id: HarnessId, on: bool) -> Result<(), String> {
-        if !zeron_harness::switches_native_subagents(id) {
+        if !zend_harness::switches_native_subagents(id) {
             return Err(format!("{id:?} has no native subagents to turn off"));
         }
         {
@@ -722,12 +722,12 @@ impl HarnessRegistry {
 
     /// Registers an agent added from the ACP registry (or replaces its slot,
     /// once updated): the generic ACP harness, launched from its record.
-    pub fn register_registry_agent(&self, record: &zeron_harness::acp_registry::Record) {
-        let Some(agent) = zeron_proto::RegistryAgent::new(&record.id) else {
+    pub fn register_registry_agent(&self, record: &zend_harness::acp_registry::Record) {
+        let Some(agent) = zend_proto::RegistryAgent::new(&record.id) else {
             return;
         };
         let name = record.name.clone();
-        let harness = zeron_harness::AcpHarness::registry(agent, &name);
+        let harness = zend_harness::AcpHarness::registry(agent, &name);
         let descriptor = HarnessDescriptor {
             icon: record.icon_svg.clone(),
             ..describe(&harness)
@@ -735,9 +735,9 @@ impl HarnessRegistry {
         let id = descriptor.id;
         let slot = Slot::Lazy {
             descriptor,
-            installed: Box::new(move || zeron_harness::acp_registry::installed(agent)),
+            installed: Box::new(move || zend_harness::acp_registry::installed(agent)),
             factory: Box::new(move || {
-                Ok(Arc::new(zeron_harness::AcpHarness::registry(agent, &name)) as Arc<dyn Harness>)
+                Ok(Arc::new(zend_harness::AcpHarness::registry(agent, &name)) as Arc<dyn Harness>)
             }),
         };
         if self.slots().insert(id, slot).is_none() {
@@ -808,14 +808,14 @@ impl HarnessRegistry {
                     None => return None,
                 };
                 descriptor.enabled = Some(enabled.contains(id));
-                descriptor.can_install = zeron_harness::install::can_install(*id);
+                descriptor.can_install = zend_harness::install::can_install(*id);
                 // An agent from the ACP registry keeps its icon in its record:
                 // a slot resolved since (its first run, a model listing) is
                 // described by its harness, which carries none.
                 if descriptor.icon.is_none()
                     && let Some(agent) = id.registry()
                 {
-                    descriptor.icon = zeron_harness::acp_registry::record(agent).and_then(|r| r.icon_svg);
+                    descriptor.icon = zend_harness::acp_registry::record(agent).and_then(|r| r.icon_svg);
                 }
                 Some(descriptor)
             })
@@ -830,13 +830,13 @@ pub fn default_registry() -> HarnessRegistry {
 }
 
 /// The production registry: MockHarness (hidden from production pickers) plus a lazy
-/// `claude-code` slot resolved through `zeron_harness` on first use (subprocess
+/// `claude-code` slot resolved through `zend_harness` on first use (subprocess
 /// discovery only happens when a run/model call actually needs it). On a
 /// `cloud` platform only [`CLOUD_HARNESS_IDS`] (plus the test-only mock)
 /// are registered.
 pub fn registry_for_platform(platform: &str) -> HarnessRegistry {
     let registry = full_registry();
-    if platform == zeron_proto::CLOUD_PLATFORM {
+    if platform == zend_proto::CLOUD_PLATFORM {
         registry.retain(|id| id == HarnessId::Mock || CLOUD_HARNESS_IDS.contains(&id));
     }
     registry
@@ -845,7 +845,7 @@ pub fn registry_for_platform(platform: &str) -> HarnessRegistry {
 fn full_registry() -> HarnessRegistry {
     // Warm the login-shell PATH snapshot in the background so the first
     // claude/codex resolve doesn't pay the shell-startup latency inline.
-    zeron_harness::shell_env::prewarm();
+    zend_harness::shell_env::prewarm();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(MockHarness {
         script: vec![
@@ -857,7 +857,7 @@ fn full_registry() -> HarnessRegistry {
             },
             AgentEvent::ToolCall {
                 id: "mock-tool-1".into(),
-                call: zeron_proto::ToolCall::Exec {
+                call: zend_proto::ToolCall::Exec {
                     command: "cargo test --workspace".into(),
                 },
             },
@@ -870,7 +870,7 @@ fn full_registry() -> HarnessRegistry {
             },
             AgentEvent::ToolCall {
                 id: "mock-tool-2".into(),
-                call: zeron_proto::ToolCall::Exec {
+                call: zend_proto::ToolCall::Exec {
                     command: "git log -5 --oneline --decorate && git merge-base HEAD origin/main"
                         .into(),
                 },
@@ -915,14 +915,14 @@ fn full_registry() -> HarnessRegistry {
             access_modes: AccessMode::ALL.to_vec(),
             supports_plan: true,
         },
-        Box::new(|| zeron_harness::ClaudeHarness::new().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::ClaudeHarness::new()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::ClaudeHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::ClaudeHarness::new()) as Arc<dyn Harness>)),
     );
     // Codex, same lazy pattern: the static descriptor mirrors AcpHarness::codex()
     // exactly (`describe()` after the first resolve must not change the
     // catalog entry) — "Codex" per the original HARNESS_LABEL, StepBoundary
     // steering via native `turn/steer`, and the unified reasoning ladder from
-    // zeron_harness::codex::catalog. CLI discovery only happens when a
+    // zend_harness::codex::catalog. CLI discovery only happens when a
     // run/model call actually resolves the slot.
     registry.register_lazy(
         HarnessDescriptor {
@@ -946,8 +946,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: AccessMode::ALL.to_vec(),
             supports_plan: true,
         },
-        Box::new(|| zeron_harness::CodexHarness::new().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::CodexHarness::new()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::CodexHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::CodexHarness::new()) as Arc<dyn Harness>)),
     );
     // Cursor via the pinned @cursor/sdk shim (NOT ACP — that surface strips
     // subagent transcripts), same lazy pattern: the static descriptor mirrors
@@ -966,8 +966,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::CursorHarness::new().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::CursorHarness::new()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::CursorHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::CursorHarness::new()) as Arc<dyn Harness>)),
     );
     // Devin over ACP (`devin acp`), same lazy pattern: the static descriptor
     // mirrors AcpHarness::devin() exactly. No steering extension (turn
@@ -987,8 +987,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::AcpHarness::devin().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::devin()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::AcpHarness::devin().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::AcpHarness::devin()) as Arc<dyn Harness>)),
     );
     // Grok Build over ACP, same lazy pattern: the static descriptor mirrors
     // AcpHarness::grok() exactly. No `_session/steering` extension yet, so
@@ -1012,8 +1012,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::AcpHarness::grok().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::grok()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::AcpHarness::grok().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::AcpHarness::grok()) as Arc<dyn Harness>)),
     );
     // Hermes Agent over ACP (`hermes acp`), same lazy pattern: the static
     // descriptor mirrors AcpHarness::hermes() exactly. No steering extension
@@ -1033,8 +1033,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::AcpHarness::hermes().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::hermes()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::AcpHarness::hermes().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::AcpHarness::hermes()) as Arc<dyn Harness>)),
     );
     registry.register_lazy(
         HarnessDescriptor {
@@ -1050,8 +1050,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::Supervised, AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::AcpHarness::fx().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::fx()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::AcpHarness::fx().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::AcpHarness::fx()) as Arc<dyn Harness>)),
     );
     // Native Pi RPC. Thinking levels are discovered per model.
     registry.register_lazy(
@@ -1068,8 +1068,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::PiHarness::new().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::PiHarness::new()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::PiHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::PiHarness::new()) as Arc<dyn Harness>)),
     );
     // opencode over its NATIVE HTTP/SSE protocol (the one the opencode
     // desktop app speaks — `opencode serve` + the /global/event bus), same
@@ -1096,8 +1096,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: AccessMode::ALL.to_vec(),
             supports_plan: true,
         },
-        Box::new(|| zeron_harness::OpencodeHarness::new().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::OpencodeHarness::new()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::OpencodeHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::OpencodeHarness::new()) as Arc<dyn Harness>)),
     );
     // antigravity over acp (google's agy_acp_server), same lazy pattern: the
     // static descriptor mirrors AcpHarness::antigravity() exactly. No steering
@@ -1117,8 +1117,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: AccessMode::ALL.to_vec(),
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::AcpHarness::antigravity().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::antigravity()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::AcpHarness::antigravity().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::AcpHarness::antigravity()) as Arc<dyn Harness>)),
     );
     // Muse Code over its native session protocol (`muse serve`), same lazy
     // pattern: the static descriptor mirrors MuseHarness exactly.
@@ -1136,8 +1136,8 @@ fn full_registry() -> HarnessRegistry {
             access_modes: vec![AccessMode::Supervised, AccessMode::FullAccess],
             supports_plan: false,
         },
-        Box::new(|| zeron_harness::MuseHarness::new().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::MuseHarness::new()) as Arc<dyn Harness>)),
+        Box::new(|| zend_harness::MuseHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zend_harness::MuseHarness::new()) as Arc<dyn Harness>)),
     );
     registry
 }
@@ -1500,13 +1500,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn antigravity_detection_subprocess() {
-        let Ok(expected) = std::env::var("ZERON_TEST_AGY_INSTALLED") else {
+        let Ok(expected) = std::env::var("ZEND_TEST_AGY_INSTALLED") else {
             return;
         };
         let registry = HarnessRegistry::new();
         let data = tempfile::tempdir().unwrap();
         registry.load_prefs(data.path());
-        registry.register(Arc::new(zeron_harness::AcpHarness::antigravity()));
+        registry.register(Arc::new(zend_harness::AcpHarness::antigravity()));
         let expected = expected == "true";
         assert_eq!(registry.descriptors()[0].installed, expected);
         assert_eq!(
@@ -1541,8 +1541,8 @@ mod tests {
                 .env("HOME", home.path())
                 .env("PATH", &bin)
                 .env_remove("ANTIGRAVITY_ACP_EXECUTABLE")
-                .env("ZERON_NO_LOGIN_SHELL", "1")
-                .env("ZERON_TEST_AGY_INSTALLED", installed.to_string())
+                .env("ZEND_NO_LOGIN_SHELL", "1")
+                .env("ZEND_TEST_AGY_INSTALLED", installed.to_string())
                 .output()
                 .unwrap();
             assert!(
@@ -1709,7 +1709,7 @@ mod title_tests {
         let registry = HarnessRegistry::new();
         registry.load_prefs(dir.path());
         registry.register(Arc::new(
-            zeron_harness::ClaudeHarness::new().with_executable(std::env::current_exe().unwrap()),
+            zend_harness::ClaudeHarness::new().with_executable(std::env::current_exe().unwrap()),
         ));
         let settings = TitleSettings {
             harness: Some(HarnessId::ClaudeCode),
@@ -1777,20 +1777,20 @@ mod gate_tests {
         fn reasoning_levels(&self) -> &[ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<zeron_proto::Model>, HarnessError> {
+        async fn models(&self) -> Result<Vec<zend_proto::Model>, HarnessError> {
             self.started.notify_one();
             self.release.notified().await;
             Ok(vec![])
         }
-        async fn commands(&self) -> Result<Vec<zeron_proto::SlashCommand>, HarnessError> {
+        async fn commands(&self) -> Result<Vec<zend_proto::SlashCommand>, HarnessError> {
             self.started.notify_one();
             self.release.notified().await;
             Ok(vec![])
         }
         async fn run(
             &self,
-            _: zeron_proto::RunRequest,
-            _: zeron_harness::RunControls,
+            _: zend_proto::RunRequest,
+            _: zend_harness::RunControls,
         ) -> Result<
             futures::stream::BoxStream<'static, Result<AgentEvent, HarnessError>>,
             HarnessError,
@@ -1918,7 +1918,7 @@ mod gate_tests {
 
     #[test]
     fn cloud_platform_registers_only_codex_and_claude() {
-        let registry = registry_for_platform(zeron_proto::CLOUD_PLATFORM);
+        let registry = registry_for_platform(zend_proto::CLOUD_PLATFORM);
         let ids: Vec<HarnessId> = registry.descriptors().iter().map(|d| d.id).collect();
         assert_eq!(
             ids,
@@ -1964,7 +1964,7 @@ mod gate_tests {
             })
             .collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let mut expected: Vec<&str> = zeron_proto::CLOUD_HARNESSES.to_vec();
+        let mut expected: Vec<&str> = zend_proto::CLOUD_HARNESSES.to_vec();
         let mut names = names;
         names.sort_unstable();
         expected.sort_unstable();
@@ -1980,13 +1980,13 @@ mod gate_tests {
                 &self,
                 harness: HarnessId,
                 _chat_id: Option<&str>,
-                request: &mut zeron_proto::RunRequest,
+                request: &mut zend_proto::RunRequest,
             ) -> Result<(), String> {
                 request.env.insert("HARNESS".into(), format!("{harness:?}"));
                 Ok(())
             }
         }
-        let mut request: zeron_proto::RunRequest = serde_json::from_str(
+        let mut request: zend_proto::RunRequest = serde_json::from_str(
             r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#,
         )
         .unwrap();
@@ -2011,7 +2011,7 @@ mod gate_tests {
     #[tokio::test]
     async fn runs_carry_the_commit_credit_hooks() {
         let data = tempfile::tempdir().unwrap();
-        let mut request: zeron_proto::RunRequest = serde_json::from_str(
+        let mut request: zend_proto::RunRequest = serde_json::from_str(
             r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#,
         )
         .unwrap();

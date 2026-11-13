@@ -170,7 +170,7 @@ fn click(ui: &mut Ui, x: f32, y: f32) {
     ui.dispatch(InputEvent::PointerMove { x: 290., y: 190. });
     settle(ui);
 }
-/// A window of two buttons ("New chat" first, as Zeron's) and a menu: its
+/// A window of two buttons ("New chat" first, as Zend's) and a menu: its
 /// trigger, `open`, and the buttons' looks at rest.
 struct Window {
     ui: Ui,

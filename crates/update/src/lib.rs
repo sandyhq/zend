@@ -1,5 +1,5 @@
-//! zeron-update — release checking and self-update, shared by the engine (the
-//! background checker + `ApplyUpdate`), the CLI (`zeron update`), and the UI
+//! zend-update — release checking and self-update, shared by the engine (the
+//! background checker + `ApplyUpdate`), the CLI (`zend update`), and the UI
 //! (its own report-only checker, the "Check for Updates…" menu item, the
 //! sidebar update strip, and the desktop install paths).
 //!
@@ -10,7 +10,7 @@
 //! releases published before the manifest existed.
 //!
 //! Install kinds and their update paths:
-//! - **Managed** (`~/.zeron/app/<ver>` + `current` symlink — the curl|sh
+//! - **Managed** (`~/.zend/app/<ver>` + `current` symlink — the curl|sh
 //!   installer and the Linux tarball's `install.sh`): download the headless
 //!   tarball into a new versioned dir, then restart into a trial of it that
 //!   moves the symlink only once it has proved it's ready ([`transaction`]).
@@ -18,7 +18,7 @@
 //!   bundle directory, relaunch, driven by the UI; or, asked from another device,
 //!   the engine's own trial of it ([`transaction`]).
 //! - **WindowsPortable** (the Windows installer or portable zip — both carry
-//!   `zeron-update.json`): swap the executable in place, the same two ways.
+//!   `zend-update.json`): swap the executable in place, the same two ways.
 //! - **Unmanaged** (source builds, hand-copied binaries): report only — the
 //!   UI's advisory strip links to [`RELEASES_PAGE`].
 //!
@@ -49,11 +49,11 @@ pub use channel::Channel;
 pub use transaction::{UpdateReport, UpdateState};
 
 /// The version compiled into this binary: the workspace's, or a beta's
-/// (`ZERON_ENGINE_VERSION=0.2.137-beta.3` at build time). Betas of one release
+/// (`ZEND_ENGINE_VERSION=0.2.137-beta.3` at build time). Betas of one release
 /// share a workspace version, and a running engine only knows a bundle replaced
 /// it by this being older than the bundle's.
 pub const fn current_version() -> &'static str {
-    match option_env!("ZERON_ENGINE_VERSION") {
+    match option_env!("ZEND_ENGINE_VERSION") {
         Some(version) => version,
         None => env!("CARGO_PKG_VERSION"),
     }
@@ -61,7 +61,7 @@ pub const fn current_version() -> &'static str {
 
 static APP_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Set by the zgx app, the Zeron app on every platform: its updater follows
+/// Set by the zgx app, the Zend app on every platform: its updater follows
 /// the channel on record ([`InstallKind::follows_channels`]). Not by an
 /// engine, whose process runs this crate too.
 static APP_FOLLOWS_CHANNELS: AtomicBool = AtomicBool::new(false);
@@ -182,10 +182,10 @@ fn require_mac_app_update_platform() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `zeron-<ver>-<os>-<arch>.tar.gz` — the headless/CLI tarball (Linux CI builds).
+/// `zend-<ver>-<os>-<arch>.tar.gz` — the headless/CLI tarball (Linux CI builds).
 pub fn headless_artifact(version: &str) -> String {
     let (os, arch) = platform_key();
-    format!("zeron-{version}-{os}-{arch}.tar.gz")
+    format!("zend-{version}-{os}-{arch}.tar.gz")
 }
 
 /// The directory under a managed install's root that holds `version`.
@@ -201,10 +201,10 @@ pub fn managed_dir(version: &str) -> String {
     }
 }
 
-/// `zeron-<ver>-macos-<arch>-app.tar.gz` — the macOS app update payload.
+/// `zend-<ver>-macos-<arch>-app.tar.gz` — the macOS app update payload.
 pub fn mac_app_artifact(version: &str) -> String {
     let (_, arch) = platform_key();
-    format!("zeron-{version}-macos-{arch}-app.tar.gz")
+    format!("zend-{version}-macos-{arch}-app.tar.gz")
 }
 
 /// A release version: dotted numbers and, for a prerelease, its semver
@@ -356,7 +356,7 @@ fn offer_given(
         && !channel::macos_at_least(system, minimum)
     {
         return Offer::Held(format!(
-            "Zeron {latest} needs macOS {minimum} or later. This Mac has macOS {system}."
+            "Zend {latest} needs macOS {minimum} or later. This Mac has macOS {system}."
         ));
     }
     if !leaving_beta {
@@ -367,7 +367,7 @@ fn offer_given(
         && version_newer(engine, target_engine)
     {
         return Offer::Held(format!(
-            "This beta's engine ({engine}) is newer than Zeron {latest}'s. You'll move to Stable once it catches up."
+            "This beta's engine ({engine}) is newer than Zend {latest}'s. You'll move to Stable once it catches up."
         ));
     }
     if version_newer(latest, running) {
@@ -504,7 +504,7 @@ fn http_client_with_timeouts(connect: Duration, read: Duration) -> anyhow::Resul
         // Inactivity timeout, not a total download cap: slow progressing
         // updates remain viable on constrained links.
         .read_timeout(read)
-        .user_agent(concat!("zeron/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("zend/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {
                 return attempt.error("too many update redirects");
@@ -543,14 +543,14 @@ fn validate_release_override(value: &str) -> anyhow::Result<String> {
 /// The project's GitHub releases page — the advisory update strip opens this
 /// for unmanaged installs (source builds, hand-copied binaries), where no
 /// updater flow exists to drive.
-pub const RELEASES_PAGE: &str = "https://github.com/zeronsh/zeron/releases";
+pub const RELEASES_PAGE: &str = "https://github.com/sandyhq/zend/releases";
 
 /// The newest release's page — the download destination offered when this
 /// installation cannot replace itself.
-pub const LATEST_RELEASE_PAGE: &str = "https://github.com/zeronsh/zeron/releases/latest";
+pub const LATEST_RELEASE_PAGE: &str = "https://github.com/sandyhq/zend/releases/latest";
 
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
-    if let Ok(url) = std::env::var("ZERON_RELEASES_URL")
+    if let Ok(url) = std::env::var("ZEND_RELEASES_URL")
         && !url.trim().is_empty()
     {
         return validate_release_override(&url);
@@ -569,9 +569,9 @@ fn release_base(edge_url: &str) -> anyhow::Result<String> {
 /// How this binary was installed — decides the update path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallKind {
-    /// `~/.zeron/app/<ver>/zeron` behind the `current` symlink
+    /// `~/.zend/app/<ver>/zend` behind the `current` symlink
     /// (curl|sh installer, the Linux tarball's `install.sh`, or a previous
-    /// `zeron update`).
+    /// `zend update`).
     Managed { app_root: PathBuf },
     /// Running out of a macOS `.app` bundle.
     MacApp { bundle: PathBuf },
@@ -599,12 +599,12 @@ impl std::fmt::Display for UpdateBlocker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Translocated | Self::DiskImage => f.write_str(
-                "Zeron is running from a temporary, read-only location. Move Zeron to your \
+                "Zend is running from a temporary, read-only location. Move Zend to your \
                  Applications folder and reopen it to turn on updates.",
             ),
             Self::NotWritable(dir) => write!(
                 f,
-                "Zeron doesn't have permission to replace itself in {}.",
+                "Zend doesn't have permission to replace itself in {}.",
                 dir.display()
             ),
         }
@@ -713,7 +713,7 @@ impl InstallKind {
                     .context("staged install has no version directory")?;
                 apply_headless(app_root, dir.strip_prefix("beta-").unwrap_or(dir))?;
                 if relaunch {
-                    let binary = app_root.join("current").join("zeron");
+                    let binary = app_root.join("current").join("zend");
                     relaunch_after_exit(&binary, Path::new(""));
                 }
                 Ok(())
@@ -745,7 +745,7 @@ fn mac_bundle_blocker(bundle: &Path, writable: impl Fn(&Path) -> bool) -> Option
 /// Probe by creating (and removing) a file: permission bits alone miss
 /// read-only mounts, ACLs, and sandboxed locations.
 fn dir_writable(dir: &Path) -> bool {
-    let probe = dir.join(format!(".zeron-write-probe-{}", std::process::id()));
+    let probe = dir.join(format!(".zend-write-probe-{}", std::process::id()));
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -765,7 +765,7 @@ fn dir_writable(dir: &Path) -> bool {
     }
 }
 
-/// How this copy of Zeron is installed, as `UpdateStatus` reports it. A client
+/// How this copy of Zend is installed, as `UpdateStatus` reports it. A client
 /// shows what the device can do from this and `can_apply_remotely`, rather
 /// than guessing from its platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -801,8 +801,8 @@ pub struct UpdateAbility {
     pub manual_command: Option<String>,
 }
 
-/// The one command that installs Zeron on Linux.
-const LINUX_INSTALL_COMMAND: &str = "curl -fsSL https://zeron.sh/install.sh | sh";
+/// The one command that installs Zend on Linux.
+const LINUX_INSTALL_COMMAND: &str = "curl -fsSL https://zend.invalid/install.sh | sh";
 
 impl UpdateAbility {
     fn refused(
@@ -832,14 +832,14 @@ impl UpdateAbility {
         match kind {
             InstallKind::Managed { .. } if os != "linux" => Self::refused(
                 InstallMethod::Unmanaged,
-                "Zeron on a Mac updates through the Zeron app. Install the app on this Mac.",
+                "Zend on a Mac updates through the Zend app. Install the app on this Mac.",
                 None,
             ),
             InstallKind::Managed { .. } if !supervised => Self::refused(
                 InstallMethod::StartedByHand,
-                "Zeron was started by hand on this device, so nothing would start it again \
+                "Zend was started by hand on this device, so nothing would start it again \
                  after an update. Update it on the device, then start it again.",
-                Some("zeron update"),
+                Some("zend update"),
             ),
             InstallKind::Managed { .. } => {
                 let install = if systemd {
@@ -861,22 +861,22 @@ impl UpdateAbility {
             // run any other way has nothing to bring it back.
             InstallKind::MacApp { .. } => Self::desktop(
                 InstallMethod::MacApp,
-                "This Zeron wasn't started by the app, so nothing would bring it back after an \
-                 update. Update it from the Zeron app on that Mac.",
+                "This Zend wasn't started by the app, so nothing would bring it back after an \
+                 update. Update it from the Zend app on that Mac.",
                 supervised,
                 blocker,
             ),
             #[cfg(windows)]
             InstallKind::WindowsPortable { .. } => Self::desktop(
                 InstallMethod::WindowsApp,
-                "This Zeron wasn't started by the app, so nothing would bring it back after an \
-                 update. Update it from the Zeron app on that PC.",
+                "This Zend wasn't started by the app, so nothing would bring it back after an \
+                 update. Update it from the Zend app on that PC.",
                 supervised,
                 blocker,
             ),
             InstallKind::Unmanaged => Self::refused(
                 InstallMethod::Unmanaged,
-                "This copy of Zeron wasn't installed by the installer, so it can't replace itself.",
+                "This copy of Zend wasn't installed by the installer, so it can't replace itself.",
                 (os == "linux").then_some(LINUX_INSTALL_COMMAND),
             ),
         }
@@ -915,10 +915,10 @@ impl UpdateAbility {
 
 /// Set on a new version on trial: the installation it's running in place of
 /// (macOS: the app bundle; Windows: the folder).
-pub const INSTALLED_AT_ENV: &str = "ZERON_INSTALLED_AT";
+pub const INSTALLED_AT_ENV: &str = "ZEND_INSTALLED_AT";
 
 /// Where this process was installed from, resolved once: an update moves
-/// the running image aside (Windows renames it to `zeron.exe.old`), and a
+/// the running image aside (Windows renames it to `zend.exe.old`), and a
 /// long-running engine must still recognise the installation it belongs to.
 pub fn detect_install() -> InstallKind {
     static INSTALL: std::sync::OnceLock<InstallKind> = std::sync::OnceLock::new();
@@ -952,14 +952,14 @@ fn detect_install_from_for_os(exe: &Path, home: Option<&Path>, os: &str) -> Inst
     {
         return InstallKind::WindowsPortable { directory };
     }
-    // Never interpret a coincidental Windows `%HOME%\.zeron\app` layout as
+    // Never interpret a coincidental Windows `%HOME%\.zend\app` layout as
     // the Unix symlink-managed installation.
     if !managed_updates_supported(os) {
         return InstallKind::Unmanaged;
     }
     if let Some(home) = home {
         // `current_exe` resolves the `current` symlink to the versioned dir.
-        let app_root = home.join(".zeron").join("app");
+        let app_root = home.join(".zend").join("app");
         if exe.starts_with(&app_root) {
             return InstallKind::Managed { app_root };
         }
@@ -978,7 +978,7 @@ fn detect_install_from_for_os(exe: &Path, home: Option<&Path>, os: &str) -> Inst
 
 /// The version currently installed on disk for `kind`, read without executing
 /// anything. A long-running process compares it with its own version to notice
-/// that something else (the desktop app, `zeron update`, a re-run installer)
+/// that something else (the desktop app, `zend update`, a re-run installer)
 /// has already replaced its binary.
 pub fn installed_version(kind: &InstallKind) -> Option<String> {
     let version = match kind {
@@ -995,7 +995,7 @@ pub fn installed_version(kind: &InstallKind) -> Option<String> {
     parse_version(&version).map(|_| version)
 }
 
-/// The engine a macOS app bundle carries: its Info.plist's `ZeronEngineVersion`
+/// The engine a macOS app bundle carries: its Info.plist's `ZendEngineVersion`
 /// (packaging writes it; a beta app's engine is stable's, older than the app),
 /// else `CFBundleShortVersionString` (bundles from before the key, whose
 /// engine was always the app's own version). An engine compares this with
@@ -1003,15 +1003,15 @@ pub fn installed_version(kind: &InstallKind) -> Option<String> {
 /// restart a beta's engine forever.
 pub fn bundle_engine_version(bundle: &Path) -> Option<String> {
     let plist = std::fs::read_to_string(bundle.join("Contents/Info.plist")).ok()?;
-    plist_string(&plist, "ZeronEngineVersion").or_else(|| plist_string(&plist, "CFBundleShortVersionString"))
+    plist_string(&plist, "ZendEngineVersion").or_else(|| plist_string(&plist, "CFBundleShortVersionString"))
 }
 
 /// The app's own version in a macOS bundle (a beta's isn't its engine's). A
-/// beta says it in `ZeronVersion`: its short version has to stay numeric, so
+/// beta says it in `ZendVersion`: its short version has to stay numeric, so
 /// that alone would read `0.2.137-beta.3` as the stable `0.2.137`.
 pub fn bundle_app_version(bundle: &Path) -> Option<String> {
     let plist = std::fs::read_to_string(bundle.join("Contents/Info.plist")).ok()?;
-    plist_string(&plist, "ZeronVersion").or_else(|| plist_string(&plist, "CFBundleShortVersionString"))
+    plist_string(&plist, "ZendVersion").or_else(|| plist_string(&plist, "CFBundleShortVersionString"))
 }
 
 /// A string value from an XML property list (the packaging template;
@@ -1121,8 +1121,8 @@ async fn verify_staged_binary(binary: &Path, version: &str) -> anyhow::Result<()
     .with_context(|| format!("running {} --version", binary.display()))?;
     let reported = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     anyhow::ensure!(
-        output.status.success() && reported == format!("zeron {version}"),
-        "staged binary reported {reported:?} (exit {}), expected \"zeron {version}\"",
+        output.status.success() && reported == format!("zend {version}"),
+        "staged binary reported {reported:?} (exit {}), expected \"zend {version}\"",
         output.status
     );
     Ok(())
@@ -1158,7 +1158,7 @@ async fn stage_headless_on(
         "invalid release version {version:?}"
     );
     let dest = app_root.join(managed_dir(version));
-    if dest.join("zeron").exists() {
+    if dest.join("zend").exists() {
         return Ok(dest);
     }
     let file = headless_artifact(version);
@@ -1182,17 +1182,17 @@ async fn stage_headless_on(
                 "--strip-components=1",
             ],
         )?;
-        if !unpacked.join("zeron").is_file() {
-            bail!("tarball {file} did not contain a zeron binary");
+        if !unpacked.join("zend").is_file() {
+            bail!("tarball {file} did not contain a zend binary");
         }
-        verify_staged_binary(&unpacked.join("zeron"), version).await?;
+        verify_staged_binary(&unpacked.join("zend"), version).await?;
         if cloud {
             strip_cloud_unused(&unpacked);
         }
         match std::fs::rename(&unpacked, &dest) {
             Ok(()) => {}
             // Lost a race with another stager — the staged copy is equivalent.
-            Err(_) if dest.join("zeron").exists() => {}
+            Err(_) if dest.join("zend").exists() => {}
             Err(err) => {
                 return Err(err).with_context(|| format!("moving {} into place", dest.display()));
             }
@@ -1210,7 +1210,7 @@ pub fn apply_headless(app_root: &Path, version: &str) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         let target = app_root.join(managed_dir(version));
-        if !target.join("zeron").exists() {
+        if !target.join("zend").exists() {
             bail!("{} is not a staged install", target.display());
         }
         let tmp = app_root.join(format!(".current-{}", std::process::id()));
@@ -1233,7 +1233,7 @@ pub fn apply_headless(app_root: &Path, version: &str) -> anyhow::Result<()> {
 /// the engine that's starting, so each version kept (about 270 MB) slowed every
 /// wake by seconds. Going back there is a reinstall, which downloads anyway.
 pub fn older_versions_kept() -> usize {
-    older_versions_kept_on(std::env::var("ZERON_DEVICE_PLATFORM").ok().as_deref())
+    older_versions_kept_on(std::env::var("ZEND_DEVICE_PLATFORM").ok().as_deref())
 }
 
 fn older_versions_kept_on(platform: Option<&str>) -> usize {
@@ -1245,13 +1245,13 @@ fn on_cloud_platform(platform: Option<&str>) -> bool {
 }
 
 fn on_cloud() -> bool {
-    on_cloud_platform(std::env::var("ZERON_DEVICE_PLATFORM").ok().as_deref())
+    on_cloud_platform(std::env::var("ZEND_DEVICE_PLATFORM").ok().as_deref())
 }
 
 /// Release files a Cloud machine never runs: the desktop app's background
-/// engine (78 MB). A Cloud machine runs `zeron headless`, which links the
+/// engine (78 MB). A Cloud machine runs `zend headless`, which links the
 /// engine, and its disk is copied back in on every wake.
-pub const CLOUD_UNUSED_FILES: &[&str] = &["zeron-engine"];
+pub const CLOUD_UNUSED_FILES: &[&str] = &["zend-engine"];
 
 /// Remove [`CLOUD_UNUSED_FILES`] from the version folder `dir`.
 pub fn strip_cloud_unused(dir: &Path) {
@@ -1300,7 +1300,7 @@ pub fn prune_installed_versions(
     let Some(current) = std::fs::read_link(app_root.join("current"))
         .ok()
         .and_then(|target| Some(target.file_name()?.to_str()?.to_owned()))
-        .filter(|name| app_root.join(name).join("zeron").is_file())
+        .filter(|name| app_root.join(name).join("zend").is_file())
     else {
         // No working install to measure against: leave everything alone.
         return Vec::new();
@@ -1435,23 +1435,23 @@ fn managed_restart_ready() -> bool {
 
 /// Whether this process is the engine service [`restart_service`] manages:
 /// the desktop app's background engine ([`set_managed_restart`]); systemd
-/// places a service in the `zeron.service` cgroup; launchd names the job in
+/// places a service in the `zend.service` cgroup; launchd names the job in
 /// `XPC_SERVICE_NAME`.
 pub fn running_as_installed_service() -> bool {
     if MANAGED_RESTART.get().is_some() {
         return true;
     }
     if cfg!(target_os = "macos") {
-        std::env::var("XPC_SERVICE_NAME").is_ok_and(|label| label == "sh.zeron.app")
+        std::env::var("XPC_SERVICE_NAME").is_ok_and(|label| label == "sh.zend.app")
     } else if cfg!(target_os = "linux") {
         std::fs::read_to_string("/proc/self/cgroup")
-            .is_ok_and(|cgroups| in_zeron_service_cgroup(&cgroups))
+            .is_ok_and(|cgroups| in_zend_service_cgroup(&cgroups))
     } else {
         false
     }
 }
 
-fn in_zeron_service_cgroup(cgroups: &str) -> bool {
+fn in_zend_service_cgroup(cgroups: &str) -> bool {
     in_service_cgroup(cgroups, &service_unit())
 }
 
@@ -1465,17 +1465,17 @@ fn in_service_cgroup(cgroups: &str, unit: &str) -> bool {
 /// A Cloud machine's engine: a *system* unit the installer enables
 /// (edge/src/cloud/install-script.ts), because enabled system units are what a
 /// sandbox provider starts again on resume.
-pub const CLOUD_SERVICE_UNIT: &str = "zeron-cloud.service";
+pub const CLOUD_SERVICE_UNIT: &str = "zend-cloud.service";
 
-/// The systemd unit this engine runs as. `ZERON_SERVICE_UNIT` names another, so
+/// The systemd unit this engine runs as. `ZEND_SERVICE_UNIT` names another, so
 /// a test install beside a real one can never restart the real one. A Cloud
-/// machine says so in its environment (`ZERON_DEVICE_PLATFORM=cloud`, written
+/// machine says so in its environment (`ZEND_DEVICE_PLATFORM=cloud`, written
 /// by the installer on every machine, so machines already out there need no
 /// reinstall).
 pub fn service_unit() -> String {
     resolve_service_unit(
-        std::env::var("ZERON_SERVICE_UNIT").ok().as_deref(),
-        std::env::var("ZERON_DEVICE_PLATFORM").ok().as_deref(),
+        std::env::var("ZEND_SERVICE_UNIT").ok().as_deref(),
+        std::env::var("ZEND_DEVICE_PLATFORM").ok().as_deref(),
     )
 }
 
@@ -1483,7 +1483,7 @@ fn resolve_service_unit(unit: Option<&str>, platform: Option<&str>) -> String {
     match unit.filter(|unit| !unit.trim().is_empty()) {
         Some(unit) => unit.to_owned(),
         None if platform == Some("cloud") => CLOUD_SERVICE_UNIT.to_owned(),
-        None => "zeron.service".to_owned(),
+        None => "zend.service".to_owned(),
     }
 }
 
@@ -1492,7 +1492,7 @@ fn resolve_service_unit(unit: Option<&str>, platform: Option<&str>) -> String {
 /// watchdog acting on one may run a version later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceScope {
-    /// The login user's manager: `zeron daemon` and the curl|sh installer.
+    /// The login user's manager: `zend daemon` and the curl|sh installer.
     User,
     /// The system manager: a Cloud machine, whose engine is an unprivileged
     /// user with passwordless sudo.
@@ -1535,7 +1535,7 @@ pub fn systemctl_query(unit: &str) -> std::process::Command {
     command
 }
 
-/// Restart the installed engine service (the same units `zeron daemon` and the
+/// Restart the installed engine service (the same units `zend daemon` and the
 /// curl|sh installer manage). Called after a symlink swap so the running daemon
 /// picks up the new binary. Only queues the restart: the caller may be the
 /// service itself, which must stay responsive to the stop signal that follows.
@@ -1550,7 +1550,7 @@ pub fn restart_service() -> anyhow::Result<()> {
         let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
         run(
             "launchctl",
-            &["kickstart", "-k", &format!("gui/{uid}/sh.zeron.app")],
+            &["kickstart", "-k", &format!("gui/{uid}/sh.zend.app")],
         )
     } else {
         ask_systemd_to_restart(&service_unit())
@@ -1582,7 +1582,7 @@ fn restart_outcome(code: Option<i32>, stderr: &[u8]) -> anyhow::Result<()> {
 // macOS app-bundle installs — the desktop path
 // ---------------------------------------------------------------------------
 
-/// Download + unpack the app tarball into `{data_dir}/updates/<ver>/Zeron.app`
+/// Download + unpack the app tarball into `{data_dir}/updates/<ver>/Zend.app`
 /// (idempotent). The bundle is unpacked beside its final name and renamed in
 /// only after its binary answers with the expected version, so an interrupted
 /// unpack can never be mistaken for a staged update. Returns the staged bundle.
@@ -1600,8 +1600,8 @@ pub async fn stage_mac_app(
     );
     let updates = data_dir.join("updates");
     let dir = updates.join(version);
-    let staged = dir.join("Zeron.app");
-    let staged_binary = staged.join("Contents/MacOS/zeron");
+    let staged = dir.join("Zend.app");
+    let staged_binary = staged.join("Contents/MacOS/zend");
     if staged_binary.exists() && verify_staged_binary(&staged_binary, version).await.is_ok() {
         return Ok(staged);
     }
@@ -1622,13 +1622,13 @@ pub async fn stage_mac_app(
             &unpack.to_string_lossy(),
         ],
     )
-    .map(|()| unpack.join("Zeron.app"));
+    .map(|()| unpack.join("Zend.app"));
     std::fs::remove_file(&tarball).ok();
     let unpacked = unpacked?;
-    let unpacked_binary = unpacked.join("Contents/MacOS/zeron");
+    let unpacked_binary = unpacked.join("Contents/MacOS/zend");
     if !unpacked_binary.exists() {
         let _ = std::fs::remove_dir_all(&dir);
-        bail!("app tarball {file} did not contain Zeron.app");
+        bail!("app tarball {file} did not contain Zend.app");
     }
     if let Err(err) = verify_staged_binary(&unpacked_binary, version).await {
         let _ = std::fs::remove_dir_all(&dir);
@@ -1683,8 +1683,8 @@ pub fn process_runs_from(dir: &Path) -> bool {
     }
 }
 
-/// Bundles an update set aside (`.Zeron.app.old-…`) or left half-installed
-/// (`.Zeron.app.new-…`), once nothing runs from them.
+/// Bundles an update set aside (`.Zend.app.old-…`) or left half-installed
+/// (`.Zend.app.new-…`), once nothing runs from them.
 pub fn prune_retired_mac_bundles(bundle: &Path) {
     let (Some(parent), Some(name)) = (bundle.parent(), bundle.file_name()) else {
         return;
@@ -1793,7 +1793,7 @@ if [ -n "$3" ]; then exec "$2" "$3"; else exec "$2"; fi"#;
         command
             .arg("-c")
             .arg(script)
-            .arg("zeron-relaunch")
+            .arg("zend-relaunch")
             .arg(&pid)
             .arg(program)
             .arg(argument)
@@ -1906,17 +1906,17 @@ pub fn can_update_at_boot() -> bool {
         && UpdateAbility::current().can_apply_remotely
 }
 
-/// `ZERON_AUTO_UPDATE=1|true|yes` — headless daemons apply updates themselves.
+/// `ZEND_AUTO_UPDATE=1|true|yes` — headless daemons apply updates themselves.
 fn auto_update_enabled() -> bool {
-    std::env::var("ZERON_AUTO_UPDATE")
+    std::env::var("ZEND_AUTO_UPDATE")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 }
 
-/// `ZERON_AUTO_UPDATE=0|false|no` — the desktop app then only reports: no
+/// `ZEND_AUTO_UPDATE=0|false|no` — the desktop app then only reports: no
 /// background download and no install on quit. Unset means on.
 pub fn desktop_auto_update_enabled() -> bool {
-    std::env::var("ZERON_AUTO_UPDATE")
+    std::env::var("ZEND_AUTO_UPDATE")
         .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
         .unwrap_or(true)
 }
@@ -1927,7 +1927,7 @@ pub type QuiescentCheck = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Who runs the checker — decides what it may do beyond reporting.
 enum Role {
-    /// The engine: managed installs with `ZERON_AUTO_UPDATE` apply themselves,
+    /// The engine: managed installs with `ZEND_AUTO_UPDATE` apply themselves,
     /// and a service daemon restarts into a binary someone else installed.
     Engine { quiescent: Option<QuiescentCheck> },
     /// The desktop app: report only — downloading and installing are UI
@@ -1938,7 +1938,7 @@ enum Role {
 /// Background release checker: polls `{edge}/releases` hourly on a wall-clock
 /// schedule (so sleep/wake cannot stretch it), backs off on failure, and
 /// publishes [`UpdateStatus`] over a watch channel. In the engine, managed
-/// installs with `ZERON_AUTO_UPDATE` set stage + apply + service restart on
+/// installs with `ZEND_AUTO_UPDATE` set stage + apply + service restart on
 /// their own — but only in a quiet window: while `quiescent` reports activity,
 /// the apply defers and re-probes every [`IDLE_RECHECK`].
 #[derive(Clone)]
@@ -1953,7 +1953,7 @@ pub struct Updater {
     /// a fresh look at the wall clock.
     wake_tx: Arc<watch::Sender<u64>>,
     forced: Arc<AtomicBool>,
-    /// Set by `zeron headless`: this process is the installed service and may
+    /// Set by `zend headless`: this process is the installed service and may
     /// restart itself into a newer installed binary.
     service: Arc<AtomicBool>,
     /// A boot's update is under way ([`Updater::hold_background_updates`]).
@@ -2053,9 +2053,9 @@ impl Updater {
             .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
     }
 
-    /// Called by `zeron headless`: when this process is the installed engine
+    /// Called by `zend headless`: when this process is the installed engine
     /// service and something else installs a newer binary, restart into it at
-    /// the next quiet moment. A hand-started `zeron headless` is left alone —
+    /// the next quiet moment. A hand-started `zend headless` is left alone —
     /// restarting the service unit would start a second engine beside it.
     pub fn restart_when_superseded(&self) {
         if !running_as_installed_service() {
@@ -2359,7 +2359,7 @@ impl Updater {
                 transaction::fail_request(
                     &data_dir,
                     &requested.id,
-                    "Zeron couldn't restart to install the update, so nothing changed.".into(),
+                    "Zend couldn't restart to install the update, so nothing changed.".into(),
                 );
                 self.refresh_update_report();
             }
@@ -2459,7 +2459,7 @@ impl Updater {
                     transaction::fail_request(
                         data_dir,
                         id,
-                        "Zeron couldn't restart to install the update, so nothing changed.".into(),
+                        "Zend couldn't restart to install the update, so nothing changed.".into(),
                     );
                     updater.refresh_update_report();
                 }
@@ -2746,7 +2746,7 @@ pub async fn prepare_install(
     app_root: &Path,
     data_dir: &Path,
 ) -> anyhow::Result<()> {
-    let download = if app_root.join(&manifest.version).join("zeron").exists() {
+    let download = if app_root.join(&manifest.version).join("zend").exists() {
         0
     } else {
         artifact_size(edge_url, manifest, &headless_artifact(&manifest.version))
@@ -2832,7 +2832,7 @@ impl Schedule {
 }
 
 /// Restarts a service daemon into a newer binary that is already installed
-/// (the desktop app swapped the bundle, `zeron update` flipped the symlink).
+/// (the desktop app swapped the bundle, `zend update` flipped the symlink).
 /// Waits for quiescence, and tries at most once per installed version so a
 /// broken service manager cannot turn into a restart loop.
 #[derive(Debug, Default)]
@@ -2900,7 +2900,7 @@ mod tests {
 
     fn managed() -> InstallKind {
         InstallKind::Managed {
-            app_root: PathBuf::from("/home/me/.zeron/app"),
+            app_root: PathBuf::from("/home/me/.zend/app"),
         }
     }
 
@@ -2908,9 +2908,9 @@ mod tests {
     /// one's cgroup isn't its own.
     #[test]
     fn the_service_is_recognised_by_its_own_unit_only() {
-        let cgroups = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zeron.service\n";
-        assert!(in_service_cgroup(cgroups, "zeron.service"));
-        assert!(!in_service_cgroup(cgroups, "zeron-test.service"));
+        let cgroups = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zend.service\n";
+        assert!(in_service_cgroup(cgroups, "zend.service"));
+        assert!(!in_service_cgroup(cgroups, "zend-test.service"));
     }
 
     /// Cloud runs a system unit of its own; every other install a user one.
@@ -2978,14 +2978,14 @@ mod tests {
     }
 
     /// What a boot's look for a release costs: `fetch_latest`, client and all. Run by
-    /// hand, with `ZERON_BENCH_EDGE` for a real feed (TLS, and the fallback when a
+    /// hand, with `ZEND_BENCH_EDGE` for a real feed (TLS, and the fallback when a
     /// feed has no manifest).
     #[tokio::test]
     #[ignore = "benchmark"]
     async fn bench_boot_check() {
         let (base, server) = serve_forever(br#"{"version":"0.0.1","files":{}}"#.to_vec()).await;
         let mut targets = vec![base];
-        if let Ok(edge) = std::env::var("ZERON_BENCH_EDGE") {
+        if let Ok(edge) = std::env::var("ZEND_BENCH_EDGE") {
             targets.push(edge);
         }
         for target in targets {
@@ -3067,7 +3067,7 @@ mod tests {
         let (base, server) = serve_forever(good.clone()).await;
         install_release_within(&base, &manifest(&good), &app_root, &data, limit).await.unwrap();
         server.abort();
-        assert!(app_root.join("9.9.9").join("zeron").is_file());
+        assert!(app_root.join("9.9.9").join("zend").is_file());
     }
 
     #[tokio::test]
@@ -3108,7 +3108,7 @@ mod tests {
         assert_eq!(cloud, CLOUD_SERVICE_UNIT);
         assert_eq!(ServiceScope::of(&cloud), ServiceScope::System);
         assert!(in_service_cgroup(
-            "0::/system.slice/zeron-cloud.service\n",
+            "0::/system.slice/zend-cloud.service\n",
             &cloud
         ));
 
@@ -3124,7 +3124,7 @@ mod tests {
         assert_eq!(query.get_args().count(), 0);
 
         let laptop = resolve_service_unit(None, None);
-        assert_eq!(laptop, "zeron.service");
+        assert_eq!(laptop, "zend.service");
         assert_eq!(ServiceScope::of(&laptop), ServiceScope::User);
         let action = systemctl_action(&laptop);
         assert_eq!(action.get_program(), "systemctl");
@@ -3132,10 +3132,10 @@ mod tests {
 
         // A test install's own unit wins, on Cloud too.
         assert_eq!(
-            resolve_service_unit(Some("zeron-test.service"), Some("cloud")),
-            "zeron-test.service"
+            resolve_service_unit(Some("zend-test.service"), Some("cloud")),
+            "zend-test.service"
         );
-        assert_eq!(resolve_service_unit(Some("  "), None), "zeron.service");
+        assert_eq!(resolve_service_unit(Some("  "), None), "zend.service");
     }
 
     /// Inside the unit, the restart kills the `systemctl` that asked for it.
@@ -3164,21 +3164,21 @@ mod tests {
         let by_hand = UpdateAbility::decide(&managed(), "linux", false, false, None);
         assert_eq!(by_hand.install, InstallMethod::StartedByHand);
         assert!(!by_hand.can_apply_remotely);
-        assert_eq!(by_hand.manual_command.as_deref(), Some("zeron update"));
+        assert_eq!(by_hand.manual_command.as_deref(), Some("zend update"));
 
         let read_only = UpdateAbility::decide(
             &managed(),
             "linux",
             true,
             true,
-            Some(UpdateBlocker::NotWritable(PathBuf::from("/opt/zeron"))),
+            Some(UpdateBlocker::NotWritable(PathBuf::from("/opt/zend"))),
         );
         assert_eq!(read_only.install, InstallMethod::LinuxService);
         assert!(!read_only.can_apply_remotely);
-        assert!(read_only.cannot_apply_reason.unwrap().contains("/opt/zeron"));
+        assert!(read_only.cannot_apply_reason.unwrap().contains("/opt/zend"));
 
         let bundle = InstallKind::MacApp {
-            bundle: PathBuf::from("/Applications/Zeron.app"),
+            bundle: PathBuf::from("/Applications/Zend.app"),
         };
         let mac = UpdateAbility::decide(&bundle, "macos", true, false, None);
         assert_eq!(mac.install, InstallMethod::MacApp);
@@ -3246,7 +3246,7 @@ mod tests {
         let value = serde_json::to_value(&status).unwrap();
         assert_eq!(value["install"], "startedByHand");
         assert_eq!(value["canApplyRemotely"], false);
-        assert_eq!(value["manualCommand"], "zeron update");
+        assert_eq!(value["manualCommand"], "zend update");
         assert!(value["cannotApplyReason"].is_string());
     }
 
@@ -3460,32 +3460,32 @@ mod tests {
     fn install_kind_detection() {
         assert_eq!(
             detect_install_from_for_os(
-                Path::new("/home/u/.zeron/app/0.1.1/zeron"),
+                Path::new("/home/u/.zend/app/0.1.1/zend"),
                 Some(Path::new("/home/u")),
                 "linux",
             ),
             InstallKind::Managed {
-                app_root: PathBuf::from("/home/u/.zeron/app")
+                app_root: PathBuf::from("/home/u/.zend/app")
             }
         );
         assert_eq!(
             detect_install_from_for_os(
-                Path::new("/Applications/Zeron.app/Contents/MacOS/zeron"),
+                Path::new("/Applications/Zend.app/Contents/MacOS/zend"),
                 Some(Path::new("/Users/u")),
                 "macos",
             ),
             InstallKind::MacApp {
-                bundle: PathBuf::from("/Applications/Zeron.app")
+                bundle: PathBuf::from("/Applications/Zend.app")
             }
         );
         // A path merely containing `.app` without the bundle layout is not a bundle.
         assert_eq!(
-            detect_install_from_for_os(Path::new("/tmp/foo.app/zeron"), None, "macos"),
+            detect_install_from_for_os(Path::new("/tmp/foo.app/zend"), None, "macos"),
             InstallKind::Unmanaged
         );
         assert_eq!(
             detect_install_from_for_os(
-                Path::new("/src/target/release/zeron"),
+                Path::new("/src/target/release/zend"),
                 Some(Path::new("/home/u")),
                 "linux",
             ),
@@ -3496,10 +3496,10 @@ mod tests {
     #[test]
     fn artifact_names_match_packaging() {
         let (os, arch) = platform_key();
-        assert!(headless_artifact("0.2.0").starts_with("zeron-0.2.0-"));
+        assert!(headless_artifact("0.2.0").starts_with("zend-0.2.0-"));
         assert_eq!(
             headless_artifact("0.2.0"),
-            format!("zeron-0.2.0-{os}-{arch}.tar.gz")
+            format!("zend-0.2.0-{os}-{arch}.tar.gz")
         );
         assert!(mac_app_artifact("0.2.0").ends_with("-app.tar.gz"));
     }
@@ -3515,7 +3515,7 @@ mod tests {
     fn windows_install_is_always_unmanaged() {
         assert_eq!(
             detect_install_from(
-                Path::new(r"C:\Users\u\.zeron\app\0.2.0\zeron.exe"),
+                Path::new(r"C:\Users\u\.zend\app\0.2.0\zend.exe"),
                 Some(Path::new(r"C:\Users\u")),
             ),
             InstallKind::Unmanaged
@@ -3552,7 +3552,7 @@ mod tests {
                 .contains("not supported on windows")
         );
         assert!(
-            apply_mac_app(&data_dir.join("Zeron.app"), &data_dir.join("Installed.app"))
+            apply_mac_app(&data_dir.join("Zend.app"), &data_dir.join("Installed.app"))
                 .unwrap_err()
                 .to_string()
                 .contains("not supported on windows")
@@ -3568,12 +3568,12 @@ mod tests {
     #[test]
     fn manifest_parses_with_and_without_files() {
         let full: Manifest = serde_json::from_str(
-            r#"{"version":"0.1.1","files":{"zeron-0.1.1-linux-x86_64.tar.gz":{"sha256":"abc"}}}"#,
+            r#"{"version":"0.1.1","files":{"zend-0.1.1-linux-x86_64.tar.gz":{"sha256":"abc"}}}"#,
         )
         .unwrap();
         assert_eq!(full.version, "0.1.1");
         assert_eq!(
-            full.files["zeron-0.1.1-linux-x86_64.tar.gz"]
+            full.files["zend-0.1.1-linux-x86_64.tar.gz"]
                 .sha256
                 .as_deref(),
             Some("abc")
@@ -3589,7 +3589,7 @@ mod tests {
         let app_root = tmp.path().join("app");
         for ver in ["0.1.0", "0.1.1"] {
             std::fs::create_dir_all(app_root.join(ver)).unwrap();
-            std::fs::write(app_root.join(ver).join("zeron"), ver).unwrap();
+            std::fs::write(app_root.join(ver).join("zend"), ver).unwrap();
         }
         apply_headless(&app_root, "0.1.0").unwrap();
         assert_eq!(
@@ -3610,7 +3610,7 @@ mod tests {
     fn versions_installed(app_root: &Path, versions: &[&str]) {
         for ver in versions {
             std::fs::create_dir_all(app_root.join(ver)).unwrap();
-            std::fs::write(app_root.join(ver).join("zeron"), ver).unwrap();
+            std::fs::write(app_root.join(ver).join("zend"), ver).unwrap();
         }
     }
 
@@ -3699,19 +3699,19 @@ mod tests {
         let app_root = tmp.path().join("app");
         versions_installed(&app_root, &["0.2.10", "0.2.11"]);
         for ver in ["0.2.10", "0.2.11"] {
-            std::fs::write(app_root.join(ver).join("zeron-engine"), "desktop").unwrap();
+            std::fs::write(app_root.join(ver).join("zend-engine"), "desktop").unwrap();
         }
         std::fs::create_dir_all(app_root.join("notes")).unwrap();
-        std::fs::write(app_root.join("notes").join("zeron-engine"), "not a version").unwrap();
+        std::fs::write(app_root.join("notes").join("zend-engine"), "not a version").unwrap();
         apply_headless(&app_root, "0.2.11").unwrap();
 
         strip_unused_from_versions(&app_root);
 
         for ver in ["0.2.10", "0.2.11"] {
-            assert!(!app_root.join(ver).join("zeron-engine").exists(), "{ver}");
-            assert!(app_root.join(ver).join("zeron").exists(), "{ver}");
+            assert!(!app_root.join(ver).join("zend-engine").exists(), "{ver}");
+            assert!(app_root.join(ver).join("zend").exists(), "{ver}");
         }
-        assert!(app_root.join("notes").join("zeron-engine").exists());
+        assert!(app_root.join("notes").join("zend-engine").exists());
     }
 
     #[cfg(target_os = "linux")]
@@ -3808,17 +3808,17 @@ mod tests {
 
     #[test]
     fn systemd_service_cgroup_is_recognized() {
-        assert!(in_zeron_service_cgroup(
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zeron.service\n"
+        assert!(in_zend_service_cgroup(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zend.service\n"
         ));
-        assert!(in_zeron_service_cgroup(
-            "12:pids:/user.slice/user@1000.service/zeron.service\n1:name=systemd:/x\n"
+        assert!(in_zend_service_cgroup(
+            "12:pids:/user.slice/user@1000.service/zend.service\n1:name=systemd:/x\n"
         ));
-        assert!(!in_zeron_service_cgroup(
+        assert!(!in_zend_service_cgroup(
             "0::/user.slice/user-1000.slice/session-3.scope\n"
         ));
-        assert!(!in_zeron_service_cgroup(
-            "0::/user.slice/user@1000.service/app.slice/zeron.service.d\n"
+        assert!(!in_zend_service_cgroup(
+            "0::/user.slice/user@1000.service/app.slice/zend.service.d\n"
         ));
     }
 
@@ -3828,21 +3828,21 @@ mod tests {
         let plist = template.replace("__VERSION__", "0.3.1");
         assert_eq!(plist_string(&plist, "CFBundleShortVersionString").as_deref(), Some("0.3.1"));
         // Packaging names the engine it bundles.
-        assert_eq!(plist_string(&plist, "ZeronEngineVersion").as_deref(), Some("0.3.1"));
+        assert_eq!(plist_string(&plist, "ZendEngineVersion").as_deref(), Some("0.3.1"));
         assert_eq!(plist_string("<plist></plist>", "CFBundleShortVersionString"), None);
     }
 
     #[test]
     fn a_bundle_s_engine_version_is_its_key_else_the_app_s() {
         let tmp = tempfile::tempdir().unwrap();
-        let bundle = tmp.path().join("Zeron.app");
+        let bundle = tmp.path().join("Zend.app");
         std::fs::create_dir_all(bundle.join("Contents")).unwrap();
         let write = |body: &str| std::fs::write(bundle.join("Contents/Info.plist"), body).unwrap();
         // A beta: the app is 0.2.136-beta.1, its engine stable's 0.2.135. An
         // engine weighing the app's version would restart forever.
         write(
             "<plist><dict><key>CFBundleShortVersionString</key><string>0.2.136</string>\
-             <key>ZeronEngineVersion</key><string>0.2.135</string></dict></plist>",
+             <key>ZendEngineVersion</key><string>0.2.135</string></dict></plist>",
         );
         assert_eq!(bundle_engine_version(&bundle).as_deref(), Some("0.2.135"));
         let mac = InstallKind::MacApp { bundle: bundle.clone() };
@@ -3863,7 +3863,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         for dir in ["beta-0.2.137-beta.1", "0.2.136"] {
             std::fs::create_dir_all(root.path().join(dir)).unwrap();
-            std::fs::write(root.path().join(dir).join("zeron"), "").unwrap();
+            std::fs::write(root.path().join(dir).join("zend"), "").unwrap();
         }
         let managed = InstallKind::Managed { app_root: root.path().to_path_buf() };
         apply_headless(root.path(), "0.2.137-beta.1").unwrap();
@@ -3956,7 +3956,7 @@ mod tests {
         assert_eq!(offer_given(&caught_up, "0.2.139-beta.6", Channel::Stable, None, None, false), Offer::Newer);
         #[cfg(target_os = "linux")]
         {
-            let unpacked = std::path::Path::new("/home/someone/Downloads/zeron-0.2.139-beta.6-linux-x86_64/zeron");
+            let unpacked = std::path::Path::new("/home/someone/Downloads/zend-0.2.139-beta.6-linux-x86_64/zend");
             let home = std::path::Path::new("/home/someone");
             assert_eq!(detect_install_from(unpacked, Some(home)), InstallKind::Unmanaged);
             assert!(!InstallKind::Unmanaged.follows_channels());
@@ -4004,7 +4004,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let app_root = tmp.path().join("app");
         std::fs::create_dir_all(app_root.join("0.4.0")).unwrap();
-        std::fs::write(app_root.join("0.4.0").join("zeron"), "").unwrap();
+        std::fs::write(app_root.join("0.4.0").join("zend"), "").unwrap();
         let managed = InstallKind::Managed {
             app_root: app_root.clone(),
         };
@@ -4012,7 +4012,7 @@ mod tests {
         apply_headless(&app_root, "0.4.0").unwrap();
         assert_eq!(installed_version(&managed).as_deref(), Some("0.4.0"));
 
-        let bundle = tmp.path().join("Zeron.app");
+        let bundle = tmp.path().join("Zend.app");
         std::fs::create_dir_all(bundle.join("Contents")).unwrap();
         std::fs::write(
             bundle.join("Contents/Info.plist"),
@@ -4031,27 +4031,27 @@ mod tests {
         let writable = |_: &Path| true;
         let read_only = |_: &Path| false;
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Applications/Zeron.app"), writable),
+            mac_bundle_blocker(Path::new("/Applications/Zend.app"), writable),
             None
         );
         assert_eq!(
             mac_bundle_blocker(
-                Path::new("/private/var/folders/x/T/AppTranslocation/ABC/d/Zeron.app"),
+                Path::new("/private/var/folders/x/T/AppTranslocation/ABC/d/Zend.app"),
                 writable
             ),
             Some(UpdateBlocker::Translocated)
         );
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Volumes/Zeron/Zeron.app"), read_only),
+            mac_bundle_blocker(Path::new("/Volumes/Zend/Zend.app"), read_only),
             Some(UpdateBlocker::DiskImage)
         );
         // An external drive the user can write to updates in place.
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Volumes/Work/Zeron.app"), writable),
+            mac_bundle_blocker(Path::new("/Volumes/Work/Zend.app"), writable),
             None
         );
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Applications/Zeron.app"), read_only),
+            mac_bundle_blocker(Path::new("/Applications/Zend.app"), read_only),
             Some(UpdateBlocker::NotWritable(PathBuf::from("/Applications")))
         );
     }
@@ -4104,14 +4104,14 @@ mod tests {
         server.abort();
     }
 
-    /// A headless tarball whose `zeron` reports `reported` from `--version`.
+    /// A headless tarball whose `zend` reports `reported` from `--version`.
     #[cfg(unix)]
     fn fake_headless_tarball(dir: &Path, reported: &str) -> Vec<u8> {
         use std::os::unix::fs::PermissionsExt as _;
-        let root = dir.join("zeron-pkg");
+        let root = dir.join("zend-pkg");
         std::fs::create_dir_all(&root).unwrap();
-        let binary = root.join("zeron");
-        std::fs::write(&binary, format!("#!/bin/sh\necho \"zeron {reported}\"\n")).unwrap();
+        let binary = root.join("zend");
+        std::fs::write(&binary, format!("#!/bin/sh\necho \"zend {reported}\"\n")).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         let tarball = dir.join("pkg.tar.gz");
         run(
@@ -4121,7 +4121,7 @@ mod tests {
                 &tarball.to_string_lossy(),
                 "-C",
                 &dir.to_string_lossy(),
-                "zeron-pkg",
+                "zend-pkg",
             ],
         )
         .unwrap();
@@ -4153,7 +4153,7 @@ mod tests {
             .unwrap_err();
         server.abort();
         assert!(
-            format!("{error:#}").contains("expected \"zeron 9.9.9\""),
+            format!("{error:#}").contains("expected \"zend 9.9.9\""),
             "unexpected error: {error:#}"
         );
         assert!(!app_root.join("9.9.9").exists());
@@ -4166,7 +4166,7 @@ mod tests {
             .unwrap();
         server.abort();
         assert_eq!(staged, app_root.join("9.9.9"));
-        assert!(staged.join("zeron").is_file());
+        assert!(staged.join("zend").is_file());
     }
 
     /// The release carries the desktop's background engine; a Cloud machine
@@ -4176,8 +4176,8 @@ mod tests {
     async fn a_cloud_machine_stages_a_release_without_the_desktop_engine() {
         let tmp = tempfile::tempdir().unwrap();
         let pkg = tmp.path().join("pkg");
-        std::fs::create_dir_all(pkg.join("zeron-pkg")).unwrap();
-        std::fs::write(pkg.join("zeron-pkg").join("zeron-engine"), "desktop").unwrap();
+        std::fs::create_dir_all(pkg.join("zend-pkg")).unwrap();
+        std::fs::write(pkg.join("zend-pkg").join("zend-engine"), "desktop").unwrap();
         let bytes = fake_headless_tarball(&pkg, "9.9.9");
         let manifest = Manifest {
             version: "9.9.9".into(),
@@ -4196,8 +4196,8 @@ mod tests {
             let (base, server) = serve_forever(bytes.clone()).await;
             let staged = stage_headless_on(&base, &manifest, &app_root, cloud).await.unwrap();
             server.abort();
-            assert!(staged.join("zeron").is_file(), "cloud {cloud}");
-            assert_eq!(staged.join("zeron-engine").exists(), kept, "cloud {cloud}");
+            assert!(staged.join("zend").is_file(), "cloud {cloud}");
+            assert_eq!(staged.join("zend-engine").exists(), kept, "cloud {cloud}");
         }
     }
 
@@ -4210,12 +4210,12 @@ mod tests {
         std::fs::write(
             contents.join("Info.plist"),
             "<plist><dict><key>CFBundleShortVersionString</key><string>0.2.137</string>\
-             <key>ZeronEngineVersion</key><string>0.2.136</string>\
-             <key>ZeronVersion</key><string>0.2.137-beta.16</string></dict></plist>",
+             <key>ZendEngineVersion</key><string>0.2.136</string>\
+             <key>ZendVersion</key><string>0.2.137-beta.16</string></dict></plist>",
         )
         .unwrap();
         assert_eq!(bundle_app_version(dir.path()).as_deref(), Some("0.2.137-beta.16"));
-        // A stable bundle has no `ZeronVersion`.
+        // A stable bundle has no `ZendVersion`.
         std::fs::write(
             contents.join("Info.plist"),
             "<plist><dict><key>CFBundleShortVersionString</key><string>0.2.136</string></dict></plist>",

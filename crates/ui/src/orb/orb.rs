@@ -14,7 +14,7 @@ use gpui::{
     px,
 };
 use std::time::Instant;
-use zeron_orb::{
+use zend_orb::{
     OrbAnimator, OrbSize, OrbState, OrbTheme,
     engine::{Frame, draw_mode_into},
     resolve_preset,

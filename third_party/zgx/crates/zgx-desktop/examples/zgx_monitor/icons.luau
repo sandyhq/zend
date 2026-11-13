@@ -8,7 +8,7 @@ end
 
 return {
 	search = icon('<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/>'),
-	-- Zeron's sidebar (icons.zeron.sh) without its panel, which
+	-- Zend's sidebar (icons.zend.invalid) without its panel, which
 	-- controls.sidebar_glyph draws to animate it.
 	sidebar_frame = icon('<rect x="3" y="4" width="18" height="16" rx="4"/>'),
 	plus = icon('<path d="M12 5.5v13M5.5 12h13"/>'),

@@ -1,15 +1,15 @@
 -- Account pin's window: says what its service did, in a toast. The work is
 -- the service's (service.luau), which runs with no window open; this only
--- tells you while Zeron is open.
+-- tells you while Zend is open.
 
-local zeron = require("./zeron")("account-pin")
+local zend = require("./zend")("account-pin")
 
-local service = zeron.service()
+local service = zend.service()
 
 service:on("pinned", function(e)
-	zeron.toast(`A new Claude Code chat is running on {e.to}.`)
+	zend.toast(`A new Claude Code chat is running on {e.to}.`)
 end)
 
 service:on("lost", function(e)
-	zeron.toast(`A saved account was removed; its chats run on the active account now.`)
+	zend.toast(`A saved account was removed; its chats run on the active account now.`)
 end)

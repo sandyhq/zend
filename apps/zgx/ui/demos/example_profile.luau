@@ -38,7 +38,7 @@ local FULL, NARROW = 900, 560
 -- badges given since (none yet). Its name is the display name's, as typed.
 local YOU = {
 	number = 1378,
-	-- The username: the card's address (zeron.sh/c/mara), chosen once.
+	-- The username: the card's address (zend.invalid/c/mara), chosen once.
 	username = "mara",
 	since = "Oct 30, 2026",
 	layers = {
@@ -65,11 +65,11 @@ local function outline(): Node
 		h = H * ZOOM,
 		shrink = 0,
 		p = "$space.3",
-		rounded = "$zeron.card.radius",
+		rounded = "$zend.card.radius",
 		border = 1,
 		border_dash = { 4, 4 },
 		border_color = "$border.strong",
-		ui.text { "zeron", font = "$font.sans", weight = "$font.weight.bold", text_size = "$font.size.xs", color = "$text.disabled" },
+		ui.text { "zend", font = "$font.sans", weight = "$font.weight.bold", text_size = "$font.size.xs", color = "$text.disabled" },
 	}
 end
 
@@ -109,7 +109,7 @@ return {
 				},
 				-- Its address, the username: where the card lives, what the
 				-- ways under it share.
-				ui.text { `zeron.sh/c/{YOU.username}`, text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
+				ui.text { `zend.invalid/c/{YOU.username}`, text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
 				ds.CardActions { state = card_state, form = "glyphs", w = CARD_W },
 			}
 		end
@@ -198,7 +198,7 @@ return {
 								ds.Settings.Row {
 									label = "Username",
 									description = function()
-										return if has_card() then `zeron.sh/c/{YOU.username}` else "Not chosen yet. Your card needs one."
+										return if has_card() then `zend.invalid/c/{YOU.username}` else "Not chosen yet. Your card needs one."
 									end,
 								},
 								ds.Settings.Row {

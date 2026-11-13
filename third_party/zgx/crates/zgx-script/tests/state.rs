@@ -787,7 +787,7 @@ fn a_wait_fires_timers_after_frames_ran_ahead_of_the_wall_clock() {
     );
 }
 
-/// Zeron's code editor: a layout settled in `ui.after(0)` from `on_resize`
+/// Zend's code editor: a layout settled in `ui.after(0)` from `on_resize`
 /// shows settled on the frame that laid it out, mounted or reloaded, as in
 /// a window, where `ui.after(0)` runs before the next frame is drawn.
 #[test]

@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use zeron_doc::RegistryDoc;
-use zeron_sync::DocsStore;
+use zend_doc::RegistryDoc;
+use zend_sync::DocsStore;
 
 use crate::EngineError;
 use crate::chat2_host::CHAT2_DOC_EPOCH;
@@ -397,7 +397,7 @@ impl LocalImporter {
     fn import_chat(
         &self,
         source_store: &DocsStore,
-        chat: &zeron_proto::Chat,
+        chat: &zend_proto::Chat,
         source_journals: &Path,
     ) -> Result<bool, EngineError> {
         // Doc bytes may be absent (a chat row created but never opened) — the

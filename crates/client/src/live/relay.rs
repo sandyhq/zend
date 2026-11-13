@@ -1,4 +1,4 @@
-//! Host RPCs over the device-room relay (`zeron_rpc::LinkCache`: one cached,
+//! Host RPCs over the device-room relay (`zend_rpc::LinkCache`: one cached,
 //! self-evicting link per target device, dark-peer fast-fail, dial cooldown),
 //! plus the multi-call transfers built on it and the PR-status watches.
 
@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
-use zeron_proto::CheckoutChangeRequestStatus;
-use zeron_rpc::{LinkCache, LinkCacheConfig, PeerLiveness, RpcError, methods};
+use zend_proto::CheckoutChangeRequestStatus;
+use zend_rpc::{LinkCache, LinkCacheConfig, PeerLiveness, RpcError, methods};
 
 use super::{Bearer, b64};
 use crate::client::ClientInner;
@@ -72,13 +72,13 @@ impl Relay {
     pub(crate) async fn voice_transport(
         &self,
         device_id: &str,
-    ) -> Result<Arc<zeron_voice_session::RpcTransport>> {
+    ) -> Result<Arc<zend_voice_session::RpcTransport>> {
         let client = self
             .links
             .client(device_id)
             .await
             .map_err(|e| map_rpc(device_id, methods::VOICE_CAPABILITIES_V2, e))?;
-        Ok(Arc::new(zeron_voice_session::RpcTransport {
+        Ok(Arc::new(zend_voice_session::RpcTransport {
             client,
             host: device_id.into(),
         }))
@@ -178,7 +178,7 @@ impl Relay {
         device_id: &str,
         method: &str,
         params: Value,
-    ) -> Result<zeron_rpc::RpcSubscription> {
+    ) -> Result<zend_rpc::RpcSubscription> {
         let client = self
             .links
             .client(device_id)

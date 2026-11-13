@@ -1,7 +1,7 @@
 //! The desktop app's background engine: started by the app when nothing
 //! serves its port, it outlives the app's window — close or quit the app and
-//! sessions keep running — and shows up as its own process ("Zeron Engine"
-//! in Activity Monitor, `zeron-engine` elsewhere).
+//! sessions keep running — and shows up as its own process ("Zend Engine"
+//! in Activity Monitor, `zend-engine` elsewhere).
 //!
 //! It is started as a detached child of the app rather than through a
 //! service manager. On macOS that keeps privacy permissions (Files &
@@ -23,13 +23,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
+use zend_rpc::{RpcError, RpcReply, RpcService, methods};
 
 use crate::{Engine, EngineConfig, InstanceLock, WorkspaceScope, deferred, desktop_notify};
 
 // Starting the engine helper is shared with the command line and the zgx
 // app, which don't link the engine (crates/launch).
-pub use zeron_launch::{
+pub use zend_launch::{
     APP_ENV, ENGINE_EXECUTABLES, ENGINE_SUBCOMMAND, MANAGED_ENV, app_path, engine_command,
     reap, spawn_detached,
 };
@@ -39,10 +39,10 @@ pub use zeron_launch::{
 const HANDOFF: Duration = Duration::from_secs(60);
 
 /// Start the background engine for `config`, detached from the app
-/// ([`zeron_launch::launch`]).
+/// ([`zend_launch::launch`]).
 pub fn launch(config: &EngineConfig, app_exe: &Path) -> std::io::Result<Child> {
-    zeron_launch::launch(
-        &zeron_launch::LaunchConfig {
+    zend_launch::launch(
+        &zend_launch::LaunchConfig {
             data_dir: config.data_dir.clone(),
             ipc_port: config.ipc_port,
             edge_url: config.edge_url.clone(),
@@ -94,25 +94,25 @@ async fn acquire_lock(data_dir: &Path) -> anyhow::Result<InstanceLock> {
 /// now keeps it — not this process's own image, which an update leaves
 /// behind (a Linux install's previous version directory; Windows renames the
 /// running image aside).
-fn installed_executable(exe: &Path, install: &zeron_update::InstallKind) -> PathBuf {
+fn installed_executable(exe: &Path, install: &zend_update::InstallKind) -> PathBuf {
     let name = exe.file_name().unwrap_or_default();
     match install {
-        zeron_update::InstallKind::Managed { app_root } => app_root.join("current").join(name),
-        zeron_update::InstallKind::MacApp { bundle } => {
+        zend_update::InstallKind::Managed { app_root } => app_root.join("current").join(name),
+        zend_update::InstallKind::MacApp { bundle } => {
             bundle.join("Contents").join("MacOS").join(name)
         }
         #[cfg(windows)]
-        zeron_update::InstallKind::WindowsPortable { directory } => directory.join("zeron.exe"),
+        zend_update::InstallKind::WindowsPortable { directory } => directory.join("zend.exe"),
         _ => exe.to_path_buf(),
     }
 }
 
-/// The binary agents launch as their Zeron MCP server: this process's own
+/// The binary agents launch as their Zend MCP server: this process's own
 /// image while it is still there, else the installation's current copy. An
 /// image an update replaced, or a sandbox moved aside, names a path the
 /// agent's next spawn of the server can't run (Linux even reports a deleted
 /// one as `"<path> (deleted)"`), and an agent whose server won't start has
-/// no Zeron tools for the rest of its session.
+/// no Zend tools for the rest of its session.
 pub(crate) fn mcp_executable() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let raw = exe.to_string_lossy();
@@ -124,8 +124,8 @@ pub(crate) fn mcp_executable() -> Option<PathBuf> {
     if !deleted && exe.exists() {
         return Some(exe);
     }
-    let installed = installed_executable(&exe, &zeron_update::detect_install());
-    tracing::info!(stale = %exe.display(), installed = %installed.display(), "this engine's image moved; agents launch the installed Zeron MCP");
+    let installed = installed_executable(&exe, &zend_update::detect_install());
+    tracing::info!(stale = %exe.display(), installed = %installed.display(), "this engine's image moved; agents launch the installed Zend MCP");
     installed.exists().then_some(installed)
 }
 
@@ -141,7 +141,7 @@ fn stop_when_uninstalled(
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let installed = installed_executable(&exe, &zeron_update::detect_install());
+    let installed = installed_executable(&exe, &zend_update::detect_install());
     let sessions = runtime.core().sessions.clone();
     let terminals = runtime.core().terminals.clone();
     tokio::spawn(async move {
@@ -209,7 +209,7 @@ fn app_running(dir: &Path) -> bool {
 /// Relaunch this engine with its own arguments and environment; the new one
 /// waits for this one to release the data directory.
 fn relaunch_self() -> anyhow::Result<()> {
-    let exe = installed_executable(&std::env::current_exe()?, &zeron_update::detect_install());
+    let exe = installed_executable(&std::env::current_exe()?, &zend_update::detect_install());
     let mut command = Command::new(exe);
     command.args(std::env::args_os().skip(1));
     let child = spawn_detached(&mut command)?;
@@ -258,8 +258,8 @@ impl Engine {
         // `app_starts_engine`), so the restart waits for the app to run and
         // this engine keeps serving the old version until then.
         #[cfg(target_os = "macos")]
-        zeron_update::set_managed_restart_ready(app_starts_engine);
-        zeron_update::set_managed_restart(managed_restart(
+        zend_update::set_managed_restart_ready(app_starts_engine);
+        zend_update::set_managed_restart(managed_restart(
             config.data_dir.clone(),
             || std::env::current_exe().ok(),
             restart_stop,
@@ -379,7 +379,7 @@ fn managed_restart(
     stop: tokio::sync::mpsc::UnboundedSender<()>,
     stopped_for_update: Arc<std::sync::atomic::AtomicBool>,
 ) -> impl Fn() -> anyhow::Result<()> + Send + Sync + 'static {
-    use zeron_update::transaction;
+    use zend_update::transaction;
     move || {
         if cfg!(target_os = "macos") {
             if transaction::read(&data_dir).is_some_and(|update| update.in_progress()) {
@@ -451,7 +451,7 @@ enum AfterFailedUpdate {
 ///   very update): that engine is up and the record is its business.
 #[cfg(target_os = "macos")]
 fn after_a_failed_update(data_dir: &Path) -> AfterFailedUpdate {
-    use zeron_update::transaction::{self, Phase};
+    use zend_update::transaction::{self, Phase};
     let lock = match InstanceLock::acquire(data_dir) {
         Ok(lock) => lock,
         Err(_) if stamped_by_this_process(data_dir) => {
@@ -467,7 +467,7 @@ fn after_a_failed_update(data_dir: &Path) -> AfterFailedUpdate {
             transaction::fail_request(
                 data_dir,
                 &update.id,
-                "Zeron couldn't start the new version, so it stayed on this one.".into(),
+                "Zend couldn't start the new version, so it stayed on this one.".into(),
             );
             let failed = transaction::read(data_dir)
                 .is_some_and(|now| now.id == update.id && now.phase == Phase::Failed);
@@ -496,7 +496,7 @@ fn stamped_by_this_process(data_dir: &Path) -> bool {
 fn exec_installed() -> std::io::Error {
     use std::os::unix::process::CommandExt as _;
     let exe = match std::env::current_exe() {
-        Ok(exe) => installed_executable(&exe, &zeron_update::detect_install()),
+        Ok(exe) => installed_executable(&exe, &zend_update::detect_install()),
         Err(err) => return err,
     };
     Command::new(exe).args(std::env::args_os().skip(1)).exec()
@@ -508,32 +508,32 @@ mod tests {
 
     #[test]
     fn relaunches_run_the_installed_version() {
-        let exe = Path::new("/home/me/.zeron/app/0.2.114/zeron-engine");
+        let exe = Path::new("/home/me/.zend/app/0.2.114/zend-engine");
         assert_eq!(
             installed_executable(
                 exe,
-                &zeron_update::InstallKind::Managed {
-                    app_root: PathBuf::from("/home/me/.zeron/app"),
+                &zend_update::InstallKind::Managed {
+                    app_root: PathBuf::from("/home/me/.zend/app"),
                 }
             ),
-            PathBuf::from("/home/me/.zeron/app/current/zeron-engine")
+            PathBuf::from("/home/me/.zend/app/current/zend-engine")
         );
         assert_eq!(
             installed_executable(
-                Path::new("/Applications/Zeron.app/Contents/MacOS/Zeron Engine"),
-                &zeron_update::InstallKind::MacApp {
-                    bundle: PathBuf::from("/Applications/Zeron.app"),
+                Path::new("/Applications/Zend.app/Contents/MacOS/Zend Engine"),
+                &zend_update::InstallKind::MacApp {
+                    bundle: PathBuf::from("/Applications/Zend.app"),
                 }
             ),
-            PathBuf::from("/Applications/Zeron.app/Contents/MacOS/Zeron Engine")
+            PathBuf::from("/Applications/Zend.app/Contents/MacOS/Zend Engine")
         );
         assert_eq!(
-            installed_executable(exe, &zeron_update::InstallKind::Unmanaged),
+            installed_executable(exe, &zend_update::InstallKind::Unmanaged),
             exe.to_path_buf()
         );
     }
 
-    /// `/Applications`-like folder with the installed `Zeron.app` at 1.0.0
+    /// `/Applications`-like folder with the installed `Zend.app` at 1.0.0
     /// (its engine executable included) and a data directory.
     #[cfg(target_os = "macos")]
     struct MacInstall {
@@ -548,33 +548,33 @@ mod tests {
         fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
             let base = std::fs::canonicalize(root.path()).unwrap();
-            let bundle = base.join("Applications/Zeron.app");
-            let engine = bundle.join("Contents/MacOS/Zeron Engine");
+            let bundle = base.join("Applications/Zend.app");
+            let engine = bundle.join("Contents/MacOS/Zend Engine");
             std::fs::create_dir_all(engine.parent().unwrap()).unwrap();
             std::fs::write(&engine, "").unwrap();
             std::fs::write(
                 bundle.join("Contents/Info.plist"),
-                "<plist><key>ZeronVersion</key><string>1.0.0</string></plist>",
+                "<plist><key>ZendVersion</key><string>1.0.0</string></plist>",
             )
             .unwrap();
-            let data = base.join(".zeron");
+            let data = base.join(".zend");
             std::fs::create_dir_all(&data).unwrap();
             Self { _root: root, data, bundle, engine }
         }
 
         /// What `ApplyUpdate` records: 1.0.0 → 2.0.0, into a bundle beside.
         fn request_update(&self) {
-            let incoming = self.bundle.with_file_name(".Zeron.app.new-next");
+            let incoming = self.bundle.with_file_name(".Zend.app.new-next");
             std::fs::create_dir_all(incoming.join("Contents/MacOS")).unwrap();
-            zeron_update::transaction::request(
+            zend_update::transaction::request(
                 &self.data,
-                zeron_update::transaction::Layout::MacBundle {
+                zend_update::transaction::Layout::MacBundle {
                     bundle: self.bundle.clone(),
                     incoming,
                 },
                 "1.0.0",
                 "2.0.0",
-                zeron_update::transaction::RestartMode::Relaunch,
+                zend_update::transaction::RestartMode::Relaunch,
             )
             .unwrap();
         }
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn a_newer_app_installed_by_the_app_still_stops_the_engine() {
         let install = MacInstall::new();
-        let elsewhere = install.data.join("not-the-installation/Zeron Engine");
+        let elsewhere = install.data.join("not-the-installation/Zend Engine");
         for exe in [&install.engine, &elsewhere] {
             assert_eq!(install.restart_from(exe), (true, true, false), "{}", exe.display());
         }
@@ -620,8 +620,8 @@ mod tests {
     fn an_update_this_engine_carries_out_stops_it_flagged() {
         let install = MacInstall::new();
         install.request_update();
-        let earlier = install.bundle.with_file_name(".Zeron.app.new-earlier");
-        for exe in [install.engine.clone(), earlier.join("Contents/MacOS/Zeron Engine")] {
+        let earlier = install.bundle.with_file_name(".Zend.app.new-earlier");
+        for exe in [install.engine.clone(), earlier.join("Contents/MacOS/Zend Engine")] {
             assert_eq!(install.restart_from(&exe), (true, true, true), "{}", exe.display());
         }
     }
@@ -633,7 +633,7 @@ mod tests {
     fn an_update_this_engine_cant_start_never_stops_it() {
         let install = MacInstall::new();
         install.request_update();
-        let beside = install.data.join("build/Zeron Engine");
+        let beside = install.data.join("build/Zend Engine");
         assert_eq!(install.restart_from(&beside), (false, false, false));
         let refused = stop_for_update(false).unwrap_err().to_string();
         assert!(refused.contains("kept running"), "{refused}");
@@ -645,7 +645,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_backstop_leaves_another_engines_update_alone() {
-        use zeron_update::transaction::{self, Phase};
+        use zend_update::transaction::{self, Phase};
         let install = MacInstall::new();
         install.request_update();
         let other = InstanceLock::acquire(&install.data).unwrap();
@@ -665,7 +665,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_leaked_lock_of_its_own_still_comes_back() {
-        use zeron_update::transaction::{self, Phase};
+        use zend_update::transaction::{self, Phase};
         let install = MacInstall::new();
         install.request_update();
         let leaked = InstanceLock::acquire(&install.data).unwrap();
@@ -680,7 +680,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn another_process_trial_is_left_alone() {
-        use zeron_update::transaction::{self, Phase};
+        use zend_update::transaction::{self, Phase};
         let install = MacInstall::new();
         install.request_update();
         for phase in [Phase::Trial, Phase::Restoring] {
@@ -708,7 +708,7 @@ mod tests {
         install.request_update();
         std::fs::write(
             install.bundle.join("Contents/Info.plist"),
-            "<plist><key>ZeronVersion</key><string>3.0.0</string></plist>",
+            "<plist><key>ZendVersion</key><string>3.0.0</string></plist>",
         )
         .unwrap();
         assert_eq!(install.restart_from(&install.engine), (true, true, false));
@@ -757,10 +757,10 @@ mod tests {
             std::process::Command::new(&exe).spawn().unwrap()
         };
         assert!(!app_running(&macos), "nothing runs from the bundle yet");
-        let mut engine = start("Zeron Engine");
+        let mut engine = start("Zend Engine");
         std::thread::sleep(Duration::from_millis(200));
         assert!(!app_running(&macos), "the engine isn't the app");
-        let mut app = start("zeron");
+        let mut app = start("zend");
         std::thread::sleep(Duration::from_millis(200));
         assert!(app_running(&macos));
         for child in [&mut engine, &mut app] {

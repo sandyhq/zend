@@ -54,7 +54,7 @@ local function headings(app: any): { string }
 end
 
 local function cloud_menu(app: any)
-	app:click(`{CLOUD} >> role:button "More for zeron"`)
+	app:click(`{CLOUD} >> role:button "More for zend"`)
 	expect(app:wait('role:menu >> role:button "Rename"', { timeout_ms = 15000 })).to_be(true)
 	app:wait('"nothing"', { timeout_ms = 400 })
 end
@@ -65,9 +65,9 @@ test("Cloud's machines are one Cloud group, after your computers, a repository o
 	expect(count(table.concat(heads, "|"), "Cloud")).to_be(1)
 	expect(heads[#heads]).to_be("Cloud")
 	local cloud = app:tree(CLOUD)
-	-- zeronsh/zeron on three machines: one row, 1 + 1 + 1 archived.
-	expect(count(cloud, "zeronsh/zeron")).to_be(1)
-	expect(cloud).to_contain("3 sessions · zeronsh/zeron")
+	-- sandyhq/zend on three machines: one row, 1 + 1 + 1 archived.
+	expect(count(cloud, "sandyhq/zend")).to_be(1)
+	expect(cloud).to_contain("3 sessions · sandyhq/zend")
 	expect(cloud).to_contain("No sessions · acme/app")
 	expect(count(cloud, "More for")).to_be(2)
 end)
@@ -80,9 +80,9 @@ test("your computers' groups and rows are as they were", function()
 	local page = app:tree(PAGE)
 	expect(page).to_contain("4 sessions · /work/atlas")
 	expect(page).to_contain("2 sessions · /srv/borealis")
-	-- (This Mac's clone of zeronsh/zeron: its own row, its folder.)
-	expect(page).to_contain("No sessions · /work/zeron")
-	expect(app:tree(CLOUD)).never.to_contain("/work/zeron")
+	-- (This Mac's clone of sandyhq/zend: its own row, its folder.)
+	expect(page).to_contain("No sessions · /work/zend")
+	expect(app:tree(CLOUD)).never.to_contain("/work/zend")
 end)
 
 test("the search finds Cloud's row by its name or its repository", function()
@@ -90,11 +90,11 @@ test("the search finds Cloud's row by its name or its repository", function()
 	app:fill(`{PAGE} >> "Find a project"`, "acme")
 	app:frames(20)
 	expect(app:tree(PAGE)).to_contain("acme/app")
-	expect(app:tree(PAGE)).never.to_contain("zeronsh/zeron")
-	app:fill(`{PAGE} >> "Find a project"`, "zeron")
+	expect(app:tree(PAGE)).never.to_contain("sandyhq/zend")
+	app:fill(`{PAGE} >> "Find a project"`, "zend")
 	app:frames(20)
-	expect(count(app:tree(CLOUD), "zeronsh/zeron")).to_be(1)
-	expect(app:tree(PAGE)).to_contain("/work/zeron")
+	expect(count(app:tree(CLOUD), "sandyhq/zend")).to_be(1)
+	expect(app:tree(PAGE)).to_contain("/work/zend")
 end)
 
 test("renaming Cloud's row renames every copy, and none of your computers'", function()
@@ -102,16 +102,16 @@ test("renaming Cloud's row renames every copy, and none of your computers'", fun
 	cloud_menu(app)
 	app:click('role:menu >> role:button "Rename"')
 	app:frames(10)
-	app:fill(`{CLOUD} >> "Name for zeron"`, "Zeron app")
+	app:fill(`{CLOUD} >> "Name for zend"`, "Zend app")
 	app:key("Enter")
 	app:frames(20)
 	local calls = said(app)
 	for _, id in { "zc1", "zc2", "zc3" } do
-		expect(calls).to_contain(`rename_project:{id}:Zeron app`)
+		expect(calls).to_contain(`rename_project:{id}:Zend app`)
 	end
 	expect(calls).never.to_contain("rename_project:zmac")
 	expect(calls).never.to_contain("rename_project:app1")
-	expect(app:tree(CLOUD)).to_contain("Zeron app")
+	expect(app:tree(CLOUD)).to_contain("Zend app")
 end)
 
 test("changing Cloud's row's icon changes every copy's", function()
@@ -142,7 +142,7 @@ test("removing Cloud's row counts every copy's sessions, stops the running one, 
 	cloud_menu(app)
 	app:click('role:menu >> role:button "Remove…"')
 	app:frames(20)
-	local dialog = 'role:dialog "Remove “zeron”?"'
+	local dialog = 'role:dialog "Remove “zend”?"'
 	expect(app:has(dialog)).to_be(true)
 	expect(app:has(`{dialog} >> ~"Its 3 sessions are deleted for good, on every device."`)).to_be(true)
 	expect(app:has(`{dialog} >> ~"One of them is running now and is stopped first."`)).to_be(true)
@@ -157,9 +157,9 @@ test("removing Cloud's row counts every copy's sessions, stops the running one, 
 	end
 	expect(calls).never.to_contain("delete_project:zmac")
 	expect(app:state("settings_project_removing_open")).to_be(false)
-	expect(app:tree(PAGE)).never.to_contain("zeronsh/zeron")
+	expect(app:tree(PAGE)).never.to_contain("sandyhq/zend")
 	expect(app:tree(CLOUD)).to_contain("acme/app")
-	expect(app:tree(PAGE)).to_contain("/work/zeron")
+	expect(app:tree(PAGE)).to_contain("/work/zend")
 end)
 
 -- A new chat's project, on Cloud ────────────────────────────────────────────

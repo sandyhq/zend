@@ -4,7 +4,7 @@
 -- Each row's ⋯ renames it in place (every device then shows the name),
 -- changes its icon and color in the window's one Edit project (its tile
 -- does too, at a click), shows this device's folder in Finder, and removes
--- it: Zeron forgets the
+-- it: Zend forgets the
 -- project and deletes its sessions, as the sidebar's Remove and the
 -- shipping app's `delete_space` do (`deleteSpace`); the folder and its
 -- files stay where they are, which the confirmation says plainly. Sessions
@@ -471,7 +471,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 			rounded = "$radius.md",
 			hover = { opacity = 0.85 },
 			active = { opacity = 0.7 },
-			focus = { outline = "$zeron.focus.width", outline_color = "$zeron.focus.ring", outline_offset = 2 },
+			focus = { outline = "$zend.focus.width", outline_color = "$zend.focus.ring", outline_offset = 2 },
 			on_click = edit,
 			face(),
 		}

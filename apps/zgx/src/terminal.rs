@@ -4,7 +4,7 @@
 //! terminal (`ui.term` / `ui.terminal`).
 //!
 //! zgx's terminal runs a process on a pseudoterminal of its own, so the
-//! process it runs is this app's bridge (`zeron-zgx terminal-bridge …`):
+//! process it runs is this app's bridge (`zend-zgx terminal-bridge …`):
 //! it attaches to the engine's terminal and passes bytes both ways, its own
 //! pseudoterminal in raw mode, and tells the engine its size as zgx sizes
 //! it. The engine routes the calls to the session's device, as the file
@@ -53,7 +53,7 @@ use zgx_script::{ScriptHost, Value};
 use crate::engine::{self, rpc};
 
 /// The bridge commands the host itself made (`terminal.start`,
-/// `terminal.command`): a terminal Zeron started shows while a template is a
+/// `terminal.command`): a terminal Zend started shows while a template is a
 /// preview, which can't start one (preview.rs `guard`).
 static ISSUED: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
@@ -110,7 +110,7 @@ fn said(error: String) -> String {
     if engine::outcome(&error) == "offline" {
         "offline".into()
     } else if error.to_ascii_lowercase().contains("unknown method") {
-        "Update Zeron to use terminals here.".into()
+        "Update Zend to use terminals here.".into()
     } else {
         error
     }
@@ -148,7 +148,7 @@ async fn open_params(target: &Value) -> Result<Map<String, Json>, String> {
 
 /// Where new terminals' bridges leave their ids.
 fn claims_dir() -> PathBuf {
-    std::env::temp_dir().join("zeron-zgx-terminals")
+    std::env::temp_dir().join("zend-zgx-terminals")
 }
 
 /// A new terminal's bridge line: it opens the engine's terminal itself, at
@@ -156,7 +156,7 @@ fn claims_dir() -> PathBuf {
 async fn start(arg: Value) -> Result<Value, String> {
     let target = arg.field("target").ok_or("no target")?;
     let params = open_params(target).await?;
-    let (port, data) = engine::get().ipc_endpoint().ok_or("Zeron isn't available here")?;
+    let (port, data) = engine::get().ipc_endpoint().ok_or("Zend isn't available here")?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = claims_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -282,7 +282,7 @@ fn quote_windows(word: &str) -> String {
 /// The bridge's command line for terminal `arg.id` (on `device`, another
 /// device's, routed there).
 fn command(arg: Value, device: Option<String>) -> Result<Value, String> {
-    let (port, data) = engine::get().ipc_endpoint().ok_or("Zeron isn't available here")?;
+    let (port, data) = engine::get().ipc_endpoint().ok_or("Zend isn't available here")?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let id = text(arg.field("id"));
     if id.is_empty() {
@@ -678,7 +678,7 @@ pub fn bridge(args: &[String]) -> i32 {
     let mut socket = match dial(args.port, token.as_deref()) {
         Ok(socket) => socket,
         Err(why) => {
-            print!("\r\nZeron can't be reached right now ({why}).\r\n");
+            print!("\r\nZend can't be reached right now ({why}).\r\n");
             let _ = std::io::stdout().flush();
             return 1;
         }
@@ -712,7 +712,7 @@ pub fn bridge(args: &[String]) -> i32 {
                 }
                 Err(why) => {
                     leave_claim(claim, &format!("error: {why}"));
-                    let shown = if why == "offline" { "Zeron can't reach this session's device right now.".to_owned() } else { why };
+                    let shown = if why == "offline" { "Zend can't reach this session's device right now.".to_owned() } else { why };
                     print!("\r\n{shown}\r\n");
                     let _ = std::io::stdout().flush();
                     return 1;
@@ -839,7 +839,7 @@ pub fn bridge(args: &[String]) -> i32 {
                 Ok(_) => {}
                 Err(e) if rpc::would_block(&e) => break,
                 Err(_) => {
-                    print!("\r\nZeron's connection ended.\r\n");
+                    print!("\r\nZend's connection ended.\r\n");
                     let _ = stdout.flush();
                     return 1;
                 }
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn an_older_engine_says_to_update() {
-        assert_eq!(said("unknown method: TerminalStatus".into()), "Update Zeron to use terminals here.");
+        assert_eq!(said("unknown method: TerminalStatus".into()), "Update Zend to use terminals here.");
         assert_eq!(said("no such terminal".into()), "no such terminal");
     }
 
@@ -939,10 +939,10 @@ mod tests {
     fn quotes_and_parses_the_bridge_line() {
         assert_eq!(quote_posix("a b'c"), "'a b'\\''c'");
         // Paths with spaces, each platform's way (both checked everywhere).
-        assert_eq!(quote_posix("/Users/Some One/Zeron.app/zeron-zgx"), "'/Users/Some One/Zeron.app/zeron-zgx'");
-        assert_eq!(quote_windows(r"C:\Program Files\Zeron\zeron.exe"), r#""C:\Program Files\Zeron\zeron.exe""#);
+        assert_eq!(quote_posix("/Users/Some One/Zend.app/zend-zgx"), "'/Users/Some One/Zend.app/zend-zgx'");
+        assert_eq!(quote_windows(r"C:\Program Files\Zend\zend.exe"), r#""C:\Program Files\Zend\zend.exe""#);
         // A folder's trailing backslash must not escape the closing quote.
-        assert_eq!(quote_windows(r"C:\Users\me\AppData\Local\Zeron\"), r#""C:\Users\me\AppData\Local\Zeron\\""#);
+        assert_eq!(quote_windows(r"C:\Users\me\AppData\Local\Zend\"), r#""C:\Users\me\AppData\Local\Zend\\""#);
         assert_eq!(quote_windows(r#"{"chatId":"c1"}"#), r#""{\"chatId\":\"c1\"}""#);
         assert_eq!(quote_windows(r#"a\"b"#), r#""a\\\"b""#);
         assert_eq!(quote_windows(""), r#""""#);
@@ -994,10 +994,10 @@ mod tests {
             unsafe { LocalFree(argv.cast()) };
             words
         }
-        let exe = r"C:\Users\Some One\AppData\Local\Programs\Zeron\zeron.exe";
-        let data = r"C:\Users\Some One\AppData\Local\Zeron\";
+        let exe = r"C:\Users\Some One\AppData\Local\Programs\Zend\zend.exe";
+        let data = r"C:\Users\Some One\AppData\Local\Zend\";
         let open = r#"{"chatId":"c 1","root":"C:\\work\\a \"b\""}"#;
-        let claim = r"C:\Temp\zeron-zgx-terminals\12-34";
+        let claim = r"C:\Temp\zend-zgx-terminals\12-34";
         let line = format!(
             "{} terminal-bridge --port 27654 --data {} --open {} --claim {}",
             quote(exe),

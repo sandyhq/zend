@@ -60,7 +60,7 @@ local icons: { [Name]: string } = {
 		'<ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/>'
 	),
 
-	-- Zeron's icons (icons.zeron.sh): the same 24-point grid and stroke.
+	-- Zend's icons (icons.zend.invalid): the same 24-point grid and stroke.
 	back = icon('<g transform="rotate(180 12 12)"><path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5"/></g>'),
 	forward = icon('<path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5"/>'),
 	refresh = icon('<path d="M19 9a7.5 7.5 0 0 0-13-3L4 8m0-4v4h4m-3 7a7.5 7.5 0 0 0 13 3l2-2m0 4v-4h-4"/>'),

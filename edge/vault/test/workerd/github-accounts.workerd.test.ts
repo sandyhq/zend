@@ -789,7 +789,7 @@ describe("old clients on the new vault", () => {
     const connections = status.connections.filter((c) => c.provider === "github");
     expect(connections).toHaveLength(1);
     expect(connections[0]).toMatchObject({ status: "connected", account: "home-me", accounts: 2, hasActive: true });
-    expect(status.githubInstallUrl).toBe("https://github.com/apps/zeron-test/installations/new");
+    expect(status.githubInstallUrl).toBe("https://github.com/apps/zend-test/installations/new");
 
     // A grant still answers the fields an old machine reads.
     const granted = value(await grant(await session(), "work-org/api"));
@@ -819,7 +819,7 @@ describe("installing the App", () => {
     expect(!refused.ok && refused.message).toContain("github_app_not_installed");
     expect(!refused.ok && refused.message).toContain("no GitHub account you connected");
     expect(!refused.ok && refused.message).toContain(
-      `https://github.com/apps/zeron-test/installations/new/permissions?suggested_target_id=${9000 + "elsewhere".length}`
+      `https://github.com/apps/zend-test/installations/new/permissions?suggested_target_id=${9000 + "elsewhere".length}`
     );
   });
 
@@ -830,7 +830,7 @@ describe("installing the App", () => {
     await connect(caller, github, work, [parent]);
     const refused = await grant(await session(), "nameless/app");
     expect(refused).toMatchObject({ ok: false, error: "not_found" });
-    expect(!refused.ok && refused.message).toContain("install it at https://github.com/apps/zeron-test/installations/new,");
+    expect(!refused.ok && refused.message).toContain("install it at https://github.com/apps/zend-test/installations/new,");
   });
 });
 

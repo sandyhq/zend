@@ -1,6 +1,6 @@
--- Which columns the window has room for, Zeron's way (crates/ui
+-- Which columns the window has room for, Zend's way (crates/ui
 -- shell/panel_layout.rs `horizontal_panel_fit`, shell.rs `content_split`,
--- `right_pane_max_width`, the minima in settings.rs). Zeron's three columns
+-- `right_pane_max_width`, the minima in settings.rs). Zend's three columns
 -- beside the chat are the sidebar, its docked Files explorer and its
 -- surface host ("Right"). Here the explorer lives inside the session's
 -- panel (its file tab's tree, docked beside the file): the panel is Right,
@@ -187,7 +187,7 @@ M.current = ui.computed(function(): Fit
 		{ open = open_panel, at = panel_at },
 		-- (Its docked tree first of all: it gives way by floating over the
 		-- file, not by closing, so it never costs the sidebar its place.
-		-- Ranked by when it opened, as Zeron's separate Files column is, it
+		-- Ranked by when it opened, as Zend's separate Files column is, it
 		-- hid the sidebar in windows with room for sidebar, chat and panel,
 		-- and the panel then opened at the sidebar's share too.)
 		{ open = open_tree, at = -math.huge },
@@ -213,7 +213,7 @@ end
 
 -- The width the sidebar lays out at: its limit while it shows; while it
 -- folds or the fit hides it, the last it had (its edge clips it as it
--- goes, nothing in it laid out again: Zeron's `fit_exit_content`).
+-- goes, nothing in it laid out again: Zend's `fit_exit_content`).
 local held_room: number? = nil
 M.sidebar_room = ui.computed(function(): number
 	local f = M.current:get()

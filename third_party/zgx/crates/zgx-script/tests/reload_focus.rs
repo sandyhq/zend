@@ -180,7 +180,7 @@ fn focused_is(h: &mut Harness, id: &str) -> bool {
     node.is_some() && h.ui.input.focused() == node
 }
 
-/// Zeron's "Escape randomly focuses an element when you close the command
+/// Zend's "Escape randomly focuses an element when you close the command
 /// palette": a reload dropped focus to the first Tab stop, and closing the
 /// palette then gave it back there.
 #[test]

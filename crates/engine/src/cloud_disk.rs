@@ -20,14 +20,14 @@ const GIB: f64 = (1u64 << 30) as f64;
 /// Mirrors `DISK_WARN` (edge/src/cloud/policy.ts).
 const WARN_SHARE: f64 = 0.8;
 
-/// A cleanup's whole budget: inside the 60 s the edge gives `zeron quiesce`.
+/// A cleanup's whole budget: inside the 60 s the edge gives `zend quiesce`.
 pub const CLEANUP_BUDGET: Duration = Duration::from_secs(25);
 
 /// How deep under the checkout a Cargo target directory is looked for.
 const TARGET_SEARCH_DEPTH: usize = 4;
 
 /// What a rename leaves until its deletion finishes (it may run out of time).
-const REMOVING_SUFFIX: &str = ".zeron-removing";
+const REMOVING_SUFFIX: &str = ".zend-removing";
 
 /// Download caches, relative to the home directory: everything in them is
 /// fetched again on demand, and none holds anything built here.
@@ -150,7 +150,7 @@ pub async fn pre_sleep_cleanup(data_dir: &Path) {
         let started = Instant::now();
         // What's copied back in on every wake and never needed for one: a
         // machine installed before Cloud stopped unpacking these still has them.
-        zeron_update::strip_cloud_unused_installed(&app_root);
+        zend_update::strip_cloud_unused_installed(&app_root);
         let mut report = clean_codex_caches(&codex_home, CLEANUP_BUDGET);
         let rest = clean(
             checkout.as_deref(),
@@ -475,12 +475,12 @@ mod tests {
     #[test]
     fn codex_s_downloads_go_and_its_login_and_state_stay() {
         let root = tempfile::tempdir().unwrap();
-        let codex = root.path().join(".zeron/cloud/codex-home");
+        let codex = root.path().join(".zend/cloud/codex-home");
         write(&codex.join("cache/remote_plugin_catalog/c981.json"), "60 MB");
         write(&codex.join("cache/codex_apps_tools/6b7d.json"), "tools");
         write(&codex.join("plugins/cache/openai-curated-remote/t/0.1.1/skills/x/a.pptx"), "bundle");
         // A cleanup a deadline cut off.
-        write(&codex.join("cache.zeron-removing/old.json"), "half gone");
+        write(&codex.join("cache.zend-removing/old.json"), "half gone");
         let kept = [
             "auth.json",
             "config.toml",
@@ -499,7 +499,7 @@ mod tests {
         let report = clean_codex_caches(&codex, CLEANUP_BUDGET);
 
         assert!(!report.timed_out);
-        for gone in ["cache", "plugins/cache", "cache.zeron-removing"] {
+        for gone in ["cache", "plugins/cache", "cache.zend-removing"] {
             assert!(!codex.join(gone).exists(), "{gone} must go");
         }
         for file in kept {

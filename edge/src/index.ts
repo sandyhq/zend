@@ -1,5 +1,5 @@
 /**
- * Zeron-native edge Worker (design §2, ARCHITECTURE §6): JWT auth at the
+ * Zend-native edge Worker (design §2, ARCHITECTURE §6): JWT auth at the
  * edge, then forwarding into per-session, per-workspace, and per-device
  * Durable Objects. Also serves content-addressed R2 attachments (§1.2) and
  * the absorbed WorkOS auth routes (formerly apps/server).
@@ -67,7 +67,7 @@
  *
  * Member cards (card-routes.ts):
  *   GET  /cards/:username               — pre-bearer, a card as JSON
- *   GET  /c/:username, /@:username      — pre-bearer, a card's page (also routed from zeron.sh)
+ *   GET  /c/:username, /@:username      — pre-bearer, a card's page (also routed from zend.invalid)
  *     (every public card route goes through publicCardGate: per-IP limit, one plain 503)
  *   GET|POST /username, GET /username/check — user bearer (claim, availability)
  */
@@ -141,7 +141,7 @@ export default {
       return json({ ok: true, auth: env.AUTH_MODE === "dev" ? "dev" : "workos" });
     }
 
-    // ── public install surface (also routed from zeron.sh): the
+    // ── public install surface (also routed from zend.invalid): the
     //    `curl | sh` installer and the release artifacts it downloads ───────
     if (url.pathname === "/install.sh" && (request.method === "GET" || request.method === "HEAD")) {
       return new Response(request.method === "HEAD" ? null : installSh, {

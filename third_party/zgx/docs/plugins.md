@@ -218,7 +218,7 @@ ui.contribute { target = "#header", after = Badge { label = "beta" } }
 - **In the plugin's own VM.** The package's modules load there as source, with state of their own: nothing is shared with the app's VM or another plugin's. A process compiles a lent module once, however many plugins require it.
 - **Only inside what was lent.** A lent module requires only inside its package or the plugin's other lent packages. `require("@app/…")`, an unlent package, or the plugin's own files from inside it is an error that names what's missing: ``package `@kit` isn't lent to plugin `p`: the host lends it with Capability::Package("kit")``.
 - **No authority.** A lent component calling `ui.fetch` or `ui.clipboard` is gated by the plugin's grants, as the plugin's own code is.
-- **It follows the package.** The package is whatever folder the host registered (Zeron's `.live` overlay). When its files change, the app and every plugin that required from it reload.
+- **It follows the package.** The package is whatever folder the host registered (Zend's `.live` overlay). When its files change, the app and every plugin that required from it reload.
 - **Listed.** `host.contributions()` (`zgx inspect contributions`) has a `package` entry per plugin and package: `@ds`, and how many of its modules the plugin required.
 
 `zgx check` gives a plugin's files the packages its zgx.json grants lend, and the app's files all of them. `zgx types <plugin folder>` adds those aliases to the plugin's `.luaurc`, pointing at the folders zgx.json gives, so an editor's luau-lsp completes `@ds/…`. It never changes an alias already there.

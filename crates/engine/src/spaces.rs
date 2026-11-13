@@ -38,7 +38,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use zeron_proto::Space;
+use zend_proto::Space;
 
 use crate::fs_watch::{FsWatch, FsWatchHub};
 use crate::repos::Repos;
@@ -568,7 +568,7 @@ mod tests {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-qm", "one"]);
         let data = tempfile::tempdir().unwrap();
-        let store = Arc::new(zeron_sync::DocsStore::open(data.path()).unwrap());
+        let store = Arc::new(zend_sync::DocsStore::open(data.path()).unwrap());
         let workspace = WorkspaceHost::open(
             store,
             crate::workspace_host::WorkspaceHostConfig {
@@ -672,7 +672,7 @@ mod tests {
         let before = GitInputs::read(&root.join("wt"));
         git(&repo, &["commit", "-q", "--allow-empty", "-m", "main moves"]);
         assert_eq!(before, GitInputs::read(&root.join("wt")), "another branch is no input");
-        git(&repo, &["config", "zeron.test", "1"]);
+        git(&repo, &["config", "zend.test", "1"]);
         assert_ne!(before, GitInputs::read(&root.join("wt")), "the shared config");
     }
 

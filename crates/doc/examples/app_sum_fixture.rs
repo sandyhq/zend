@@ -4,14 +4,14 @@
 //! every entry after each frame. The app's test applies the frames and
 //! checks its sums agree; otherwise every reopen would silently be a reset.
 //!
-//! cargo run -p zeron-doc --example app_sum_fixture > apps/zgx/src/live_frames_fixture.json
+//! cargo run -p zend-doc --example app_sum_fixture > apps/zgx/src/live_frames_fixture.json
 use serde_json::json;
-use zeron_doc::*;
+use zend_doc::*;
 
 fn tool(id: &str, output: Option<&str>) -> MessagePart {
     serde_json::from_value(json!({
         "kind": "tool", "id": id,
-        "call": { "kind": "exec", "command": "cargo test -p zeron-doc" },
+        "call": { "kind": "exec", "command": "cargo test -p zend-doc" },
         "isError": false, "resolved": output.is_some(), "output": output,
     }))
     .unwrap()
@@ -41,11 +41,11 @@ fn main() {
     };
     let versions = vec![
         vec![user.clone(), reply(vec![text("a1-t", "I'll ")], MessageStatus::Streaming, None)],
-        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zeron-doc» first.")], MessageStatus::Streaming, None)],
-        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zeron-doc» first."), tool("a1-c", None)], MessageStatus::Streaming, None)],
-        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zeron-doc» first."), tool("a1-c", Some("test result: ok. 198 passed"))], MessageStatus::Streaming, None)],
-        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zeron-doc» first."), tool("a1-c", Some("test result: ok. 198 passed")), text("a1-u", "All 198 pass.")], MessageStatus::Streaming, None)],
-        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zeron-doc» first."), tool("a1-c", Some("test result: ok. 198 passed")), text("a1-u", "All 198 pass. 🎉")], MessageStatus::Complete, Some(4200))],
+        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zend-doc» first.")], MessageStatus::Streaming, None)],
+        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zend-doc» first."), tool("a1-c", None)], MessageStatus::Streaming, None)],
+        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zend-doc» first."), tool("a1-c", Some("test result: ok. 198 passed"))], MessageStatus::Streaming, None)],
+        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zend-doc» first."), tool("a1-c", Some("test result: ok. 198 passed")), text("a1-u", "All 198 pass.")], MessageStatus::Streaming, None)],
+        vec![user.clone(), reply(vec![text("a1-t", "I'll run the tests – «zend-doc» first."), tool("a1-c", Some("test result: ok. 198 passed")), text("a1-u", "All 198 pass. 🎉")], MessageStatus::Complete, Some(4200))],
     ];
     let options = DiffOptions { part_patches: true };
     let sums = |entries: &[SessionMessageEntry]| -> Vec<serde_json::Value> {

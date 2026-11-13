@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use zeron_proto::Device;
-use zeron_rpc::{RpcError, RpcReply};
+use zend_proto::Device;
+use zend_rpc::{RpcError, RpcReply};
 
 use super::EngineRpc;
 use crate::device_stats::{self, Places};
@@ -45,7 +45,7 @@ impl EngineRpc {
         }
         let asked = tokio::time::timeout(
             REMOTE_DEADLINE,
-            self.forward(target, zeron_rpc::methods::DEVICE_STATS, params.clone()),
+            self.forward(target, zend_rpc::methods::DEVICE_STATS, params.clone()),
         )
         .await;
         match asked {
@@ -93,7 +93,7 @@ pub(crate) fn remote_error(device: &Device, error: RpcError, now: DateTime<Utc>)
             .map(|v| format!(" ({v})"))
             .unwrap_or_default();
         return RpcError::Failed(format!(
-            "{}'s Zeron{version} is too old to report stats. Update Zeron there.",
+            "{}'s Zend{version} is too old to report stats. Update Zend there.",
             device.name
         ));
     }
@@ -163,7 +163,7 @@ mod tests {
             let said = remote_error(&device(Some("0.2.100"), None), error, now).to_string();
             assert_eq!(
                 said,
-                "devbox's Zeron (0.2.100) is too old to report stats. Update Zeron there."
+                "devbox's Zend (0.2.100) is too old to report stats. Update Zend there."
             );
         }
     }

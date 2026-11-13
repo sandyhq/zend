@@ -1,4 +1,4 @@
-//! A dithered image (`ImageData::dithered`): Zeron's two levels in dots on
+//! A dithered image (`ImageData::dithered`): Zend's two levels in dots on
 //! the screen's grid, each lit to its colour's full value or dimmed to 8% by
 //! its 4x4 Bayer threshold; the same on the wgpu path and with Metal directly,
 //! moved or scaled.

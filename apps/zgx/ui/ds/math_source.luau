@@ -12,9 +12,9 @@ local M = {}
 -- text). `\$` is a dollar. A `$$` still open (a reply streaming in) is left
 -- as it is until it closes.
 local BACKTICK, TILDE, DOLLAR, SLASH, NEWLINE, SPACE, TAB, BRACKET = 96, 126, 36, 92, 10, 32, 9, 91
--- a sent prompt's skills are labelled with their `$` (`[$review](zeron-invoke:…)`),
+-- a sent prompt's skills are labelled with their `$` (`[$review](zend-invoke:…)`),
 -- so two in one message would otherwise read as one formula between them
-local ZERON_LINK = "^%[[^%]\n]*%]%(zeron%-[%a]+:[^%)%s]*%)"
+local ZEND_LINK = "^%[[^%]\n]*%]%(zend%-[%a]+:[^%)%s]*%)"
 -- The bytes the read stops at; any other is copied as it is.
 local SPECIAL = "[\n\\%[`%$]"
 -- A line that may act on the text around it, as markdown reads it: a link's
@@ -251,8 +251,8 @@ local function read(st: Scan)
 		if b == SLASH then
 			reach = math.max(reach, i)
 			i += 2
-		elseif b == BRACKET and string.match(src, ZERON_LINK, i) then
-			i += #(string.match(src, ZERON_LINK, i) :: string)
+		elseif b == BRACKET and string.match(src, ZEND_LINK, i) then
+			i += #(string.match(src, ZEND_LINK, i) :: string)
 			reach = math.max(reach, i - 1)
 		elseif b == BRACKET then
 			-- (Not one: the furthest the pattern looked is its `]` and the

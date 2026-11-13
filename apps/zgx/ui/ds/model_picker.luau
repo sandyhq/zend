@@ -1,4 +1,4 @@
--- Picking the model an agent runs, as Zeron's compact picker does
+-- Picking the model an agent runs, as Zend's compact picker does
 -- (crates/ui/src/pickers.rs, render_harness_model_popover and
 -- pickers/compact.rs): it opens folded on the chosen model, its options
 -- (Devin Fusion's lead and sidekick, each a row opening its choices beside
@@ -79,10 +79,10 @@ export type Props = {
 	loading: (() -> boolean)?,
 	-- The chosen model's name while its catalog doesn't list it (a chat on
 	-- another device, its catalog not looked at yet or short of it): what
-	-- the chip says rather than nothing, as Zeron's `selected_model_label`.
+	-- the chip says rather than nothing, as Zend's `selected_model_label`.
 	model_label: (() -> string?)?,
 	-- What runs while no model is chosen (a chat naming none runs its agent's
-	-- own): shown as the chosen one is, its mark and reasoning, as Zeron's
+	-- own): shown as the chosen one is, its mark and reasoning, as Zend's
 	-- `effective_model_id` falls back to the agent's default, but never
 	-- written into `model` or `effort`, so it isn't sent as a pick.
 	default_model: (() -> string?)?,
@@ -112,7 +112,7 @@ local LEAD = "lead"
 -- A choice list's width.
 local CHOICES_W = 232
 
--- A model's options, in order: the lead first (Zeron's `card_order`),
+-- A model's options, in order: the lead first (Zend's `card_order`),
 -- then the rest as the agent lists them.
 local function ordered(m: Model): { Option }
 	local out: { Option } = {}
@@ -235,7 +235,7 @@ return ui.component(function(props: Props): Node
 		return opt.choices[1] or { id = opt.default, label = "" }
 	end
 	-- A choice picked: kept by option id; the option's own start is no pick
-	-- (Zeron leaves a default out of the chat's options).
+	-- (Zend leaves a default out of the chat's options).
 	local function pick(opt: Option, choice: string)
 		if not props.options then
 			return
@@ -330,7 +330,7 @@ return ui.component(function(props: Props): Node
 			items = "center",
 			justify = "center",
 			-- A button's corner, as the icon buttons beside it.
-			rounded = "$zeron.icon_button.radius",
+			rounded = "$zend.icon_button.radius",
 			bg = "#00000000",
 			color = function()
 				return if shown() then "$text.primary" else "$text.tertiary"
@@ -406,7 +406,7 @@ return ui.component(function(props: Props): Node
 		end, IconButton(button))
 	end
 
-	-- Fast mode as Zeron's picker shows it beside the reasoning: a bare
+	-- Fast mode as Zend's picker shows it beside the reasoning: a bare
 	-- bolt (a plate only under the pointer), filling as it turns on, the
 	-- glyph's colour the state.
 	local fast = props.fast
@@ -442,7 +442,7 @@ return ui.component(function(props: Props): Node
 		}
 	end
 
-	-- An option's row (Zeron's setting row): its name, the choice made
+	-- An option's row (Zend's setting row): its name, the choice made
 	-- (quiet) and a chevron, opening its choices beside the panel as the
 	-- composer's Where rows do: a dropdown whose trigger is the row, the
 	-- chosen one in the selected state, the option's start tagged. `before`
@@ -612,7 +612,7 @@ return ui.component(function(props: Props): Node
 						tabular = true,
 						shrink = 0,
 						text_size = "$font.size.md",
-						-- (Quiet until it's near a limit, as Zeron's ring's figure.)
+						-- (Quiet until it's near a limit, as Zend's ring's figure.)
 						color = function(): string
 							local f = used(in_use())
 							return if f >= 0.8 then context_usage.usage_ink(f) else "$text.tertiary"
@@ -680,7 +680,7 @@ return ui.component(function(props: Props): Node
 		return ui.row(row)
 	end
 
-	-- Under the list, Zeron's tray: the chosen model's options (each a row),
+	-- Under the list, Zend's tray: the chosen model's options (each a row),
 	-- then its reasoning (Fast mode's bolt in its header); a model with Fast
 	-- mode and no reasoning has its switch row. One slider while the model
 	-- has levels, following the model as it changes (its levels, its bolt),
@@ -712,7 +712,7 @@ return ui.component(function(props: Props): Node
 				return `{it.model.value}/{it.option.id}`
 			end,
 			w_full = true,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 		}),
 		ui.show(
 			function(): boolean
@@ -848,7 +848,7 @@ return ui.component(function(props: Props): Node
 		-- inset by the list: the shown tab's bar meets the rule.)
 		head = ui.scroll_x {
 			-- Its tabs and buttons sit in the panel's corner: concentric with it.
-			theme = { zeron = { icon_button = { radius = corner } } },
+			theme = { zend = { icon_button = { radius = corner } } },
 			w_full = true,
 			h = 36,
 			mt = if bottom_up then ui.raw(-4, "the tab bar meets the rule") else nil,
@@ -860,7 +860,7 @@ return ui.component(function(props: Props): Node
 			wheel_across = true,
 			ui.row {
 				h = 36,
-				gap = "$zeron.space.hair",
+				gap = "$zend.space.hair",
 				-- Its tabs to the side away from the list, so the bar (4 past
 				-- them, on the rule by the list) stays inside the strip's clip.
 				items = if bottom_up then "end" else "start",
@@ -871,7 +871,7 @@ return ui.component(function(props: Props): Node
 		-- (The slider's groove in the panel's foot corners, its fill 2 inside.)
 		extra = ui.column {
 			w_full = true,
-			theme = { radius = { md = corner, sm = control.nest(corner, "$zeron.space.hair") } },
+			theme = { radius = { md = corner, sm = control.nest(corner, "$zend.space.hair") } },
 			table.unpack(foot),
 		},
 		extra_when = function(): boolean

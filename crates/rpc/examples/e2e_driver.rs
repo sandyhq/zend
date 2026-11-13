@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use zeron_rpc::{RpcClient, connect_ipc, methods};
+use zend_rpc::{RpcClient, connect_ipc, methods};
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(90);
 const MOCK_TEXT: &str = "Mock harness reporting in.";
@@ -97,12 +97,12 @@ async fn wait_stream<T>(
 }
 
 fn apply_transcript_item(
-    current: &mut Vec<zeron_doc::SessionMessageEntry>,
+    current: &mut Vec<zend_doc::SessionMessageEntry>,
     item: &serde_json::Value,
 ) -> Result<(), String> {
-    let frame: zeron_doc::TranscriptFrame =
+    let frame: zend_doc::TranscriptFrame =
         serde_json::from_value(item.clone()).map_err(|err| err.to_string())?;
-    zeron_doc::apply_transcript_frame(current, frame).map_err(|err| err.to_string())
+    zend_doc::apply_transcript_frame(current, frame).map_err(|err| err.to_string())
 }
 
 /// The chat's row on `client` reaching `generation`.
@@ -156,8 +156,8 @@ async fn wait_for_replies(client: &RpcClient, chat_id: &str, count: usize, label
             let done = transcript
                 .iter()
                 .filter(|entry| {
-                    entry.role == zeron_doc::MessageRole::Assistant
-                        && entry.status == Some(zeron_doc::MessageStatus::Complete)
+                    entry.role == zend_doc::MessageRole::Assistant
+                        && entry.status == Some(zend_doc::MessageStatus::Complete)
                 })
                 .count();
             (done >= count).then_some(())
@@ -167,8 +167,8 @@ async fn wait_for_replies(client: &RpcClient, chat_id: &str, count: usize, label
 }
 
 fn room_stats(chat_id: &str) -> serde_json::Value {
-    let edge = std::env::var("ZERON_E2E_EDGE_URL").unwrap_or_else(|_| fail("ZERON_E2E_EDGE_URL unset"));
-    let token = std::env::var("ZERON_E2E_TOKEN").unwrap_or_else(|_| fail("ZERON_E2E_TOKEN unset"));
+    let edge = std::env::var("ZEND_E2E_EDGE_URL").unwrap_or_else(|_| fail("ZEND_E2E_EDGE_URL unset"));
+    let token = std::env::var("ZEND_E2E_TOKEN").unwrap_or_else(|_| fail("ZEND_E2E_TOKEN unset"));
     let output = std::process::Command::new("curl")
         .args(["-sf", "-m", "5", "-H", &format!("authorization: Bearer {token}")])
         .arg(format!("{edge}/chat2/{chat_id}/stats"))
@@ -178,7 +178,7 @@ fn room_stats(chat_id: &str) -> serde_json::Value {
 }
 
 /// Relay layer on in both engines (docs/design/relay-layer.md): the chat moves to
-/// generation 3, a turn stores nothing, and, with `ZERON_E2E_RESTART_B` set, device B
+/// generation 3, a turn stores nothing, and, with `ZEND_E2E_RESTART_B` set, device B
 /// coming back on a build without the layer gets everything it missed: the chat stays
 /// on 3 and the host stores for B only while it's here.
 async fn relay_layer(
@@ -213,7 +213,7 @@ async fn relay_layer(
     }
     pass("the turn stored no rows, and its queued command left the room");
 
-    let Ok(restart) = std::env::var("ZERON_E2E_RESTART_B") else {
+    let Ok(restart) = std::env::var("ZEND_E2E_RESTART_B") else {
         return;
     };
     let stop = std::process::Command::new("bash").arg(&restart).arg("stop").status();
@@ -258,7 +258,7 @@ async fn relay_layer(
     if !stop.is_ok_and(|status| status.success()) {
         fail("couldn't stop the old B");
     }
-    let settle: u64 = std::env::var("ZERON_E2E_OLD_GONE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+    let settle: u64 = std::env::var("ZEND_E2E_OLD_GONE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
     tokio::time::sleep(Duration::from_secs(settle)).await;
     let before = room_stats(chat_id);
     queue_run(a, chat_id, "the old client has gone").await;
@@ -326,7 +326,7 @@ async fn whale_chat(a: &RpcClient, b: &RpcClient, space_id: &str, a_port: u16, a
         fail("a chat over the relay limit moved to generation 3");
     }
     pass("a chat over the relay limit stays on stored rows");
-    let Ok(restart) = std::env::var("ZERON_E2E_RESTART_A") else {
+    let Ok(restart) = std::env::var("ZEND_E2E_RESTART_A") else {
         return;
     };
     let restarted = std::process::Command::new("bash").arg(&restart).status();
@@ -528,8 +528,8 @@ async fn main() {
             apply_transcript_item(&mut transcript, item)
                 .unwrap_or_else(|err| fail(&format!("assistant transcript on B: {err}")));
             let entry = transcript.iter().find(|entry| {
-                entry.role == zeron_doc::MessageRole::Assistant
-                    && entry.status == Some(zeron_doc::MessageStatus::Complete)
+                entry.role == zend_doc::MessageRole::Assistant
+                    && entry.status == Some(zend_doc::MessageStatus::Complete)
             })?;
             let device = entry.device_id.clone();
             let text = serde_json::to_string(entry)
@@ -568,9 +568,9 @@ async fn main() {
     .await;
     pass("session status (A working -> idle) round-tripped to B");
 
-    if std::env::var("ZERON_E2E_RELAY").as_deref() == Ok("1") {
+    if std::env::var("ZEND_E2E_RELAY").as_deref() == Ok("1") {
         relay_layer(&a, &b, &chat_id, b_port, b_dir.as_deref()).await;
-        if std::env::var("ZERON_E2E_RESTART_B").is_err() {
+        if std::env::var("ZEND_E2E_RESTART_B").is_err() {
             whale_chat(&a, &b, &space_id, a_port, a_dir.as_deref()).await;
         }
     } else {
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(transcript[0].device_id, "device-a");
         assert_eq!(
             transcript[0].status,
-            Some(zeron_doc::MessageStatus::Complete)
+            Some(zend_doc::MessageStatus::Complete)
         );
     }
 }

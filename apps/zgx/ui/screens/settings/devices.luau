@@ -1,11 +1,11 @@
 -- Settings → Devices: the computers your sessions sync across, the
 -- shipping app's Devices (crates/ui settings/devices.rs): this one first,
--- each with its system, the Zeron it runs, and whether it's there now or
+-- each with its system, the Zend it runs, and whether it's there now or
 -- when it last was. Each row's ⋯ renames it in place (every device then
 -- shows the name) and removes another one from your account: gone from the
 -- list everywhere and never dialed again, its sessions and projects kept
--- (the engine's `removeDevice`). Not this device (its own Zeron writes it
--- back as it starts), and not one online now (its Zeron is running, maybe
+-- (the engine's `removeDevice`). Not this device (its own Zend writes it
+-- back as it starts), and not one online now (its Zend is running, maybe
 -- with sessions working, and they'd drop out from under it): Remove says
 -- why instead. Cloud's machines aren't listed (they come and go with their
 -- sessions).
@@ -43,7 +43,7 @@ local PLATFORMS: { [string]: string } = {
 	android = "Android",
 }
 
--- What the line under a device's name says: its system, its Zeron, and
+-- What the line under a device's name says: its system, its Zend, and
 -- whether it's there (in the locale shown: read where it's drawn).
 function M.describe(d: sessions.Device, now: number): string
 	local parts = { PLATFORMS[d.platform] or d.platform }
@@ -284,7 +284,7 @@ local function device_row(_d: sessions.Device, _i: number, d: State<sessions.Dev
 				end,
 			},
 		},
-		-- (Never this device: its own Zeron writes it back as it starts.)
+		-- (Never this device: its own Zend writes it back as it starts.)
 		if d:peek().here
 			then nil
 			else ui.column {

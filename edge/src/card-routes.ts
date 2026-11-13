@@ -5,7 +5,7 @@
  *
  * Public, routed before the bearer gate (every route through card-gate.ts):
  *   GET /cards/:username          — a card as JSON, CORS-open
- *   GET /c/:username              — a card's page (`zeron.sh/c/*` and `/@*` route
+ *   GET /c/:username              — a card's page (`zend.invalid/c/*` and `/@*` route
  *                                   here; `/@:username` is the same page): the
  *                                   card drawn by apps/card-web, with X's Player Card
  *                                   and Open Graph tags, so a post shows it
@@ -39,7 +39,7 @@ const PAGE_PATH = /^\/(?:@|%40|c\/)/i;
 const PAGE_NAME = /^\/(?:@|%40|c\/)([^/]*)(?:\/(player|card\.png))?\/?$/i;
 
 /** The X handle the share page names as the card's site. */
-const X_SITE = "@zeron";
+const X_SITE = "@zend";
 
 /** What the pages may load: their own script, style, fonts and art, no
  * inline script; the player may be framed by X (and ourselves), the page
@@ -52,7 +52,7 @@ const unavailable = (): Response => jsonError(503, "unavailable", "The user dire
 
 /** A card's HTML, as apps/card-web renders it: the share page or the player
  * (`kind`), from the request's own origin, so staging's pages name staging's
- * player and picture and zeron.sh's name zeron.sh's. */
+ * player and picture and zend.invalid's name zend.invalid's. */
 const cardPage = (card: PublicCard, kind: "page" | "player", site: string): Response => {
   const urls = urlsFor(card, site);
   const html = kind === "player" ? renderPlayer(card, urls) : renderShare(card, urls, { site: X_SITE });
@@ -77,7 +77,7 @@ const missingPage = (): Response =>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex" />
-<title>No card here — Zeron</title>
+<title>No card here — Zend</title>
 <style>
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; text-align: center;
          background: #0a0a0a; color: #ededed; font: 15px/1.6 ui-sans-serif, system-ui, sans-serif; }

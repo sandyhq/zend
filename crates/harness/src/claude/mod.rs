@@ -69,7 +69,7 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-use zeron_proto::{
+use zend_proto::{
     AccessMode, AgentEvent, DoneStatus, HarnessId, McpServer, Model, ReasoningLevel, RunRequest,
     SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
@@ -86,15 +86,15 @@ use wire::{
     deny_response,
 };
 
-/// Appended to a chat's system prompt (where Zeron's server offers
+/// Appended to a chat's system prompt (where Zend's server offers
 /// `wait_on_background`: [`McpServer::waits_on_background`]): the text Sonnet and Opus were live-probed acting
 /// on. The CLI starts a turn of its own when a background task ends, so a
 /// turn that ends on one isn't the agent's last.
 const WAIT_ON_BACKGROUND_NOTE: &str = "\
 When you start background work you will come back to once it finishes (a test run, a build, a \
-long check) and you end your turn before it finishes, call the Zeron tool wait_on_background \
+long check) and you end your turn before it finishes, call the Zend tool wait_on_background \
 with its task id first, so the person sees this chat waiting rather than finished. Never for work \
-you leave running on purpose (a dev server, a watcher). Zeron tools may be deferred: load it \
+you leave running on purpose (a dev server, a watcher). Zend tools may be deferred: load it \
 with tool search first.";
 
 /// Locate the device's installed Claude Code CLI: our own PATH, then the
@@ -177,7 +177,7 @@ const SESSION_LOST: &str = "The previous Claude session could not be restored, s
 /// The inline `--mcp-config` JSON for an injected server (the CLI accepts a
 /// JSON string as well as a file path).
 #[cfg(test)]
-fn mcp_config_arg(mcp: &zeron_proto::McpServer) -> String {
+fn mcp_config_arg(mcp: &zend_proto::McpServer) -> String {
     serde_json::json!({
         "mcpServers": {
             &mcp.name: {
@@ -190,12 +190,12 @@ fn mcp_config_arg(mcp: &zeron_proto::McpServer) -> String {
     .to_string()
 }
 
-/// The inline `--mcp-config` JSON for Zeron's own server plus the plugins'
+/// The inline `--mcp-config` JSON for Zend's own server plus the plugins'
 /// native servers ([`RunRequest::extra_mcp`]), or `None` when there are none.
-/// Zeron's own server wins a name clash.
+/// Zend's own server wins a name clash.
 fn mcp_servers_config_arg(
-    mcp: Option<&zeron_proto::McpServer>,
-    extras: &[zeron_proto::McpServer],
+    mcp: Option<&zend_proto::McpServer>,
+    extras: &[zend_proto::McpServer],
 ) -> Option<String> {
     if mcp.is_none() && extras.is_empty() {
         return None;
@@ -233,7 +233,7 @@ fn model_arg(request: &RunRequest) -> Option<String> {
 /// Whether this run must really be limited to a 200K window. The model id
 /// alone cannot do it: models such as `claude-opus-5-5` run 1M under their
 /// plain id, so the "200K" choice only held for ids that happen to default to
-/// 200K (zeronsh/zeron#1083). The CLI's `CLAUDE_CODE_DISABLE_1M_CONTEXT`
+/// 200K (sandyhq/zend#1083). The CLI's `CLAUDE_CODE_DISABLE_1M_CONTEXT`
 /// makes it resolve a 200K window (verified on 2.1.319: `modelUsage.contextWindow`
 /// 1000000 -> 200000), and its own autocompact then works from that window.
 /// It is read at launch, so changing it needs a fresh process.
@@ -532,13 +532,13 @@ impl ClaudeHarness {
                 cmd.arg("--strict-mcp-config");
             }
         } else {
-            // Zeron's own server (and the plugins' native ones) ride beside
+            // Zend's own server (and the plugins' native ones) ride beside
             // the user's configured servers (no `--strict-mcp-config`): the
             // CLI merges an inline JSON config with settings-sourced ones.
             if let Some(config) = mcp_servers_config_arg(request.mcp.as_ref(), &request.extra_mcp) {
                 cmd.args(["--mcp-config", &config]);
             }
-            // When to say it waits on background work (the Zeron tool
+            // When to say it waits on background work (the Zend tool
             // `wait_on_background`), where that tool is offered. Its own
             // description and the server's instructions say so too, but
             // neither reaches the model before it decides to end a turn:
@@ -675,7 +675,7 @@ impl ClaudeHarness {
             child.shutdown(self.kill_grace).await;
             return Err(HarnessError::Protocol("claude child has no stdio".into()));
         };
-        const PROBE_ID: &str = "zeron-command-probe";
+        const PROBE_ID: &str = "zend-command-probe";
         let discovery = async {
             let request = serde_json::json!({
                 "type": "control_request",
@@ -691,7 +691,7 @@ impl ClaudeHarness {
             };
             if let Err(error) = sent {
                 tracing::debug!(
-                    target: "zeron_harness::claude",
+                    target: "zend_harness::claude",
                     %error,
                     "initialize request not delivered to the discovery probe"
                 );
@@ -935,7 +935,7 @@ impl Harness for ClaudeHarness {
     async fn skills(
         &self,
         cwd: &std::path::Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+    ) -> Result<Option<Vec<zend_proto::invocation::Skill>>, HarnessError> {
         let (skills, commands) = tokio::try_join!(
             crate::skills::discover(self.id(), cwd),
             self.workspace_commands
@@ -951,10 +951,10 @@ impl Harness for ClaudeHarness {
                         // Shared files are not Claude command definitions. A
                         // same-named built-in must not replace their identity.
                         Some(skill)
-                    } else if zeron_proto::invocation::valid_skill_command_name(&skill.name)
+                    } else if zend_proto::invocation::valid_skill_command_name(&skill.name)
                         && commands.iter().any(|command| command.name == skill.name)
                     {
-                        skill.command = Some(zeron_proto::invocation::SkillCommand {
+                        skill.command = Some(zend_proto::invocation::SkillCommand {
                             name: skill.name.clone(),
                             harness: self.id(),
                         });
@@ -1024,7 +1024,7 @@ impl ClaudeHarness {
                     Normalizer::for_resume(&config_root(&request.env), &session_id).await;
                 if transcript == Transcript::Empty {
                     tracing::info!(
-                        target: "zeron_harness::claude",
+                        target: "zend_harness::claude",
                         %session_id,
                         "no conversation to resume; starting a new session"
                     );
@@ -1044,7 +1044,7 @@ impl ClaudeHarness {
 
         let lock_dir = refresh_lock::config_dir_for(&request.env);
         if !title_only {
-            stdin.line(wire::initialize_request_line("zeron_initialize"));
+            stdin.line(wire::initialize_request_line("zend_initialize"));
         }
 
         // The initial prompt as the first stdin user line (streaming-input
@@ -1096,7 +1096,7 @@ impl ClaudeHarness {
 async fn read_stderr(stderr: impl tokio::io::AsyncRead + Unpin, tail: crate::StderrTail) {
     let mut lines = crate::lossy_lines::lossy_lines(stderr);
     while let Ok(Some(line)) = lines.next_line().await {
-        tracing::debug!(target: "zeron_harness::claude", "stderr: {line}");
+        tracing::debug!(target: "zend_harness::claude", "stderr: {line}");
         tail.push(&line);
     }
     tail.close();
@@ -1211,16 +1211,16 @@ async fn load_image_blocks(paths: &[String]) -> Vec<wire::ImageBlock> {
         let bytes = match tokio::fs::read(path).await {
             Ok(bytes) => bytes,
             Err(err) => {
-                tracing::warn!(target: "zeron_harness::claude", %path, error = %err, "attachment unreadable; path ref only");
+                tracing::warn!(target: "zend_harness::claude", %path, error = %err, "attachment unreadable; path ref only");
                 continue;
             }
         };
         if bytes.len() as u64 > MAX_INLINE_IMAGE_BYTES {
-            tracing::debug!(target: "zeron_harness::claude", %path, "attachment over inline cap; path ref only");
+            tracing::debug!(target: "zend_harness::claude", %path, "attachment over inline cap; path ref only");
             continue;
         }
         let Some(media_type) = image_media_type(std::path::Path::new(path), &bytes) else {
-            tracing::debug!(target: "zeron_harness::claude", %path, "attachment not an inline-supported image; path ref only");
+            tracing::debug!(target: "zend_harness::claude", %path, "attachment not an inline-supported image; path ref only");
             continue;
         };
         blocks.push(wire::ImageBlock {
@@ -1248,7 +1248,7 @@ async fn stdin_writer(
                     stdin.flush().await
                 };
                 if let Err(e) = write.await {
-                    tracing::debug!(target: "zeron_harness::claude", "stdin write failed (tolerated): {e}");
+                    tracing::debug!(target: "zend_harness::claude", "stdin write failed (tolerated): {e}");
                     return;
                 }
             }
@@ -1464,7 +1464,7 @@ async fn run_session(session: Session) {
                     let frame = match wire::parse_frame(line) {
                         Ok(frame) => frame,
                         Err(e) => {
-                            tracing::debug!(target: "zeron_harness::claude", "unparseable frame (skipped): {e}");
+                            tracing::debug!(target: "zend_harness::claude", "unparseable frame (skipped): {e}");
                             continue;
                         }
                     };
@@ -1478,7 +1478,7 @@ async fn run_session(session: Session) {
                             .any(|e| e.as_str().is_some_and(no_conversation))
                     {
                         tracing::info!(
-                            target: "zeron_harness::claude",
+                            target: "zend_harness::claude",
                             session = ?launched.resume,
                             "session could not be restored; relaunching fresh"
                         );
@@ -1506,7 +1506,7 @@ async fn run_session(session: Session) {
                             }
                         } else if let Some(error) = error {
                             tracing::warn!(
-                                target: "zeron_harness::claude",
+                                target: "zend_harness::claude",
                                 request = %response.request_id,
                                 "control request failed: {error}"
                             );
@@ -1607,7 +1607,7 @@ async fn run_session(session: Session) {
                         && stop_done_at.is_some_and(|at| at.elapsed() < STOP_SETTLE)
                     {
                         tracing::debug!(
-                            target: "zeron_harness::claude",
+                            target: "zend_harness::claude",
                             "late result of a stopped turn dropped"
                         );
                         continue;
@@ -1725,14 +1725,14 @@ async fn run_session(session: Session) {
                         let deadline = tokio::time::Instant::now() + CONTROL_TIMEOUT;
                         switch_mode |= resend || permission_mode(&next) != permission_mode(&config);
                         if resend || model_arg(&next) != model_arg(&config) {
-                            let id = format!("zeron_model_{reconfigures}");
+                            let id = format!("zend_model_{reconfigures}");
                             let model = model_arg(&next);
                             let line = wire::set_model_request_line(&id, model.as_deref());
                             pending_controls.insert(id, ("model", Value::from(model), deadline));
                             if !stdin.line(line) { break 'main; }
                         }
                         if resend || flag_settings(&next) != flag_settings(&config) {
-                            let id = format!("zeron_settings_{reconfigures}");
+                            let id = format!("zend_settings_{reconfigures}");
                             let settings = flag_settings(&next);
                             let line = wire::apply_flag_settings_line(&id, settings.clone());
                             pending_controls.insert(id, ("settings", settings, deadline));
@@ -1742,7 +1742,7 @@ async fn run_session(session: Session) {
                     }
                     if switch_mode {
                         mode_switches += 1;
-                        let id = format!("zeron_mode_{mode_switches}");
+                        let id = format!("zend_mode_{mode_switches}");
                         let mode = permission_mode(&config);
                         let deadline = tokio::time::Instant::now() + CONTROL_TIMEOUT;
                         let line = wire::set_permission_mode_line(&id, mode);
@@ -1776,7 +1776,7 @@ async fn run_session(session: Session) {
             // stopped turn must not continue into them.
             _ = turn.stop_requested(), if !interrupted => {
                 stops_sent += 1;
-                let id = format!("zeron_stop_{stops_sent}");
+                let id = format!("zend_stop_{stops_sent}");
                 pending_steers.clear();
                 commands.cancel_waiting();
                 stopping = Some(id.clone());
@@ -1801,7 +1801,7 @@ async fn run_session(session: Session) {
             // stop, which kills it and reports the roster without it.
             task = turn.background_stop_requested(), if !interrupted => {
                 task_stops_sent += 1;
-                let id = format!("zeron_stop_task_{task_stops_sent}");
+                let id = format!("zend_stop_task_{task_stops_sent}");
                 if !stdin.line(wire::stop_task_request_line(&id, &task)) {
                     break 'main;
                 }
@@ -1890,7 +1890,7 @@ async fn run_session(session: Session) {
                 pending_controls.retain(|id, (_, _, at)| {
                     let waiting = *at > now;
                     if !waiting {
-                        tracing::warn!(target: "zeron_harness::claude", request = %id, "control request unanswered");
+                        tracing::warn!(target: "zend_harness::claude", request = %id, "control request unanswered");
                     }
                     waiting
                 });
@@ -2078,7 +2078,7 @@ fn handle_control_request(
 ) {
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
-            target: "zeron_harness::claude",
+            target: "zend_harness::claude",
             "unhandled control_request subtype: {}", req.request.subtype
         );
         let line = control_error_line(
@@ -2315,7 +2315,7 @@ mod tests {
             reasoning: None,
             model_options: serde_json::Map::new(),
             cwd: String::new(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
             auto_approve: false,
             access: Default::default(),
             plan: false,
@@ -2345,7 +2345,7 @@ mod tests {
                 reasoning: None,
                 model_options: serde_json::Map::new(),
                 cwd: String::new(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
                 auto_approve: false,
                 access: Default::default(),
                 plan: false,
@@ -2366,8 +2366,8 @@ mod tests {
                 .map(|i| args[i + 1].clone())
         };
         let server = |env: &[(&str, &str)]| McpServer {
-            name: "zeron".into(),
-            command: "zeron-engine".into(),
+            name: "zend".into(),
+            command: "zend-engine".into(),
             args: vec!["mcp".into()],
             env: env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
         };
@@ -2399,7 +2399,7 @@ mod access_tests {
             reasoning: None,
             model_options: serde_json::Map::new(),
             cwd: "/work".into(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
             auto_approve,
             access,
             plan,
@@ -2654,34 +2654,34 @@ mod mcp_injection_tests {
 
     #[test]
     fn mcp_config_arg_spells_the_server_the_way_the_cli_reads_it() {
-        let mcp = zeron_proto::McpServer {
-            name: "zeron".into(),
-            command: "/opt/zeron/zeron".into(),
+        let mcp = zend_proto::McpServer {
+            name: "zend".into(),
+            command: "/opt/zend/zend".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())]
+            env: [("ZEND_CHAT_ID".to_owned(), "chat-1".to_owned())]
                 .into_iter()
                 .collect(),
         };
         let parsed: Value = serde_json::from_str(&mcp_config_arg(&mcp)).unwrap();
-        assert_eq!(parsed["mcpServers"]["zeron"]["command"], "/opt/zeron/zeron");
+        assert_eq!(parsed["mcpServers"]["zend"]["command"], "/opt/zend/zend");
         assert_eq!(
-            parsed["mcpServers"]["zeron"]["args"],
+            parsed["mcpServers"]["zend"]["args"],
             serde_json::json!(["mcp"])
         );
         assert_eq!(
-            parsed["mcpServers"]["zeron"]["env"]["ZERON_CHAT_ID"],
+            parsed["mcpServers"]["zend"]["env"]["ZEND_CHAT_ID"],
             "chat-1"
         );
     }
     #[test]
-    fn mcp_servers_config_arg_adds_plugin_servers_beside_zeron() {
-        let zeron = zeron_proto::McpServer {
-            name: "zeron".into(),
-            command: "/opt/zeron/zeron".into(),
+    fn mcp_servers_config_arg_adds_plugin_servers_beside_zend() {
+        let zend = zend_proto::McpServer {
+            name: "zend".into(),
+            command: "/opt/zend/zend".into(),
             args: vec!["mcp".into()],
             env: Default::default(),
         };
-        let extra = zeron_proto::McpServer {
+        let extra = zend_proto::McpServer {
             name: "plugin-focus".into(),
             command: "/data/plugins/.loaded/focus/0123/bin/server".into(),
             args: vec!["--stdio".into()],
@@ -2689,10 +2689,10 @@ mod mcp_injection_tests {
         };
         assert_eq!(mcp_servers_config_arg(None, &[]), None);
         let both: Value = serde_json::from_str(
-            &mcp_servers_config_arg(Some(&zeron), std::slice::from_ref(&extra)).unwrap(),
+            &mcp_servers_config_arg(Some(&zend), std::slice::from_ref(&extra)).unwrap(),
         )
         .unwrap();
-        assert_eq!(both["mcpServers"]["zeron"]["command"], "/opt/zeron/zeron");
+        assert_eq!(both["mcpServers"]["zend"]["command"], "/opt/zend/zend");
         let plugin = &both["mcpServers"]["plugin-focus"];
         assert_eq!(
             plugin["command"],
@@ -2702,7 +2702,7 @@ mod mcp_injection_tests {
         assert_eq!(plugin["env"]["FOCUS"], "1");
         let only: Value =
             serde_json::from_str(&mcp_servers_config_arg(None, &[extra]).unwrap()).unwrap();
-        assert!(only["mcpServers"].get("zeron").is_none());
+        assert!(only["mcpServers"].get("zend").is_none());
         assert!(only["mcpServers"].get("plugin-focus").is_some());
     }
 }

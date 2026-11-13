@@ -11,8 +11,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{
     Request as WsRequest, Response as WsResponse,
 };
-use zeron_engine::{AuthState, Engine, EngineConfig, EngineInfo, HarnessId, WorkspaceScope};
-use zeron_rpc::{connect_ipc, connect_ws, memory_client, methods};
+use zend_engine::{AuthState, Engine, EngineConfig, EngineInfo, HarnessId, WorkspaceScope};
+use zend_rpc::{connect_ipc, connect_ws, memory_client, methods};
 
 fn config(
     data_dir: &std::path::Path,
@@ -46,7 +46,7 @@ async fn rejecting_edge() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<
                 let mut request = [0u8; 4096];
                 let n = stream.read(&mut request).await.unwrap_or(0);
                 // A `HEAD /` is preview discovery probing this listener on
-                // localhost (seen from the Zeron engine already running on a
+                // localhost (seen from the Zend engine already running on a
                 // developer's Mac), not a request to the edge.
                 if !request[..n].starts_with(b"HEAD / ") {
                     seen.fetch_add(1, Ordering::SeqCst);
@@ -461,7 +461,7 @@ async fn workspace_recovers_from_an_unreachable_edge_without_restarting() {
     let refresh_loop = auth.spawn_refresh_loop();
     assert!(matches!(
         auth.access_token().await,
-        Err(zeron_rpc::TokenError::TemporarilyUnavailable(_))
+        Err(zend_rpc::TokenError::TemporarilyUnavailable(_))
     ));
     wait_until(
         || runtime.core().workspace.sync_status().is_some(),
@@ -569,7 +569,7 @@ async fn headless_stop_rpc_drains_the_daemon_and_releases_ipc() {
     .expect("headless IPC did not start");
 
     // The daemon published an owner-only bearer and refuses dials without it.
-    let token_file = zeron_rpc::ipc_auth::token_path(dir.path());
+    let token_file = zend_rpc::ipc_auth::token_path(dir.path());
     assert!(
         token_file.is_file(),
         "headless start must publish its IPC token"

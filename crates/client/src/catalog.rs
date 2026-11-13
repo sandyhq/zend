@@ -150,7 +150,7 @@ const CODEX_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
 /// A device's agents, when they're known without asking it: a Cloud device's
 /// (the account's, or a session's machine) are Claude Code and Codex.
 pub fn harnesses_without_asking(device_id: &str) -> Option<Vec<HarnessInfo>> {
-    zeron_proto::is_cloud_device(device_id, "").then(fallback_harnesses)
+    zend_proto::is_cloud_device(device_id, "").then(fallback_harnesses)
 }
 
 pub fn fallback_harnesses() -> Vec<HarnessInfo> {

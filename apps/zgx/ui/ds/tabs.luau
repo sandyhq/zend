@@ -104,7 +104,7 @@ return ui.component(function(props: Props): Node
 				cursor = if o.disabled then nil else "pointer",
 				h = H,
 				px = if pill then "$space.3" else "$space.1",
-				gap = "$zeron.space.tight",
+				gap = "$zend.space.tight",
 				items = "center",
 				shrink = 0,
 				rounded = if pill then "$radius.lg" else "$radius.sm",
@@ -146,7 +146,7 @@ return ui.component(function(props: Props): Node
 		return refs[i].width or 0
 	end
 	-- The gap between tabs, in points for the indicator's sums (the
-	-- row's own gap, zeron.space.hair or space.4).
+	-- row's own gap, zend.space.hair or space.4).
 	local GAP = if pill then 2 else 16
 	local function measured(): boolean
 		for i in refs do
@@ -173,7 +173,7 @@ return ui.component(function(props: Props): Node
 			top = 0,
 			h = H,
 			rounded = "$radius.lg",
-			bg = "$zeron.selected.flat.bg",
+			bg = "$zend.selected.flat.bg",
 			w = w,
 			x = x,
 			pointer_events = "none",
@@ -193,7 +193,7 @@ return ui.component(function(props: Props): Node
 		role = "tablist",
 		label = props.label,
 		relative = true,
-		gap = if pill then "$zeron.space.hair" else "$space.4",
+		gap = if pill then "$zend.space.hair" else "$space.4",
 		items = "center",
 		shrink = 0,
 		ui.show(measured, indicator),

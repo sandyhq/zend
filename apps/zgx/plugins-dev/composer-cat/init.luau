@@ -11,7 +11,7 @@
 -- those nothing changes, so nothing is drawn. With Reduce motion it sits
 -- still.
 
-local zeron = require("./zeron")("composer-cat")
+local zend = require("./zend")("composer-cat")
 
 -- The sprite's grid, a pixel's size (points), and where it sits: its
 -- outline's last row over the pill's top edge, 84 in from the composer's
@@ -129,4 +129,4 @@ local function Cat(): Node
 	}
 end
 
-zeron.place { at = "#composer-toolbar", before = Cat }
+zend.place { at = "#composer-toolbar", before = Cat }

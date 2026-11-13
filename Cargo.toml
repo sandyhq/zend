@@ -34,7 +34,7 @@ members = [
     "crates/visual-gpu",
     "crates/zatex",
     "crates/plugin-guard",
-    "apps/zeron",
+    "apps/zend",
 ]
 
 [workspace.package]
@@ -44,37 +44,37 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-zeron-voice-session = { path = "crates/voice-session" }
-zeron-orb = { path = "crates/orb" }
-zeron-veil = { path = "crates/veil" }
-zeron-term = { path = "crates/term" }
-zeron-term-link = { path = "crates/term-link" }
-zeron-voice-media = { path = "crates/voice-media" }
-zeron-audio = { path = "crates/audio" }
-zeron-proto = { path = "crates/proto" }
-zeron-preview = { path = "crates/preview" }
-zeron-preview-label = { path = "crates/preview-label" }
-zeron-doc = { path = "crates/doc" }
-zeron-sync = { path = "crates/sync" }
-zeron-harness = { path = "crates/harness" }
-zeron-engine = { path = "crates/engine" }
-zeron-rpc = { path = "crates/rpc" }
-zeron-update = { path = "crates/update" }
-zeron-cli = { path = "crates/cli" }
-zeron-launch = { path = "crates/launch" }
-zeron-ui = { path = "crates/ui" }
-zeron-notify = { path = "crates/notify" }
-zeron-syntax = { path = "crates/syntax" }
-zeron-markdown = { path = "crates/markdown" }
-zeron-mobile = { path = "crates/mobile" }
-zeron-client = { path = "crates/client" }
-zeron-theme = { path = "crates/theme" }
-zeron-mcp = { path = "crates/mcp" }
-zeron-text = { path = "crates/text" }
+zend-voice-session = { path = "crates/voice-session" }
+zend-orb = { path = "crates/orb" }
+zend-veil = { path = "crates/veil" }
+zend-term = { path = "crates/term" }
+zend-term-link = { path = "crates/term-link" }
+zend-voice-media = { path = "crates/voice-media" }
+zend-audio = { path = "crates/audio" }
+zend-proto = { path = "crates/proto" }
+zend-preview = { path = "crates/preview" }
+zend-preview-label = { path = "crates/preview-label" }
+zend-doc = { path = "crates/doc" }
+zend-sync = { path = "crates/sync" }
+zend-harness = { path = "crates/harness" }
+zend-engine = { path = "crates/engine" }
+zend-rpc = { path = "crates/rpc" }
+zend-update = { path = "crates/update" }
+zend-cli = { path = "crates/cli" }
+zend-launch = { path = "crates/launch" }
+zend-ui = { path = "crates/ui" }
+zend-notify = { path = "crates/notify" }
+zend-syntax = { path = "crates/syntax" }
+zend-markdown = { path = "crates/markdown" }
+zend-mobile = { path = "crates/mobile" }
+zend-client = { path = "crates/client" }
+zend-theme = { path = "crates/theme" }
+zend-mcp = { path = "crates/mcp" }
+zend-text = { path = "crates/text" }
 zatex = { path = "crates/zatex" }
-zeron-visual = { path = "crates/visual" }
-zeron-visual-gpu = { path = "crates/visual-gpu" }
-zeron-plugin-guard = { path = "crates/plugin-guard" }
+zend-visual = { path = "crates/visual" }
+zend-visual-gpu = { path = "crates/visual-gpu" }
+zend-plugin-guard = { path = "crates/plugin-guard" }
 
 # CRDT
 loro = "1.17"
@@ -95,7 +95,7 @@ loro-protocol = "0.3"
 # sidebar); a6c1ad5 adds BackdropBlur + horizontal EdgeFade + glass fixes;
 # 9b672fa bounds renderer GPU memory (region-sized backdrop blur scratch,
 # idle release of blur/path intermediates, instance pool shrink,
-# ZERON_GPU_STATS=1 diagnostics); b687328 adds ImageSource::evict (frees
+# ZEND_GPU_STATS=1 diagnostics); b687328 adds ImageSource::evict (frees
 # sprite-atlas tiles — remove_asset alone leaked them, see
 # attachments::flush_evicted); ac135eb adds device memory to the stats line;
 # f596cde fixes destination alpha on transparent windows (Porter-Duff OVER,
@@ -215,10 +215,10 @@ debug = true
 debug = true
 
 # Scenes rasterize in software every frame the camera moves.
-[profile.dev.package.zeron-visual]
+[profile.dev.package.zend-visual]
 opt-level = 3
 
-[profile.dev.package.zeron-visual-gpu]
+[profile.dev.package.zend-visual-gpu]
 opt-level = 3
 
 # Mobile core (scripts/ios/build-core.sh). Always optimized — layout and sync

@@ -17,7 +17,7 @@
 //!     children = { [parent id] = { { id, parent, title, device, status?,
 //!                 updated, created, harness?, agent?, child_kind? } } } (its
 //!                 side chats, newest first; `child_kind` "subagent" or
-//!                 "side" for one a Zeron chat started, none for the person's),
+//!                 "side" for one a Zend chat started, none for the person's),
 //!     places = { pinned = { id }, sections = { { id, name, sessions = { id },
 //!                collapsed } } },
 //!     archived = { chat, … } (as `chats`, the most recently moved first),
@@ -71,7 +71,7 @@ use std::{
 };
 
 use serde_json::{Value as Json, json};
-use zeron_proto::{ChatIndicator, SeenMarks, Session, SleepState};
+use zend_proto::{ChatIndicator, SeenMarks, Session, SleepState};
 use zgx_desktop::WindowContext;
 use zgx_script::{ScriptHost, Shared, Value};
 
@@ -183,7 +183,7 @@ struct Row {
 struct RowWith {
     status: Option<&'static str>,
     /// What its agent waits on, while that shows.
-    waiting: Option<Vec<zeron_proto::WaitingOn>>,
+    waiting: Option<Vec<zend_proto::WaitingOn>>,
     /// Its sleep: asleep until (`true`), or woke at (`false`), in Unix seconds.
     sleep: Option<(bool, i64)>,
     running_subagents: u32,
@@ -282,7 +282,7 @@ struct LiveRows {
     /// Each chat's rows, parsed, in the list's order (one, but for an
     /// engine that doesn't key them).
     by_chat: HashMap<String, Vec<Session>>,
-    /// The moments a chat's rows go stale (`zeron_proto::view`'s rule, at
+    /// The moments a chat's rows go stale (`zend_proto::view`'s rule, at
     /// whole seconds): its state can change then, and only then.
     turns: Times,
     /// When each row that shows goes stale, as `next_stale` reads it.
@@ -368,15 +368,15 @@ impl LiveRows {
 }
 
 /// The first whole second at which a row stamped `updated` is stale
-/// (`zeron_proto::view`'s `SESSION_STALE_MS`, judged as `value` does, at a
+/// (`zend_proto::view`'s `SESSION_STALE_MS`, judged as `value` does, at a
 /// whole second).
 fn turn(updated: chrono::DateTime<chrono::Utc>) -> i64 {
     let stale = |at: i64| {
         chrono::DateTime::from_timestamp(at, 0).unwrap_or_default().signed_duration_since(updated).num_milliseconds()
-            > zeron_proto::view::SESSION_STALE_MS
+            > zend_proto::view::SESSION_STALE_MS
     };
     // (Not stale a second before the limit; stale within a few after.)
-    let mut at = updated.timestamp() + zeron_proto::view::SESSION_STALE_MS / 1000 - 1;
+    let mut at = updated.timestamp() + zend_proto::view::SESSION_STALE_MS / 1000 - 1;
     for _ in 0..4 {
         if stale(at) {
             break;
@@ -646,7 +646,7 @@ fn child_row(rows: &mut HashMap<String, Row>, c: &Json, id: &str, parent: &str, 
         ("agent", harness.and_then(crate::agents::glyph).map_or(Value::Nil, |g| Value::from(g.as_str()))),
         // An agent from the ACP registry: its icon, as listed.
         ("agent_icon", with.agent_icon.as_deref().map_or(Value::Nil, Value::from)),
-        // Started by a Zeron chat through Zeron's tools ("subagent" or
+        // Started by a Zend chat through Zend's tools ("subagent" or
         // "side"); none for a side chat the person started.
         ("child_kind", opt(c["childKind"].as_str())),
     ]);
@@ -674,9 +674,9 @@ fn top_row(
     let status = status_of(marks, session, at);
     let with = RowWith {
         status,
-        waiting: (status == Some("waiting")).then(|| zeron_proto::view::waiting(session, at).map(|w| w.on.clone())).flatten(),
+        waiting: (status == Some("waiting")).then(|| zend_proto::view::waiting(session, at).map(|w| w.on.clone())).flatten(),
         sleep: sleep_of(c, marks, at),
-        running_subagents: zeron_proto::view::running_subagents(session, at),
+        running_subagents: zend_proto::view::running_subagents(session, at),
         side_chats,
         working_side_chats,
         known_project: project.is_some(),
@@ -898,7 +898,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             }
         }
     });
-    // A session's Zeron conversation link (production's links.rs): its id
+    // A session's Zend conversation link (production's links.rs): its id
     // and its workspace's locator, the same hash, so either app opens it.
     host.async_action("sessions.link", move |id| {
         let id = text(&id);
@@ -1287,7 +1287,7 @@ impl Sessions {
                 if let Some(at) = seen.filter(|_| !online) {
                     fields.push(("seen", Value::Num(at as f64)));
                 }
-                // The Zeron it runs, as it last said (Settings → Devices).
+                // The Zend it runs, as it last said (Settings → Devices).
                 if let Some(version) = d["version"].as_str().filter(|v| !v.is_empty()) {
                     fields.push(("version", Value::from(version)));
                 }
@@ -1537,7 +1537,7 @@ impl Sessions {
             params["config"] = config;
         }
         let made = engine::get().call("Mutate", params).await.map_err(|error| {
-            eprintln!("zeron-zgx: sessions: no Cloud session: {error}");
+            eprintln!("zend-zgx: sessions: no Cloud session: {error}");
             match engine::outcome(&error) {
                 "failed" => cloud_words(&error),
                 word => word.to_string(),
@@ -1617,7 +1617,7 @@ impl Sessions {
                     .call("Mutate", json!({ "op": "changeSidebarPin", "change": change }))
                     .await
                 {
-                    eprintln!("zeron-zgx: sessions: a sidebar change didn't take: {error}");
+                    eprintln!("zend-zgx: sessions: a sidebar change didn't take: {error}");
                 }
             }
             me.sending.set(false);
@@ -1630,7 +1630,7 @@ impl Sessions {
 }
 
 /// A device row of Cloud's: the logical Cloud device or a session's machine
-/// (`zeron_proto::is_cloud_device` and the Cloud capabilities).
+/// (`zend_proto::is_cloud_device` and the Cloud capabilities).
 pub(crate) fn is_cloud(d: &Json) -> bool {
     let id = d["id"].as_str().unwrap_or_default();
     let platform = d["platform"].as_str().unwrap_or_default();
@@ -1658,7 +1658,7 @@ fn removal_refused(error: &str) -> Outcome {
 
 /// An engine error as an outcome: offline, or failed.
 /// Why a project's picture wasn't set, as a word the dialog says plainly:
-/// `outdated` (this Mac's Zeron predates project icons and refused the
+/// `outdated` (this Mac's Zend predates project icons and refused the
 /// request), `gone` (the project was removed meanwhile), `invalid` (the
 /// picture was refused), `offline`, else `failed`.
 fn icon_fail(error: &str) -> Outcome {
@@ -1763,9 +1763,9 @@ fn project_name<'a>(name: Option<&'a str>, path: &'a str) -> &'a str {
 /// one chat: `live_sessions` picks the one that says most.
 #[derive(PartialEq, Debug)]
 struct Live {
-    indicator: zeron_proto::view::Indicator,
+    indicator: zend_proto::view::Indicator,
     /// What its agent waits on, while that shows.
-    waiting: Option<Vec<zeron_proto::WaitingOn>>,
+    waiting: Option<Vec<zend_proto::WaitingOn>>,
     /// Its subagents streaming now, none once the row has gone quiet.
     subagents: u32,
     /// Its last turn's outcome and the turn it marks, as the status reads
@@ -1784,9 +1784,9 @@ fn live_states(value: &Json, now: i64) -> HashMap<String, Live> {
 /// A chat's `Live` from the row that says most for it, at `at`.
 fn live_of(s: &Session, at: chrono::DateTime<chrono::Utc>) -> Live {
     Live {
-        indicator: zeron_proto::view::effective_indicator(Some(s), at),
-        waiting: zeron_proto::view::waiting(Some(s), at).map(|w| w.on.clone()),
-        subagents: zeron_proto::view::running_subagents(Some(s), at),
+        indicator: zend_proto::view::effective_indicator(Some(s), at),
+        waiting: zend_proto::view::waiting(Some(s), at).map(|w| w.on.clone()),
+        subagents: zend_proto::view::running_subagents(Some(s), at),
         outcome: s.last_turn_outcome.as_ref().and_then(|o| serde_json::to_string(o).ok()),
         last_completed_turn: s.last_completed_turn.clone(),
     }
@@ -1844,9 +1844,9 @@ fn live_sessions(value: &Json, now: chrono::DateTime<chrono::Utc>) -> HashMap<St
 /// How much a session row says at `now`: a run showing, a wait showing,
 /// nothing (`live_sessions` keeps the one that says most).
 fn says(s: &Session, now: chrono::DateTime<chrono::Utc>) -> u8 {
-    if zeron_proto::view::effective_indicator(Some(s), now) != zeron_proto::view::Indicator::None {
+    if zend_proto::view::effective_indicator(Some(s), now) != zend_proto::view::Indicator::None {
         2
-    } else if zeron_proto::view::waiting(Some(s), now).is_some() {
+    } else if zend_proto::view::waiting(Some(s), now).is_some() {
         1
     } else {
         0
@@ -1862,7 +1862,7 @@ fn seen_marks(chat: &Json) -> SeenMarks {
 }
 
 /// The sidebar's state for a chat, as every viewport reads it
-/// (`zeron_proto::view::display_status`): working, waiting on work that will
+/// (`zend_proto::view::display_status`): working, waiting on work that will
 /// wake it, waiting on you, failed or finished since you last looked; else
 /// none.
 fn status_of(
@@ -1870,7 +1870,7 @@ fn status_of(
     session: Option<&Session>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<&'static str> {
-    match zeron_proto::view::display_status_from(marks, session, now) {
+    match zend_proto::view::display_status_from(marks, session, now) {
         ChatIndicator::Working => Some("working"),
         ChatIndicator::Waiting => Some("waiting"),
         ChatIndicator::AwaitingInput => Some("input"),
@@ -1887,7 +1887,7 @@ fn sleep_of(chat: &Json, marks: SeenMarks, now: chrono::DateTime<chrono::Utc>) -
     if chat["sleep"].is_null() {
         return None;
     }
-    let sleep = zeron_proto::ChatSleep::deserialize(&chat["sleep"]).ok()?;
+    let sleep = zend_proto::ChatSleep::deserialize(&chat["sleep"]).ok()?;
     match sleep.state(marks.last_seen_at, now) {
         SleepState::Awake => None,
         SleepState::Asleep { until } => Some((true, until.timestamp())),
@@ -1896,14 +1896,14 @@ fn sleep_of(chat: &Json, marks: SeenMarks, now: chrono::DateTime<chrono::Utc>) -
 }
 
 /// What a chat's agent waits on, as scripts read it.
-fn waiting_value(on: &[zeron_proto::WaitingOn]) -> Value {
+fn waiting_value(on: &[zend_proto::WaitingOn]) -> Value {
     Value::List(on.iter().map(|w| {
         Value::record([
             ("id", Value::from(w.id.as_str())),
             (
                 "kind",
                 Value::from(match w.kind {
-                    zeron_proto::WaitingKind::Agent => "agent",
+                    zend_proto::WaitingKind::Agent => "agent",
                     _ => "process",
                 }),
             ),
@@ -2100,7 +2100,7 @@ fn workspace_locator(scope: &str, device: Option<&str>, signed_in: Option<(Strin
         "local" => ("Local", format!("device:{}", device?)),
         _ => return None,
     };
-    Some(zeron_notify::links::workspace_locator_of(name, &identity))
+    Some(zend_notify::links::workspace_locator_of(name, &identity))
 }
 
 /// The locator of the workspace the engine has open now (none until it's
@@ -2112,8 +2112,8 @@ pub(crate) async fn current_locator() -> Option<String> {
     workspace_locator(scope, info["deviceId"].as_str(), crate::auth::signed_in())
 }
 
-/// A Zeron conversation link (crates/notify, the shipping app's).
-use zeron_notify::links::conversation_link;
+/// A Zend conversation link (crates/notify, the shipping app's).
+use zend_notify::links::conversation_link;
 
 pub(crate) fn new_id() -> String {
     use std::hash::{BuildHasher, Hasher};
@@ -2251,7 +2251,7 @@ mod tests {
         assert_eq!(super::workspace_locator("local", Some("d9"), None).as_deref(), Some("e2ee91fa9d910190"));
         assert_eq!(super::workspace_locator("synced", None, None), None, "signed out: not knowable");
         assert_eq!(super::workspace_locator("local", None, who()), None);
-        assert_eq!(super::conversation_link("c 1/x", "abc"), "zeron://open/chat/c%201%2Fx?workspace=abc");
+        assert_eq!(super::conversation_link("c 1/x", "abc"), "zend://open/chat/c%201%2Fx?workspace=abc");
     }
 
     /// The connection line says what production's pill says, a chat's
@@ -2473,7 +2473,7 @@ mod tests {
         assert_eq!(kids[0].field("title").map(crate::auth::text).as_deref(), Some("New side chat"));
         assert_eq!(kids[1].field("status").map(crate::auth::text).as_deref(), Some("working"));
         assert_eq!(kids[1].field("parent").map(crate::auth::text).as_deref(), Some("p"));
-        // Started by a Zeron chat, which kind; the person's, none.
+        // Started by a Zend chat, which kind; the person's, none.
         assert_eq!(kids[1].field("child_kind").map(crate::auth::text).as_deref(), Some("subagent"));
         assert!(kids[0].field("child_kind").is_none_or(|k| matches!(k, zgx_script::Value::Nil)));
         let p = chat(&v, "p");
@@ -3069,7 +3069,7 @@ mod bench {
         CLOCK.with(|c| c.set(None));
     }
 
-    /// `cargo test --release -p zeron-zgx bench::per_update -- --ignored --nocapture`
+    /// `cargo test --release -p zend-zgx bench::per_update -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn per_update() {

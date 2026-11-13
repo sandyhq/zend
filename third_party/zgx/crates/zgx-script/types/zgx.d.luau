@@ -2029,7 +2029,7 @@ export type Styles = {
 	-- main thread, showing a frame later; "sync" waits for it, any size;
 	-- "async" never waits.
 	decode: ("auto" | "sync" | "async")?,
-	-- An image drawn dithered as Zeron dithers wallpapers, in dots this many
+	-- An image drawn dithered as Zend dithers wallpapers, in dots this many
 	-- points square: each lit to its colour's full value or dimmed to 8% by a
 	-- 4x4 Bayer threshold, on the GPU as it draws (it follows the image as it
 	-- moves and scales).

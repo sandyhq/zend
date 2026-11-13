@@ -1,5 +1,5 @@
 -- Setup, right after the account is made and before the card: choosing a
--- username. It's what the card is for: its address (zeron.sh/c/mara) is
+-- username. It's what the card is for: its address (zend.invalid/c/mara) is
 -- the username, so there is no card without one, and it's chosen once.
 -- The username is the whole screen, as the organization's name is on its
 -- step: one field, the address it makes on the line under it (checked a
@@ -24,7 +24,7 @@ local failed = ui.state("ex_un_failed", false)
 
 -- Usernames already spoken for, and the ones nobody gets.
 local TAKEN = { theo = true, priya = true, jonas = true, ada = true, graham = true, sam = true, lin = true }
-local RESERVED = { admin = true, zeron = true, api = true, www = true, support = true, help = true, settings = true, login = true, signup = true, about = true, me = true }
+local RESERVED = { admin = true, zend = true, api = true, www = true, support = true, help = true, settings = true, login = true, signup = true, about = true, me = true }
 local MIN, MAX = 3, 20
 
 -- What was typed, as a username is kept: lowercase, no leading @, no
@@ -140,25 +140,25 @@ return {
 			ui.row {
 				items = "center",
 				min_w = 0,
-				ui.text { "zeron.sh/c/", text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
+				ui.text { "zend.invalid/c/", text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
 				ds.FadeText {
 					handle,
 					text_size = "$font.size.sm",
 					line_height = "$font.line.sm",
 					color = function()
 						local c = check:get()
-						return if c == "taken" or c == "reserved" or c == "invalid" or c == "start" then "$zeron.tone.danger.ink" else "$text.secondary"
+						return if c == "taken" or c == "reserved" or c == "invalid" or c == "start" then "$zend.tone.danger.ink" else "$text.secondary"
 					end,
 				},
 			},
 			ui.row {
 				items = "center",
 				status("checking", ds.ProgressRing { size = 12, tone = "neutral", label = "Checking the username" }, "Checking", "$text.tertiary"),
-				status("available", mark("check-circle"), "Available", "$zeron.tone.success.ink"),
-				status("taken", mark("close-circle"), "Taken", "$zeron.tone.danger.ink"),
-				status("reserved", mark("close-circle"), "Reserved", "$zeron.tone.danger.ink"),
-				status("invalid", mark("info-circle"), "Letters, digits, _ and - only", "$zeron.tone.danger.ink"),
-				status("start", mark("info-circle"), "Start with a letter or digit", "$zeron.tone.danger.ink"),
+				status("available", mark("check-circle"), "Available", "$zend.tone.success.ink"),
+				status("taken", mark("close-circle"), "Taken", "$zend.tone.danger.ink"),
+				status("reserved", mark("close-circle"), "Reserved", "$zend.tone.danger.ink"),
+				status("invalid", mark("info-circle"), "Letters, digits, _ and - only", "$zend.tone.danger.ink"),
+				status("start", mark("info-circle"), "Start with a letter or digit", "$zend.tone.danger.ink"),
 				status("short", nil, `At least {MIN} characters`, "$text.tertiary"),
 				status("long", nil, `At most {MAX} characters`, "$text.tertiary"),
 			},
@@ -204,7 +204,7 @@ return {
 							else "It's your card's address, and it's yours for good."
 					end,
 					tone = function()
-						return if failed:get() then "$zeron.tone.danger.ink" else "$text.secondary"
+						return if failed:get() then "$zend.tone.danger.ink" else "$text.secondary"
 					end,
 					ui.column {
 						w_full = true,

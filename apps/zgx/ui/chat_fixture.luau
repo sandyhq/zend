@@ -133,11 +133,11 @@ do
 		open_lane(session, lane)
 	end
 	-- s2's child chats, as the host lists them: a subagent and a side chat a
-	-- Zeron chat started (through Zeron's tools: `child_kind`), working and
+	-- Zend chat started (through Zend's tools: `child_kind`), working and
 	-- at rest, and a side chat the person started.
 	ui.command {
 		id = "child_chats",
-		title = "s2 has child chats: two a Zeron chat started, one the person did",
+		title = "s2 has child chats: two a Zend chat started, one the person did",
 		run = function()
 			local now = table.clone(sessions.now:peek() :: any)
 			local children = table.clone(now.children or {})
@@ -443,7 +443,7 @@ ui.command {
 -- since switched to a branch of its own (the chat still names main).
 REFS["/tmp/atlas-wt/pr"] = {
 	{ name = "main", current = false },
-	{ name = "zeron/readme-pr", current = true, worktree = "/tmp/atlas-wt/pr" },
+	{ name = "zend/readme-pr", current = true, worktree = "/tmp/atlas-wt/pr" },
 }
 ui.command {
 	id = "session_in_worktree",
@@ -623,11 +623,11 @@ invocations_stub.read = function(harness: string, target: any): any
 	note(`invocations:{harness}:{target.chat or target.space or "?"}`)
 	return settled({
 		rows = {
-			{ kind = "command", name = "review", label = "/review", detail = "Review the diff · <branch>", link = "[/review](zeron-invoke:7b226b696e64223a22636f6d6d616e64222c226e616d65223a22726576696577227d)" },
-			{ kind = "command", name = "compact", label = "/compact", detail = "Summarize the conversation", link = "[/compact](zeron-invoke:7b7d)" },
-			-- (The agent's own `/new`: Zeron's is `/zeron:new` beside it.)
-			{ kind = "command", name = "new", label = "/new", detail = "The agent's new", link = "[/new](zeron-invoke:7b7d)" },
-			{ kind = "skill", name = "code-review", label = "Code Review", detail = "Careful review — /s/code-review/SKILL.md", link = "[$code-review](zeron-invoke:7b7d)" },
+			{ kind = "command", name = "review", label = "/review", detail = "Review the diff · <branch>", link = "[/review](zend-invoke:7b226b696e64223a22636f6d6d616e64222c226e616d65223a22726576696577227d)" },
+			{ kind = "command", name = "compact", label = "/compact", detail = "Summarize the conversation", link = "[/compact](zend-invoke:7b7d)" },
+			-- (The agent's own `/new`: Zend's is `/zend:new` beside it.)
+			{ kind = "command", name = "new", label = "/new", detail = "The agent's new", link = "[/new](zend-invoke:7b7d)" },
+			{ kind = "skill", name = "code-review", label = "Code Review", detail = "Careful review — /s/code-review/SKILL.md", link = "[$code-review](zend-invoke:7b7d)" },
 		},
 	})
 end
@@ -892,8 +892,8 @@ ui.command {
 }
 
 -- The theme, for captures in both.
-ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zeron-light") end }
-ui.command { id = "theme_dark", title = "Dark theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zeron-dark") end }
+ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zend-light") end }
+ui.command { id = "theme_dark", title = "Dark theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zend-dark") end }
 ui.command { id = "opaque", title = "Opaque surfaces", run = function() require("@ds/material").frosted:set(false) end }
 ui.command { id = "frosted", title = "Frosted surfaces", run = function() require("@ds/material").frosted:set(true) end }
 
@@ -1326,7 +1326,7 @@ Beta.5 is almost out. Here's where everything stands:
 | **Beta.5** | Windows and both Linux builds passed. macOS has been building, signing and notarizing for about 40 minutes; notarization usually takes the longest. It publishes right after. |
 | **Memory** | Two of the three fixes are merged in zgx (#1960, #1981); #1945 merges after its checks. Together they bring memory after heavy use to about **264 MB** (was 315, and beta.1 was 271). The memory chat is now chasing the remaining ~50 MB stuck in partly used memory pages. |
 | **Streaming** | ff4bff4f's three zgx PRs are open and in CI: append-only text, styled text that follows state, and the fade-in drawn as one piece. Next is the GPU-run fade-in under the glass, worked out with the render chat. Your staging app's build is at 5.9% (from 7.1%), with about 4–4.5% as the next target. |
-| **Scrolling** | Waiting on zgx CI: accessibility updates (#1931), zgx's built-in scroll bar (#1961), and the "scrolling stopped" timer (#1975). The Zeron side of each is ready on branches. The working-rings fix is merged. |
+| **Scrolling** | Waiting on zgx CI: accessibility updates (#1931), zgx's built-in scroll bar (#1961), and the "scrolling stopped" timer (#1975). The Zend side of each is ready on branches. The working-rings fix is merged. |
 | **The scroll-skip / overlapping-rows bug** | Not reproduced, and no cause yet. Tests are in place. If it happens again, send a screenshot and the chat name before navigating away. |
 ]]
 	-- `status_table`: a reply whose table has a 38-character label beside
@@ -1566,7 +1566,7 @@ ui.command {
 	end,
 }
 -- Two comments a plugin left on a diff (Git's Changes, through
--- `zeron.compose_comment`; screens/plugins hands them on as this does): a
+-- `zend.compose_comment`; screens/plugins hands them on as this does): a
 -- range of the changed file's lines with its code, and an old line.
 -- `test_plugin_comments` says which of the plugin's are still carried.
 ui.command {
@@ -1712,7 +1712,7 @@ panel_stub.open_file = function(session: any, path: string)
 	note(`open_file:{if type(session) == "table" then session.id else session}:{path}`)
 end
 -- The app taking web links (ds/links, as the shell sets it for "Open links
--- in Zeron"): each link opened is noted, nothing else happens.
+-- in Zend"): each link opened is noted, nothing else happens.
 ui.command {
 	id = "set_opener",
 	title = "Take web links",
@@ -1724,10 +1724,10 @@ ui.command {
 		end
 	end,
 }
--- "Open links in" as the shell has it (`test_open_links`: "zeron" or
+-- "Open links in" as the shell has it (`test_open_links`: "zend" or
 -- "external"), the panel's browser tab noting what it's sent (`panel:`); a
--- chat's Zeron link and Reveal in Finder noted as asked (ds/links' menus).
-local open_links = ui.state("test_open_links", "zeron")
+-- chat's Zend link and Reveal in Finder noted as asked (ds/links' menus).
+local open_links = ui.state("test_open_links", "zend")
 ui.command {
 	id = "set_links",
 	title = "Links as the shell sets them",
@@ -1738,15 +1738,15 @@ ui.command {
 			return true
 		end
 		Links.in_app = function(): boolean
-			return open_links:peek() == "zeron"
+			return open_links:peek() == "zend"
 		end
 		Links.opener = function(url: string): boolean
-			return open_links:peek() == "zeron" and (Links.panel :: any)(url)
+			return open_links:peek() == "zend" and (Links.panel :: any)(url)
 		end
 	end,
 }
 sessions_stub.link = function(id: string): any
-	return settled(`zeron://open/chat/{id}?workspace=w1`)
+	return settled(`zend://open/chat/{id}?workspace=w1`)
 end
 local files_stub = (require :: any)("@app/screens/files/api")
 files_stub.reveal = function(target: any, path: string): any
@@ -1763,13 +1763,13 @@ ui.command {
 		store.messages:push {
 			id = "lu1",
 			role = "user",
-			text = "Look at [chat.rs](zeron-file:src/chat.rs) please, as in [Long chat](zeron-chat:s1), and [the site](https://example.com/)",
+			text = "Look at [chat.rs](zend-file:src/chat.rs) please, as in [Long chat](zend-chat:s1), and [the site](https://example.com/)",
 			at = "Sep 8, 1:50 PM",
 			copy = "Look at chat.rs please",
 		}
 		local reply = "The fix is in [the parser](src/parse.rs#L12) and [the host](/work/atlas/src/main.rs:40). "
 			.. "Not [this one](/etc/hosts.conf), nor [the docs](https://example.com/a.rs). "
-			.. "PR: **https://github.com/zeronsh/example/pull/1**."
+			.. "PR: **https://github.com/sandyhq/example/pull/1**."
 		store.messages:push {
 			id = "la1",
 			role = "assistant",
@@ -1786,7 +1786,7 @@ ui.command {
 -- whose folder is /work/atlas.
 local function invoke(kind: string, name: string): string
 	local json = `\{"kind":"{kind}","name":"{name}"\}`
-	return "zeron-invoke:" .. (string.gsub(json, ".", function(c: string): string
+	return "zend-invoke:" .. (string.gsub(json, ".", function(c: string): string
 		return string.format("%02x", string.byte(c))
 	end))
 end
@@ -1802,10 +1802,10 @@ ui.command {
 		store.messages:push {
 			id = "cu1",
 			role = "user",
-			text = `[AGENTS.md](zeron-file:AGENTS.md) first\n\n[Long chat](zeron-chat:s1) then\n\n[$frontend-design]({skill}) and\n\n[/review]({command}) last`,
+			text = `[AGENTS.md](zend-file:AGENTS.md) first\n\n[Long chat](zend-chat:s1) then\n\n[$frontend-design]({skill}) and\n\n[/review]({command}) last`,
 			at = "Sep 8, 1:52 PM",
 		}
-		local reply = `[AGENTS.md](AGENTS.md) came through\n\n[Long chat](zeron-chat:s1) too\n\n[$frontend-design]({skill}) as well\n\n[the docs](https://example.com/) stay a link\n\n[the review skill](/Users/me/.agents/skills/code-review/SKILL.md) is one\n\n[that skill](/Users/me/.agents/skills/not-listed/SKILL.md) is not\n\n[hosts](/etc/hosts.conf) is outside`
+		local reply = `[AGENTS.md](AGENTS.md) came through\n\n[Long chat](zend-chat:s1) too\n\n[$frontend-design]({skill}) as well\n\n[the docs](https://example.com/) stay a link\n\n[the review skill](/Users/me/.agents/skills/code-review/SKILL.md) is one\n\n[that skill](/Users/me/.agents/skills/not-listed/SKILL.md) is not\n\n[hosts](/etc/hosts.conf) is outside`
 		store.messages:push {
 			id = "ca1",
 			role = "assistant",
@@ -1867,7 +1867,7 @@ ui.command {
 		store.messages:push {
 			id = "mu1",
 			role = "user",
-			text = "Look at [Image 1](zeron-image:1) and [notes \\[v2\\].md](zeron-attachment:2)",
+			text = "Look at [Image 1](zend-image:1) and [notes \\[v2\\].md](zend-attachment:2)",
 			attachments = {
 				{ kind = "image", name = "92a7aa9f-Image_1.png", src = "assets/favicons/zgx.png" },
 				{ kind = "file", name = "1b2c3d4e-notes__v2_.md" },
@@ -2205,7 +2205,7 @@ ui.command {
 	end,
 }
 
--- A plugin putting words into the composer (`zeron.compose.insert`).
+-- A plugin putting words into the composer (`zend.compose.insert`).
 ui.command {
 	id = "insert_words",
 	title = "Insert words into the composer",

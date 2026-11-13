@@ -274,7 +274,7 @@ return ui.component(function(props: Props): Node
 				end,
 				cursor = "pointer",
 				bg = function(): Color
-					return if on() then "$zeron.segmented.thumb" else "#00000000"
+					return if on() then "$zend.segmented.thumb" else "#00000000"
 				end,
 				hover = { bg = "$hover" },
 				active = { bg = "$pressed" },
@@ -484,7 +484,7 @@ return ui.component(function(props: Props): Node
 			ui.row { w_full = true, justify = "between", aria_hidden = true, table.unpack(heads) },
 			ui.column {
 				w_full = true,
-				gap = "$zeron.space.hair",
+				gap = "$zend.space.hair",
 				role = "grid",
 				label = props.label or locale.t("ds.date_picker.label"),
 				focus_group = "both",

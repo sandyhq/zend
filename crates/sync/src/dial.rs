@@ -60,7 +60,7 @@ pub async fn connect_ws_with_headers(
 /// tungstenite's default refuses any frame over 16 MiB, and a Durable Object
 /// sends each message as one frame however the sender fragmented it: a host's
 /// large reply then ended the whole link in the reader. The cap only stops
-/// runaways, like the local socket's (`zeron_rpc`'s `ws::config`).
+/// runaways, like the local socket's (`zend_rpc`'s `ws::config`).
 fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
     const MAX_MESSAGE_BYTES: usize = 512 << 20;
     tokio_tungstenite::tungstenite::protocol::WebSocketConfig {

@@ -257,7 +257,7 @@ fn a_keyed_lists_rows_stay_as_the_scroll_around_it_moves() {
     assert!(built(&mut h).contains(&21));
 }
 
-/// Zeron's panel section: the list in a clipping box that eases open and
+/// Zend's panel section: the list in a clipping box that eases open and
 /// shut. The rows it builds follow the box, not only the scroll: folded
 /// none, opened again (the scroll not moved) the rows it shows, and the box
 /// shrinking keeps only those it still shows.

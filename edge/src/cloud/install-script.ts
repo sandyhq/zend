@@ -5,13 +5,13 @@
  * Provider-neutral by contract (sandbox-provider.ts): POSIX sh on Linux
  * x86_64/aarch64 with curl, tar, sudo and systemd; it runs as whatever
  * unprivileged user `exec` uses and installs into that user's home. Its
- * inputs (`ZERON_RUNNER_ENROLL`, `ZERON_EDGE_URL`) come from the sandbox's
+ * inputs (`ZEND_RUNNER_ENROLL`, `ZEND_EDGE_URL`) come from the sandbox's
  * create-time env, overridable inline by the command (installCommand).
  *
  * Not the public install.sh: that one installs a local-only *user* service.
  * The Cloud device needs a *system* unit — enabled system units are what a
  * provider restarts after stop/resume — whose environment comes from an
- * EnvironmentFile (~/.zeron/env, 0600), because the sandbox env reaches
+ * EnvironmentFile (~/.zend/env, 0600), because the sandbox env reaches
  * `exec` commands but not systemd services.
  *
  * Idempotent by construction: providers don't retry commands and a lost
@@ -20,11 +20,11 @@
  * be mid-flight. Hence the flock, the "already downloaded" skip, atomic
  * env-file replace, and restart-only-on-change.
  *
- * `ZERON_CLOUD_HOME` / `ZERON_CLOUD_UNIT_DIR` exist so the unit tier can run
+ * `ZEND_CLOUD_HOME` / `ZEND_CLOUD_UNIT_DIR` exist so the unit tier can run
  * the real script in a temp dir; production never sets them.
  */
 
-export const CLOUD_UNIT_NAME = "zeron-cloud.service";
+export const CLOUD_UNIT_NAME = "zend-cloud.service";
 
 /**
  * Starts the engine when a machine comes back, without anyone asking over the
@@ -35,9 +35,9 @@ export const CLOUD_UNIT_NAME = "zeron-cloud.service";
  * unit or only the ones that were running. `--no-block`: a unit's start must
  * not wait on another's during boot.
  */
-export const CLOUD_BOOT_UNIT_NAME = "zeron-cloud-boot.service";
+export const CLOUD_BOOT_UNIT_NAME = "zend-cloud-boot.service";
 export const CLOUD_BOOT_UNIT = `[Unit]
-Description=Start the Zeron Cloud engine when the machine comes back
+Description=Start the Zend Cloud engine when the machine comes back
 
 [Service]
 Type=oneshot
@@ -49,17 +49,17 @@ WantedBy=multi-user.target
 `;
 
 export const CLOUD_INSTALL_SCRIPT = `#!/bin/sh
-# Zeron Cloud engine installer (edge/src/cloud/install-script.ts).
+# Zend Cloud engine installer (edge/src/cloud/install-script.ts).
 # POSIX sh, idempotent, provider-neutral.
 set -eu
 
-: "\${ZERON_RUNNER_ENROLL:?ZERON_RUNNER_ENROLL is required}"
-: "\${ZERON_EDGE_URL:?ZERON_EDGE_URL is required}"
+: "\${ZEND_RUNNER_ENROLL:?ZEND_RUNNER_ENROLL is required}"
+: "\${ZEND_EDGE_URL:?ZEND_EDGE_URL is required}"
 
 run_user="$(id -un)"
-home="\${ZERON_CLOUD_HOME:-$HOME}"
-unit_dir="\${ZERON_CLOUD_UNIT_DIR:-/etc/systemd/system}"
-data="$home/.zeron"
+home="\${ZEND_CLOUD_HOME:-$HOME}"
+unit_dir="\${ZEND_CLOUD_UNIT_DIR:-/etc/systemd/system}"
+data="$home/.zend"
 app="$data/app"
 unit="$unit_dir/${CLOUD_UNIT_NAME}"
 
@@ -74,19 +74,19 @@ flock 9
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
   aarch64 | arm64) arch=aarch64 ;;
-  *) echo "zeron cloud install: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+  *) echo "zend cloud install: unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
 
 # (No pipefail in POSIX sh: a failed fetch yields an empty version, refused below.)
-ver="$(curl -fsSL --retry 3 --max-time 30 "$ZERON_EDGE_URL/releases/latest.txt" | tr -d '[:space:]')"
+ver="$(curl -fsSL --retry 3 --max-time 30 "$ZEND_EDGE_URL/releases/latest.txt" | tr -d '[:space:]')"
 case "$ver" in
-  "" | *[!A-Za-z0-9._+-]*) echo "zeron cloud install: bad release version '$ver'" >&2; exit 1 ;;
+  "" | *[!A-Za-z0-9._+-]*) echo "zend cloud install: bad release version '$ver'" >&2; exit 1 ;;
 esac
 
 restart=0
 dest="$app/$ver"
-if [ -x "$dest/zeron" ]; then
-  echo "zeron $ver already installed"
+if [ -x "$dest/zend" ]; then
+  echo "zend $ver already installed"
 else
   tmp="$(mktemp -d "$data/.download.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
@@ -94,15 +94,15 @@ else
   # without a floor one bad connection trickled for good, holding the lock
   # every retried install then queued behind.
   curl -fsSL --retry 3 --connect-timeout 15 --speed-limit 1048576 --speed-time 15 \\
-    -o "$tmp/zeron.tar.gz" "$ZERON_EDGE_URL/releases/zeron-$ver-linux-$arch.tar.gz"
+    -o "$tmp/zend.tar.gz" "$ZEND_EDGE_URL/releases/zend-$ver-linux-$arch.tar.gz"
   mkdir "$tmp/unpacked"
-  tar -xzf "$tmp/zeron.tar.gz" -C "$tmp/unpacked" --strip-components=1
+  tar -xzf "$tmp/zend.tar.gz" -C "$tmp/unpacked" --strip-components=1
   # Probe before switching: a binary that cannot start must not replace one that can.
-  "$tmp/unpacked/zeron" --version >/dev/null
+  "$tmp/unpacked/zend" --version >/dev/null
   # The desktop app's background engine (78 MB): never run here (the unit runs
-  # \`zeron headless\`, which links the engine), and every byte on this disk is
+  # \`zend headless\`, which links the engine), and every byte on this disk is
   # copied back in on every wake. The engine's updater leaves it out too.
-  rm -f "$tmp/unpacked/zeron-engine"
+  rm -f "$tmp/unpacked/zend-engine"
   rm -rf "$dest"
   mv "$tmp/unpacked" "$dest"
 fi
@@ -116,16 +116,16 @@ fi
 put() { if [ -n "$2" ]; then printf '%s=%s\\n' "$1" "$2"; fi; }
 env_new="$(mktemp "$data/.env.XXXXXX")"
 {
-  put ZERON_RUNNER_ENROLL "$ZERON_RUNNER_ENROLL"
-  put ZERON_EDGE_URL "$ZERON_EDGE_URL"
-  printf 'ZERON_DEVICE_NAME="%s"\\n' "\${ZERON_DEVICE_NAME:-Cloud session}"
-  put ZERON_DEVICE_PLATFORM "\${ZERON_DEVICE_PLATFORM:-cloud}"
-  put ZERON_CLOUD_ACCOUNT "\${ZERON_CLOUD_ACCOUNT:-}"
-  put ZERON_CLOUD_CHAT "\${ZERON_CLOUD_CHAT:-}"
-  put ZERON_CLOUD_REPO "\${ZERON_CLOUD_REPO:-}"
-  put ZERON_CLOUD_PATH "\${ZERON_CLOUD_PATH:-}"
-  put ZERON_CLOUD_BRANCH "\${ZERON_CLOUD_BRANCH:-}"
-  put ZERON_AUTO_UPDATE 1
+  put ZEND_RUNNER_ENROLL "$ZEND_RUNNER_ENROLL"
+  put ZEND_EDGE_URL "$ZEND_EDGE_URL"
+  printf 'ZEND_DEVICE_NAME="%s"\\n' "\${ZEND_DEVICE_NAME:-Cloud session}"
+  put ZEND_DEVICE_PLATFORM "\${ZEND_DEVICE_PLATFORM:-cloud}"
+  put ZEND_CLOUD_ACCOUNT "\${ZEND_CLOUD_ACCOUNT:-}"
+  put ZEND_CLOUD_CHAT "\${ZEND_CLOUD_CHAT:-}"
+  put ZEND_CLOUD_REPO "\${ZEND_CLOUD_REPO:-}"
+  put ZEND_CLOUD_PATH "\${ZEND_CLOUD_PATH:-}"
+  put ZEND_CLOUD_BRANCH "\${ZEND_CLOUD_BRANCH:-}"
+  put ZEND_AUTO_UPDATE 1
   put HOME "$home"
 } >"$env_new"
 chmod 600 "$env_new"
@@ -139,7 +139,7 @@ fi
 unit_new="$(mktemp "$data/.unit.XXXXXX")"
 cat >"$unit_new" <<UNIT
 [Unit]
-Description=Zeron Cloud engine
+Description=Zend Cloud engine
 StartLimitIntervalSec=0
 
 [Service]
@@ -147,7 +147,7 @@ User=$run_user
 WorkingDirectory=$home
 Environment=HOME=$home
 EnvironmentFile=$data/env
-ExecStart=$app/current/zeron headless
+ExecStart=$app/current/zend headless
 Restart=always
 RestartSec=1
 
@@ -180,7 +180,7 @@ if [ "$restart" = 1 ]; then
 else
   sudo systemctl start ${CLOUD_UNIT_NAME}
 fi
-echo "zeron cloud: $ver ready"
+echo "zend cloud: $ver ready"
 `;
 
 /** `orgId.userId.deviceId.code` (ids + base64url only). */
@@ -199,27 +199,27 @@ export const isBranch = (value: string): boolean => BRANCH_RE.test(value) && !va
 
 /** Everything a session sandbox is provisioned with (also its create env). */
 export interface SessionEnv {
-  readonly ZERON_RUNNER_ENROLL: string;
-  readonly ZERON_EDGE_URL: string;
-  readonly ZERON_DEVICE_NAME: string;
-  readonly ZERON_DEVICE_PLATFORM: string;
-  readonly ZERON_CLOUD_ACCOUNT: string;
-  readonly ZERON_CLOUD_CHAT: string;
-  readonly ZERON_CLOUD_REPO: string;
-  readonly ZERON_CLOUD_PATH: string;
-  readonly ZERON_CLOUD_BRANCH: string;
+  readonly ZEND_RUNNER_ENROLL: string;
+  readonly ZEND_EDGE_URL: string;
+  readonly ZEND_DEVICE_NAME: string;
+  readonly ZEND_DEVICE_PLATFORM: string;
+  readonly ZEND_CLOUD_ACCOUNT: string;
+  readonly ZEND_CLOUD_CHAT: string;
+  readonly ZEND_CLOUD_REPO: string;
+  readonly ZEND_CLOUD_PATH: string;
+  readonly ZEND_CLOUD_BRANCH: string;
 }
 
 const CHECKS: Record<keyof SessionEnv, (v: string) => boolean> = {
-  ZERON_RUNNER_ENROLL: (v) => ENROLL_RE.test(v),
-  ZERON_EDGE_URL: isEdgeOrigin,
-  ZERON_DEVICE_NAME: (v) => /^[A-Za-z0-9 ._-]{1,64}$/.test(v),
-  ZERON_DEVICE_PLATFORM: (v) => ID_RE.test(v),
-  ZERON_CLOUD_ACCOUNT: (v) => ID_RE.test(v),
-  ZERON_CLOUD_CHAT: (v) => ID_RE.test(v),
-  ZERON_CLOUD_REPO: isRepoUrl,
-  ZERON_CLOUD_PATH: isCheckoutPath,
-  ZERON_CLOUD_BRANCH: isBranch
+  ZEND_RUNNER_ENROLL: (v) => ENROLL_RE.test(v),
+  ZEND_EDGE_URL: isEdgeOrigin,
+  ZEND_DEVICE_NAME: (v) => /^[A-Za-z0-9 ._-]{1,64}$/.test(v),
+  ZEND_DEVICE_PLATFORM: (v) => ID_RE.test(v),
+  ZEND_CLOUD_ACCOUNT: (v) => ID_RE.test(v),
+  ZEND_CLOUD_CHAT: (v) => ID_RE.test(v),
+  ZEND_CLOUD_REPO: isRepoUrl,
+  ZEND_CLOUD_PATH: isCheckoutPath,
+  ZEND_CLOUD_BRANCH: isBranch
 };
 
 /**
@@ -259,8 +259,8 @@ export const START_ENGINE_COMMAND =
 /** A sleep's first step: the engine starts no new work, so nothing begins that
  * the stop would cut off; what arrives meanwhile waits for the woken machine.
  * Exits {@link QUIESCE_BUSY_EXIT} when a turn is in flight or a message is
- * waiting (mirrors `zeron quiesce`, apps/zeron/src/main.rs). */
-export const QUIESCE_ENGINE_COMMAND = `"$HOME/.zeron/app/current/zeron" quiesce`;
+ * waiting (mirrors `zend quiesce`, apps/zend/src/main.rs). */
+export const QUIESCE_ENGINE_COMMAND = `"$HOME/.zend/app/current/zend" quiesce`;
 export const QUIESCE_BUSY_EXIT = 75;
 
 /**
@@ -274,13 +274,13 @@ export const QUIESCE_BUSY_EXIT = 75;
  * start` on a resumed machine), a crash restarts in a second, and the boot
  * unit appears. Then everything written is flushed to the disk, as the
  * provider's snapshot follows. Best effort: only the stop decides the exit status.
- * `ZERON_CLOUD_UNIT_DIR` exists for the unit tier.
+ * `ZEND_CLOUD_UNIT_DIR` exists for the unit tier.
  */
 export const STOP_ENGINE_COMMAND = [
-  `d="\${ZERON_CLOUD_UNIT_DIR:-/etc/systemd/system}"`,
+  `d="\${ZEND_CLOUD_UNIT_DIR:-/etc/systemd/system}"`,
   `if [ -f "$d/${CLOUD_UNIT_NAME}" ] && t="$(mktemp)"; then`,
   `  if awk '/^After=network-online.target$/||/^Wants=network-online.target$/||/^StartLimitIntervalSec=/{next} ` +
-    `/^RestartSec=5$/{print "RestartSec=1";next} {print} /^Description=Zeron Cloud engine$/{print "StartLimitIntervalSec=0"}' ` +
+    `/^RestartSec=5$/{print "RestartSec=1";next} {print} /^Description=Zend Cloud engine$/{print "StartLimitIntervalSec=0"}' ` +
     `"$d/${CLOUD_UNIT_NAME}" >"$t" && grep -q '^ExecStart=' "$t"; then`,
   `    cmp -s "$t" "$d/${CLOUD_UNIT_NAME}" || sudo install -m 0644 "$t" "$d/${CLOUD_UNIT_NAME}"`,
   `  fi`,

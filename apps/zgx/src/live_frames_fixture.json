@@ -50,7 +50,7 @@
             "entry": "a1",
             "len": 43,
             "part": "a1-t",
-            "text": "run the tests – «zeron-doc» first."
+            "text": "run the tests – «zend-doc» first."
           }
         ],
         "count": 2,
@@ -79,7 +79,7 @@
             "len": 2,
             "part": {
               "call": {
-                "command": "cargo test -p zeron-doc",
+                "command": "cargo test -p zend-doc",
                 "kind": "exec"
               },
               "id": "a1-c",
@@ -114,7 +114,7 @@
             "len": 2,
             "part": {
               "call": {
-                "command": "cargo test -p zeron-doc",
+                "command": "cargo test -p zend-doc",
                 "kind": "exec"
               },
               "id": "a1-c",
@@ -186,11 +186,11 @@
                 {
                   "id": "a1-t",
                   "kind": "text",
-                  "text": "I'll run the tests – «zeron-doc» first."
+                  "text": "I'll run the tests – «zend-doc» first."
                 },
                 {
                   "call": {
-                    "command": "cargo test -p zeron-doc",
+                    "command": "cargo test -p zend-doc",
                     "kind": "exec"
                   },
                   "id": "a1-c",

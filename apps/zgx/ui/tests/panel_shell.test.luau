@@ -228,7 +228,7 @@ test("the panel's home stands level with a new chat's composer, its rows no wide
 			local home, composer = middle(app, "panel-home-block"), middle(app, "chat-composer-dock")
 			return home ~= nil and composer ~= nil and math.abs(home - composer) <= 1
 		end)).to_be(true)
-		-- (No wider than a list's (zeron.form.list), in the panel's middle; each row
+		-- (No wider than a list's (zend.form.list), in the panel's middle; each row
 		-- as wide as the block's inside, its whole width a target.)
 		local panel, block = box(app, "panel-empty") :: any, box(app, "panel-home-block") :: any
 		local row = box(app, "panel-open-browser") :: any

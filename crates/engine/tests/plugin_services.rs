@@ -20,8 +20,8 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{Request as WsRequest, Response as WsResponse};
 
-use zeron_engine::{EngineCore, HarnessId, HarnessRegistry};
-use zeron_rpc::{
+use zend_engine::{EngineCore, HarnessId, HarnessRegistry};
+use zend_rpc::{
     DeviceFrameHeader, LinkCache, LinkCacheConfig, RpcClient, StaticToken, decode_device_frame,
     encode_device_frame, methods,
 };
@@ -108,7 +108,7 @@ async fn device_rooms() -> String {
 struct Engine {
     core: EngineCore,
     client: RpcClient,
-    _host: zeron_rpc::HostRelay,
+    _host: zend_rpc::HostRelay,
 }
 
 fn engine(dir: &Path, device: &str, rooms: &str) -> Engine {
@@ -122,23 +122,23 @@ fn engine(dir: &Path, device: &str, rooms: &str) -> Engine {
     // Each dial says which device it is (the edge verifies the proof).
     let me = device.to_owned();
     links.caller_proof = Some(Arc::new(move |_: &str, _: &str, _: i64| {
-        Some(zeron_rpc::CallerProof { device: me.clone(), key: "test-key".into(), signature: "test-sig".into() })
+        Some(zend_rpc::CallerProof { device: me.clone(), key: "test-key".into(), signature: "test-sig".into() })
     }));
     core.set_links(LinkCache::new(links));
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     Engine { core, client, _host: host }
 }
 
 const SERVICE: &str = r#"
-local zeron = require("./zeron")("hello-devices")
+local zend = require("./zend")("hello-devices")
 
-zeron.serve("where", function(args, call)
-	local ran = zeron.run("echo", { zeron.device.id }):await()
-	return { device = zeron.device.id, from = call.from.id, echoed = ran.stdout }
+zend.serve("where", function(args, call)
+	local ran = zend.run("echo", { zend.device.id }):await()
+	return { device = zend.device.id, from = call.from.id, echoed = ran.stdout }
 end, { safe = true })
 
-zeron.serve("shout", function(args)
-	zeron.emit("shouted", { word = args.word, at = zeron.device.id })
+zend.serve("shout", function(args)
+	zend.emit("shouted", { word = args.word, at = zend.device.id })
 	return true
 end)
 "#;
@@ -157,7 +157,7 @@ async fn install_asking(e: &Engine, dir: &Path, version: &str, more: &[&str]) {
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("init.luau"), "return nil").unwrap();
     std::fs::write(folder.join("service.luau"), SERVICE).unwrap();
-    std::fs::write(folder.join("zeron.luau"), zeron_engine::plugins::scaffold::SDK).unwrap();
+    std::fs::write(folder.join("zend.luau"), zend_engine::plugins::scaffold::SDK).unwrap();
     std::fs::write(folder.join("icon.svg"), ICON).unwrap();
     let permissions: Vec<&str> = ["service", "commands"].into_iter().chain(more.iter().copied()).collect();
     let manifest = json!({
@@ -167,8 +167,8 @@ async fn install_asking(e: &Engine, dir: &Path, version: &str, more: &[&str]) {
         "commands": ["echo"],
         "icon": "icon.svg",
     });
-    std::fs::write(folder.join("zeron-plugin.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
-    // As Zeron's consent window signs: with a review for it as listed.
+    std::fs::write(folder.join("zend-plugin.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    // As Zend's consent window signs: with a review for it as listed.
     let review = review(e, "hello-devices").await;
     let signed = e
         .client
@@ -241,10 +241,10 @@ async fn a_window_on_one_device_calls_its_service_on_another() {
     // One person's two devices: the same plugin key (the same author).
     std::fs::create_dir_all(&dir_a).unwrap();
     std::fs::create_dir_all(&dir_b).unwrap();
-    zeron_engine::plugins::signing::load_or_create_key(&dir_a).unwrap();
+    zend_engine::plugins::signing::load_or_create_key(&dir_a).unwrap();
     std::fs::copy(
-        dir_a.join(zeron_engine::plugins::signing::KEY_FILE),
-        dir_b.join(zeron_engine::plugins::signing::KEY_FILE),
+        dir_a.join(zend_engine::plugins::signing::KEY_FILE),
+        dir_b.join(zend_engine::plugins::signing::KEY_FILE),
     )
     .unwrap();
     let a = engine(&dir_a, "device-a", &rooms);
@@ -294,7 +294,7 @@ async fn a_window_on_one_device_calls_its_service_on_another() {
     // (A file here can't be installed there.)
     let refused = a
         .client
-        .call(methods::INSTALL_PLUGIN, json!({ "targetDeviceId": "device-b", "path": "/tmp/x.zeron-plugin" }))
+        .call(methods::INSTALL_PLUGIN, json!({ "targetDeviceId": "device-b", "path": "/tmp/x.zend-plugin" }))
         .await;
     assert!(refused.is_err(), "{refused:?}");
     let answered = ask(&a, "device-b", "where", json!({})).await;
@@ -386,7 +386,7 @@ async fn allow_on(e: &Engine, device: &str, item: &Value, review: &Value) -> Res
         .map_err(|e| e.to_string())
 }
 
-/// As Settings → Plugins sends a `.zeron-plugin` file on this device to
+/// As Settings → Plugins sends a `.zend-plugin` file on this device to
 /// `device`: in pieces (small ones here, so there are several), then
 /// installed there.
 async fn send_file(e: &Engine, device: &str, file: &Path) -> Result<Value, String> {
@@ -416,7 +416,7 @@ async fn send_file(e: &Engine, device: &str, file: &Path) -> Result<Value, Strin
         .map_err(|e| e.to_string())
 }
 
-/// `e`'s plugin as a `.zeron-plugin` file in `dir`.
+/// `e`'s plugin as a `.zend-plugin` file in `dir`.
 async fn export(e: &Engine, dir: &Path) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let out = e
@@ -430,14 +430,14 @@ async fn export(e: &Engine, dir: &Path) -> std::path::PathBuf {
 /// An agent's call on `e` (its MCP server's scoped token, as the engine
 /// sees it once past the IPC gate).
 async fn as_agent(e: &Engine, method: &str, params: Value) -> Result<Value, String> {
-    use zeron_rpc::RpcService as _;
+    use zend_rpc::RpcService as _;
     let rpc = e.core.rpc_service();
-    let reply = zeron_rpc::with_caller(zeron_rpc::Caller::Agent { chat: Some("chat-1".into()) }, async move {
+    let reply = zend_rpc::with_caller(zend_rpc::Caller::Agent { chat: Some("chat-1".into()) }, async move {
         rpc.handle(method, params).await
     })
     .await;
     match reply {
-        Ok(zeron_rpc::RpcReply::Value(value)) => Ok(value),
+        Ok(zend_rpc::RpcReply::Value(value)) => Ok(value),
         Ok(_) => Ok(Value::Null),
         Err(error) => Err(error.to_string()),
     }
@@ -445,7 +445,7 @@ async fn as_agent(e: &Engine, method: &str, params: Value) -> Result<Value, Stri
 
 /// Beta users couldn't install a plugin on another of their devices: its
 /// Allow was refused on the way. Now a person installs someone else's
-/// plugin on another of their devices from this one (a `.zeron-plugin` file
+/// plugin on another of their devices from this one (a `.zend-plugin` file
 /// here), sees what it asks as that device reads it, and allows it there;
 /// an update asking for more waits there again, and is allowed from here
 /// too. The decision is that device's alone (this one hasn't allowed it),

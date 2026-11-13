@@ -7,12 +7,12 @@ name: release
 #   - Windows per-user installer, portable zip, and the standalone exe that
 #     the old app's updater installs (it completes itself from the zip)
 # then create a GitHub Release AND upload everything to the
-# `comet-native-releases` R2 bucket (served at zeron.sh/releases/* for
-# `curl -fsSL https://zeron.sh/install.sh | sh`), bumping latest.txt.
+# `comet-native-releases` R2 bucket (served at zend.invalid/releases/* for
+# `curl -fsSL https://zend.invalid/install.sh | sh`), bumping latest.txt.
 #
-# Every shipped Zeron installs these (crates/update at v0.2.138 reads the same
+# Every shipped Zend installs these (crates/update at v0.2.138 reads the same
 # names, checksums and `--version` answers), so a release can move to the old
-# app (apps/zeron, the jobs below) and back: the `app` input of a run by hand,
+# app (apps/zend, the jobs below) and back: the `app` input of a run by hand,
 # or the repository variable STABLE_APP=gpui for a tag. That's the way back
 # if the zgx app has to be withdrawn: a newer version of the old app.
 #
@@ -76,9 +76,9 @@ jobs:
       # The edge's, as the betas': stable at its root, the beta channel in its
       # `beta/`. (The old app's installs name the GitHub release marked
       # latest; their first package moves them here.)
-      windows-feed: https://zeron.sh/releases
+      windows-feed: https://zend.invalid/releases
 
-  # The old app (apps/zeron), when a release has to go back to it.
+  # The old app (apps/zend), when a release has to go back to it.
   linux:
     needs: version
     if: needs.version.outputs.app == 'gpui'
@@ -229,7 +229,7 @@ jobs:
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
               macos-arm64.dmg macos-arm64-app.tar.gz \
               windows-x86_64.zip windows-x86_64.exe windows-x86_64-setup.exe; do
-            test -f "dist/zeron-$ver-$platform" \
+            test -f "dist/zend-$ver-$platform" \
               || { echo "missing artifact for tag v$ver: $platform — check builds and Cargo.toml version"; exit 1; }
           done
           echo "VERSION=$ver" >> "$GITHUB_ENV"
@@ -239,7 +239,7 @@ jobs:
         run: |
           # The zgx app needs macOS 13 (Ghostty's floor); the old app's 12. A
           # Mac below it is held on the release it has, and told why
-          # (crates/update `offer`, in every Zeron since 0.2.136).
+          # (crates/update `offer`, in every Zend since 0.2.136).
           if [ "$APP" = zgx ]; then
             manifest=$(jq -n --arg version "$VERSION" '{version: $version, minimumMacOS: "13.0", files: {}}')
           else
@@ -261,7 +261,7 @@ jobs:
           # replaced. Keep the ones already there, so re-running this job
           # after a failed R2 upload gets past this step.
           overwrite_files: false
-      - name: upload to R2 (zeron.sh/releases/*)
+      - name: upload to R2 (zend.invalid/releases/*)
         env:
           APP: ${{ needs.version.outputs.app }}
         if: env.CLOUDFLARE_API_TOKEN != ''

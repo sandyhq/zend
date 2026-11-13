@@ -74,17 +74,17 @@ claim. Normal shared-host noise limits interpretation of small differences.
 
 ## Reproduction
 
-Build each revision with `cargo build --release --locked -p zeron`, copy each
+Build each revision with `cargo build --release --locked -p zend`, copy each
 binary to an immutable path, and run `scripts/resource-profile.mjs` sequentially
 in main/candidate/candidate/main order for each workload. Use:
 
 ```sh
-DISPLAY=:108 WAYLAND_DISPLAY= LP_NUM_THREADS=4 ZERON_FRAME_STATS=0 \
-  ZERON_PROFILE_PSS=1 ZERON_PROFILE_SUBMIT_UI=1 \
-  ZERON_PROFILE_PRE_IDLE_MS=10000 ZERON_PROFILE_IDLE_MS=45000 \
-  ZERON_REPLAY_DELAY_MS=40 \
+DISPLAY=:108 WAYLAND_DISPLAY= LP_NUM_THREADS=4 ZEND_FRAME_STATS=0 \
+  ZEND_PROFILE_PSS=1 ZEND_PROFILE_SUBMIT_UI=1 \
+  ZEND_PROFILE_PRE_IDLE_MS=10000 ZEND_PROFILE_IDLE_MS=45000 \
+  ZEND_REPLAY_DELAY_MS=40 \
   CLAUDE_CODE_EXECUTABLE="$PWD/scripts/replay-claude.py" \
-  ZERON_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
+  ZEND_REPLAY_JOURNAL="$PWD/scripts/fixtures/resource-stream.jsonl" \
   node scripts/resource-profile.mjs /path/to/binary /tmp/fresh-run claude-code
 ```
 

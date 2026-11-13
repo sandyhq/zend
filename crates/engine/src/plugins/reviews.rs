@@ -1,4 +1,4 @@
-//! Who may decide: one-time review capabilities for Zeron's consent window.
+//! Who may decide: one-time review capabilities for Zend's consent window.
 //!
 //! Allowing a plugin (`DecidePlugin {allow: true}`), taking one as yours
 //! (`SignPlugin {id}`) and allowing a template (`DecideTemplate {allow:
@@ -7,7 +7,7 @@
 //! that plugin or package as shown, used up by the decision it was minted
 //! for, gone after [`TTL`]. Only a consent window's own host asks for one:
 //! the methods are refused to agents' scoped token
-//! ([`zeron_rpc::agent_allowed`]), and the window's Luau never sees it.
+//! ([`zend_rpc::agent_allowed`]), and the window's Luau never sees it.
 //!
 //! A plugin's may also be asked for by another of the account's devices
 //! over the device link (Settings → Plugins' device switcher: that device's
@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use zeron_rpc::RpcError;
+use zend_rpc::RpcError;
 
 /// How long a review stays good: a decision is made while the sheet is up.
 pub const TTL: Duration = Duration::from_secs(10 * 60);
@@ -57,11 +57,11 @@ impl Origin {
     /// The origin of the call being served, if it may hold a review at all:
     /// this device's app, or a verified peer. An agent's token or an
     /// unverified dial may not.
-    pub fn of(caller: &zeron_rpc::Caller) -> Option<Origin> {
+    pub fn of(caller: &zend_rpc::Caller) -> Option<Origin> {
         match caller {
-            zeron_rpc::Caller::Local => Some(Origin::Local),
-            zeron_rpc::Caller::Peer { device: Some(device) } if !device.is_empty() => Some(Origin::Peer(device.clone())),
-            zeron_rpc::Caller::Peer { device: _ } | zeron_rpc::Caller::Agent { .. } => None,
+            zend_rpc::Caller::Local => Some(Origin::Local),
+            zend_rpc::Caller::Peer { device: Some(device) } if !device.is_empty() => Some(Origin::Peer(device.clone())),
+            zend_rpc::Caller::Peer { device: _ } | zend_rpc::Caller::Agent { .. } => None,
         }
     }
 }
@@ -83,7 +83,7 @@ pub struct Reviews {
 /// mints a fresh one and tries again.
 pub fn needed(what: &str) -> RpcError {
     RpcError::Failed(format!(
-        "review: {what} needs Zeron's own consent window (open it there and decide again)"
+        "review: {what} needs Zend's own consent window (open it there and decide again)"
     ))
 }
 
@@ -102,7 +102,7 @@ impl Reviews {
             };
             self.open.remove(&oldest);
         }
-        let token = zeron_rpc::ipc_auth::generate_token()
+        let token = zend_rpc::ipc_auth::generate_token()
             .map_err(|e| RpcError::Failed(format!("Couldn't open a review: {e}")))?;
         self.open.insert(
             token.clone(),
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn only_the_app_and_verified_devices_may_hold_one() {
-        use zeron_rpc::Caller;
+        use zend_rpc::Caller;
         assert_eq!(Origin::of(&Caller::Local), Some(Origin::Local));
         assert_eq!(Origin::of(&Caller::Peer { device: Some("laptop".into()) }), Some(Origin::Peer("laptop".into())));
         assert_eq!(Origin::of(&Caller::Peer { device: None }), None);

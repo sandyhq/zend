@@ -2,20 +2,20 @@
 //! engine says when it's from before it took approvals and files from your
 //! other devices, said as what to do about it.
 
-use zeron_rpc::{RpcError, methods};
+use zend_rpc::{RpcError, methods};
 
-/// The first Zeron whose engine takes reviews, allows and plugin files from
+/// The first Zend whose engine takes reviews, allows and plugin files from
 /// your other devices: the 0.3.0 stable, as the 0.2.139 betas before it.
 /// An older engine is known by its refusal's words, not by a version
 /// compared, so no beta suffix can read as new enough; this only names the
 /// release to update to.
 pub const REMOTE_APPROVALS_SINCE: &str = "0.3.0";
 
-/// The words for a device whose Zeron is too old for this.
+/// The words for a device whose Zend is too old for this.
 pub fn too_old() -> String {
     format!(
-        "That device's Zeron is too old to approve or install plugins from your other devices. \
-         Update Zeron there to {REMOTE_APPROVALS_SINCE} or later, or allow it on that device."
+        "That device's Zend is too old to approve or install plugins from your other devices. \
+         Update Zend there to {REMOTE_APPROVALS_SINCE} or later, or allow it on that device."
     )
 }
 
@@ -49,7 +49,7 @@ pub fn older_engine(target: &str, method: &str, error: RpcError) -> RpcError {
 mod tests {
     use super::*;
 
-    /// What a device on an older Zeron said to each, word for word.
+    /// What a device on an older Zend said to each, word for word.
     #[test]
     fn an_older_device_s_refusal_says_which_version_it_needs() {
         for (method, error) in [
@@ -60,7 +60,7 @@ mod tests {
             (methods::INSTALL_PLUGIN, RpcError::Failed("Give a package file (`path`) or a link (`url`)".into())),
         ] {
             let said = older_engine("laptop", method, error).to_string();
-            assert!(said.contains(REMOTE_APPROVALS_SINCE) && said.contains("Update Zeron there"), "{method}: {said}");
+            assert!(said.contains(REMOTE_APPROVALS_SINCE) && said.contains("Update Zend there"), "{method}: {said}");
         }
         // Anything else stays as it was: the device away, a stale review.
         let away = older_engine("laptop", methods::DECIDE_PLUGIN, RpcError::Failed("transport: peer laptop: unreachable".into()));

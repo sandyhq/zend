@@ -385,7 +385,7 @@ room showed no extra cost: after 15 s idle the first token came no later than on
 Peer-to-peer links carried the same frames over the WebRTC stack in `crates/preview`. They worked,
 and they saved 40-130 ms on a send or steer, but the owner parked them to ship the relay alone and
 make it as good as it can be. Nothing here waits on a link or prefers one. The code is on the branch
-`zeron/relay-direct-link`, ready to come back: a link is only ever a second path for frames the relay
+`zend/relay-direct-link`, ready to come back: a link is only ever a second path for frames the relay
 already carries, so it can return without changing anything durable.
 
 What those runs left behind for the stack terminals use is on its own: a connection now outlives a
@@ -443,7 +443,7 @@ that can't heal will never store them.
    stores a heal, and moves the chat back. Queued rows go into `rows` when that heal lands.
 2. Wait. A chat only heals when its host opens it, and there's no sweep, so give it as long as devices
    take to come back. `GET /chat2/{id}/stats` shows `relayDirty` and `relayQueue` for a chat.
-3. `ZERON_RELAY_LAYER=0` turns the layer off in one engine, as a kill switch. A build from this PR on with it
+3. `ZEND_RELAY_LAYER=0` turns the layer off in one engine, as a kill switch. A build from this PR on with it
    off still owes a heal for a chat it hosts on generation 3, and moves it back after. That's the only thing
    the off path does, and an account that never ran the layer has no such chat.
 4. **Never go below this PR's edge code while a room may hold a queue or a chat may be unhealed.** Older
@@ -458,7 +458,7 @@ that can't heal will never store them.
 ## What's built
 
 Behind `CHAT_RELAY_LAYER` on the edge: `1` for everyone, or a comma-separated list of user ids. It
-defaults off. Engines run the layer against every edge unless `ZERON_RELAY_LAYER` is set to anything but `1`,
+defaults off. Engines run the layer against every edge unless `ZEND_RELAY_LAYER` is set to anything but `1`,
 and follow what the room answers: a room that doesn't offer it (an edge without this code, or with its switch off)
 leaves every chat on stored rows, exactly as before (`relay_layer_on` in `crates/engine/src/doc_host/relay.rs`).
 

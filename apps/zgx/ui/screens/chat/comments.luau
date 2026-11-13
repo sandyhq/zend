@@ -1,7 +1,7 @@
 -- Review comments left on a file (the files pane's editor, a block of its
 -- preview) or on a diff (a plugin's: Git's Changes, through
--- `zeron.compose_comment`), carried on the composer and sent after the
--- words as Zeron's composer sends them (crates/ui/src/comments.rs
+-- `zend.compose_comment`), carried on the composer and sent after the
+-- words as Zend's composer sends them (crates/ui/src/comments.rs
 -- `with_comments`):
 --
 --   <the words, or "Address the review comments below." with none>

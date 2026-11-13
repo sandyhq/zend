@@ -2,7 +2,7 @@
 
 The **transcript** is laid out _analytically_: every row's height is known
 before it is shown, so scrolling never guesses. Inline `code spans` get chips,
-[links](https://zeron.sh/docs) are tappable, and ~~old ideas~~ are struck.
+[links](https://zend.invalid/docs) are tappable, and ~~old ideas~~ are struck.
 
 ## Steps
 
@@ -29,9 +29,9 @@ fn main() {
 
 | Crate | Role | Lines |
 |:------|:----:|------:|
-| zeron-text | measurement + line breaking | 3,100 |
-| zeron-markdown | incremental parse | 1,700 |
-| zeron-mobile | layout + FFI | 1,400 |
+| zend-text | measurement + line breaking | 3,100 |
+| zend-markdown | incremental parse | 1,700 |
+| zend-mobile | layout + FFI | 1,400 |
 
 Math sits on the line: $E = mc^2$, $\frac{a}{b}$ and $\sum_{i=1}^{n} x_i$ grow
 their lines only as much as they need.

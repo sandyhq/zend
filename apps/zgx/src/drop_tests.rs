@@ -275,11 +275,11 @@ fn the_sidebars_headers_keep_their_height_through_a_toggle() {
     assert!(faults.is_empty(), "{}", faults.join("\n"));
 }
 
-/// Zeron's column motion (crates/ui `WidthTween::panel`: motion
+/// Zend's column motion (crates/ui `WidthTween::panel`: motion
 /// `PANEL_RESIZE`, CSS `ease`, 180 ms, longer moves stretched by the square
 /// root of the distance over the sidebar's 256 to at most 240 ms): where a
 /// column is `ms` into a move from `from` to `to`.
-fn zerons(from: f32, to: f32, ms: f32) -> f32 {
+fn zends(from: f32, to: f32, ms: f32) -> f32 {
     let duration = 180. * ((to - from).abs() / 256.).sqrt().clamp(1., 240. / 180.);
     let t = (ms / duration).clamp(0., 1.);
     // cubic-bezier(0.25, 0.1, 0.25, 1): x(s) = t solved by bisection.
@@ -307,12 +307,12 @@ fn panels(from: f32, to: f32, ms: f32) -> f32 {
     from + (to - from) * at(y1, y2, (lo + hi) / 2.)
 }
 
-/// The sidebar folding and coming back moves as Zeron's columns do, and a
+/// The sidebar folding and coming back moves as Zend's columns do, and a
 /// session's panel opening and closing on its own motion: frame by frame on
 /// each curve and duration (from the frame after the toggle, as the move
 /// starts).
 #[test]
-fn the_columns_move_as_zerons_do() {
+fn the_columns_move_as_zends_do() {
     let mut app = mount();
     app.click("#shell-sidebar >> role:button \"Fix the build\"");
     app.frames(30);
@@ -347,8 +347,8 @@ fn the_columns_move_as_zerons_do() {
         }
         app.frames(30);
     };
-    check(&mut app, "the sidebar folding", "shell.toggle_sidebar", "#shell-sidebar", zerons);
-    check(&mut app, "the sidebar coming back", "shell.toggle_sidebar", "#shell-sidebar", zerons);
+    check(&mut app, "the sidebar folding", "shell.toggle_sidebar", "#shell-sidebar", zends);
+    check(&mut app, "the sidebar coming back", "shell.toggle_sidebar", "#shell-sidebar", zends);
     check(&mut app, "the panel opening", "shell.toggle_files", "#shell-files", panels);
     check(&mut app, "the panel closing", "shell.toggle_files", "#shell-files", panels);
     assert!(faults.is_empty(), "{}", faults.join("\n"));

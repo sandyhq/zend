@@ -1,5 +1,5 @@
 -- The model picker lists the agents and models of the device the chat runs
--- on, as Zeron's does (crates/client `list_harnesses(device)`): the composer
+-- on, as Zend's does (crates/client `list_harnesses(device)`): the composer
 -- tells the host which device that is as it changes (`store.catalog_on`).
 
 test("a session on another device reads that device's catalog, and back", function()
@@ -74,7 +74,7 @@ test("a chat that names no model shows its agent's default row, and sends no pic
 	app:frames(30)
 	app:command("session_names_no_model")
 	app:frames(30)
-	-- The agent's first model, with its own reasoning, as Zeron's chip has it.
+	-- The agent's first model, with its own reasoning, as Zend's chip has it.
 	local chip = chip_text(app, "Model")
 	expect(chip).to_contain("Opus")
 	expect(chip).to_contain("High")
@@ -137,7 +137,7 @@ test("a new chat's model its device doesn't offer gives way to one it does", fun
 	expect(app:error()).to_be(nil)
 end)
 
--- The connection, as Zeron's composer says it (composer.rs `link_notice`).
+-- The connection, as Zend's composer says it (composer.rs `link_notice`).
 local LinkNotice = require("../screens/chat/link_notice")
 
 test("the connection notice follows production's cases", function()

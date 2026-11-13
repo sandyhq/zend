@@ -6,7 +6,7 @@ local-first guarantee. This covers what's different when the device is a phone: 
 without warning, killed without warning, and paying for every byte.
 
 > **Relay only (2026-11-07).** Peer-to-peer is parked: a phone has no direct link to a chat's host,
-> and the room carries everything. The link and its pacing are kept on `zeron/relay-mobile-direct-link`.
+> and the room carries everything. The link and its pacing are kept on `zend/relay-mobile-direct-link`.
 > Terminals still use their own direct path, as they do on `main`. Where this document still talks
 > about a chat's link, it's describing the parked design or the test runs made with it.
 
@@ -24,7 +24,7 @@ Everything below lives in `crates/client` and `crates/sync`, and runs the moment
 
 | Behaviour | Where |
 |---|---|
-| Registry `hello` and pulls say `relay: 1`, so the room doesn't list this phone as one that can't follow | `live/mod.rs`, `live/urls.rs`, `zeron_sync::registry::announce_relay_layer` |
+| Registry `hello` and pulls say `relay: 1`, so the room doesn't list this phone as one that can't follow | `live/mod.rs`, `live/urls.rs`, `zend_sync::registry::announce_relay_layer` |
 | Each room's `hello` says `relay: 1`, `gen: 3` when the row does, and carries `hostDevice` | `live/room.rs` (`RoomRelay::apply_route`) |
 | Live relay frames into the doc and the transcript | `ViewerSink::relay_import` |
 | The journal: kept in `chat_inbox` until a save covers it, replayed on open | `ViewerSink::relay_import`, `Persister::flush`, `load_local` |
@@ -72,7 +72,7 @@ did on stored rows.
 
 | Call | iOS | Android | Why the layer needs it |
 |---|---|---|---|
-| `onForeground()` | `sceneWillEnterForeground` | `ProcessLifecycleOwner.onStart` (`ZeronApplication.kt`) | Redials the chat on screen after 8 s away, probes the rest |
+| `onForeground()` | `sceneWillEnterForeground` | `ProcessLifecycleOwner.onStart` (`ZendApplication.kt`) | Redials the chat on screen after 8 s away, probes the rest |
 | `onBackground()` | `sceneDidEnterBackground` | `ProcessLifecycleOwner.onStop` | Saves every doc, which retires the journal |
 | `setNetworkOnline` | `NWPathMonitor` status | `registerDefaultNetworkCallback` | Parks dials instead of burning them, and drives the Offline state |
 | `networkPathChanged` | `NWPathMonitor` interface change | `onCapabilitiesChanged` / `onLost` on the default network | Drops connections whose path is gone, and the room redials |
@@ -169,7 +169,7 @@ that engines share.
   clock starts when the path returns.
 - A streaming tail with no path or no host doesn't read as working, on stored chats too.
 - A device counts as socketless only after 30 s of failing dials, not just three. See [Traps](#traps).
-- `CHAT_LINK_PREFIX` moved to `zeron_proto::relay_gen`.
+- `CHAT_LINK_PREFIX` moved to `zend_proto::relay_gen`.
 
 ## Old and new together
 
@@ -187,7 +187,7 @@ that engines share.
 **1. Shared tests: nothing to do.** They're already green on the code you link.
 
 ```sh
-cargo test -p zeron-client --test relay
+cargo test -p zend-client --test relay
 ```
 
 **2. The rig.** An emulator reaches the host as `10.0.2.2`. Everything else matches what iOS uses. Clear the app's
@@ -198,15 +198,15 @@ inherited environment first: an engine with none of this set would touch product
 (cd edge && npx wrangler dev --port 27650 --var AUTH_MODE:dev --var CHAT_RELAY_LAYER:1)
 python3 proxy.py 27660 27650   # any TCP forwarder you can kill, for playing a dead network
 
-env -u ZERON_APP -u ZERON_DATA_DIR -u ZERON_EDGE_URL -u ZERON_IPC_PORT -u ZERON_MANAGED_ENGINE \
-    -u ZERON_WORKOS_CLIENT_ID -u ZERON_CALLBACK_PORT \
-  ZERON_DATA_DIR=/tmp/relay-host ZERON_IPC_PORT=27811 ZERON_DEVICE_NAME=relay-host \
-  ZERON_EDGE_URL=http://localhost:27650 ZERON_EDGE_TOKEN=relaytest@org1 ZERON_ORG_ID=org1 \
-  ZERON_HARNESS=mock ZERON_MOCK_DELAY_MS=400 ZERON_RELAY_LAYER=1 RUST_LOG=info \
-  target/debug/zeron headless
+env -u ZEND_APP -u ZEND_DATA_DIR -u ZEND_EDGE_URL -u ZEND_IPC_PORT -u ZEND_MANAGED_ENGINE \
+    -u ZEND_WORKOS_CLIENT_ID -u ZEND_CALLBACK_PORT \
+  ZEND_DATA_DIR=/tmp/relay-host ZEND_IPC_PORT=27811 ZEND_DEVICE_NAME=relay-host \
+  ZEND_EDGE_URL=http://localhost:27650 ZEND_EDGE_TOKEN=relaytest@org1 ZEND_ORG_ID=org1 \
+  ZEND_HARNESS=mock ZEND_MOCK_DELAY_MS=400 ZEND_RELAY_LAYER=1 RUST_LOG=info \
+  target/debug/zend headless
 
-cargo run -p zeron-rpc --example relay_rig -- 27811 /tmp/relay-host create   # prints the chat id
-cargo run -p zeron-rpc --example relay_rig -- 27811 /tmp/relay-host run <chat> "go"
+cargo run -p zend-rpc --example relay_rig -- 27811 /tmp/relay-host create   # prints the chat id
+cargo run -p zend-rpc --example relay_rig -- 27811 /tmp/relay-host run <chat> "go"
 curl -H 'authorization: Bearer relaytest@org1' http://localhost:27650/chat2/<chat>/stats
 ```
 
@@ -235,7 +235,7 @@ For a link on an emulator, expect pairing to depend on your NAT. Falling back to
 file exists, and passes everything else, so signaling and the registry stay up. Run a turn. If the phone's copy grows, the
 link carried it. Cutting the whole edge proves nothing, because signaling goes with it (see [Traps](#traps)). To reach a
 host on another machine with a local edge, tunnel it: `ssh -R 27681:127.0.0.1:27650 -L 27871:127.0.0.1:27871 <machine>`, with
-`ZERON_EDGE_URL=http://localhost:27681` on the engine. That gave a real internet path between a simulator and a server.
+`ZEND_EDGE_URL=http://localhost:27681` on the engine. That gave a real internet path between a simulator and a server.
 
 **4. Measure on a real device before relying on it:** data used by a day of warm rooms, and battery with a chat left on
 screen. Neither has been measured on any phone.
@@ -279,7 +279,7 @@ These cost real time on iOS, or would have.
 - **Three failed dials used to mean "socketless".** They can take 2 s, and a network coming back answers HTTPS first. The
   next pull then said `fallback=1`, the room treated the phone as an old reader, and the chat left relaying for every device
   for 10 minutes. It now takes 30 s of failing dials. A phone on a poor network could have done this often.
-- **A rig's engine can reach things it shouldn't.** With no `ZERON_EDGE_URL` it uses production. A fresh data dir with a real
+- **A rig's engine can reach things it shouldn't.** With no `ZEND_EDGE_URL` it uses production. A fresh data dir with a real
   `HOME` also snapshots real agent logins. Use a private `HOME`, a `PATH` without agent CLIs, and the mock harness.
 - **`Syncing…` right after a host stops is correct.** Presence stays fresh for 45 s after the last beat, and the 20 s patience
   usually ends the wait first.
@@ -330,4 +330,4 @@ with the real `Client` and real workerd, but not on a simulator.
 
 - A real agent. A fresh engine data dir with a real `HOME` snapshots real logins, so everything here used the mock harness.
 - A real Cloud machine with a phone on it, or an actual TestFlight binary. The old phone here is the app built from `main`.
-- `zeron-edge-p2p-test`: it needs an interactive WorkOS sign-in, so the rig used a local edge, tunnelled to the second machine.
+- `zend-edge-p2p-test`: it needs an interactive WorkOS sign-in, so the rig used a local edge, tunnelled to the second machine.

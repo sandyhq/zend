@@ -171,7 +171,7 @@ impl DocsStore {
 
 #[cfg(test)]
 mod tests {
-    use zeron_doc::{QueuedMessage, SessionCommandPayload};
+    use zend_doc::{QueuedMessage, SessionCommandPayload};
 
     use crate::attachment_store::{HeldBody, HeldUpload};
 

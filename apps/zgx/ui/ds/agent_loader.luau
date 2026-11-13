@@ -1,6 +1,6 @@
 -- NOT WIRED YET (Wing, Nov 8: the old loaders for now). Nothing requires
 -- this; the working ring (ds/status `StatusIcon { kind = "working" }`) is
--- still every loader. To wire it (all of it on branch zeron/agent-loaders,
+-- still every loader. To wire it (all of it on branch zend/agent-loaders,
 -- with tests/agent_loader.test.luau):
 --   - the reply's Working line (ds/working): `{ glyph = "agent", size = 16 }`,
 --     the big glyph, filling its square;
@@ -15,7 +15,7 @@
 -- times a second; the working ring repaints the same way but rests 0.9 s in
 -- every 4.8 s (34 of 120 frames against 60).
 
--- Zeron's agent loaders: the tiles of a glyph turn over one after another,
+-- Zend's agent loaders: the tiles of a glyph turn over one after another,
 -- from the top left to the bottom right, diagonal by diagonal. Each tile
 -- turns up to its lit face almost at once (9% of the cycle), turns back
 -- slowly (46%) and rests; the old activity glyph's rhythm, drawn with the

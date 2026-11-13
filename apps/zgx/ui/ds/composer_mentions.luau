@@ -1,5 +1,5 @@
 -- Mentions in the draft: `@` a file or folder, `/` a command, `$` a skill
--- (Zeron's triggers, crates/ui/src/composer.rs: `@` and `/` after a space
+-- (Zend's triggers, crates/ui/src/composer.rs: `@` and `/` after a space
 -- or at a start, `$` not before a digit, none inside code). As one is
 -- typed, a popover opens at the caret with what matches, its first row
 -- lit; ↑ and ↓ move (the list scrolling to keep it in view), Enter or Tab
@@ -10,7 +10,7 @@
 -- list was put away; the caret leaving the token, or a trigger typed, ends
 -- that. Hidden is never put away: the window going to the back, Settings
 -- over the page, the field losing the keys. A row chosen lands in the draft
--- as its token and a space: a file by its name alone (as Zeron's chips name
+-- as its token and a space: a file by its name alone (as Zend's chips name
 -- it), the shortest end of its path that tells it from another of that
 -- name; the path it stands for is kept beside the draft (`refs`).
 --
@@ -372,7 +372,7 @@ function M.use(opts: Use)
 				return true
 			end
 			-- Nothing lit (no row matches, or the list is still loading):
-			-- Enter is the composer's again, so it sends, as Zeron's does
+			-- Enter is the composer's again, so it sends, as Zend's does
 			-- (composer.rs `enter_outcome`). A last word like `/tmp`,
 			-- `$HOME` or `@someone` once ate it, and nothing went.
 			return e.key == "Tab"
@@ -482,7 +482,7 @@ function M.use(opts: Use)
 			key = function(entry: { item: Item, i: number }): string
 				return tostring(entry.i)
 			end,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 		})
 		local skeleton: { Node } = {}
 		for _ = 1, 3 do
@@ -547,7 +547,7 @@ function M.use(opts: Use)
 					id = "mention-list",
 					before = {
 						Menu.Heading { title, first = true },
-						ui.show(loading, ui.column { gap = "$zeron.list.gap", table.unpack(skeleton) }),
+						ui.show(loading, ui.column { gap = "$zend.list.gap", table.unpack(skeleton) }),
 						ui.show(function()
 							return not loading() and #shown:get() == 0
 						end, ui.row {

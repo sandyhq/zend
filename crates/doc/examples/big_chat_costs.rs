@@ -1,8 +1,8 @@
 //! Times what one commit and one open cost on a real chat snapshot.
-//! cargo run -p zeron-doc --release --example big_chat_costs -- <snapshot>
+//! cargo run -p zend-doc --release --example big_chat_costs -- <snapshot>
 use std::time::Instant;
 use loro::{ContainerTrait, ToJson};
-use zeron_doc::*;
+use zend_doc::*;
 
 fn main() {
     let path = std::env::args().nth(1).expect("snapshot path");

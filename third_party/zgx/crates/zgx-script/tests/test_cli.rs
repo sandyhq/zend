@@ -45,7 +45,7 @@ fn run(dir: &PathBuf, args: &[&str]) -> (Option<i32>, String) {
 
 #[test]
 fn escape_from_a_menu_opened_with_nothing_focused_presses_no_button_after() {
-    // Zeron's report: a menu opened by a shortcut and closed with Escape put
+    // Zend's report: a menu opened by a shortcut and closed with Escape put
     // focus on the window's first button ("New chat"), so Enter pressed it.
     let dir = app(
         "escape-focus",
@@ -1020,7 +1020,7 @@ return ui.column {
 
 #[test]
 fn a_pane_settled_in_ui_after_0_reads_settled_at_once() {
-    // Zeron's editor in `zgx test`: a pane rebuilt and read straight away
+    // Zend's editor in `zgx test`: a pane rebuilt and read straight away
     // (no frame between) showed its layout before `ui.after(0)` from its
     // `on_resize` settled it, as a window never draws it.
     let dir = app(
@@ -1063,7 +1063,7 @@ return ui.column { ui.switch(function() return which:get() end, { a = pane(), b 
 
 #[test]
 fn a_presence_rebuilt_by_set_state_reads_settled_after_one_frame() {
-    // Zeron's files fixture: the pane comes back through a `ui.presence`
+    // Zend's files fixture: the pane comes back through a `ui.presence`
     // keyed on a state the test sets, then one frame, then `tree`.
     let dir = app(
         "after-0-presence",

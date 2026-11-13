@@ -193,7 +193,7 @@ pub(crate) fn open_page(url: &str) {
         && !crate::auth::no_browser(url)
         && let Err(error) = open::that_detached(url)
     {
-        eprintln!("zeron-zgx: github: the browser didn't open: {error}");
+        eprintln!("zend-zgx: github: the browser didn't open: {error}");
     }
 }
 
@@ -289,9 +289,9 @@ impl GitHub {
         let mut status = match engine.call("CloudStatus", json!({})).await {
             Ok(status) => status,
             Err(error) => {
-                eprintln!("zeron-zgx: github: Cloud's status unavailable: {error}");
+                eprintln!("zend-zgx: github: Cloud's status unavailable: {error}");
                 if self.generation.get() == generation {
-                    self.unavailable("Zeron can't be reached right now. Skip for now.");
+                    self.unavailable("Zend can't be reached right now. Skip for now.");
                 }
                 return;
             }
@@ -304,11 +304,11 @@ impl GitHub {
             return;
         }
         if status["state"].as_str() == Some("off") {
-            eprintln!("zeron-zgx: github: setting up Cloud for the account");
+            eprintln!("zend-zgx: github: setting up Cloud for the account");
             match engine.call("CloudEnable", json!({})).await {
                 Ok(enabled) => status = enabled,
                 Err(error) => {
-                    eprintln!("zeron-zgx: github: Cloud didn't set up: {error}");
+                    eprintln!("zend-zgx: github: Cloud didn't set up: {error}");
                     if self.generation.get() == generation {
                         self.unavailable("Cloud couldn't be set up. Skip for now.");
                     }
@@ -336,9 +336,9 @@ impl GitHub {
         let vault = match engine::get().call("VaultStatus", json!({})).await {
             Ok(vault) => vault,
             Err(error) => {
-                eprintln!("zeron-zgx: github: the vault didn't answer: {error}");
+                eprintln!("zend-zgx: github: the vault didn't answer: {error}");
                 if self.generation.get() == generation {
-                    self.unavailable("Zeron can't be reached right now. Skip for now.");
+                    self.unavailable("Zend can't be reached right now. Skip for now.");
                 }
                 return;
             }
@@ -357,7 +357,7 @@ impl GitHub {
         let accounts = match engine::get().call("GithubAccounts", json!({})).await {
             Ok(answer) => accounts_from(&answer),
             Err(error) => {
-                eprintln!("zeron-zgx: github: no list of logins: {error}");
+                eprintln!("zend-zgx: github: no list of logins: {error}");
                 Vec::new()
             }
         };
@@ -389,7 +389,7 @@ impl GitHub {
                 self.publish();
             }
             Ok(_) => {}
-            Err(error) => eprintln!("zeron-zgx: github: repositories unavailable: {error}"),
+            Err(error) => eprintln!("zend-zgx: github: repositories unavailable: {error}"),
         }
     }
 
@@ -422,7 +422,7 @@ impl GitHub {
         {
             Ok(flow) => flow,
             Err(error) => {
-                eprintln!("zeron-zgx: github: no code from GitHub: {error}");
+                eprintln!("zend-zgx: github: no code from GitHub: {error}");
                 if self.generation.get() == generation {
                     self.fail("GitHub couldn't be reached. Try again.");
                 }
@@ -472,7 +472,7 @@ impl GitHub {
                     }
                     Some("failed") => {
                         eprintln!(
-                            "zeron-zgx: github: not connected: {}",
+                            "zend-zgx: github: not connected: {}",
                             progress["error"].as_str().unwrap_or("no reason given")
                         );
                         if self.generation.get() == generation {
@@ -486,7 +486,7 @@ impl GitHub {
                 Err(error) => {
                     failures += 1;
                     if failures >= 3 {
-                        eprintln!("zeron-zgx: github: lost the connection's progress: {error}");
+                        eprintln!("zend-zgx: github: lost the connection's progress: {error}");
                         if self.generation.get() == generation {
                             self.fail("GitHub couldn't be reached. Try again.");
                         }
@@ -505,7 +505,7 @@ impl GitHub {
         match engine::get().call("GithubAccountForget", json!({ "slot": slot })).await {
             Ok(_) => self.refresh_vault(generation).await,
             Err(error) => {
-                eprintln!("zeron-zgx: github: didn't disconnect a login: {error}");
+                eprintln!("zend-zgx: github: didn't disconnect a login: {error}");
                 if self.generation.get() == generation {
                     self.publish();
                 }
@@ -538,7 +538,7 @@ impl GitHub {
         match engine::get().call(method, params).await {
             Ok(_) => self.refresh_vault(generation).await,
             Err(error) => {
-                eprintln!("zeron-zgx: github: didn't disconnect: {error}");
+                eprintln!("zend-zgx: github: didn't disconnect: {error}");
                 if self.generation.get() == generation {
                     self.publish();
                 }

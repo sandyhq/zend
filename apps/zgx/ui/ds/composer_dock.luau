@@ -16,7 +16,7 @@
 --
 --   Dock { queue = queued, todos = plan, tasks = running, open = tab, … }
 --
--- The queue's rows are Zeron's (crates/ui/src/queue.rs): a grip, its
+-- The queue's rows are Zend's (crates/ui/src/queue.rs): a grip, its
 -- thumbnails, its first line, and at its end Edit, Remove and one primary
 -- action: "Send now" for a message with cargo (it interrupts), "Steer" where
 -- the agent takes a word mid-turn, else "Send next". Rows drag into a new
@@ -413,7 +413,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 					shrink = 0,
 					pl = "$space.2",
 					pr = ui.raw(10, "a step past the count, so it sits off the capsule's curve"),
-					gap = "$zeron.space.tight",
+					gap = "$zend.space.tight",
 					items = "center",
 					rounded = ui.raw(tab_h / 2, "a capsule: the frame's corner less its edge and the header's inset"),
 					cursor = "pointer",
@@ -462,7 +462,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 						text_size = "$font.size.md",
 						color = if t.tone
 							then function(): string
-								return `$zeron.tone.{(t.tone :: () -> AlertTone)()}.ink`
+								return `$zend.tone.{(t.tone :: () -> AlertTone)()}.ink`
 							end
 							else "$text.tertiary",
 					},
@@ -490,7 +490,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 		top = 0,
 		h = tab_h,
 		rounded = ui.raw(tab_h / 2, "the tab's capsule"),
-		bg = "$zeron.composer.deck.thumb",
+		bg = "$zend.composer.deck.thumb",
 		pointer_events = "none",
 		opacity = ui.tween(ui.computed(function(): number
 			return if is_open() and many() then 1 else 0
@@ -509,7 +509,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 		h = tab_h,
 		shrink = 1,
 		min_w = 0,
-		gap = "$zeron.space.hair",
+		gap = "$zend.space.hair",
 		items = "center",
 		role = "tablist",
 		thumb,
@@ -637,7 +637,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 			-- inset less it (a side padding alone left the ends a point wider
 			-- than the top and bottom).
 			p = ui.raw(PILL_PAD - 1, "the capsules' inset in the pill, less its border"),
-			gap = "$zeron.space.hair",
+			gap = "$zend.space.hair",
 			items = "center",
 			shrink = 0,
 			rounded = ui.raw(PILL_H / 2, "a capsule, as the Scroll to end pill"),
@@ -658,7 +658,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 				h = inner,
 				pl = "$space.2",
 				pr = "$space.2",
-				gap = "$zeron.space.tight",
+				gap = "$zend.space.tight",
 				items = "center",
 				shrink = 0,
 				rounded = ui.raw(inner / 2, "concentric with the pill: its corner less the inset"),
@@ -685,7 +685,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 						rounded = ui.raw(inner / 2, "the capsule's"),
 						pointer_events = "none",
 						bg = function(): string
-							return `$zeron.tone.{tone()}.wash`
+							return `$zend.tone.{tone()}.wash`
 						end,
 					}
 					else nil,
@@ -709,7 +709,7 @@ local function deck(tabs: { Tab }, open: State<Tray?>, geometry: { [string]: num
 					weight = "$font.weight.medium",
 					color = if tone
 						then function(): string
-							return `$zeron.tone.{tone()}.ink`
+							return `$zend.tone.{tone()}.ink`
 						end
 						else nil,
 				},
@@ -794,10 +794,10 @@ local function thumbs(items: { cargo.Item }, narrow: () -> boolean): Node?
 				h = 28,
 				shrink = 0,
 				-- Concentric with its row, a step in from the row's edge.
-				rounded = "$zeron.composer.tray.thumb_radius",
+				rounded = "$zend.composer.tray.thumb_radius",
 				overflow = "hidden",
 				border = 1,
-				border_color = "$zeron.composer.chip.edge",
+				border_color = "$zend.composer.chip.edge",
 				border_over = true,
 				bg = "$hover",
 				items = "center",
@@ -883,7 +883,7 @@ local function queue_row(q: Queued, i: () -> number, last: () -> boolean, row: S
 	end
 	-- Being edited: Save to queue, and Cancel, in the actions' place.
 	local editing_side = ui.row {
-		gap = "$zeron.space.hair",
+		gap = "$zend.space.hair",
 		shrink = 0,
 		items = "center",
 		IconButton {
@@ -947,11 +947,11 @@ local function queue_row(q: Queued, i: () -> number, last: () -> boolean, row: S
 			},
 		})
 		return ui.row {
-			gap = "$zeron.space.hair",
+			gap = "$zend.space.hair",
 			shrink = 0,
 			items = "center",
 			ui.row {
-				gap = "$zeron.space.hair",
+				gap = "$zend.space.hair",
 				items = "center",
 				opacity = ui.tween(ui.computed(quiet_when), { duration = 120 }),
 				IconButton {
@@ -995,7 +995,7 @@ local function queue_row(q: Queued, i: () -> number, last: () -> boolean, row: S
 		gap = "$space.2",
 		items = "center",
 		-- Concentric with the tray, as its head is.
-		rounded = "$zeron.composer.tray.row_radius",
+		rounded = "$zend.composer.tray.row_radius",
 		role = "listitem",
 		label = function()
 			return `{i()}. {now().text}`
@@ -1004,7 +1004,7 @@ local function queue_row(q: Queued, i: () -> number, last: () -> boolean, row: S
 			return if locked() then 0.55 else 1
 		end,
 		bg = function()
-			return if editing() then "$zeron.selected.flat.bg" else "#00000000"
+			return if editing() then "$zend.selected.flat.bg" else "#00000000"
 		end,
 		hover = { bg = "$hover" },
 		on_hover = function(inside: boolean)
@@ -1121,7 +1121,7 @@ local function fold_row(count: () -> number, later: boolean, on_click: () -> ())
 		gap = "$space.2",
 		items = "center",
 		cursor = "pointer",
-		rounded = "$zeron.composer.tray.row_radius",
+		rounded = "$zend.composer.tray.row_radius",
 		hover = { bg = "$hover" },
 		role = "button",
 		label = function()
@@ -1168,7 +1168,7 @@ local function task_row(t: Task, row: State<Task>, now: State<number>, props: Pr
 		gap = "$space.2",
 		items = "center",
 		-- Concentric with the tray, as its head is.
-		rounded = "$zeron.composer.tray.row_radius",
+		rounded = "$zend.composer.tray.row_radius",
 		role = if opens then "button" else "listitem",
 		hover = { bg = "$hover" },
 	}
@@ -1278,7 +1278,7 @@ end
 local function alert_row(a: Alert, row: State<Alert>, props: Props, height: number, width: State<number>, grid: { name: number, columns: { GridColumn } }?): Node
 	local choice = grid ~= nil
 	local function ink(): string
-		return `$zeron.tone.{row:get().tone}.ink`
+		return `$zend.tone.{row:get().tone}.ink`
 	end
 	local function off(): boolean
 		return row:get().disabled == true
@@ -1299,14 +1299,14 @@ local function alert_row(a: Alert, row: State<Alert>, props: Props, height: numb
 		end else nil,
 		disabled = if choice then off else nil,
 		opacity = if choice then function(): any
-			return if off() and row:get().current ~= true then "$zeron.disabled" else 1
+			return if off() and row:get().current ~= true then "$zend.disabled" else 1
 		end else nil,
 		min_h = height,
 		pl = "$space.2",
 		pr = "$space.1",
 		gap = "$space.2",
 		items = "center",
-		rounded = "$zeron.composer.tray.row_radius",
+		rounded = "$zend.composer.tray.row_radius",
 		role = "listitem",
 		hover = { bg = "$hover" },
 		ui.div {
@@ -1460,7 +1460,7 @@ local function finished_row(count: () -> number, open: () -> boolean, on_click: 
 		gap = "$space.2",
 		items = "center",
 		cursor = "pointer",
-		rounded = "$zeron.composer.tray.row_radius",
+		rounded = "$zend.composer.tray.row_radius",
 		hover = { bg = "$hover" },
 		active = { bg = "$pressed" },
 		focus = control.ring,
@@ -1494,11 +1494,11 @@ end
 
 local function build(props: Props): ({ Tab }, State<Tray?>, { [string]: number }, () -> boolean)
 	local geometry = {
-		inset = n("zeron.composer.deck.inset", 10),
-		tab = n("zeron.composer.deck.tab", 30),
-		tab_gap = n("zeron.space.hair", 2),
-		row = n("zeron.composer.tray.row", 32),
-		body = n("zeron.composer.tray.body", 216),
+		inset = n("zend.composer.deck.inset", 10),
+		tab = n("zend.composer.deck.tab", 30),
+		tab_gap = n("zend.space.hair", 2),
+		row = n("zend.composer.tray.row", 32),
+		body = n("zend.composer.tray.body", 216),
 	}
 	local open: State<Tray?> = props.open or ui.use_state(nil :: Tray?)
 	local narrow = props.narrow or function()
@@ -1587,7 +1587,7 @@ local function build(props: Props): ({ Tab }, State<Tray?>, { [string]: number }
 		local function glyph(size: number): Node
 			return ui.div {
 				color = function(): string
-					return `$zeron.tone.{worst()}.ink`
+					return `$zend.tone.{worst()}.ink`
 				end,
 				Icon { name = "danger-triangle", size = size },
 			}
@@ -2006,7 +2006,7 @@ local function build(props: Props): ({ Tab }, State<Tray?>, { [string]: number }
 				key = function(q: Queued): string
 					return q.id
 				end,
-				gap = "$zeron.space.hair",
+				gap = "$zend.space.hair",
 				animate = { duration = 220, ease = "outCubic" },
 				enter = { opacity = { 0, 1 }, y = { 6, 0 }, duration = 220, ease = "outCubic" },
 				exit = { opacity = 0, duration = 140 },
