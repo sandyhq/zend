@@ -5,6 +5,11 @@ import { createInterface } from "node:readline";
 export default function (pi) {
   const config = JSON.parse(process.env.ZERON_PI_MCP);
   let child, lines, nextId = 0;
+  // What the server tells its client to know (MCP `instructions`), carried
+  // into the system prompt as a section of its own (zend): pi lists MCP
+  // servers by name alone, so this is where their guidance reaches the agent.
+  let instructions = "";
+  const section = `mcp-${String(config.name).toLowerCase().replace(/[^a-z0-9-]+/g, "-")}`;
   const pending = new Map();
   function fail(error) {
     for (const request of [...pending.values()]) request.reject(error);
@@ -65,7 +70,8 @@ export default function (pi) {
       else request.resolve(message.result);
     });
     try {
-      await rpc("initialize", {protocolVersion: "2024-11-05", capabilities: {}, clientInfo: {name: "zeron-pi", version: "1"}});
+      const init = await rpc("initialize", {protocolVersion: "2024-11-05", capabilities: {}, clientInfo: {name: "zeron-pi", version: "1"}});
+      instructions = typeof init?.instructions === "string" ? init.instructions.trim() : "";
       child.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/initialized"}) + "\n");
       const {tools} = await rpc("tools/list", {});
       for (const tool of tools) {
@@ -83,6 +89,12 @@ export default function (pi) {
       close();
       throw error;
     }
+  });
+  pi.on("before_agent_start", event => {
+    const sections = event.systemPromptOptions?.sections;
+    if (!sections) return;
+    if (instructions) sections[section] = instructions;
+    else delete sections[section];
   });
   pi.on("session_shutdown", close);
   process.once("exit", close);

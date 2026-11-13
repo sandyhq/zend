@@ -323,7 +323,9 @@ fn draws_over_time(node: &zv::Node) -> bool {
 #[derive(Default)]
 struct Visuals {
     entries: RefCell<HashMap<String, Entry>>,
-    shared: RefCell<Vec<Shared>>,
+    /// Each shared `visuals`, with the id prefix it shows (a plugin's own:
+    /// its ids without it), or none (the app's: every visual).
+    shared: RefCell<Vec<(Option<String>, Shared)>>,
     /// What lets VMs go as each window goes idle.
     rests: RefCell<Vec<zgx::idle::IdleTrim>>,
 }
@@ -333,20 +335,27 @@ thread_local! {
 }
 
 impl Visuals {
-    fn revs(&self) -> Value {
+    fn revs(&self, scope: Option<&str>) -> Value {
         let entries = self.entries.borrow();
-        Value::record(entries.iter().map(|(id, e)| {
+        let shown = entries.iter().filter_map(|(id, e)| match scope {
+            None => Some((id.as_str(), e)),
+            Some(prefix) => id.strip_prefix(prefix).map(|local| (local, e)),
+        });
+        Value::record(shown.map(|(id, e)| {
             (
-                id.as_str(),
+                id,
                 Value::record([("rev", Value::Num(e.rev as f64)), ("gen", Value::Num(e.generation as f64))]),
             )
         }))
     }
 
     fn publish(&self) {
-        let value = self.revs();
-        for shared in self.shared.borrow().iter() {
-            shared.set(value.clone());
+        let all = self.revs(None);
+        for (scope, shared) in self.shared.borrow().iter() {
+            match scope {
+                None => shared.set(all.clone()),
+                Some(prefix) => shared.set(self.revs(Some(prefix))),
+            }
         }
     }
 
@@ -376,20 +385,69 @@ pub fn install(cx: &mut zgx_desktop::WindowContext, host: &ScriptHost) {
 /// The calls on `host` (a test's, with no window, too).
 pub fn register(host: &ScriptHost) {
     let visuals = VISUALS.with(Rc::clone);
-    visuals.shared.borrow_mut().push(host.shared("visuals", visuals.revs()));
+    visuals.shared.borrow_mut().push((None, host.shared("visuals", visuals.revs(None))));
+    calls(host, "visuals", &visuals, None);
+}
 
-    let v = visuals.clone();
-    host.async_action("visuals.open", move |arg| {
+/// Plugin `plugin`'s own visuals (zend): the same calls as
+/// `plugin.<plugin>.visuals.open` and the rest, and its shared
+/// `plugin.<plugin>.visuals`. Its ids are its own: each is kept here as
+/// `plugin:<plugin>:<id>`, so it reaches no chat's visual and no other
+/// plugin's. It runs scripts it gives (`source`) and reads no file
+/// (`path`, `device` are refused).
+pub fn register_plugin(host: &ScriptHost, plugin: &str) {
+    let visuals = VISUALS.with(Rc::clone);
+    let scope = format!("plugin:{plugin}:");
+    let key = format!("plugin.{plugin}.visuals");
+    visuals.shared.borrow_mut().push((Some(scope.clone()), host.shared(&key, visuals.revs(Some(&scope)))));
+    calls(host, &key, &visuals, Some(scope));
+}
+
+/// The names a plugin's own visuals are called by (for exposing them).
+pub const PLUGIN_CALLS: &[&str] = &["open", "get", "event", "draw", "frame", "release"];
+
+/// `arg` with its `id` in `scope` (a record's field, or `arg` itself as text).
+fn scoped(arg: Value, scope: &Option<String>) -> Value {
+    let Some(scope) = scope else { return arg };
+    match &arg {
+        Value::Map(fields) => Value::record(fields.iter().map(|(k, v)| {
+            if &**k == "id" {
+                (k.clone(), Value::from(format!("{scope}{}", text(Some(v))).as_str()))
+            } else {
+                (k.clone(), v.clone())
+            }
+        })),
+        _ => Value::from(format!("{scope}{}", crate::auth::text(&arg)).as_str()),
+    }
+}
+
+fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<String>) {
+    let name = |call: &str| format!("{prefix}.{call}");
+
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.async_action(name("open"), move |arg| {
         let v = v.clone();
-        async move { open(v, arg).await }
+        let sc = sc.clone();
+        async move {
+            if sc.is_some() {
+                if arg.field("source").is_none() {
+                    return Err("a plugin's visual is drawn from its source".into());
+                }
+                if arg.field("path").is_some() || arg.field("device").is_some() {
+                    return Err("a plugin's visual reads no file".into());
+                }
+            }
+            open(v, scoped(arg, &sc)).await
+        }
     });
-    let v = visuals.clone();
-    host.function("visuals.get", move |arg| {
-        let id = crate::auth::text(&arg);
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.function(name("get"), move |arg| {
+        let id = crate::auth::text(&scoped(arg, &sc));
         v.with(&id, |e| e.snapshot()).unwrap_or(Value::Nil)
     });
-    let v = visuals.clone();
-    host.action("visuals.event", move |arg| {
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.action(name("event"), move |arg| {
+        let arg = scoped(arg, &sc);
         let id = text(arg.field("id"));
         let handler = arg.field("h").and_then(Value::as_f64).unwrap_or(-1.);
         if handler < 0. {
@@ -406,22 +464,25 @@ pub fn register(host: &ScriptHost) {
             v.publish();
         }
     });
-    let v = visuals.clone();
-    host.function("visuals.draw", move |arg| {
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.function(name("draw"), move |arg| {
+        let arg = scoped(arg, &sc);
         let id = text(arg.field("id"));
         let start = std::time::Instant::now();
         let drawn = v.with(&id, |e| e.draw(&arg)).unwrap_or(Value::Nil);
         DRAW_NS.fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         drawn
     });
-    let v = visuals.clone();
+    let (v, sc) = (visuals.clone(), scope.clone());
     let frames_host = host.clone();
-    host.async_action("visuals.frame", move |arg| {
+    host.async_action(name("frame"), move |arg| {
         let (v, host) = (v.clone(), frames_host.clone());
+        let arg = scoped(arg, &sc);
         async move { frame(v, host, arg).await }
     });
-    let v = visuals.clone();
-    host.action("visuals.release", move |arg| {
+    let (v, sc) = (visuals.clone(), scope);
+    host.action(name("release"), move |arg| {
+        let arg = scoped(arg, &sc);
         let (id, path) = (text(arg.field("id")), text(arg.field("p")));
         v.with(&id, |e| {
             e.scenes.remove(&path);

@@ -339,6 +339,13 @@ pub fn expose_own(host: &ScriptHost, id: &str) {
     }
     // What's behind a token an element gave it, as its records allow.
     tokens::serve(host, id, &host.shared(&format!("plugin.{id}.records"), Value::Nil));
+    // Its own visuals (zend): show_visual scripts it gives, drawn by
+    // ds/visual with `api = "plugin.<id>.visuals"`, under ids of its own.
+    crate::visuals::register_plugin(host, id);
+    host.expose_shared_read(format!("plugin.{id}.visuals"), Some(own.clone()));
+    for call in crate::visuals::PLUGIN_CALLS {
+        host.expose_action(format!("plugin.{id}.visuals.{call}"), Some(own.clone()));
+    }
 }
 
 /// The plugin watches on connection `rpc`. The engine answers them (and

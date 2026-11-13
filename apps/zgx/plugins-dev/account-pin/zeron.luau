@@ -76,6 +76,9 @@
 --                        the code under it)                              ("compose")
 --   zeron.composed()     in a build: your comments still on a draft, by key
 --                        ({ [key] = { session, hovered } }), reactive    ("compose")
+--   zeron.visual { id, source, title? }  a node: a show_visual script of
+--                        yours, drawn as a chat draws an agent's (ds/visual),
+--                        under ids of your own (zend)              (always)
 --   zeron.toast(text)    a short note at the window's foot   (always)
 --   zeron.notify { title, body?, session? }  a notification, as Zeron's
 --                        own (Settings → Notifications)     ("notifications")
@@ -1345,6 +1348,13 @@ return function(id: string): any
 
 	function M.compose(text: string)
 		ui.invoke("zeron.compose.insert", text)
+	end
+
+	-- A show_visual script drawn as a chat draws an agent's (zend): its
+	-- ids are this plugin's own, it reads no file.
+	function M.visual(props: { id: string, source: string, title: string? }): any
+		local Visual = require("@ds/visual")
+		return Visual { id = props.id, source = props.source, title = props.title, api = `{prefix}.visuals` }
 	end
 
 	-- A review comment on a file or a diff, as a chip on a session's draft
