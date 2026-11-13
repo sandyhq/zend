@@ -42,6 +42,7 @@ local VisualCarry = require("@ds/visual_carry")
 local Visual = require("@ds/visual")
 local glass = require("@ds/glass")
 local Invocations = require("@app/screens/chat/invocations")
+local Completions = require("@app/screens/chat/completions")
 local ZendCommands = require("@app/screens/chat/zend_commands")
 -- (Loaded with the chat page: captures land on its composer.)
 local Appshots = require("@app/screens/chat/appshots")
@@ -702,15 +703,9 @@ local function Composer(): Node
 	-- `$` offer nothing yet.)
 	local mention_sources = ui.state("chat_mentions", { ["/"] = {}, ["$"] = {} } :: any)
 	-- The agent the chat runs (its model's): whose completion settings the
-	-- composer follows.
+	-- composer follows (the chat's own when the catalog doesn't name it).
 	local function agent(): string?
-		local chosen = model:get()
-		for _, m in store.catalog:get().models do
-			if m.value == chosen then
-				return m.harness
-			end
-		end
-		return nil
+		return Completions.agent_of(model:get(), if session_id:get() then open() else nil)
 	end
 	-- What each trigger lists, as the agent's settings have it: with
 	-- "Separate / commands" off, `/` lists the skills after the commands
