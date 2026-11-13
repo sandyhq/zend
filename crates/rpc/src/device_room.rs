@@ -13,7 +13,7 @@
 //!
 //! The RPC path multiplexes NOTHING new: each distinct client `connId` becomes a virtual
 //! string-frame connection feeding the existing [`serve_connection`] seam, so every RPC
-//! handler works through the relay untouched (the port of zeron's `device-room-host.ts`).
+//! handler works through the relay untouched (the port of zend's `device-room-host.ts`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -275,7 +275,7 @@ pub enum TokenError {
     TemporarilyUnavailable(String),
 }
 
-impl From<TokenError> for zeron_sync::SyncError {
+impl From<TokenError> for zend_sync::SyncError {
     fn from(error: TokenError) -> Self {
         match error {
             TokenError::SignedOut => Self::Auth("signed out".into()),
@@ -331,6 +331,10 @@ pub struct HostRelayConfig {
     pub token: Arc<dyn TokenSource>,
     /// Reconnect delay after a session ends (a small jitter is added).
     pub retry: Duration,
+    /// The most jitter added to a reconnect.
+    pub max_jitter: Duration,
+    /// Called each time the relay joins the room.
+    pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl HostRelayConfig {
@@ -344,13 +348,15 @@ impl HostRelayConfig {
             device_id: device_id.into(),
             token,
             retry: Duration::from_secs(5),
+            max_jitter: Duration::from_secs(2),
+            on_connected: None,
         }
     }
 }
 
 /// The service as relay clients see it: every method but the ones a peer
 /// may not have answered here ([`crate::peer_refused`]: the local-only
-/// ones, allowing a plugin, a file path on the caller's device), refused
+/// ones, a file path on the caller's device), refused
 /// before they reach it; the rest served as [`crate::Caller::Peer`], with
 /// the device the edge verified for this connection (`fromDevice`), if any.
 struct RelayGuard {
@@ -381,7 +387,7 @@ impl RpcService for RelayGuard {
 /// `service` to every client conn through virtual string-frame connections. Immortal
 /// supervisor: quiet while signed out, reconnects with backoff when the socket drops
 /// (including the 4409 "superseded by new host connection" close — the newest host wins,
-/// so the superseded process backs off and retries, mirroring zeron's DeviceRoomHost).
+/// so the superseded process backs off and retries, mirroring zend's DeviceRoomHost).
 pub struct HostRelay {
     task: tokio::task::JoinHandle<()>,
 }
@@ -395,8 +401,8 @@ impl HostRelay {
         // Peers never reach what only a local client may call: each
         // virtual conn wraps it in a `RelayGuard` (make_virtual_conn).
         let task = tokio::spawn(async move {
-            let mut wake = zeron_sync::wake::subscribe();
-            let mut online = zeron_sync::wake::subscribe_online();
+            let mut wake = zend_sync::wake::subscribe();
+            let mut online = zend_sync::wake::subscribe_online();
             let mut token_changes = config.token.subscribe();
             // Fast-rejoin bookkeeping: the edge DO periodically ends healthy
             // host sessions (hibernation/deploys). Every second the host is
@@ -418,7 +424,8 @@ impl HostRelay {
                         let url = format!("{url}&nudgeAck=1");
                         let started = tokio::time::Instant::now();
                         let outcome = {
-                            let session = host_session(&url, &service, &on_nudge);
+                            let session =
+                                host_session(&url, &service, &on_nudge, config.on_connected.as_ref());
                             tokio::pin!(session);
                             loop {
                                 tokio::select! {
@@ -465,7 +472,7 @@ impl HostRelay {
                 // only wakes/successes DURING this wait cut it short.
                 while online.try_recv().is_ok() {}
                 tokio::select! {
-                    _ = tokio::time::sleep(delay + jitter()) => {}
+                    _ = tokio::time::sleep(delay + jitter(config.max_jitter)) => {}
                     // Wake = redial NOW (the old socket died with the suspend).
                     _ = wake.recv() => { delay = HOST_REJOIN_MIN; }
                     // A sibling dial succeeded = the network is back.
@@ -496,22 +503,23 @@ const DIAL_RETRY_SPACING: Duration = Duration::from_millis(1500);
 /// DO's lifecycle, not our failure, so the rejoin does not escalate.
 const HOST_HEALTHY_SESSION: Duration = Duration::from_secs(30);
 
-fn jitter() -> Duration {
+fn jitter(max: Duration) -> Duration {
     // Cheap decorrelation without a rand dependency.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    Duration::from_millis(u64::from(nanos) % 2_000)
+    Duration::from_millis(u64::from(nanos) % (max.as_millis() as u64).max(1))
 }
 
 /// One per-client virtual connection: `in_tx` feeds the ndjson dispatch loop
 /// ([`serve_connection`]); its replies are pumped back as `{to: connId}` frames.
 ///
 /// Teardown is by channel closure, NOT task abort: dropping `in_tx` ends the dispatch
-/// loop, which aborts its in-flight request tasks (streams included); their reply senders
-/// drop and the pump task drains out. Aborting the dispatch loop directly would strand
-/// the request tasks it spawned.
+/// loop, which aborts its in-flight request tasks (streams included) and lets each
+/// terminal's input lane finish what was already sent; their reply senders drop and the
+/// pump task drains out. Aborting the dispatch loop directly would strand the request
+/// tasks it spawned.
 struct VirtualConn {
     in_tx: mpsc::Sender<String>,
     /// The device the edge verified for this conn (its first frame's
@@ -551,7 +559,7 @@ fn reply_frames(conn_id: &str, chunks: bool, text: String) -> Result<Vec<Vec<u8>
         let refusal = serde_json::to_string(&crate::ServerFrame {
             id,
             err: Some(format!(
-                "reply of {} MiB is too large for this device's Zeron over the relay; update it",
+                "reply of {} MiB is too large for this device's Zend over the relay; update it",
                 text.len() >> 20
             )),
             ..Default::default()
@@ -596,14 +604,18 @@ async fn host_session(
     url: &str,
     service: &Arc<dyn RpcService>,
     on_nudge: &NudgeHandler,
+    on_connected: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<(), RpcError> {
-    let ws = zeron_sync::dial::connect_ws(url)
+    let ws = zend_sync::dial::connect_ws(url)
         .await
         .map_err(|e| RpcError::Transport(format!("device room unreachable: {e}")))?;
     tracing::info!("device-room: host connected");
+    if let Some(on_connected) = on_connected {
+        on_connected();
+    }
     let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(256);
     let (in_tx, mut in_rx) = mpsc::channel::<Vec<u8>>(1);
-    let transport = zeron_sync::socket::pump_with_timing(
+    let transport = zend_sync::socket::pump_with_timing(
         ws,
         out_rx,
         in_tx,
@@ -745,19 +757,19 @@ impl DeviceLink {
     }
 
     /// [`Self::connect`], and the device the room verified this dial as
-    /// (its 101's `x-zeron-caller-device`), if it did.
+    /// (its 101's `x-zend-caller-device`), if it did.
     async fn connect_seen(url: &str) -> Result<(Self, Option<String>), RpcError> {
-        let (ws, headers) = zeron_sync::dial::connect_ws_with_headers(url)
+        let (ws, headers) = zend_sync::dial::connect_ws_with_headers(url)
             .await
             .map_err(|e| RpcError::Transport(format!("device room unreachable: {e}")))?;
         let stamped = headers
-            .get("x-zeron-caller-device")
+            .get("x-zend-caller-device")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         Ok((Self::from_socket(ws), stamped))
     }
 
-    fn from_socket<S>(ws: zeron_sync::socket::Connection<S>) -> Self
+    fn from_socket<S>(ws: zend_sync::socket::Connection<S>) -> Self
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -768,7 +780,7 @@ impl DeviceLink {
         let (closed_tx, closed_rx) = watch::channel::<Option<String>>(None);
 
         let pump = tokio::spawn(async move {
-            let transport = zeron_sync::socket::pump_with_timing(
+            let transport = zend_sync::socket::pump_with_timing(
                 ws,
                 wire_rx,
                 wire_in,
@@ -932,7 +944,7 @@ pub struct LinkCacheConfig {
     pub edge_url: String,
     pub token: Arc<dyn TokenSource>,
     /// Exponential dial cooldown after failures (base, cap) — a dead peer must not be
-    /// redialed at full cadence; callers fail fast in between (zeron peers.ts behavior).
+    /// redialed at full cadence; callers fail fast in between (zend peers.ts behavior).
     pub cooldown_base: Duration,
     pub cooldown_max: Duration,
     /// Readiness probe budget: the relay accepts client joins even when the host is
@@ -965,9 +977,9 @@ pub struct CallerProof {
 /// device has a key to prove itself with.
 pub type CallerProofFn = Arc<dyn Fn(&str, &str, i64) -> Option<CallerProof> + Send + Sync>;
 
-/// `"zeron-device-link:v1:{target}:{connId}:{ts}"`: what a dial's proof signs.
+/// `"zend-device-link:v1:{target}:{connId}:{ts}"`: what a dial's proof signs.
 pub fn caller_proof_message(target: &str, conn_id: &str, ts: i64) -> String {
-    format!("zeron-device-link:v1:{target}:{conn_id}:{ts}")
+    format!("zend-device-link:v1:{target}:{conn_id}:{ts}")
 }
 
 /// `&callerDevice=…&callerKey=…&callerTs=…&callerProof=…`, or nothing when a
@@ -986,7 +998,7 @@ fn caller_query(proof: &CallerProof, ts: i64) -> String {
 impl LinkCacheConfig {
     pub fn new(edge_url: impl Into<String>, token: Arc<dyn TokenSource>) -> Self {
         // Interactive remote control (remote folders, terminals, accounts) rides
-        // this cache: one blip must cost seconds, not minutes. The old zeron
+        // this cache: one blip must cost seconds, not minutes. The old zend
         // 15s→5min curve punished a single failed dial with a 5-minute refusal;
         // here the first failure backs off 5s and even a dead peer is re-probed
         // within a minute. A generous probe budget keeps a slow-waking laptop
@@ -1014,7 +1026,7 @@ struct DialState {
     cooldown_until: Option<Instant>,
 }
 
-/// Lazily-dialed, cached peer links keyed by device id — the Rust twin of zeron's
+/// Lazily-dialed, cached peer links keyed by device id — the Rust twin of zend's
 /// `Peers`. Cache hits never wait behind an in-flight dial; dials to the same device are
 /// serialized per device (a global lock would head-of-line-block healthy peers); links
 /// self-evict when the transport drops; a failed RPC should call [`LinkCache::invalidate`]
@@ -1046,8 +1058,8 @@ impl LinkCache {
         if tokio::runtime::Handle::try_current().is_ok() {
             let weak = Arc::downgrade(&cache);
             tokio::spawn(async move {
-                let mut wake = zeron_sync::wake::subscribe();
-                let mut online = zeron_sync::wake::subscribe_online();
+                let mut wake = zend_sync::wake::subscribe();
+                let mut online = zend_sync::wake::subscribe_online();
                 let mut token_changes = weak
                     .upgrade()
                     .and_then(|cache| cache.config.token.subscribe());
@@ -1176,6 +1188,12 @@ impl LinkCache {
     /// live token provider and therefore remain disabled while signed out.
     pub fn disconnect_all(&self) {
         self.revoked.store(true, Ordering::Release);
+        lock(&self.links).clear();
+        lock(&self.dial_state).clear();
+    }
+
+    /// Close every peer socket and forget each one's retry curve. The next call dials.
+    pub fn close_all(&self) {
         lock(&self.links).clear();
         lock(&self.dial_state).clear();
     }
@@ -1332,6 +1350,14 @@ impl LinkCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rejoin_jitters_within_what_its_relay_allows() {
+        for _ in 0..200 {
+            assert!(super::jitter(std::time::Duration::from_millis(100)).as_millis() < 100);
+        }
+        assert_eq!(super::jitter(std::time::Duration::ZERO), std::time::Duration::ZERO);
+    }
+
     #[tokio::test]
     async fn relay_refuses_local_only_methods_and_serves_the_rest() {
         use crate::{RpcReply, RpcService, methods};
@@ -1387,7 +1413,7 @@ mod tests {
     /// from a link (which lands waiting here). What it reaches runs as a
     /// peer.
     #[tokio::test]
-    async fn relay_refuses_allowing_and_paths_from_peers() {
+    async fn relay_carries_peers_approvals_but_not_paths_signing_or_templates() {
         use crate::{RpcReply, RpcService, methods};
         use std::sync::{Arc, Mutex};
 
@@ -1408,13 +1434,10 @@ mod tests {
         let guard = super::RelayGuard { inner: Arc::new(Seen(seen.clone())), device: None };
         let hash = "ab".repeat(32);
         for (method, params) in [
-            (methods::DECIDE_PLUGIN, serde_json::json!({"id": "x", "allow": true, "hash": hash})),
-            (methods::DECIDE_PLUGIN, serde_json::json!({"id": "x", "allow": true, "hash": hash, "review": "r"})),
-            (methods::DECIDE_PLUGIN, serde_json::json!({"id": "x", "hash": hash})),
-            (methods::REVIEW_PLUGIN, serde_json::json!({"id": "x", "hash": hash})),
+            (methods::REVIEW_TEMPLATE, serde_json::json!({"pending": "x", "hash": hash})),
             (methods::SIGN_PLUGIN, serde_json::json!({"id": "x"})),
             (methods::DECIDE_TEMPLATE, serde_json::json!({"pending": "x", "allow": true, "hash": hash})),
-            (methods::INSTALL_PLUGIN, serde_json::json!({"path": "/tmp/x.zeron-plugin"})),
+            (methods::INSTALL_PLUGIN, serde_json::json!({"path": "/tmp/x.zend-plugin"})),
         ] {
             assert!(
                 guard.handle(method, params.clone()).await.is_err(),
@@ -1423,15 +1446,24 @@ mod tests {
         }
         assert!(seen.lock().unwrap().is_empty(), "refused before the service");
 
-        for (method, params) in [
+        // Your other devices' Settings → Plugins: reviews and allows (the
+        // engine holds each to a review minted for that very device,
+        // plugins/reviews.rs), installs from a link or a file sent here.
+        let reached = [
             (methods::DECIDE_PLUGIN, serde_json::json!({"id": "x", "allow": false, "hash": hash})),
+            (methods::DECIDE_PLUGIN, serde_json::json!({"id": "x", "allow": true, "hash": hash, "review": "r"})),
+            (methods::REVIEW_PLUGIN, serde_json::json!({"id": "x", "hash": hash})),
             (methods::SET_PLUGIN_OFF, serde_json::json!({"id": "x", "off": true})),
-            (methods::INSTALL_PLUGIN, serde_json::json!({"url": "https://example.com/x.zeron-plugin"})),
-        ] {
+            (methods::INSTALL_PLUGIN, serde_json::json!({"url": "https://example.com/x.zend-plugin"})),
+            (methods::STAGE_PLUGIN_PACKAGE, serde_json::json!({"data": ""})),
+            (methods::INSTALL_PLUGIN, serde_json::json!({"upload": "u", "name": "x.zend-plugin"})),
+        ];
+        let count = reached.len();
+        for (method, params) in reached {
             guard.handle(method, params).await.expect(method);
         }
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.len(), count);
         assert!(
             seen.iter().all(|(_, caller)| matches!(caller, crate::Caller::Peer { .. })),
             "served as a peer: {seen:?}"
@@ -1442,8 +1474,8 @@ mod tests {
     async fn blocked_relay_upload_closes_link_and_fails_pending_rpc() {
         use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
         let (client, _peer) = tokio::io::duplex(64);
-        let (client, progress) = zeron_sync::socket::ProgressIo::new(client);
-        let socket = zeron_sync::socket::Connection {
+        let (client, progress) = zend_sync::socket::ProgressIo::new(client);
+        let socket = zend_sync::socket::Connection {
             socket: WebSocketStream::from_raw_socket(client, Role::Client, None).await,
             progress,
         };
@@ -1465,8 +1497,8 @@ mod tests {
         use tokio::io::AsyncReadExt;
         use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
         let (client, mut peer) = tokio::io::duplex(8);
-        let (client, progress) = zeron_sync::socket::ProgressIo::new(client);
-        let socket = zeron_sync::socket::Connection {
+        let (client, progress) = zend_sync::socket::ProgressIo::new(client);
+        let socket = zend_sync::socket::Connection {
             socket: WebSocketStream::from_raw_socket(client, Role::Client, None).await,
             progress,
         };
@@ -1618,7 +1650,7 @@ mod tests {
         // Anything that would need escaping isn't sent at all (unstamped).
         let odd = CallerProof { device: "dev a&x=1".into(), ..proof };
         assert_eq!(caller_query(&odd, 1), "");
-        assert_eq!(caller_proof_message("dev-b", "c1", 5), "zeron-device-link:v1:dev-b:c1:5");
+        assert_eq!(caller_proof_message("dev-b", "c1", 5), "zend-device-link:v1:dev-b:c1:5");
     }
 
     #[test]

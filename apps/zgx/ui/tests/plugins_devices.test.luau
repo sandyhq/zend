@@ -2,7 +2,8 @@
 -- at the title's end shows another device's plugins, and everything done
 -- there names that device (switching, reviewing, removing, installing,
 -- updating, checking sources); a device that's away says so in plain
--- words; and a file installs only on this computer. On the page in
+-- words; and a file on this computer installs on any of them (sent
+-- there, src/plugins/remote.rs `send_file`). On the page in
 -- ui/plugins_devices_fixture.luau.
 
 local function open(): any
@@ -104,7 +105,7 @@ test("this computer's actions name no device; another computer's folders aren't 
 	expect(asked(app, "set_off:focus:true@")).to_be(true)
 	pick(app, "devbox")
 	-- One that can't load there says why, with no folder to show here.
-	expect(app:tree()).to_contain("permission Zeron doesn")
+	expect(app:tree()).to_contain("permission Zend doesn")
 	expect(app:has('role:button "Show folder"')).to_be(false)
 	-- None there: a link to install one, not this computer's folder.
 	app:command("devbox_empty")
@@ -150,7 +151,7 @@ test("a computer that's away says so, and is looked at again when it's back", fu
 	expect(app:tree()).to_contain("Checkout status")
 end)
 
-test("a file installs only on this computer; a link installs on any computer", function()
+test("a file on this computer or a link installs on any computer", function()
 	local app = open()
 	app:click('role:button "Install"')
 	app:frames(20)
@@ -162,8 +163,8 @@ test("a file installs only on this computer; a link installs on any computer", f
 	app:click('role:button "Install"')
 	app:frames(20)
 	expect(app:tree()).to_contain("Install a plugin on devbox")
-	expect(app:has('role:button "Choose File"')).to_be(false)
-	expect(app:tree()).to_contain("installs only on the computer it")
+	expect(app:has('role:button "Choose File"')).to_be(true)
+	expect(app:tree()).never.to_contain("installs only on the computer it")
 	app:type('role:textbox "Link"', "ada/clock")
 	app:click('role:dialog >> role:button "Install"')
 	app:frames(20)
@@ -184,7 +185,7 @@ test("the device choice sits at the top right, centred on the title's line; shor
 	expect(th > 0 and ph > 0).to_be(true)
 	expect(math.abs((py + ph / 2) - (ty + th / 2)) <= 1).to_be(true)
 	-- At the far end of the title's row: past the description's measure.
-	local dx, _, dw = box(app, '"What plugins add to Zeron on each of your computers, and the tools they give your agents."')
+	local dx, _, dw = box(app, '"What plugins add to Zend on each of your computers, and the tools they give your agents."')
 	expect(px + pw > dx + dw or dw == 0).to_be(true)
 	-- Narrow: under the title, as every page's trail goes.
 	app:resize(420, 900)

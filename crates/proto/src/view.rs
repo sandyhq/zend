@@ -40,6 +40,27 @@ pub enum Indicator {
 /// §1.12). Engines heartbeat sessions well inside this window.
 pub const SESSION_STALE_MS: i64 = 45_000;
 
+/// How often a host restamps `updated_at` on a session row that says
+/// something readers drop once it goes stale ([`session_expires`]). Every
+/// restamp is a stored registry write, so it is as rare as shipped readers
+/// allow: they judge staleness against [`SESSION_STALE_MS`] with no other
+/// signal. Hosts check every 5 s, so restamps land at most 30 s apart and
+/// leave 15 s for delivery and clock skew.
+pub const SESSION_HEARTBEAT_MS: i64 = 25_000;
+
+/// Whether a session row says anything that [`SESSION_STALE_MS`] expires: a
+/// live status, running subagents, background processes or a wait. Only
+/// such a row needs its host's heartbeat; any other row reads the same
+/// stale or fresh. Terminal activity is restamped by its own projection.
+pub fn session_expires(session: &Session) -> bool {
+    matches!(
+        session.status,
+        SessionStatus::Working | SessionStatus::AwaitingInput
+    ) || session.running_subagents > 0
+        || !session.background_tasks.is_empty()
+        || session.waiting.is_some()
+}
+
 /// Only live activity expires. Completed/error records remain useful after
 /// process exit; a lost heartbeat is never evidence of successful completion.
 pub fn session_stale(session: &Session, now: DateTime<Utc>) -> bool {
@@ -308,7 +329,7 @@ pub fn sort_chats(chats: &mut [Chat]) {
 // Boot gate
 // ---------------------------------------------------------------------------
 
-/// The app gate (zeron's App.tsx phases). Pure.
+/// The app gate (zend's App.tsx phases). Pure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatePhase {
     /// Booting / probing — splash covers this.
@@ -760,7 +781,7 @@ pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGro
 }
 
 /// Compact relative time ("now", "5m", "3h", "2d", "1w", …) — no "ago" suffix;
-/// port of zeron's `formatTimeAgo`.
+/// port of zend's `formatTimeAgo`.
 pub fn format_time_ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = now.signed_duration_since(then).num_seconds().max(0);
     // Under a minute reads as "now" — otherwise 45–59s floors to a bare "0m".
@@ -790,7 +811,7 @@ pub fn format_time_ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     format!("{}y", d / 365)
 }
 
-/// Session-row sub-line, "project · branch" (zeron `chatLocation`): the repo
+/// Session-row sub-line, "project · branch" (zend `chatLocation`): the repo
 /// checkout identity. Either part may be missing; empty when both are. A
 /// projectless chat names no project and no folder.
 pub fn chat_location(chat: &Chat) -> Option<String> {
@@ -836,7 +857,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// Per-kind chip label + one-line detail. Labels match zeron's `describeTool`
+/// Per-kind chip label + one-line detail. Labels match zend's `describeTool`
 /// (tool-chip.tsx) exactly, so the two viewports name a tool identically.
 pub fn tool_chip_content(call: &crate::ToolCall) -> (&'static str, String) {
     let (label, detail) = tool_chip_content_raw(call);
@@ -972,7 +993,7 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
         segments.push(format!("{failed} failed"));
     }
     let mut summary = segments.join(" · ");
-    // Capitalize the first segment only (zeron's style).
+    // Capitalize the first segment only (zend's style).
     if let Some(first) = summary.get(0..1) {
         let upper = first.to_uppercase();
         summary.replace_range(0..1, &upper);
@@ -1130,7 +1151,7 @@ fn clip(text: &str, max: usize) -> String {
 ///
 /// Colors live here rather than in the viewport because the *meaning* of a
 /// dot is part of the protocol, not the presentation — a given status must
-/// read the same on every surface. `zeron-ui` has the oklch→sRGB math.
+/// read the same on every surface. `zend-ui` has the oklch→sRGB math.
 pub mod dot {
     /// Running. Pink, not amber: the harsh yellow read as a warning, and running
     /// is routine (user request).
@@ -1171,7 +1192,7 @@ pub enum CheckoutPlan {
     CurrentCheckout { branch: Option<String> },
     /// Reuse the picked ref's existing worktree (a cwd override; no git).
     ReuseWorktree { path: String, branch: String },
-    /// `CreateWorktree` off `base` on send (the engine mints a `zeron/<name>`
+    /// `CreateWorktree` off `base` on send (the engine mints a `zend/<name>`
     /// branch). `base: None` = refs never loaded — send falls back to the space
     /// folder rather than failing.
     NewWorktree { base: Option<String> },

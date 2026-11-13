@@ -4,7 +4,7 @@
 //! ## EngineHandle
 //! The UI talks the same typed RPC whether the engine is in-process or a separate
 //! daemon (ARCHITECTURE §1). [`EngineHandle::bootstrap`] probes the localhost IPC
-//! port, mirroring zeron: if an engine is listening it connects over WebSocket
+//! port, mirroring zend: if an engine is listening it connects over WebSocket
 //! ([`RemoteEngine`]); otherwise it embeds one via [`EngineCore::assemble`] and an
 //! in-memory RPC transport ([`InProcessEngine`]) — same envelopes, same dispatch.
 //!
@@ -28,13 +28,13 @@ use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
 use crate::comments::ReviewComment;
-use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
-use zeron_engine::{EngineConfig, EngineRuntime, InstanceLock};
-use zeron_proto::{
+use zend_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
+use zend_engine::{EngineConfig, EngineRuntime, InstanceLock};
+use zend_proto::{
     AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device,
     EngineInfo, HarnessId, Session, SidebarPreferencesState, Space, WorkspaceScope,
 };
-use zeron_rpc::{RpcClient, RpcError, RpcService, memory_client, methods};
+use zend_rpc::{RpcClient, RpcError, RpcService, memory_client, methods};
 
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
@@ -49,7 +49,7 @@ struct CachedTranscript {
     prepared: Option<Arc<crate::transcript::PreparedTranscript>>,
     chat_id: String,
     entries: Vec<SessionMessageEntry>,
-    context_usage: Option<zeron_proto::ContextUsage>,
+    context_usage: Option<zend_proto::ContextUsage>,
     bytes: usize,
 }
 
@@ -68,7 +68,7 @@ impl WatchPreparation {
     }
     fn prepare(
         &mut self,
-        update: &zeron_doc::TranscriptUpdate,
+        update: &zend_doc::TranscriptUpdate,
     ) -> Result<Arc<crate::transcript::PreparedTranscript>, TranscriptDesync> {
         self.worker.as_mut().unwrap().prepare(update)
     }
@@ -91,7 +91,7 @@ impl Drop for WatchPreparation {
 /// Everything needed to reach (or start) an engine.
 #[derive(Debug, Clone)]
 pub struct EngineBootConfig {
-    /// Data directory for the embedded engine (`~/.zeron`).
+    /// Data directory for the embedded engine (`~/.zend`).
     pub data_dir: PathBuf,
     /// Localhost IPC port to probe / serve.
     pub ipc_port: u16,
@@ -183,7 +183,7 @@ impl EngineBackend for InProcessEngine {
     }
 }
 
-use zeron_engine::deferred::{
+use zend_engine::deferred::{
     DeferredEngine, DeferredState as DeferredEngineState, wait as wait_for_deferred_engine,
 };
 
@@ -194,7 +194,7 @@ static LAUNCH_BACKGROUND_ENGINE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Have [`EngineHandle::bootstrap`] start the background engine
-/// (`zeron_engine::managed`) instead of embedding one. Embedding stays the
+/// (`zend_engine::managed`) instead of embedding one. Embedding stays the
 /// fallback when it can't start.
 pub fn launch_background_engine() {
     LAUNCH_BACKGROUND_ENGINE.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -238,7 +238,7 @@ struct RemoteEngine {
 #[async_trait]
 impl EngineBackend for RemoteEngine {
     async fn media_client(&self) -> Result<RpcClient, RpcError> {
-        zeron_rpc::connect_ipc(self.ipc_port, Some(&self.data_dir)).await
+        zend_rpc::connect_ipc(self.ipc_port, Some(&self.data_dir)).await
     }
     fn client(&self) -> &RpcClient {
         &self.client
@@ -341,7 +341,7 @@ impl EngineHandle {
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let served = zeron_engine::serve_ipc(
+        let served = zend_engine::serve_ipc(
             engine_config.ipc_port,
             &engine_config.data_dir,
             service.clone(),
@@ -418,7 +418,7 @@ impl EngineHandle {
     async fn launch_background(config: &EngineConfig) -> Option<EngineHandle> {
         const STARTUP: std::time::Duration = std::time::Duration::from_secs(20);
         let app = std::env::current_exe().ok()?;
-        let mut child = match zeron_engine::managed::launch(config, &app) {
+        let mut child = match zend_engine::managed::launch(config, &app) {
             Ok(child) => child,
             Err(err) => {
                 tracing::warn!(error = %err, "couldn't start the background engine; embedding one");
@@ -429,7 +429,7 @@ impl EngineHandle {
         let deadline = std::time::Instant::now() + STARTUP;
         loop {
             if let Some(handle) = Self::attach_to_daemon(config.ipc_port, &config.data_dir).await {
-                zeron_engine::managed::reap(child);
+                zend_engine::managed::reap(child);
                 return Some(handle);
             }
             if let Ok(Some(status)) = child.try_wait() {
@@ -463,7 +463,7 @@ impl EngineHandle {
             return None;
         }
         tracing::info!(%url, "engine daemon detected; connecting");
-        match zeron_rpc::connect_ipc(ipc_port, Some(data_dir)).await {
+        match zend_rpc::connect_ipc(ipc_port, Some(data_dir)).await {
             Ok(client) => match query_engine_info(&client).await {
                 Ok(engine_info) => {
                     let client = Arc::new(client);
@@ -533,7 +533,7 @@ impl EngineHandle {
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
                 // What a current engine advertises.
-                capabilities: zeron_proto::capabilities::CURRENT
+                capabilities: zend_proto::capabilities::CURRENT
                     .iter()
                     .map(|c| c.to_string())
                     .collect(),
@@ -607,10 +607,10 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 // ---------------------------------------------------------------------------
 
 // The frontend-agnostic derivations (sort orders, staleness gating, sidebar
-// grouping, the boot gate, relative times) live in `zeron_proto::view`, pure
+// grouping, the boot gate, relative times) live in `zend_proto::view`, pure
 // and with their own test suite. Re-exported here because every call site in
 // this crate reads them as `state::…`.
-pub use zeron_proto::view::{
+pub use zend_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
     parse_auth_state, project_label, running_subagents, sort_active, sort_chats, sort_spaces, sort_tabs,
@@ -681,6 +681,11 @@ struct PendingSend {
     row_before: Option<Session>,
     /// The send creates the chat, so no earlier turn of it exists.
     new_chat: bool,
+    /// When the session poll last saw this send waiting on its Cloud machine
+    /// (starting, waking or updating); the send itself until then. A machine
+    /// reads ready before it decides to update, so the poll keeps going a
+    /// little past it ([`crate::cloud::STAGE_WATCH`]).
+    machine_waited: DateTime<Utc>,
 }
 
 impl PendingSend {
@@ -702,13 +707,13 @@ impl PendingSend {
     /// restarted host, or a Cloud machine waking, comes back with no
     /// completion at all, which counts.
     fn adopted_by(&self, session: &Session, now: DateTime<Utc>) -> bool {
-        use zeron_proto::SessionStatus::{AwaitingInput, Errored, Idle, Working};
+        use zend_proto::SessionStatus::{AwaitingInput, Errored, Idle, Working};
         let before = self.row_before.as_ref();
         let settled_before = before.map_or(self.new_chat, |b| matches!(b.status, Idle | Errored));
         match session.status {
             Working | AwaitingInput => {
                 let completed_before = before.and_then(|b| b.last_completed_turn.as_ref());
-                !zeron_proto::view::session_stale(session, now)
+                !zend_proto::view::session_stale(session, now)
                     && session.started_at.is_some()
                     && session.started_at != before.and_then(|b| b.started_at)
                     && (session.last_completed_turn.as_ref() == completed_before
@@ -717,7 +722,7 @@ impl PendingSend {
             Idle | Errored => {
                 settled_before
                     && session.last_turn_outcome.is_some_and(|o| {
-                        o.status != zeron_proto::DoneStatus::Interrupted
+                        o.status != zend_proto::DoneStatus::Interrupted
                             && o.finished_at > self.started
                     })
                     && session.last_turn_outcome != before.and_then(|b| b.last_turn_outcome)
@@ -802,12 +807,15 @@ pub enum TranscriptLoading {
     Syncing,
     Reconnecting,
     Offline,
+    /// This device has never loaded the chat, its room stores nothing, and the
+    /// device that hosts it is away. Nothing is lost; there's nothing to show yet.
+    HostAway,
 }
 
 /// The engine is still bringing this chat's room up to date. Delivery proven
 /// over the room or HTTP ends it; so does any state that is not a sync.
-fn chat_syncing(chat: &zeron_proto::ChatConnectivity) -> bool {
-    use zeron_proto::ChatSyncState as S;
+fn chat_syncing(chat: &zend_proto::ChatConnectivity) -> bool {
+    use zend_proto::ChatSyncState as S;
     !chat.delivery_live && matches!(chat.sync_state, S::Waiting | S::Connecting | S::Offline)
 }
 
@@ -942,7 +950,7 @@ pub struct AppState {
     session_presence_presentation: Vec<(Indicator, u32)>,
     /// Live edge posture (WatchConnectivity): drives the connection pill,
     /// composer honesty ("will queue"), and the Queued send badges.
-    pub connectivity: zeron_proto::Connectivity,
+    pub connectivity: zend_proto::Connectivity,
     /// Whether this runtime's connectivity watch has delivered its first
     /// frame. The default `Disabled` value is only a placeholder and must not
     /// seed notification decisions before the watch is authoritative.
@@ -997,14 +1005,14 @@ pub struct AppState {
     /// The selected chat's pending-message queue — what was typed while the
     /// agent was busy, in the order it will be sent. Device-agnostic: the
     /// chat's doc holds them (every device sees the same queue).
-    pub queue: Vec<zeron_doc::QueuedMessage>,
-    pub context_usage: Option<zeron_proto::ContextUsage>,
+    pub queue: Vec<zend_doc::QueuedMessage>,
+    pub context_usage: Option<zend_proto::ContextUsage>,
     /// The selected chat has a transcript from a `WatchDocMessages` reset
     /// (including a retained reset from an earlier visit). An
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
     pub transcript_replayed: bool,
-    transcript_baselines: HashMap<String, Arc<zeron_doc::TranscriptBaseline>>,
+    transcript_baselines: HashMap<String, Arc<zend_doc::TranscriptBaseline>>,
     transcript_cache: std::collections::VecDeque<CachedTranscript>,
     pub(crate) prepared_transcripts: HashMap<String, Arc<crate::transcript::PreparedTranscript>>,
     /// Changes only when transcript/optimistic content changes. Presence,
@@ -1025,6 +1033,9 @@ pub struct AppState {
     /// snapshots): real relay-leg progress for the sending thumbnail's
     /// percent ring, present exactly while bytes are moving.
     transfers: HashMap<String, (u64, u64)>,
+    /// Sends the engine is holding until their bytes reach the edge's store
+    /// (`WatchHeldSends`): a Cloud-hosted chat's message before it goes out.
+    held_sends: Vec<zend_proto::HeldSendStatus>,
     /// Written by the changes pane, read by the composer.
     review_comments: HashMap<String, Vec<ReviewComment>>,
     /// File surfaces whose editor-backed comments currently cite a buffer
@@ -1036,15 +1047,15 @@ pub struct AppState {
     pub local_device_id: Option<String>,
     /// Device-local agent CLI update lifecycle. Unlike `ListHarnesses`, this
     /// standing stream may be backed by subprocess and network probes.
-    pub harness_updates: Vec<zeron_proto::HarnessUpdateStatus>,
+    pub harness_updates: Vec<zend_proto::HarnessUpdateStatus>,
     /// Last `CloudStatus` any surface fetched (Settings → Cloud, Devices,
     /// New project). Fetched on open and after actions — never polled — so
     /// device lists can say "Asleep" instead of "Offline" for Cloud.
-    pub cloud_status: Option<zeron_proto::CloudStatus>,
+    pub cloud_status: Option<zend_proto::CloudStatus>,
     /// Every Cloud session and its machine's state, read on focus, chat
     /// selection and page open — and every few seconds only while one is
     /// being set up, woken or deleted ([`Self::refresh_cloud_sessions`]).
-    pub cloud_sessions: Option<zeron_proto::CloudSessions>,
+    pub cloud_sessions: Option<zend_proto::CloudSessions>,
     cloud_sessions_task: Option<Task<()>>,
     /// Sessions (by their chat id) someone asked to wake, and when: the
     /// machine reads as waking until its own heartbeat arrives, rather than
@@ -1053,10 +1064,10 @@ pub struct AppState {
     /// When a surface that couldn't reach a Cloud machine last had the
     /// session list re-read ([`Self::recheck_cloud_machine`]).
     cloud_recheck_at: Option<std::time::Instant>,
-    /// The GitHub repositories Cloud reaches (the Zeron GitHub App's
+    /// The GitHub repositories Cloud reaches (the Zend GitHub App's
     /// installations): a project whose repository is here can run a session
     /// on Cloud. `None` = Cloud off, GitHub not connected, or not read yet.
-    pub cloud_repos: Option<Vec<zeron_proto::GithubRepo>>,
+    pub cloud_repos: Option<Vec<zend_proto::GithubRepo>>,
     cloud_repos_task: Option<Task<()>>,
     /// A [`Self::refresh_cloud_repos`] read is in flight (its button spins).
     cloud_repos_refreshing: bool,
@@ -1159,7 +1170,7 @@ impl AppState {
             devices: Vec::new(),
             device_presentation: None,
             session_presence_presentation: Vec::new(),
-            connectivity: zeron_proto::Connectivity::default(),
+            connectivity: zend_proto::Connectivity::default(),
             connectivity_observed: false,
             sync_clocks: HashMap::new(),
             spaces: Vec::new(),
@@ -1187,6 +1198,7 @@ impl AppState {
             pending_sends: HashMap::new(),
             upload_progress: None,
             transfers: HashMap::new(),
+            held_sends: Vec::new(),
             review_comments: HashMap::new(),
             review_comment_flushes: HashMap::new(),
             local_device_id: None,
@@ -1603,7 +1615,7 @@ impl AppState {
     /// Optimistic local echo of a `setChatConfig` mutate: stamp the row now so
     /// the chips update on click; the next chats watch frame carries the same
     /// value once the engine applies the LWW write.
-    pub fn apply_chat_config(&mut self, chat_id: &str, config: zeron_proto::ChatConfig) {
+    pub fn apply_chat_config(&mut self, chat_id: &str, config: zend_proto::ChatConfig) {
         // The pending side chat's copy is what `apply_chats` re-inserts and
         // what an unsaved one is minted from.
         if let Some(chat) = self
@@ -1620,13 +1632,13 @@ impl AppState {
 
     /// Returns whether the posture changed. The first frame after attach always
     /// counts: it ends the bootstrap gap the shell's alert baseline waits on.
-    pub fn apply_connectivity(&mut self, connectivity: zeron_proto::Connectivity) -> bool {
+    pub fn apply_connectivity(&mut self, connectivity: zend_proto::Connectivity) -> bool {
         self.apply_connectivity_at(connectivity, clock_now())
     }
 
     fn apply_connectivity_at(
         &mut self,
-        connectivity: zeron_proto::Connectivity,
+        connectivity: zend_proto::Connectivity,
         now: DateTime<Utc>,
     ) -> bool {
         let changed = !self.connectivity_observed || self.connectivity != connectivity;
@@ -1656,7 +1668,7 @@ impl AppState {
     /// even fully offline. Opening a remote chat is [`LinkSync::Syncing`] —
     /// an outage is claimed only once its room has stalled.
     pub fn chat_link_at(&self, chat_id: &str, now: DateTime<Utc>) -> ChatLink {
-        use zeron_proto::{ChatSyncState as C, ConnectivityState as S};
+        use zend_proto::{ChatSyncState as C, ConnectivityState as S};
         let global = match self.connectivity.state {
             S::Disabled => return ChatLink::LIVE,
             S::Offline => Some(LinkSync::Offline),
@@ -1720,7 +1732,7 @@ impl AppState {
     /// The path to the device a new chat would run on (the canvas has no
     /// chat row yet): the global posture and that device's presence.
     pub fn device_link_at(&self, device_id: &str, now: DateTime<Utc>) -> ChatLink {
-        use zeron_proto::ConnectivityState as S;
+        use zend_proto::ConnectivityState as S;
         if self.connectivity.state == S::Disabled
             || self.local_device_id.as_deref() == Some(device_id)
         {
@@ -1748,7 +1760,7 @@ impl AppState {
     /// A chat hosted here, or on a local profile, is authoritative from its
     /// own disk; an unsaved side chat has nothing to load.
     pub fn transcript_loading(&self, now: DateTime<Utc>) -> Option<TranscriptLoading> {
-        use zeron_proto::{ChatSyncState as C, ConnectivityState as S};
+        use zend_proto::{ChatSyncState as C, ConnectivityState as S};
         let chat_id = self.selected_chat.as_deref()?;
         let hosted_here = self.chats.iter().any(|chat| {
             chat.id == chat_id && Some(chat.device_id.as_str()) == self.local_device_id.as_deref()
@@ -1781,12 +1793,21 @@ impl AppState {
                         C::Waiting | C::Connecting | C::Offline => false,
                     }
             });
-        if caught_up {
+        // A relayed chat's room stores nothing, so catching up with it says nothing
+        // about a chat with messages. Only its host can fill this copy.
+        let relayed_history = self.chats.iter().any(|chat| {
+            chat.id == chat_id
+                && chat.room_gen.unwrap_or(1) >= zend_proto::relay_gen::RELAY_ROOM_GEN
+                && chat.last_message_at.is_some()
+        });
+        if caught_up && !relayed_history {
             return None;
         }
-        Some(match self.chat_link_at(chat_id, now).sync {
+        let link = self.chat_link_at(chat_id, now);
+        Some(match link.sync {
             LinkSync::Offline => TranscriptLoading::Offline,
             LinkSync::Stalled | LinkSync::Reconnecting => TranscriptLoading::Reconnecting,
+            _ if relayed_history && link.host_unreachable => TranscriptLoading::HostAway,
             // Not reported yet: the room the replay opened has yet to speak.
             LinkSync::Live | LinkSync::Syncing { .. } => TranscriptLoading::Syncing,
         })
@@ -1836,6 +1857,19 @@ impl AppState {
             .is_some_and(|v| v >= min)
     }
 
+    /// Whether a send to this host can go through the edge's attachment store:
+    /// a Cloud machine that says it fetches from there, or one that hasn't
+    /// reported in yet (the engine then pushes over the peer link too).
+    pub fn host_fetches_from_store(&self, device_id: &str) -> bool {
+        zend_proto::is_cloud_device(device_id, "")
+            && self
+                .devices
+                .iter()
+                .find(|d| d.id == device_id)
+                .filter(|d| d.version.is_some())
+                .is_none_or(|d| d.supports(zend_proto::capabilities::ATTACHMENT_STORE_V1))
+    }
+
     /// Capability checks use the live EngineInfo for this device (including a
     /// localhost daemon that may not match the UI binary) and synced device
     /// rows for peers. Missing declarations are conservatively unsupported.
@@ -1875,7 +1909,7 @@ impl AppState {
 
     pub fn apply_harness_updates(
         &mut self,
-        statuses: Vec<zeron_proto::HarnessUpdateStatus>,
+        statuses: Vec<zend_proto::HarnessUpdateStatus>,
     ) -> bool {
         if self.harness_updates == statuses {
             return false;
@@ -1910,7 +1944,7 @@ impl AppState {
     }
 
     /// The signed-in user, if the engine reports one.
-    pub fn auth_user(&self) -> Option<&zeron_proto::UserProfile> {
+    pub fn auth_user(&self) -> Option<&zend_proto::UserProfile> {
         match self.auth.as_ref()? {
             AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
             AuthState::SignedOut => None,
@@ -1943,7 +1977,7 @@ impl AppState {
             if transcript.iter().any(|e| e.id == echo.id) {
                 return false;
             }
-            let Some(message_id) = zeron_proto::cloud_setup_message_id(&echo.id) else {
+            let Some(message_id) = zend_proto::cloud_setup_message_id(&echo.id) else {
                 return true;
             };
             transcript
@@ -1964,7 +1998,7 @@ impl AppState {
         }
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let is_reset = matches!(&frame, TranscriptFrame::Reset { .. });
-        zeron_doc::apply_transcript_frame(&mut self.transcript, frame)?;
+        zend_doc::apply_transcript_frame(&mut self.transcript, frame)?;
         if is_reset {
             self.transcript_replayed = true;
         }
@@ -2000,13 +2034,13 @@ impl AppState {
     pub(crate) fn transcript_baseline(
         &self,
         doc_id: &str,
-    ) -> Option<&Arc<zeron_doc::TranscriptBaseline>> {
+    ) -> Option<&Arc<zend_doc::TranscriptBaseline>> {
         self.transcript_baselines.get(doc_id)
     }
 
     pub fn receive_transcript_update(
         &mut self,
-        update: zeron_doc::TranscriptUpdate,
+        update: zend_doc::TranscriptUpdate,
         cx: &mut Context<Self>,
     ) -> Result<(), TranscriptDesync> {
         self.receive_transcript_frame(update.frame, cx)?;
@@ -2025,7 +2059,7 @@ impl AppState {
     /// with it, and don't treat it as a full reset for caching/scroll anchors.
     pub(crate) fn receive_opening_transcript_update(
         &mut self,
-        update: zeron_doc::TranscriptUpdate,
+        update: zend_doc::TranscriptUpdate,
         history_pending: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), TranscriptDesync> {
@@ -2095,7 +2129,7 @@ impl AppState {
         self.sub_watch_tasks.remove(&doc_id);
         self.transcript_baselines.insert(
             doc_id.clone(),
-            Arc::new(zeron_doc::TranscriptBaseline::capture(&entries)),
+            Arc::new(zend_doc::TranscriptBaseline::capture(&entries)),
         );
         self.sub_transcripts.insert(doc_id, entries);
     }
@@ -2126,7 +2160,7 @@ impl AppState {
     /// The send of `message_id` brings `chat_id`'s Cloud machine up (`waking`
     /// a sleeping one): show the first setup step under it right away. The
     /// machine's own setup entry replaces it in place once it boots
-    /// (`zeron_proto::cloud_setup_entry_id`), with the steps that follow.
+    /// (`zend_proto::cloud_setup_entry_id`), with the steps that follow.
     pub fn push_cloud_setup_echo(
         &mut self,
         chat_id: &str,
@@ -2136,7 +2170,7 @@ impl AppState {
     ) {
         // Pushed a beat after the send: the machine may already have written
         // its own setup entry, or (already up) moved past the message.
-        let entry_id = zeron_proto::cloud_setup_entry_id(message_id);
+        let entry_id = zend_proto::cloud_setup_entry_id(message_id);
         if self.selected_chat.as_deref() == Some(chat_id)
             && (self.transcript.iter().any(|e| e.id == entry_id)
                 || self
@@ -2159,10 +2193,10 @@ impl AppState {
             chat_id,
             SessionMessageEntry {
                 id: entry_id,
-                role: zeron_doc::MessageRole::Assistant,
-                parts: vec![zeron_doc::MessagePart::Tool {
-                    id: zeron_proto::cloud_setup_part_id(message_id, "machine"),
-                    call: zeron_proto::ToolCall::Unknown {
+                role: zend_doc::MessageRole::Assistant,
+                parts: vec![zend_doc::MessagePart::Tool {
+                    id: zend_proto::cloud_setup_part_id(message_id, "machine"),
+                    call: zend_proto::ToolCall::Unknown {
                         name: name.into(),
                         input: None,
                     },
@@ -2183,7 +2217,7 @@ impl AppState {
                 }],
                 created_at: created_at + 1,
                 device_id: "local".into(),
-                status: Some(zeron_doc::MessageStatus::Streaming),
+                status: Some(zend_doc::MessageStatus::Streaming),
                 continuation_of: None,
                 duration_ms: None,
             },
@@ -2197,14 +2231,14 @@ impl AppState {
     /// entry it brought up, if it had to start or wake a machine. Setup
     /// entry ids derive from their message's, so finding one is enough.
     fn latest_cloud_setup(&self) -> Option<(&SessionMessageEntry, Option<&SessionMessageEntry>)> {
-        let user = zeron_doc::MessageRole::User;
+        let user = zend_doc::MessageRole::User;
         let message = self
             .pending_echoes()
             .iter()
             .rev()
             .find(|entry| entry.role == user)
             .or_else(|| self.transcript.iter().rev().find(|entry| entry.role == user))?;
-        let setup_id = zeron_proto::cloud_setup_entry_id(&message.id);
+        let setup_id = zend_proto::cloud_setup_entry_id(&message.id);
         let setup = self
             .pending_echoes()
             .iter()
@@ -2218,7 +2252,7 @@ impl AppState {
     /// the turn's answer) still streaming.
     pub fn cloud_setup_streaming(&self) -> bool {
         self.latest_cloud_setup().is_some_and(|(_, setup)| {
-            setup.is_some_and(|setup| setup.status == Some(zeron_doc::MessageStatus::Streaming))
+            setup.is_some_and(|setup| setup.status == Some(zend_doc::MessageStatus::Streaming))
         })
     }
 
@@ -2238,7 +2272,7 @@ impl AppState {
     pub fn cloud_setup_echo_pending(&self) -> bool {
         self.pending_echoes()
             .iter()
-            .any(|echo| zeron_proto::cloud_setup_message_id(&echo.id).is_some())
+            .any(|echo| zend_proto::cloud_setup_message_id(&echo.id).is_some())
     }
 
     /// Drop an echo (send failed — the prompt returns to the draft).
@@ -2277,6 +2311,7 @@ impl AppState {
                 started: now,
                 row_before,
                 new_chat,
+                machine_waited: now,
             },
         );
     }
@@ -2326,7 +2361,7 @@ impl AppState {
 
     /// A `WatchTransfers` snapshot: the engine-side relay leg's in-flight
     /// queued-attachment transfers, replacing the whole set each frame.
-    pub fn apply_transfers(&mut self, transfers: Vec<zeron_proto::TransferProgress>) -> bool {
+    pub fn apply_transfers(&mut self, transfers: Vec<zend_proto::TransferProgress>) -> bool {
         let transfers: HashMap<_, _> = transfers
             .into_iter()
             .map(|t| (t.upload_id, (t.done, t.total)))
@@ -2336,6 +2371,107 @@ impl AppState {
         }
         self.transfers = transfers;
         true
+    }
+
+    /// The engine's outbox changed. A send still held shows as an in-flight
+    /// message even after a relaunch forgot its echo; a send leaving the outbox
+    /// has only just gone out, so its delivery clock starts over.
+    pub fn apply_held_sends(&mut self, held: Vec<zend_proto::HeldSendStatus>) -> bool {
+        if self.held_sends == held {
+            return false;
+        }
+        let now = Utc::now();
+        for gone in std::mem::take(&mut self.held_sends) {
+            if held.iter().any(|send| send.id == gone.id) {
+                continue;
+            }
+            // A row is in the queue now, and its panel takes over from the echo.
+            if gone.queue_row {
+                if let Some(message_id) = &gone.message_id {
+                    self.remove_echo(&gone.chat_id, message_id);
+                }
+            } else if self
+                .pending_sends
+                .get(&gone.chat_id)
+                .is_some_and(|p| gone.message_id.as_deref() == Some(p.message_id.as_str()))
+            {
+                self.retry_pending_send(&gone.chat_id, now);
+            }
+        }
+        for send in &held {
+            let Some(message_id) = send.message_id.as_deref() else {
+                continue;
+            };
+            if self.echoes.get(&send.chat_id).is_some_and(|e| e.iter().any(|e| e.id == message_id))
+            {
+                continue;
+            }
+            self.push_echo(
+                &send.chat_id,
+                SessionMessageEntry {
+                    id: message_id.to_string(),
+                    role: zend_doc::MessageRole::User,
+                    parts: vec![zend_doc::MessagePart::Text {
+                        id: "t0".into(),
+                        text: send.prompt.clone(),
+                    }],
+                    created_at: send.created_at,
+                    device_id: "local".into(),
+                    status: None,
+                    continuation_of: None,
+                    duration_ms: None,
+                },
+            );
+            // A row waits for its turn, so it never starts one's overlay.
+            if !send.queue_row && !self.pending_sends.contains_key(&send.chat_id) {
+                self.begin_pending_send(&send.chat_id, message_id, now);
+            }
+        }
+        self.held_sends = held;
+        true
+    }
+
+    /// A send of this chat is still on its way to the edge's store: not late,
+    /// however long that takes.
+    fn send_held(&self, chat_id: &str) -> bool {
+        self.held_sends
+            .iter()
+            .any(|send| send.chat_id == chat_id && send.failure.is_none())
+    }
+
+    /// The engine's outbox as last heard.
+    pub fn held_sends_snapshot(&self) -> Vec<zend_proto::HeldSendStatus> {
+        self.held_sends.clone()
+    }
+
+    /// The chat's send the engine still holds (its files uploading, or failed),
+    /// which Remove applies to: a failed one first, then the oldest.
+    pub fn removable_held_send(&self, chat_id: &str) -> Option<&zend_proto::HeldSendStatus> {
+        let mut held = self.held_sends.iter().filter(|send| send.chat_id == chat_id);
+        held.clone()
+            .find(|send| send.failure.is_some())
+            .or_else(|| held.next())
+    }
+
+    /// Remove pressed: the send leaves this view at once (its echo and its
+    /// sending overlay), and its leaving the engine's outbox next isn't taken
+    /// for it having gone out. Returns it, to put back if the engine refuses.
+    pub fn remove_held_locally(&mut self, id: &str) -> Option<zend_proto::HeldSendStatus> {
+        let at = self.held_sends.iter().position(|send| send.id == id)?;
+        let send = self.held_sends.remove(at);
+        if let Some(message_id) = &send.message_id {
+            self.remove_echo(&send.chat_id, message_id);
+            self.end_pending_send(&send.chat_id, message_id);
+        }
+        Some(send)
+    }
+
+    /// Why a held send of this chat stopped trying. It waits for a retry.
+    pub fn held_send_failure(&self, chat_id: &str) -> Option<&str> {
+        self.held_sends
+            .iter()
+            .filter(|send| send.chat_id == chat_id)
+            .find_map(|send| send.failure.as_deref())
     }
 
     /// Percent of one queued attachment's relay transfer, by the uploadId
@@ -2361,8 +2497,24 @@ impl AppState {
         self.pending_sends.get(chat_id).is_some_and(|p| {
             now.signed_duration_since(p.started).num_milliseconds() <= UNDELIVERED_GRACE_MS
                 || self.chat_link_at(chat_id, now).delivery_unconfirmed()
-                || self.cloud_machine_booting(chat_id).is_some()
+                || self.cloud_machine_holds_send(chat_id)
+                || self.send_held(chat_id)
         })
+    }
+
+    /// The chat's Cloud machine is getting to a send: starting, waking, or
+    /// installing a release before it answers. The send isn't late then.
+    fn cloud_machine_holds_send(&self, chat_id: &str) -> bool {
+        self.cloud_machine_booting(chat_id).is_some()
+            || self.cloud_machine_updating(chat_id)
+            || self.cloud_machine_slow(chat_id)
+    }
+
+    /// A send to `chat_id` waits while its Cloud machine installs a release:
+    /// what the line under it says, setup steps or not.
+    pub fn send_waits_on_update(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
+        self.send_pending(chat_id, now)
+            && (self.cloud_machine_updating(chat_id) || self.cloud_machine_slow(chat_id))
     }
 
     /// The send has sat unadopted past the grace window: surface the
@@ -2372,9 +2524,15 @@ impl AppState {
     /// first pushes, or leaves when the room joins, and its adoption shows
     /// once the copy catches up.
     pub fn send_undelivered(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
+        if self.held_send_failure(chat_id).is_some() {
+            return true;
+        }
+        if self.send_held(chat_id) {
+            return false;
+        }
         self.pending_sends.get(chat_id).is_some_and(|p| {
             now.signed_duration_since(p.started).num_milliseconds() > UNDELIVERED_GRACE_MS
-        }) && self.cloud_machine_booting(chat_id).is_none()
+        }) && !self.cloud_machine_holds_send(chat_id)
             && !matches!(
                 self.chat_link_at(chat_id, now).sync,
                 LinkSync::Syncing { .. }
@@ -2400,7 +2558,8 @@ impl AppState {
             .filter(|p| {
                 now.signed_duration_since(p.started).num_milliseconds() <= UNDELIVERED_GRACE_MS
                     || self.chat_link_at(chat_id, now).delivery_unconfirmed()
-                    || self.cloud_machine_booting(chat_id).is_some()
+                    || self.cloud_machine_holds_send(chat_id)
+                    || self.send_held(chat_id)
             })
             .map(|p| p.started)
     }
@@ -2419,7 +2578,7 @@ impl AppState {
 
     /// A send the host held for the next turn shows as its queue row, not
     /// as an echo: drop echoes (and the pending-send overlay) for queued ids.
-    pub fn apply_queue(&mut self, items: Vec<zeron_doc::QueuedMessage>) {
+    pub fn apply_queue(&mut self, items: Vec<zend_doc::QueuedMessage>) {
         if let Some(chat_id) = self.selected_chat.as_deref() {
             if let Some(echoes) = self.echoes.get_mut(chat_id) {
                 let before = echoes.len();
@@ -2451,7 +2610,7 @@ impl AppState {
     // ---- queries ----
 
     /// Non-archived, top-level chats in sidebar order. Chats spawned by
-    /// another chat (`parent_chat_id`, the Zeron MCP's orchestration link)
+    /// another chat (`parent_chat_id`, the Zend MCP's orchestration link)
     /// are the parent's workers, not sessions the user started: they stay
     /// reachable by id/deep link but never take a sidebar row or jump slot.
     /// Voice orchestrator chats are hidden the same way.
@@ -2571,20 +2730,20 @@ impl AppState {
     }
 
     /// The space whose name and color stand for `space`'s whole project
-    /// ([`zeron_proto::view::representative_space`]).
+    /// ([`zend_proto::view::representative_space`]).
     pub fn representative_space<'a>(&'a self, space: &'a Space) -> &'a Space {
-        zeron_proto::view::representative_space(&self.spaces, space)
+        zend_proto::view::representative_space(&self.spaces, space)
     }
 
-    /// Every space of `space`'s project ([`zeron_proto::view::project_key`]):
+    /// Every space of `space`'s project ([`zend_proto::view::project_key`]):
     /// this device's first, then by device name and path.
     pub fn project_members(&self, space: &Space) -> Vec<&Space> {
-        let key = zeron_proto::view::project_key(space);
+        let key = zend_proto::view::project_key(space);
         let local = self.local_device_id.as_deref();
         let mut members: Vec<&Space> = self
             .spaces
             .iter()
-            .filter(|s| zeron_proto::view::project_key(s) == key)
+            .filter(|s| zend_proto::view::project_key(s) == key)
             .collect();
         members.sort_by_key(|s| {
             (
@@ -2743,7 +2902,7 @@ impl AppState {
     }
 
     /// Publish a fresh `CloudStatus`; observers repaint only on change.
-    pub fn set_cloud_status(&mut self, status: zeron_proto::CloudStatus, cx: &mut Context<Self>) {
+    pub fn set_cloud_status(&mut self, status: zend_proto::CloudStatus, cx: &mut Context<Self>) {
         self.cloud_status_read_at = Some(std::time::Instant::now());
         let out_of_credits = crate::cloud::out_of_credits(&status);
         if self.cloud_status.as_ref() != Some(&status) {
@@ -2767,13 +2926,13 @@ impl AppState {
         let mut blocked = Vec::new();
         for (chat_id, echoes) in &mut self.echoes {
             for entry in echoes.iter_mut() {
-                if zeron_proto::cloud_setup_message_id(&entry.id).is_none() {
+                if zend_proto::cloud_setup_message_id(&entry.id).is_none() {
                     continue;
                 }
                 let mut changed = false;
                 for part in &mut entry.parts {
-                    if let zeron_doc::MessagePart::Tool {
-                        call: zeron_proto::ToolCall::Unknown { name, .. },
+                    if let zend_doc::MessagePart::Tool {
+                        call: zend_proto::ToolCall::Unknown { name, .. },
                         is_error,
                         resolved,
                         ..
@@ -2788,7 +2947,7 @@ impl AppState {
                 }
                 if changed {
                     // Not streaming any more: the turn isn't under way.
-                    entry.status = Some(zeron_doc::MessageStatus::Complete);
+                    entry.status = Some(zend_doc::MessageStatus::Complete);
                     blocked.push(chat_id.clone());
                 }
             }
@@ -2887,7 +3046,7 @@ impl AppState {
 
     /// The Cloud session `chat_id` runs in — its own, or for a side chat its
     /// parent's (same machine) — when the chat is hosted on Cloud.
-    pub fn chat_cloud_session(&self, chat_id: &str) -> Option<&zeron_proto::CloudSession> {
+    pub fn chat_cloud_session(&self, chat_id: &str) -> Option<&zend_proto::CloudSession> {
         let sessions = self.cloud_sessions.as_ref()?;
         let device_id = self
             .chats
@@ -2901,8 +3060,8 @@ impl AppState {
     /// woken: delivered (queued for the machine), not failed — the machine
     /// picks it up as soon as it is up. `None` once the machine runs, or when
     /// it failed (that is a real delivery problem).
-    pub fn cloud_machine_booting(&self, chat_id: &str) -> Option<zeron_proto::CloudState> {
-        use zeron_proto::CloudState;
+    pub fn cloud_machine_booting(&self, chat_id: &str) -> Option<zend_proto::CloudState> {
+        use zend_proto::CloudState;
         self.chat_machine_down(chat_id)
             .map(|(_, state)| state)
             .filter(|state| {
@@ -2916,19 +3075,58 @@ impl AppState {
             })
     }
 
-    /// Whether a send is waiting on a Cloud machine (keeps the session poll
-    /// running until the machine is up).
-    fn send_waits_on_cloud(&self) -> bool {
-        self.pending_sends
+    /// The machine `chat_id` runs on is installing a release before it answers.
+    /// It can read `ready` by then: its engine is up, and a send still waits.
+    pub fn cloud_machine_updating(&self, chat_id: &str) -> bool {
+        self.chat_cloud_session(chat_id)
+            .is_some_and(crate::cloud::session_updating)
+    }
+
+    /// The edge says the wake of the machine `chat_id` runs on is taking far
+    /// longer than normal (a stuck resume it is kicking, or no engine yet).
+    pub fn cloud_machine_slow(&self, chat_id: &str) -> bool {
+        self.chat_cloud_session(chat_id)
+            .is_some_and(crate::cloud::session_slow)
+    }
+
+    /// Whether a send is waiting on a Cloud machine: keeps the session poll
+    /// running while the machine comes up or updates, and for
+    /// [`crate::cloud::STAGE_WATCH`] after it last did. A waking machine
+    /// reads ready as soon as its old engine first talks, and only then
+    /// looks for a release, so stopping at ready missed the update. Notes
+    /// what it sees first ([`Self::note_cloud_waits`]); a send that was
+    /// taken (or failed) is no longer pending, which ends it.
+    fn send_waits_on_cloud(&mut self, now: DateTime<Utc>) -> bool {
+        self.note_cloud_waits(now);
+        self.pending_sends.iter().any(|(chat_id, send)| {
+            self.chat_cloud_session(chat_id).is_some()
+                && now
+                    .signed_duration_since(send.machine_waited)
+                    .num_milliseconds()
+                    <= crate::cloud::STAGE_WATCH.as_millis() as i64
+        })
+    }
+
+    /// Stamp each pending send whose Cloud machine is still getting to it.
+    fn note_cloud_waits(&mut self, now: DateTime<Utc>) {
+        let waiting: Vec<String> = self
+            .pending_sends
             .keys()
-            .any(|chat_id| self.cloud_machine_booting(chat_id).is_some())
+            .filter(|chat_id| self.cloud_machine_holds_send(chat_id))
+            .cloned()
+            .collect();
+        for chat_id in waiting {
+            if let Some(send) = self.pending_sends.get_mut(&chat_id) {
+                send.machine_waited = now;
+            }
+        }
     }
 
     /// When `chat_id`'s Cloud machine isn't running: the session to wake
     /// (its chat id) and its state. Files, terminals and changes show a Wake
     /// button then instead of dialing a machine that won't answer.
-    pub fn chat_machine_down(&self, chat_id: &str) -> Option<(String, zeron_proto::CloudState)> {
-        use zeron_proto::CloudState;
+    pub fn chat_machine_down(&self, chat_id: &str) -> Option<(String, zend_proto::CloudState)> {
+        use zend_proto::CloudState;
         let chat = self.chats.iter().find(|c| c.id == chat_id)?;
         if !self.is_cloud_session_device(&chat.device_id) {
             return None;
@@ -3008,8 +3206,8 @@ impl AppState {
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call_as::<zeron_proto::CloudSession>(
-                    zeron_rpc::methods::CLOUD_SESSION_WAKE,
+                .call_as::<zend_proto::CloudSession>(
+                    zend_rpc::methods::CLOUD_SESSION_WAKE,
                     serde_json::json!({ "chatId": session_chat_id }),
                 )
                 .await;
@@ -3039,7 +3237,7 @@ impl AppState {
     /// Publish fresh sessions; observers repaint only on change.
     pub fn set_cloud_sessions(
         &mut self,
-        sessions: zeron_proto::CloudSessions,
+        sessions: zend_proto::CloudSessions,
         cx: &mut Context<Self>,
     ) {
         if self.cloud_sessions.as_ref() != Some(&sessions) {
@@ -3055,13 +3253,13 @@ impl AppState {
     /// replaces it. The send keeps its own course: no longer booting, it
     /// reads as not delivered, with Retry.
     fn settle_failed_cloud_setups(&mut self) {
-        use zeron_doc::{MessagePart, MessageStatus};
+        use zend_doc::{MessagePart, MessageStatus};
         let failed: Vec<(String, String)> = self
             .echoes
             .keys()
             .filter_map(|chat_id| {
                 let session = self.chat_cloud_session(chat_id)?;
-                (session.state == zeron_proto::CloudState::Error).then(|| {
+                (session.state == zend_proto::CloudState::Error).then(|| {
                     (
                         chat_id.clone(),
                         session
@@ -3078,13 +3276,13 @@ impl AppState {
             };
             let mut settled = false;
             for echo in echoes.iter_mut().filter(|echo| {
-                zeron_proto::cloud_setup_message_id(&echo.id).is_some()
+                zend_proto::cloud_setup_message_id(&echo.id).is_some()
                     && echo.status == Some(MessageStatus::Streaming)
             }) {
                 echo.status = Some(MessageStatus::Complete);
                 for part in &mut echo.parts {
                     if let MessagePart::Tool {
-                        call: zeron_proto::ToolCall::Unknown { name, .. },
+                        call: zend_proto::ToolCall::Unknown { name, .. },
                         is_error,
                         resolved,
                         output,
@@ -3114,12 +3312,12 @@ impl AppState {
     /// it settles.
     pub fn apply_cloud_session(
         &mut self,
-        session: zeron_proto::CloudSession,
+        session: zend_proto::CloudSession,
         cx: &mut Context<Self>,
     ) {
         let sessions = self
             .cloud_sessions
-            .get_or_insert_with(|| zeron_proto::CloudSessions {
+            .get_or_insert_with(|| zend_proto::CloudSessions {
                 sessions: Vec::new(),
                 available: true,
             });
@@ -3154,11 +3352,13 @@ impl AppState {
                         if let Ok(sessions) = result {
                             state.set_cloud_sessions(sessions, cx);
                         }
-                        state
-                            .cloud_sessions
-                            .as_ref()
-                            .is_some_and(crate::cloud::any_session_settling)
-                            || state.send_waits_on_cloud()
+                        // First: it notes which sends still wait, every read.
+                        let waits = state.send_waits_on_cloud(Utc::now());
+                        waits
+                            || state
+                                .cloud_sessions
+                                .as_ref()
+                                .is_some_and(crate::cloud::any_session_settling)
                     })
                     .unwrap_or(false);
                 if !settling {
@@ -3240,13 +3440,13 @@ impl AppState {
 
     /// The sidebar's project filter matches by repository: it stores one
     /// checkout's space id, and a chat in ANY checkout of that repository
-    /// (clones and worktrees on every device, [`zeron_proto::view::project_key`])
+    /// (clones and worktrees on every device, [`zend_proto::view::project_key`])
     /// matches. A filter naming a space not synced here matches its own id.
     pub fn project_filter<'a>(&'a self, filter: Option<&str>) -> impl Fn(&Chat) -> bool + 'a {
         let filter = filter.map(|id| {
             (
                 id.to_owned(),
-                self.space_row(id).map(zeron_proto::view::project_key),
+                self.space_row(id).map(zend_proto::view::project_key),
             )
         });
         move |chat| {
@@ -3257,7 +3457,7 @@ impl AppState {
                 Some(space_id) if space_id == id => true,
                 Some(space_id) => key.as_ref().is_some_and(|key| {
                     self.space_row(space_id)
-                        .is_some_and(|space| zeron_proto::view::project_key(space) == *key)
+                        .is_some_and(|space| zend_proto::view::project_key(space) == *key)
                 }),
                 None => false,
             }
@@ -3272,7 +3472,7 @@ impl AppState {
         let mut projects: Vec<Vec<&Space>> = self
             .spaces
             .iter()
-            .filter(|space| seen.insert(zeron_proto::view::project_key(space)))
+            .filter(|space| seen.insert(zend_proto::view::project_key(space)))
             .map(|space| self.project_members(space))
             .collect();
         projects.sort_by_key(|members| {
@@ -3336,7 +3536,7 @@ impl AppState {
         if self.selected_chat.as_deref() == Some(chat_id) && self.cloud_setup_streaming() {
             return Indicator::Working;
         }
-        zeron_proto::view::native_indicator(self.session_for(chat_id), now)
+        zend_proto::view::native_indicator(self.session_for(chat_id), now)
     }
 
     /// The earliest moment after `now` at which a clock-derived value flips
@@ -3369,7 +3569,7 @@ impl AppState {
             .filter(|session| {
                 matches!(
                     session.activity_status(),
-                    zeron_proto::SessionStatus::Working | zeron_proto::SessionStatus::AwaitingInput
+                    zend_proto::SessionStatus::Working | zend_proto::SessionStatus::AwaitingInput
                 )
             })
             // `age_ms > SESSION_STALE_MS` first holds one millisecond past it.
@@ -3607,7 +3807,7 @@ impl AppState {
             session.chat_id == chat_id
                 && matches!(
                     session.status,
-                    zeron_proto::SessionStatus::Working | zeron_proto::SessionStatus::AwaitingInput
+                    zend_proto::SessionStatus::Working | zend_proto::SessionStatus::AwaitingInput
                 )
         })
     }
@@ -3625,7 +3825,7 @@ impl AppState {
                     && !self.chat_turn_running(id)
                     // An older host would resume the chat's stored session
                     // under the new provider.
-                    && self.chat_host_supports(id, zeron_proto::capabilities::PROVIDER_SWITCH_V1)
+                    && self.chat_host_supports(id, zend_proto::capabilities::PROVIDER_SWITCH_V1)
             })
     }
 
@@ -3675,7 +3875,7 @@ impl AppState {
         self.transcript_task = Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
         if handle
             .engine_info()
-            .supports(zeron_proto::capabilities::MESSAGE_QUEUE_V1)
+            .supports(zend_proto::capabilities::MESSAGE_QUEUE_V1)
         {
             self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
         }
@@ -3733,7 +3933,7 @@ impl AppState {
         self.change_request_tasks.clear();
         self.focus_task = None;
         let Some(delay) = respawn else {
-            let log = config.data_dir.join("logs").join("zeron-engine.log");
+            let log = config.data_dir.join("logs").join("zend-engine.log");
             tracing::error!(
                 losses = self.engine_losses.len(),
                 reason = reason.as_deref().unwrap_or("the engine went away"),
@@ -3741,12 +3941,12 @@ impl AppState {
             );
             self.connection = ConnectionStatus::Failed(match reason {
                 Some(reason) => format!(
-                    "Zeron keeps losing its connection to the engine: {reason}. \
+                    "Zend keeps losing its connection to the engine: {reason}. \
                      Details are in {}.",
                     log.display()
                 ),
                 None => format!(
-                    "Zeron's engine keeps stopping unexpectedly. Details are in {}.",
+                    "Zend's engine keeps stopping unexpectedly. Details are in {}.",
                     log.display()
                 ),
             });
@@ -3774,7 +3974,7 @@ impl AppState {
     }
 
     /// Whether one of the app's windows is focused, for the engine's desktop
-    /// banners ("only while Zeron isn't focused"). Repeated while focused, so
+    /// banners ("only while Zend isn't focused"). Repeated while focused, so
     /// a window that dies focused stops counting.
     pub fn set_viewport_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.viewport_focused == focused && self.focus_task.is_some() {
@@ -3789,7 +3989,7 @@ impl AppState {
         let Some(engine) = self.engine.clone().filter(|engine| {
             engine
                 .engine_info()
-                .supports(zeron_proto::capabilities::DESKTOP_NOTIFICATIONS_V1)
+                .supports(zend_proto::capabilities::DESKTOP_NOTIFICATIONS_V1)
         }) else {
             self.focus_task = None;
             return;
@@ -3821,7 +4021,7 @@ impl AppState {
         let engine = self.engine.clone().filter(|engine| {
             engine
                 .engine_info()
-                .supports(zeron_proto::capabilities::DESKTOP_NOTIFICATIONS_V1)
+                .supports(zend_proto::capabilities::DESKTOP_NOTIFICATIONS_V1)
         })?;
         let params = serde_json::json!({ "viewportId": self.viewport_id, "focused": false });
         Some(async move {
@@ -3838,7 +4038,7 @@ impl AppState {
         self.engine.as_ref().is_some_and(|engine| {
             engine
                 .engine_info()
-                .supports(zeron_proto::capabilities::DESKTOP_NOTIFICATIONS_V1)
+                .supports(zend_proto::capabilities::DESKTOP_NOTIFICATIONS_V1)
         })
     }
 
@@ -3875,7 +4075,7 @@ impl AppState {
         self.connectivity_observed = false;
         let engine_info = handle.engine_info();
         let supports_harness_updates =
-            engine_info.supports(zeron_proto::capabilities::HARNESS_UPDATES_V1);
+            engine_info.supports(zend_proto::capabilities::HARNESS_UPDATES_V1);
         self.workspace_scope = Some(engine_info.workspace_scope);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.link_roots_revision = self.link_roots_revision.wrapping_add(1);
@@ -3930,6 +4130,12 @@ impl AppState {
             spawn_watch(
                 cx,
                 handle.clone(),
+                methods::WATCH_HELD_SENDS,
+                AppState::apply_held_sends,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
             ),
@@ -3978,7 +4184,7 @@ impl AppState {
                 Some(spawn_transcript_watch(cx, handle.clone(), chat_id.clone()));
             if handle
                 .engine_info()
-                .supports(zeron_proto::capabilities::MESSAGE_QUEUE_V1)
+                .supports(zend_proto::capabilities::MESSAGE_QUEUE_V1)
             {
                 self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
             }
@@ -4012,11 +4218,11 @@ impl AppState {
             // Cloud is part of every signed-in account: one not set up yet
             // is set up now. Nothing runs (or bills) until a chat does.
             if status.available
-                && status.state == zeron_proto::CloudState::Off
+                && status.state == zend_proto::CloudState::Off
                 && let Ok(on) = engine
                     .client()
-                    .call_as::<zeron_proto::CloudStatus>(
-                        zeron_rpc::methods::CLOUD_ENABLE,
+                    .call_as::<zend_proto::CloudStatus>(
+                        zend_rpc::methods::CLOUD_ENABLE,
                         serde_json::json!({}),
                     )
                     .await
@@ -4051,7 +4257,7 @@ impl AppState {
             #[derive(serde::Deserialize)]
             struct Listing {
                 #[serde(default)]
-                repos: Vec<zeron_proto::GithubRepo>,
+                repos: Vec<zend_proto::GithubRepo>,
             }
             let repos = engine
                 .client()
@@ -4075,7 +4281,7 @@ impl AppState {
 
     /// The Cloud repository a project's GitHub origin names, when Cloud
     /// reaches it — the checkout picker then offers Cloud.
-    pub fn cloud_repo_for(&self, space: &zeron_proto::Space) -> Option<&zeron_proto::GithubRepo> {
+    pub fn cloud_repo_for(&self, space: &zend_proto::Space) -> Option<&zend_proto::GithubRepo> {
         // Cloud is offered only while it is on.
         if !self.cloud_enabled() {
             return None;
@@ -4127,7 +4333,7 @@ impl AppState {
     }
 
     pub fn open_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        match crate::links::parse_zeron_conversation_link(url) {
+        match crate::links::parse_zend_conversation_link(url) {
             Ok(link) => {
                 self.pending_deep_link = Some(link);
                 self.apply_pending_deep_link(cx);
@@ -4225,7 +4431,7 @@ impl AppState {
                                         .parts
                                         .iter()
                                         .map(|part| {
-                                            std::mem::size_of::<zeron_doc::MessagePart>()
+                                            std::mem::size_of::<zend_doc::MessagePart>()
                                                 + part.byte_len()
                                         })
                                         .sum::<usize>()
@@ -4275,7 +4481,7 @@ impl AppState {
                     .as_ref()
                     .map(|p| p.navigation_baseline.clone())
                     .unwrap_or_else(|| {
-                        Arc::new(zeron_doc::TranscriptBaseline::capture(&cached.entries))
+                        Arc::new(zend_doc::TranscriptBaseline::capture(&cached.entries))
                     }),
             );
             if let Some(prepared) = cached.prepared {
@@ -4329,7 +4535,7 @@ impl AppState {
         };
         if handle
             .engine_info()
-            .supports(zeron_proto::capabilities::MESSAGE_QUEUE_V1)
+            .supports(zend_proto::capabilities::MESSAGE_QUEUE_V1)
         {
             self.queue_task = Some(spawn_queue_watch(cx, handle, chat_id));
         }
@@ -4384,7 +4590,7 @@ impl AppState {
             .iter()
             .find(|chat| chat.id == chat_id)
             .is_some_and(|chat| {
-                zeron_proto::view::has_unseen_activity(chat, self.session_for(chat_id))
+                zend_proto::view::has_unseen_activity(chat, self.session_for(chat_id))
             });
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
@@ -4523,7 +4729,7 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
     })
 }
 
-pub use zeron_proto::version_triple;
+pub use zend_proto::version_triple;
 
 fn spawn_change_request_watch(
     cx: &mut Context<AppState>,
@@ -4759,7 +4965,7 @@ fn spawn_transcript_watch(
                 let decoded = cx
                     .background_executor()
                     .spawn(async move {
-                        let update: zeron_doc::TranscriptUpdate =
+                        let update: zend_doc::TranscriptUpdate =
                             serde_json::from_value(value).map_err(|e| e.to_string())?;
                         let prepared = preparation.prepare(&update).map_err(|e| e.to_string())?;
                         Ok::<_, String>((update, prepared, preparation))
@@ -4825,7 +5031,7 @@ fn spawn_queue_watch(
     #[derive(serde::Deserialize)]
     struct QueueFrame {
         #[serde(default)]
-        items: Vec<zeron_doc::QueuedMessage>,
+        items: Vec<zend_doc::QueuedMessage>,
     }
     cx.spawn(async move |this, cx| {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -4905,7 +5111,7 @@ fn spawn_subagent_watch(
                 let decoded = cx
                     .background_executor()
                     .spawn(async move {
-                        let update: zeron_doc::TranscriptUpdate =
+                        let update: zend_doc::TranscriptUpdate =
                             serde_json::from_value(value).map_err(|e| e.to_string())?;
                         let prepared = preparation.prepare(&update).map_err(|e| e.to_string())?;
                         Ok::<_, String>((update, prepared, preparation))
@@ -4927,7 +5133,7 @@ fn spawn_subagent_watch(
                         let frame = update.frame;
                         let text_only = is_text_append(&frame);
                         state.transcript_revision = state.transcript_revision.wrapping_add(1);
-                        if let Err(err) = zeron_doc::apply_transcript_frame(rows, frame) {
+                        if let Err(err) = zend_doc::apply_transcript_frame(rows, frame) {
                             tracing::warn!(%doc_id, error = %err, "resubscribing subagent watch");
                             desync = true;
                         }
@@ -4969,11 +5175,11 @@ mod tests {
     use super::*;
     use chrono::TimeDelta;
     use gpui::AppContext;
-    use zeron_engine::{EngineCore, default_registry};
-    use zeron_rpc::RpcReply;
+    use zend_engine::{EngineCore, default_registry};
+    use zend_rpc::RpcReply;
     // `SessionStatus` is only needed to build the fixtures below — the module
-    // itself derives everything through `zeron_proto::view`.
-    use zeron_proto::{DoneStatus, SessionStatus, UserProfile};
+    // itself derives everything through `zend_proto::view`.
+    use zend_proto::{DoneStatus, SessionStatus, UserProfile};
 
     /// A localhost port that was just free (bind :0, read, drop).
     async fn free_port() -> u16 {
@@ -5049,8 +5255,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let dir = tempfile::tempdir().unwrap();
         // The viewport reads the daemon's IPC bearer from its data dir.
-        let token = zeron_rpc::ipc_auth::issue_token(dir.path()).unwrap();
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
+        let token = zend_rpc::ipc_auth::issue_token(dir.path()).unwrap();
+        let server = tokio::spawn(zend_rpc::serve_ws_listener(
             listener,
             Arc::new(LegacyIdentityRpc),
             token,
@@ -5118,7 +5324,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_reports_local_assembly_failure_before_returning_a_handle() {
         let dir = tempfile::tempdir().unwrap();
-        zeron_engine::EngineProfile::local(dir.path()).unwrap();
+        zend_engine::EngineProfile::local(dir.path()).unwrap();
         std::fs::create_dir(dir.path().join("profiles")).unwrap();
         std::fs::write(dir.path().join("profiles/local"), b"not a directory").unwrap();
         let port = free_port().await;
@@ -5167,15 +5373,15 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let (state_tx, state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
         let dir = tempfile::tempdir().unwrap();
-        let token = zeron_rpc::ipc_auth::issue_token(dir.path()).unwrap();
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
+        let token = zend_rpc::ipc_auth::issue_token(dir.path()).unwrap();
+        let server = tokio::spawn(zend_rpc::serve_ws_listener(
             listener,
             Arc::new(DeferredIdentityRpc {
                 engine_info: EngineInfo {
                     device_id: "owner-device".into(),
                     workspace_scope: WorkspaceScope::Local,
                     cursor_sdk_version: None,
-                    capabilities: zeron_proto::capabilities::current(),
+                    capabilities: zend_proto::capabilities::current(),
                     build: None,
                 },
                 state: state_rx,
@@ -5237,12 +5443,12 @@ mod tests {
         // Attach the way an external viewport would, and speak the same protocol.
         // Without the engine's bearer the port refuses to serve.
         assert!(
-            zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{port}"), None)
+            zend_rpc::connect_ws(&format!("ws://127.0.0.1:{port}"), None)
                 .await
                 .is_err(),
             "the IPC port must not serve a dial without the engine's token"
         );
-        let attached = zeron_rpc::connect_ipc(port, Some(dir.path()))
+        let attached = zend_rpc::connect_ipc(port, Some(dir.path()))
             .await
             .expect("a second viewport must be able to attach");
         let harnesses = attached
@@ -5537,7 +5743,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_connects_when_daemon_is_listening() {
-        // Stand in for `zeron headless`: an engine served over the WS IPC port.
+        // Stand in for `zend headless`: an engine served over the WS IPC port.
         let daemon_dir = tempfile::tempdir().unwrap();
         let core = EngineCore::assemble(
             daemon_dir.path(),
@@ -5551,8 +5757,8 @@ mod tests {
         let ui_dir = tempfile::tempdir().unwrap();
         // The daemon publishes its bearer; this viewport shares the data dir
         // it reads the token from.
-        let token = zeron_rpc::ipc_auth::issue_token(ui_dir.path()).unwrap();
-        tokio::spawn(zeron_rpc::serve_ws_listener(
+        let token = zend_rpc::ipc_auth::issue_token(ui_dir.path()).unwrap();
+        tokio::spawn(zend_rpc::serve_ws_listener(
             listener,
             core.rpc_service(),
             token,
@@ -5666,7 +5872,7 @@ mod tests {
     fn user_entry(id: &str) -> SessionMessageEntry {
         SessionMessageEntry {
             id: id.into(),
-            role: zeron_doc::MessageRole::User,
+            role: zend_doc::MessageRole::User,
             parts: Vec::new(),
             created_at: 0,
             device_id: "dev".into(),
@@ -5682,7 +5888,7 @@ mod tests {
     ) {
         let state = cx.new(|_| AppState::new());
         state.update(cx, |state, cx| {
-            let update = |id: &str| zeron_doc::TranscriptUpdate {
+            let update = |id: &str| zend_doc::TranscriptUpdate {
                 frame: TranscriptFrame::reset(&[user_entry(id)]),
                 context_usage: None,
                 replay_baseline: None,
@@ -5732,7 +5938,7 @@ mod tests {
             let entries: Vec<_> = (0..2000)
                 .map(|i| {
                     let mut entry = user_entry(&format!("message-{i}"));
-                    entry.parts.push(zeron_doc::MessagePart::Text {
+                    entry.parts.push(zend_doc::MessagePart::Text {
                         id: "text".into(),
                         text: "x".repeat(2048),
                     });
@@ -5820,7 +6026,7 @@ mod tests {
             state.select_chat(Some("oversize".into()), cx);
             assert!(state.transcript_cache.is_empty());
             let mut entry = user_entry("large");
-            entry.parts.push(zeron_doc::MessagePart::Text {
+            entry.parts.push(zend_doc::MessagePart::Text {
                 id: "text".into(),
                 text: "x".repeat(TRANSCRIPT_CACHE_BYTES + 1),
             });
@@ -5899,7 +6105,7 @@ mod tests {
         let mut state = AppState::new();
         let now = Utc::now();
         let mut machine = device("cloud-s", "Cloud");
-        machine.capabilities = vec![zeron_proto::CLOUD_SESSION_CAPABILITY.into()];
+        machine.capabilities = vec![zend_proto::CLOUD_SESSION_CAPABILITY.into()];
         machine.last_seen_at = Some(now);
         state.devices = vec![machine];
         state.cloud_sessions = Some(
@@ -6054,7 +6260,7 @@ mod tests {
         let mut s = AppState::new();
         assert_eq!(s.transfer_percent("u1"), None);
 
-        let frame = |id: &str, done, total| zeron_proto::TransferProgress {
+        let frame = |id: &str, done, total| zend_proto::TransferProgress {
             upload_id: id.into(),
             file_name: "a.png".into(),
             done,
@@ -6141,8 +6347,8 @@ mod tests {
         }
     }
 
-    fn outcome(status: DoneStatus, finished_at: DateTime<Utc>) -> zeron_proto::NativeTurnOutcome {
-        zeron_proto::NativeTurnOutcome {
+    fn outcome(status: DoneStatus, finished_at: DateTime<Utc>) -> zend_proto::NativeTurnOutcome {
+        zend_proto::NativeTurnOutcome {
             status,
             finished_at,
         }
@@ -6469,7 +6675,7 @@ mod tests {
             local.device_id = "mac".into();
             s.chats = vec![cloud, local];
             let mut machine = device("cloud-s1", "Cloud");
-            machine.capabilities = vec![zeron_proto::CLOUD_SESSION_CAPABILITY.into()];
+            machine.capabilities = vec![zend_proto::CLOUD_SESSION_CAPABILITY.into()];
             s.devices = vec![machine];
             s
         });
@@ -6485,14 +6691,14 @@ mod tests {
 
     #[test]
     fn a_cloud_machine_that_went_quiet_is_down_and_a_wake_reads_as_waking() {
-        use zeron_proto::{CloudSessions, CloudState};
+        use zend_proto::{CloudSessions, CloudState};
         let now = Utc::now();
         let mut s = AppState::new();
         let mut c = chat("c", 0, Some(10));
         c.device_id = "cloud-s1".into();
         s.chats = vec![c];
         let mut machine = device("cloud-s1", "Cloud");
-        machine.capabilities = vec![zeron_proto::CLOUD_SESSION_CAPABILITY.into()];
+        machine.capabilities = vec![zend_proto::CLOUD_SESSION_CAPABILITY.into()];
         machine.last_seen_at = Some(now);
         s.devices = vec![machine];
         s.cloud_sessions = Some(CloudSessions {
@@ -6526,9 +6732,140 @@ mod tests {
         assert_eq!(s.chat_machine_down("c"), None, "up again");
     }
 
+    fn held_send(id: &str, failure: Option<&str>) -> zend_proto::HeldSendStatus {
+        zend_proto::HeldSendStatus {
+            id: id.into(),
+            chat_id: "c".into(),
+            message_id: Some(format!("m-{id}")),
+            prompt: "look at this".into(),
+            queue_row: false,
+            created_at: 1_000,
+            failure: failure.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn remove_takes_the_send_out_of_view_for_good() {
+        let mut s = AppState::new();
+        let now = chrono::Utc::now();
+        s.begin_pending_send("c", "m-a", now);
+        s.apply_held_sends(vec![held_send("a", None), held_send("b", Some("too large"))]);
+        // The failed one is offered first.
+        assert_eq!(s.removable_held_send("c").map(|h| h.id.as_str()), Some("b"));
+        assert_eq!(s.removable_held_send("other"), None);
+
+        let removed = s.remove_held_locally("a").expect("held");
+        assert_eq!(removed.id, "a");
+        assert!(!s.echoes["c"].iter().any(|e| e.id == "m-a"));
+        assert!(!s.pending_sends.contains_key("c"));
+        // The engine's next frame without it doesn't bring a sending state back.
+        s.apply_held_sends(vec![held_send("b", Some("too large"))]);
+        assert!(!s.send_pending("c", now));
+        assert!(!s.echoes["c"].iter().any(|e| e.id == "m-a"));
+        assert!(s.remove_held_locally("a").is_none());
+    }
+
+    #[test]
+    fn a_held_queue_row_shows_until_the_queue_panel_has_it() {
+        let mut s = AppState::new();
+        let mut row = held_send("r", None);
+        row.queue_row = true;
+        s.apply_held_sends(vec![row]);
+        assert!(s.echoes["c"].iter().any(|e| e.id == "m-r"), "visible while it uploads");
+        assert!(!s.send_pending("other", chrono::Utc::now()));
+        assert!(
+            !s.pending_sends.contains_key("c"),
+            "a row waits for its turn: no working overlay"
+        );
+        s.apply_held_sends(Vec::new());
+        assert!(!s.echoes["c"].iter().any(|e| e.id == "m-r"));
+    }
+
+    #[test]
+    fn only_a_cloud_machine_that_can_fetch_takes_the_store() {
+        let device = |id: &str, version: Option<&str>, capable: bool| zend_proto::Device {
+            id: id.into(),
+            name: id.into(),
+            platform: "linux".into(),
+            last_seen_at: None,
+            created_at: None,
+            version: version.map(str::to_string),
+            cursor_sdk_version: None,
+            capabilities: if capable {
+                vec![zend_proto::capabilities::ATTACHMENT_STORE_V1.to_string()]
+            } else {
+                Vec::new()
+            },
+        };
+        let mut s = AppState::new();
+        s.apply_devices(vec![
+            device("cloud-new", Some("0.2.138"), true),
+            device("cloud-old", Some("0.2.100"), false),
+            device("cloud-booting", None, false),
+            device("laptop", Some("0.2.138"), true),
+        ]);
+        assert!(s.host_fetches_from_store("cloud-new"));
+        assert!(!s.host_fetches_from_store("cloud-old"));
+        assert!(s.host_fetches_from_store("cloud-booting"));
+        assert!(s.host_fetches_from_store("cloud-unseen"));
+        assert!(!s.host_fetches_from_store("laptop"));
+    }
+
+    #[test]
+    fn a_held_send_stays_in_flight_however_long_its_upload_takes() {
+        let mut s = AppState::new();
+        let start = chrono::Utc::now();
+        s.begin_pending_send("c", "m-a", start);
+        assert!(s.apply_held_sends(vec![held_send("a", None)]));
+        assert!(!s.apply_held_sends(vec![held_send("a", None)]), "no change, no redraw");
+
+        let later = start + chrono::TimeDelta::hours(5);
+        assert!(s.send_pending("c", later));
+        assert!(!s.send_undelivered("c", later));
+        assert!(s.pending_send_started("c", later).is_some());
+    }
+
+    #[test]
+    fn a_held_send_comes_back_after_a_relaunch() {
+        let mut s = AppState::new();
+        s.apply_held_sends(vec![held_send("a", None)]);
+        // The echo the relaunch forgot, and the send state with it.
+        assert!(s.echoes["c"].iter().any(|e| e.id == "m-a"));
+        assert!(s.send_pending("c", chrono::Utc::now()));
+        // Not a second echo on the next frame.
+        s.apply_held_sends(vec![held_send("a", None), held_send("b", None)]);
+        assert_eq!(s.echoes["c"].iter().filter(|e| e.id == "m-a").count(), 1);
+    }
+
+    #[test]
+    fn a_failed_held_send_says_so_and_clears_on_retry() {
+        let mut s = AppState::new();
+        let now = chrono::Utc::now();
+        s.begin_pending_send("c", "m-a", now);
+        s.apply_held_sends(vec![held_send("a", Some("the file is too large"))]);
+        assert!(s.send_undelivered("c", now), "right away, no grace to wait out");
+        assert_eq!(s.held_send_failure("c"), Some("the file is too large"));
+        assert_eq!(s.held_send_failure("other"), None);
+
+        s.apply_held_sends(vec![held_send("a", None)]);
+        assert!(!s.send_undelivered("c", now));
+        assert_eq!(s.held_send_failure("c"), None);
+    }
+
+    #[test]
+    fn a_send_leaving_the_outbox_gets_a_fresh_delivery_clock() {
+        let mut s = AppState::new();
+        let start = chrono::Utc::now() - chrono::TimeDelta::hours(5);
+        s.begin_pending_send("c", "m-a", start);
+        s.apply_held_sends(vec![held_send("a", None)]);
+        s.apply_held_sends(Vec::new());
+        // Five hours since the send, but only now did it go out.
+        assert!(!s.send_undelivered("c", chrono::Utc::now()));
+    }
+
     #[test]
     fn a_send_waiting_on_a_booting_cloud_machine_is_pending_not_undelivered() {
-        use zeron_proto::{CloudSession, CloudSessions, CloudState};
+        use zend_proto::{CloudSession, CloudSessions, CloudState};
         let now = Utc::now();
         let later = now + TimeDelta::milliseconds(UNDELIVERED_GRACE_MS + 1);
         let mut s = AppState::new();
@@ -6546,6 +6883,7 @@ mod tests {
             failed_action: None,
             last_active_at: None,
             created_at: 0,
+            ..Default::default()
         };
         s.begin_pending_send("c", "m1", now);
         for state in [
@@ -6570,6 +6908,111 @@ mod tests {
         assert!(s.send_undelivered("c", later));
     }
 
+    /// A Cloud chat on a machine with a fresh heartbeat, and its session.
+    fn cloud_chat_on_a_machine(now: DateTime<Utc>) -> AppState {
+        let mut s = AppState::new();
+        let mut c = chat("c", 0, Some(10));
+        c.device_id = "cloud-s1".into();
+        s.chats = vec![c];
+        let mut machine = device("cloud-s1", "Cloud");
+        machine.capabilities = vec![zend_proto::CLOUD_SESSION_CAPABILITY.into()];
+        machine.last_seen_at = Some(now);
+        s.devices = vec![machine];
+        s
+    }
+
+    fn set_cloud_session(s: &mut AppState, state: zend_proto::CloudState, stage: Option<&str>) {
+        s.cloud_sessions = Some(zend_proto::CloudSessions {
+            sessions: vec![zend_proto::CloudSession {
+                chat_id: "c".into(),
+                device_id: "cloud-s1".into(),
+                space_id: "sp".into(),
+                state,
+                stage: stage.map(String::from),
+                ..Default::default()
+            }],
+            available: true,
+        });
+    }
+
+    #[test]
+    fn a_send_keeps_following_its_woken_machine_until_it_says_whether_it_updates() {
+        use zend_proto::{CLOUD_STAGE_UPDATING, CloudState};
+        let sent = Utc::now();
+        let at = |secs: i64| sent + TimeDelta::seconds(secs);
+        let watch = crate::cloud::STAGE_WATCH.as_secs() as i64;
+        let mut s = cloud_chat_on_a_machine(sent);
+        s.begin_pending_send("c", "m1", sent);
+        // Waking: followed, however long it takes.
+        set_cloud_session(&mut s, CloudState::Starting, None);
+        assert!(s.send_waits_on_cloud(at(5)));
+        assert!(s.send_waits_on_cloud(at(150)));
+        // Its old engine talked: ready, heartbeat fresh, nothing booting any
+        // more. The update check comes after this, so the poll goes on.
+        set_cloud_session(&mut s, CloudState::Ready, None);
+        s.devices[0].last_seen_at = Some(Utc::now());
+        assert_eq!(s.cloud_machine_booting("c"), None);
+        assert!(s.send_waits_on_cloud(at(155)), "the wake ended just now");
+        // It installs a release: followed for as long as that takes, and the
+        // send reads as waiting on it, not late.
+        set_cloud_session(&mut s, CloudState::Ready, Some(CLOUD_STAGE_UPDATING));
+        assert!(s.send_waits_on_cloud(at(160)));
+        assert!(s.send_waits_on_cloud(at(160 + 2 * watch)));
+        let later = at(160 + 2 * watch);
+        assert!(s.send_pending("c", later));
+        assert!(!s.send_undelivered("c", later));
+        assert!(s.send_waits_on_update("c", later));
+        // Done: a little longer, then nothing more to learn.
+        set_cloud_session(&mut s, CloudState::Ready, None);
+        assert!(!s.send_waits_on_update("c", later));
+        assert!(s.send_waits_on_cloud(at(165 + 2 * watch)));
+        assert!(!s.send_waits_on_cloud(at(161 + 3 * watch)));
+    }
+
+    #[test]
+    fn a_wake_taking_longer_than_usual_holds_the_send_and_says_so() {
+        use zend_proto::{CLOUD_STAGE_SLOW, CloudState};
+        let sent = Utc::now();
+        let later = sent + TimeDelta::seconds(600);
+        let mut s = cloud_chat_on_a_machine(sent);
+        s.begin_pending_send("c", "m1", sent);
+        set_cloud_session(&mut s, CloudState::Starting, Some(CLOUD_STAGE_SLOW));
+        assert!(s.cloud_machine_slow("c"));
+        assert!(s.send_waits_on_update("c", later), "the line says so");
+        assert!(!s.send_undelivered("c", later), "not late, however long");
+        assert!(s.send_waits_on_cloud(later));
+        set_cloud_session(&mut s, CloudState::Ready, None);
+        assert!(!s.cloud_machine_slow("c"));
+    }
+
+    #[test]
+    fn a_send_to_a_machine_already_up_stops_the_poll_soon_and_when_taken() {
+        use zend_proto::CloudState;
+        let sent = Utc::now();
+        let at = |secs: i64| sent + TimeDelta::seconds(secs);
+        let watch = crate::cloud::STAGE_WATCH.as_secs() as i64;
+        let mut s = cloud_chat_on_a_machine(sent);
+        set_cloud_session(&mut s, CloudState::Ready, None);
+        // Nothing waiting: no poll.
+        assert!(!s.send_waits_on_cloud(at(0)));
+        // A send that never gets taken stops it once the watch is over:
+        // not forever.
+        s.begin_pending_send("c", "m1", sent);
+        assert!(s.send_waits_on_cloud(at(1)));
+        assert!(!s.send_waits_on_cloud(at(watch + 1)));
+        // A send that was taken ends it at once.
+        s.begin_pending_send("c", "m2", at(100));
+        assert!(s.send_waits_on_cloud(at(101)));
+        s.end_pending_send("c", "m2");
+        assert!(!s.send_waits_on_cloud(at(102)));
+        // A chat that isn't on Cloud never polls.
+        let mut local = chat("l", 0, Some(10));
+        local.device_id = "mac".into();
+        s.chats.push(local);
+        s.begin_pending_send("l", "m3", at(200));
+        assert!(!s.send_waits_on_cloud(at(201)));
+    }
+
     #[test]
     fn a_cloud_turn_stays_working_while_its_setup_streams() {
         let entry = |id: &str, role, status| SessionMessageEntry {
@@ -6582,8 +7025,8 @@ mod tests {
             continuation_of: None,
             duration_ms: None,
         };
-        let user = zeron_doc::MessageRole::User;
-        let assistant = zeron_doc::MessageRole::Assistant;
+        let user = zend_doc::MessageRole::User;
+        let assistant = zend_doc::MessageRole::Assistant;
         let now = Utc::now();
         let mut s = AppState::new();
         s.selected_chat = Some("c".into());
@@ -6591,13 +7034,13 @@ mod tests {
         // session row says Working yet.
         s.apply_transcript(vec![
             entry("m1", user, None),
-            entry("m1.cloud-setup", assistant, Some(zeron_doc::MessageStatus::Streaming)),
+            entry("m1.cloud-setup", assistant, Some(zend_doc::MessageStatus::Streaming)),
         ]);
         assert_eq!(s.indicator_for("c", now), Indicator::Working);
         // Finished: the session row speaks for itself again.
         s.apply_transcript(vec![
             entry("m1", user, None),
-            entry("m1.cloud-setup", assistant, Some(zeron_doc::MessageStatus::Complete)),
+            entry("m1.cloud-setup", assistant, Some(zend_doc::MessageStatus::Complete)),
         ]);
         assert_ne!(s.indicator_for("c", now), Indicator::Working);
     }
@@ -6614,8 +7057,8 @@ mod tests {
             continuation_of: None,
             duration_ms: None,
         };
-        let user = zeron_doc::MessageRole::User;
-        let assistant = zeron_doc::MessageRole::Assistant;
+        let user = zend_doc::MessageRole::User;
+        let assistant = zend_doc::MessageRole::Assistant;
         let mut s = AppState::new();
         s.selected_chat = Some("c".into());
         // An ordinary turn: no Cloud setup, no base.
@@ -6648,7 +7091,7 @@ mod tests {
 
     #[test]
     fn a_cloud_machine_that_failed_settles_its_setup_step() {
-        use zeron_proto::{CloudSession, CloudSessions, CloudState};
+        use zend_proto::{CloudSession, CloudSessions, CloudState};
         let mut s = AppState::new();
         let mut c = chat("c", 0, Some(10));
         c.device_id = "cloud-s1".into();
@@ -6666,14 +7109,15 @@ mod tests {
                 failed_action: None,
                 last_active_at: None,
                 created_at: 0,
+                ..Default::default()
             }],
             available: true,
         };
         s.cloud_sessions = Some(session(CloudState::Provisioning, None));
         s.push_cloud_setup_echo("c", "m1", 0, false);
         let step = |s: &AppState| match &s.pending_echoes()[0].parts[0] {
-            zeron_doc::MessagePart::Tool {
-                call: zeron_proto::ToolCall::Unknown { name, .. },
+            zend_doc::MessagePart::Tool {
+                call: zend_proto::ToolCall::Unknown { name, .. },
                 is_error,
                 output,
                 ..
@@ -6691,7 +7135,7 @@ mod tests {
         );
         assert_eq!(
             s.pending_echoes()[0].status,
-            Some(zeron_doc::MessageStatus::Complete)
+            Some(zend_doc::MessageStatus::Complete)
         );
     }
 
@@ -6828,12 +7272,12 @@ mod tests {
             let now = Utc::now() - TimeDelta::seconds(1);
             state.chats = vec![chat("c", 0, None)];
             let mut row = session("c", SessionStatus::Idle, 0, now);
-            row.terminal_activity = Some(zeron_proto::TerminalActivity {
+            row.terminal_activity = Some(zend_proto::TerminalActivity {
                 terminal_id: "pty".into(),
                 updated_at: now,
-                report: zeron_proto::ProgramStatus {
+                report: zend_proto::ProgramStatus {
                     id: String::new(),
-                    state: zeron_proto::ProgramState::Done,
+                    state: zend_proto::ProgramState::Done,
                     app: None,
                     kind: None,
                     progress: None,
@@ -6936,7 +7380,7 @@ mod tests {
         remote.parent_chat_id = Some("fork".into());
         state.apply_chats(vec![parent, fork, remote]);
         state.apply_spaces(vec![
-            space("local", "dev", "/projects/zeron", 0),
+            space("local", "dev", "/projects/zend", 0),
             space("remote", "other", "/remote/only", 1),
         ]);
         let root = |chat: Option<&str>, root: &str, local: bool| FileLinkRoot {
@@ -6951,7 +7395,7 @@ mod tests {
             vec![
                 root(Some("fork"), "/fork/fork", true),
                 root(Some("parent"), "/repo", true),
-                root(None, "/projects/zeron", true),
+                root(None, "/projects/zend", true),
             ],
             "own checkout, parent, then this device's projects"
         );
@@ -7478,7 +7922,7 @@ mod tests {
 
     #[test]
     fn identical_connectivity_frames_report_no_change() {
-        use zeron_proto::{Connectivity, ConnectivityState};
+        use zend_proto::{Connectivity, ConnectivityState};
         let mut state = AppState::new();
         // The first frame ends the bootstrap gap even when it equals the default.
         assert!(state.apply_connectivity(Connectivity::default()));
@@ -7502,7 +7946,7 @@ mod tests {
 
     #[test]
     fn identical_transfer_auth_and_harness_frames_report_no_change() {
-        use zeron_proto::{HarnessUpdatePhase, HarnessUpdateStatus, TransferProgress};
+        use zend_proto::{HarnessUpdatePhase, HarnessUpdateStatus, TransferProgress};
         let mut state = AppState::new();
         assert!(!state.apply_transfers(vec![]));
         let progress = |done| TransferProgress {
@@ -7555,12 +7999,12 @@ mod tests {
     fn apply_chat_config_stamps_the_row() {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
-        let config = zeron_proto::ChatConfig {
+        let config = zend_proto::ChatConfig {
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
-            reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
+            reasoning: Some(zend_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
             access: Default::default(),
             plan: false,
         };
@@ -7581,12 +8025,12 @@ mod tests {
         // Unknown chat: no-op, no panic.
         state.apply_chat_config(
             "missing",
-            zeron_proto::ChatConfig {
+            zend_proto::ChatConfig {
                 harness: HarnessId::ClaudeCode,
                 model: None,
                 reasoning: None,
                 model_options: serde_json::Map::new(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
                 access: Default::default(),
                 plan: false,
             },
@@ -7716,7 +8160,7 @@ mod tests {
         state.selected_chat = Some("c1".into());
         let echo = |id: &str| SessionMessageEntry {
             id: id.into(),
-            role: zeron_doc::MessageRole::User,
+            role: zend_doc::MessageRole::User,
             parts: vec![],
             created_at: 0,
             device_id: "local".into(),
@@ -7724,7 +8168,7 @@ mod tests {
             continuation_of: None,
             duration_ms: None,
         };
-        let row = |id: &str| zeron_doc::QueuedMessage {
+        let row = |id: &str| zend_doc::QueuedMessage {
             id: id.into(),
             text: "held".into(),
             attachments: vec![],
@@ -7754,7 +8198,7 @@ mod tests {
         state.selected_chat = Some("c1".into());
         let echo = SessionMessageEntry {
             id: "m1".into(),
-            role: zeron_doc::MessageRole::User,
+            role: zend_doc::MessageRole::User,
             parts: vec![],
             created_at: 0,
             device_id: "local".into(),
@@ -7808,8 +8252,8 @@ mod tests {
             continuation_of: None,
             duration_ms: None,
         };
-        let user = zeron_doc::MessageRole::User;
-        let assistant = zeron_doc::MessageRole::Assistant;
+        let user = zend_doc::MessageRole::User;
+        let assistant = zend_doc::MessageRole::Assistant;
         let mut state = AppState::new();
         state.selected_chat = Some("c1".into());
         state.push_echo("c1", entry("m1", user));
@@ -7817,7 +8261,7 @@ mod tests {
         assert!(state.cloud_setup_echo_pending());
         let placeholder = &state.pending_echoes()[1];
         assert_eq!(placeholder.id, "m1.cloud-setup");
-        let zeron_doc::MessagePart::Tool {
+        let zend_doc::MessagePart::Tool {
             id, call, resolved, ..
         } = &placeholder.parts[0]
         else {
@@ -7827,7 +8271,7 @@ mod tests {
         // Shaped like the machine's own step, which the doc keeps no input on.
         assert_eq!(
             call,
-            &zeron_proto::ToolCall::Unknown {
+            &zend_proto::ToolCall::Unknown {
                 name: "Starting a machine".into(),
                 input: None,
             }
@@ -7868,7 +8312,7 @@ mod tests {
             "c1",
             SessionMessageEntry {
                 id: "m1".into(),
-                role: zeron_doc::MessageRole::User,
+                role: zend_doc::MessageRole::User,
                 parts: vec![],
                 created_at: 0,
                 device_id: "d".into(),
@@ -7889,9 +8333,9 @@ mod tests {
         );
         let step = state.echoes["c1"]
             .iter()
-            .find(|entry| entry.id == zeron_proto::cloud_setup_entry_id("m1"))
+            .find(|entry| entry.id == zend_proto::cloud_setup_entry_id("m1"))
             .expect("placeholder");
-        let zeron_doc::MessagePart::Tool {
+        let zend_doc::MessagePart::Tool {
             call,
             is_error,
             resolved,
@@ -7902,7 +8346,7 @@ mod tests {
         };
         assert_eq!(
             call,
-            &zeron_proto::ToolCall::Unknown {
+            &zend_proto::ToolCall::Unknown {
                 name: CLOUD_NO_CREDITS_STEP.into(),
                 input: None,
             }
@@ -7924,6 +8368,7 @@ mod tests {
                 upsert: Vec::new(),
                 append: Vec::new(),
                 remove: Vec::new(),
+                parts: Vec::new(),
                 count: 0,
             })
             .expect("empty delta");
@@ -8056,13 +8501,13 @@ mod tests {
 
     #[test]
     fn project_labels_from_cwd() {
-        assert_eq!(project_label(Some("/home/w/dev/zeron")), "zeron");
-        assert_eq!(project_label(Some("/home/w/dev/zeron/")), "zeron");
+        assert_eq!(project_label(Some("/home/w/dev/zend")), "zend");
+        assert_eq!(project_label(Some("/home/w/dev/zend/")), "zend");
         assert_eq!(project_label(None), "No project");
         assert_eq!(project_label(Some("~")), "No project");
         assert_eq!(project_label(Some("~/")), "No project");
         assert_eq!(
-            project_label(Some("~/.zeron/scratch/2026-10-11-3e4f5a6b")),
+            project_label(Some("~/.zend/scratch/2026-10-11-3e4f5a6b")),
             "No project"
         );
         assert_eq!(project_label(Some("   ")), "No project");
@@ -8073,22 +8518,22 @@ mod tests {
     fn grouped_sidebar_preserves_recency_order() {
         // Input is sidebar-sorted (most recent first).
         let chats = [
-            chat_with_cwd("a", 9, Some("/dev/zeron")),
+            chat_with_cwd("a", 9, Some("/dev/zend")),
             chat_with_cwd("b", 8, Some("/dev/zed")),
-            chat_with_cwd("c", 7, Some("/dev/zeron")),
+            chat_with_cwd("c", 7, Some("/dev/zend")),
             chat_with_cwd("d", 6, None),
         ];
         let groups = group_chats(chats.iter());
         let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
         // Groups ordered by their most recent chat; rows keep order.
-        assert_eq!(labels, ["zeron", "zed", "No project"]);
-        let zeron_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(zeron_ids, ["a", "c"]);
+        assert_eq!(labels, ["zend", "zed", "No project"]);
+        let zend_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(zend_ids, ["a", "c"]);
         assert!(group_chats(std::iter::empty()).is_empty());
     }
 
     #[test]
-    fn relative_times_match_zeron_format() {
+    fn relative_times_match_zend_format() {
         let now = Utc::now();
         let ago = |secs: i64| now - chrono::Duration::seconds(secs);
         assert_eq!(format_time_ago(ago(0), now), "now");
@@ -8113,10 +8558,10 @@ mod tests {
     #[test]
     fn chat_location_joins_project_and_branch() {
         let mut c = chat_with_cwd("x", 1, Some("/home/w/dev/marigold"));
-        c.branch = Some("zeron/rebalance".into());
+        c.branch = Some("zend/rebalance".into());
         assert_eq!(
             chat_location(&c).as_deref(),
-            Some("marigold · zeron/rebalance")
+            Some("marigold · zend/rebalance")
         );
         c.branch = None;
         assert_eq!(chat_location(&c).as_deref(), Some("marigold"));
@@ -8128,7 +8573,7 @@ mod tests {
         c.branch = None;
         assert_eq!(chat_location(&c), None);
         // Projectless: no project name, no folder.
-        for cwd in ["~", "~/.zeron/scratch/2026-10-11-3e4f5a6b"] {
+        for cwd in ["~", "~/.zend/scratch/2026-10-11-3e4f5a6b"] {
             c.cwd = Some(cwd.into());
             assert_eq!(chat_location(&c), None);
         }
@@ -8247,7 +8692,7 @@ mod tests {
                 created_at: None,
                 version: Some("0.2.31".into()),
                 cursor_sdk_version: None,
-                capabilities: vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.into()],
+                capabilities: vec![zend_proto::capabilities::MESSAGE_QUEUE_V1.into()],
             },
             Device {
                 id: "upstream".into(),
@@ -8261,13 +8706,13 @@ mod tests {
             },
         ];
 
-        assert!(state.device_supports("personal", zeron_proto::capabilities::MESSAGE_QUEUE_V1));
-        assert!(!state.device_supports("upstream", zeron_proto::capabilities::MESSAGE_QUEUE_V1));
+        assert!(state.device_supports("personal", zend_proto::capabilities::MESSAGE_QUEUE_V1));
+        assert!(!state.device_supports("upstream", zend_proto::capabilities::MESSAGE_QUEUE_V1));
     }
 
     #[test]
     fn delivery_degradation_and_queued_sends_tell_the_truth() {
-        use zeron_proto::{ChatConnectivity, ConnectivityState};
+        use zend_proto::{ChatConnectivity, ConnectivityState};
         let now = Utc::now();
         let mut s = AppState::default();
         s.local_device_id = Some("local".into());
@@ -8288,7 +8733,7 @@ mod tests {
         }];
         s.connectivity.state = ConnectivityState::Connected;
         s.connectivity.chats = vec![ChatConnectivity {
-            sync_state: zeron_proto::ChatSyncState::Unknown,
+            sync_state: zend_proto::ChatSyncState::Unknown,
             chat_id: "c-remote".into(),
             connected: true,
             delivery_live: false,
@@ -8304,15 +8749,15 @@ mod tests {
 
         // Idle chats can remain without a socket for longer than the engine's
         // grace. A stale down sample during focus must not flash a warning.
-        s.connectivity.chats[0].sync_state = zeron_proto::ChatSyncState::Local;
+        s.connectivity.chats[0].sync_state = zend_proto::ChatSyncState::Local;
         s.connectivity.chats[0].connected = false;
         assert!(!queues(&s, "c-remote"));
 
         // A requested reconnect, or a room still down past the engine's
         // grace, is SYNCING — opening a chat on a slow link is no outage.
         for sync_state in [
-            zeron_proto::ChatSyncState::Waiting,
-            zeron_proto::ChatSyncState::Connecting,
+            zend_proto::ChatSyncState::Waiting,
+            zend_proto::ChatSyncState::Connecting,
         ] {
             for connected in [true, false] {
                 s.connectivity.chats[0].sync_state = sync_state;
@@ -8327,22 +8772,22 @@ mod tests {
         s.connectivity.chats[0].connected = true;
 
         // Global registry failure still warns for a dormant chat.
-        s.connectivity.chats[0].sync_state = zeron_proto::ChatSyncState::Local;
+        s.connectivity.chats[0].sync_state = zend_proto::ChatSyncState::Local;
         s.connectivity.state = ConnectivityState::Reconnecting;
         assert_eq!(s.chat_link_at("c-remote", now).sync, LinkSync::Reconnecting);
         assert!(queues(&s, "c-remote"));
-        s.connectivity.chats[0].sync_state = zeron_proto::ChatSyncState::Waiting;
+        s.connectivity.chats[0].sync_state = zend_proto::ChatSyncState::Waiting;
         assert!(queues(&s, "c-remote"));
 
         // A live chat room can deliver while the registry reconnects. The
         // graced `connected` bit alone is not proof, but delivery_live is.
-        s.connectivity.chats[0].sync_state = zeron_proto::ChatSyncState::Synced;
+        s.connectivity.chats[0].sync_state = zend_proto::ChatSyncState::Synced;
         assert!(queues(&s, "c-remote"));
         s.connectivity.chats[0].delivery_live = true;
         assert!(!queues(&s, "c-remote"));
         s.begin_pending_send("c-remote", "m-live", now);
         assert!(!s.send_queued("c-remote", now));
-        s.connectivity.chats[0].sync_state = zeron_proto::ChatSyncState::Connecting;
+        s.connectivity.chats[0].sync_state = zend_proto::ChatSyncState::Connecting;
         s.connectivity.chats[0].connected = false; // HTTP delivery can outlive the socket.
         assert!(!queues(&s, "c-remote"));
         s.connectivity.chats[0].delivery_live = false;
@@ -8418,13 +8863,13 @@ mod tests {
     }
 
     fn connectivity(
-        sync_state: zeron_proto::ChatSyncState,
+        sync_state: zend_proto::ChatSyncState,
         connected: bool,
         delivery_live: bool,
-    ) -> zeron_proto::Connectivity {
-        zeron_proto::Connectivity {
-            state: zeron_proto::ConnectivityState::Connected,
-            chats: vec![zeron_proto::ChatConnectivity {
+    ) -> zend_proto::Connectivity {
+        zend_proto::Connectivity {
+            state: zend_proto::ConnectivityState::Connected,
+            chats: vec![zend_proto::ChatConnectivity {
                 chat_id: "c-remote".into(),
                 sync_state,
                 connected,
@@ -8441,7 +8886,7 @@ mod tests {
     /// has outlived a whole first dial.
     #[test]
     fn opening_a_remote_chat_syncs_before_it_queues() {
-        use zeron_proto::ChatSyncState as C;
+        use zend_proto::ChatSyncState as C;
         let t0 = clock_epoch();
         let at = |ms: i64| t0 + TimeDelta::milliseconds(ms);
         let mut s = remote_chat_state(t0);
@@ -8482,7 +8927,7 @@ mod tests {
         // Unchanged frames keep the clock; a vanished chat drops it.
         s.apply_connectivity_at(connectivity(C::Connecting, false, false), at(720_000));
         assert_eq!(link(&s, 700_000 + SYNC_STALLED_AFTER_MS), LinkSync::Stalled);
-        s.apply_connectivity_at(zeron_proto::Connectivity::default(), at(730_000));
+        s.apply_connectivity_at(zend_proto::Connectivity::default(), at(730_000));
         assert!(s.sync_clocks.is_empty());
     }
 
@@ -8492,7 +8937,7 @@ mod tests {
     /// for a slot does not restart the clock and spin forever.
     #[gpui::test]
     fn a_sync_that_never_delivers_stalls_even_back_in_the_queue(cx: &mut gpui::TestAppContext) {
-        use zeron_proto::ChatSyncState as C;
+        use zend_proto::ChatSyncState as C;
         let t0 = clock_epoch();
         let clock = TestClock::start(t0);
         let at = |ms: i64| t0 + TimeDelta::milliseconds(ms);
@@ -8543,7 +8988,7 @@ mod tests {
     /// engine was dialing does not read as stalled 4 s into a fresh attempt.
     #[test]
     fn a_new_engine_restarts_sync_clocks() {
-        use zeron_proto::ChatSyncState as C;
+        use zend_proto::ChatSyncState as C;
         let t0 = clock_epoch();
         let at = |ms: i64| t0 + TimeDelta::milliseconds(ms);
         let mut s = remote_chat_state(t0);
@@ -8572,7 +9017,7 @@ mod tests {
     /// the copy catches up. A stalled room fails it as before.
     #[test]
     fn a_send_on_a_syncing_chat_is_not_undelivered() {
-        use zeron_proto::ChatSyncState as C;
+        use zend_proto::ChatSyncState as C;
         let t0 = clock_epoch();
         let at = |ms: i64| t0 + TimeDelta::milliseconds(ms);
         let mut s = remote_chat_state(t0);
@@ -8604,7 +9049,7 @@ mod tests {
     /// and the target device's presence.
     #[test]
     fn canvas_link_reads_the_global_state_and_the_device() {
-        use zeron_proto::ConnectivityState as S;
+        use zend_proto::ConnectivityState as S;
         let t0 = clock_epoch();
         let mut s = remote_chat_state(t0);
         s.connectivity.state = S::Connected;
@@ -8631,7 +9076,7 @@ mod tests {
     /// that refuse the WS upgrade): proof of delivery beats the room bit.
     #[test]
     fn http_fallback_is_live_while_the_registry_is_connected() {
-        use zeron_proto::ChatSyncState as C;
+        use zend_proto::ChatSyncState as C;
         let t0 = clock_epoch();
         let mut s = remote_chat_state(t0);
         s.devices.clear(); // no presence evidence: reachable
@@ -8648,11 +9093,11 @@ mod tests {
         let t0 = clock_epoch();
         let mut s = remote_chat_state(t0);
         s.apply_connectivity_at(
-            connectivity(zeron_proto::ChatSyncState::Synced, true, true),
+            connectivity(zend_proto::ChatSyncState::Synced, true, true),
             t0,
         );
         // A session machine whose heartbeat stopped has gone to sleep.
-        s.devices[0].capabilities = vec![zeron_proto::CLOUD_SESSION_CAPABILITY.into()];
+        s.devices[0].capabilities = vec![zend_proto::CLOUD_SESSION_CAPABILITY.into()];
         s.devices[0].last_seen_at = Some(t0 - TimeDelta::minutes(30));
         assert!(matches!(
             s.device_presence("remote", t0),
@@ -8669,7 +9114,7 @@ mod tests {
 
     #[gpui::test]
     fn chat_sync_caption_and_stall_are_clock_transitions(cx: &mut gpui::TestAppContext) {
-        use zeron_proto::ChatSyncState as C;
+        use zend_proto::ChatSyncState as C;
         let now = clock_epoch();
         let clock = TestClock::start(now);
         let (state, notifies, _subscription) = clock_state(cx, |state| {
@@ -8702,7 +9147,7 @@ mod tests {
         let joined = stalled + TimeDelta::minutes(2);
         advance_to(cx, &clock, stalled + TimeDelta::minutes(1), joined);
         state.update(cx, |state, _| {
-            state.apply_connectivity_at(zeron_proto::Connectivity::default(), joined);
+            state.apply_connectivity_at(zend_proto::Connectivity::default(), joined);
             state.apply_connectivity_at(connectivity(C::Connecting, true, false), joined);
         });
         let deadlines: Vec<_> = state.read_with(cx, |state, _| state.clock_deadlines().collect());
@@ -8746,7 +9191,7 @@ mod tests {
     /// as loading — opening, then syncing — not as a chat with no messages.
     #[test]
     fn cold_remote_chat_reads_as_loading_not_empty() {
-        use zeron_proto::{ChatSyncState as C, ConnectivityState};
+        use zend_proto::{ChatSyncState as C, ConnectivityState};
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -8759,7 +9204,7 @@ mod tests {
         s.selected_chat = Some("c-remote".into());
         // No engine: nothing can be loading.
         assert_eq!(s.transcript_loading(t0), None);
-        s.set_test_engine(EngineHandle::from_test_client(zeron_rpc::RpcClient::new(
+        s.set_test_engine(EngineHandle::from_test_client(zend_rpc::RpcClient::new(
             out, inbound,
         )));
         // Selected, not yet replayed, before any connectivity frame.
@@ -8805,13 +9250,51 @@ mod tests {
         assert_eq!(s.transcript_loading(t0), None);
         // So is every chat on a local profile, once that is known.
         s.selected_chat = Some("c-remote".into());
-        s.apply_connectivity_at(zeron_proto::Connectivity::default(), t0);
+        s.apply_connectivity_at(zend_proto::Connectivity::default(), t0);
         assert_eq!(s.transcript_loading(t0), None);
         // An unsaved side chat has nothing to load.
         s.connectivity_observed = false;
         assert_eq!(s.transcript_loading(t0), Some(TranscriptLoading::Opening));
         s.unsaved_side_chat = true;
         assert_eq!(s.transcript_loading(t0), None);
+    }
+
+    /// A chat that's only ever been relayed, never loaded here: an empty copy
+    /// isn't "no messages", whatever the room says.
+    #[test]
+    fn a_relayed_chat_never_loaded_here_says_its_host_is_away() {
+        use zend_proto::ChatSyncState as C;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, _requests) = tokio::sync::mpsc::channel::<String>(8);
+        let (_replies, inbound) = tokio::sync::mpsc::channel::<String>(8);
+        let t0 = clock_epoch();
+        let mut s = remote_chat_state(t0);
+        s.selected_chat = Some("c-remote".into());
+        s.set_test_engine(EngineHandle::from_test_client(zend_rpc::RpcClient::new(
+            out, inbound,
+        )));
+        s.transcript_replayed = true;
+        s.apply_connectivity_at(connectivity(C::Synced, true, true), t0);
+        assert_eq!(s.transcript_loading(t0), None, "a stored chat's room knows");
+        let row = s.chats.iter_mut().find(|chat| chat.id == "c-remote").unwrap();
+        row.room_gen = Some(zend_proto::relay_gen::RELAY_ROOM_GEN);
+        assert_eq!(s.transcript_loading(t0), None, "no messages yet: it really is empty");
+        let row = s.chats.iter_mut().find(|chat| chat.id == "c-remote").unwrap();
+        row.last_message_at = Some(t0);
+        assert_eq!(s.transcript_loading(t0), Some(TranscriptLoading::Syncing), "the host can answer");
+        let host = s.chats.iter().find(|chat| chat.id == "c-remote").unwrap().device_id.clone();
+        let away = t0 + TimeDelta::days(1);
+        for device in s.devices.iter_mut().filter(|device| device.id == host) {
+            device.last_seen_at = Some(t0);
+        }
+        s.apply_connectivity_at(connectivity(C::Synced, true, true), away);
+        assert_eq!(s.transcript_loading(away), Some(TranscriptLoading::HostAway));
+        s.transcript = vec![user_entry("m")];
+        assert_eq!(s.transcript_loading(away), None, "what's stored here always shows");
     }
 }
 
@@ -8833,7 +9316,7 @@ impl AppState {
     /// and for tests that click a sidebar badge.
     pub fn fixture_sidebar_change_request(
         &mut self,
-        snapshot: zeron_proto::CheckoutChangeRequestStatus,
+        snapshot: zend_proto::CheckoutChangeRequestStatus,
     ) {
         let key = crate::change_requests::ChangeRequestWatchKey {
             device_id: snapshot.device_id.clone(),

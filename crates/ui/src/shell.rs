@@ -1,7 +1,7 @@
-//! The app shell (zeron `__root.tsx`): sidebar column + main panel + optional
+//! The app shell (zend `__root.tsx`): sidebar column + main panel + optional
 //! right "Changes" pane, plus the boot splash and the connection gate.
 //!
-//! Layout is zeron's: collapsible drag-resizable sidebar (224–400px, default
+//! Layout is zend's: collapsible drag-resizable sidebar (224–400px, default
 //! 256) with a gentle 180–240ms width transition; main panel with an h-11 header,
 //! content outlet, and a reserved h-6 status strip so later content never
 //! shifts; right pane scaffold (360px floor, default 520), hidden by default.
@@ -23,9 +23,9 @@ use gpui::{
 };
 
 use gpui_tokio::Tokio;
-use zeron_engine::InstanceLock;
-use zeron_proto::{AuthState, ChatConfig, HarnessId, WorkspaceScope};
-use zeron_rpc::methods;
+use zend_engine::InstanceLock;
+use zend_proto::{AuthState, ChatConfig, HarnessId, WorkspaceScope};
+use zend_rpc::methods;
 
 use crate::changes::{Changes, ChangesEvent, DiscardWorkingTreeRequest};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
@@ -110,8 +110,8 @@ use spaces::{AddSpaceFlow, RenameSpaceDialog};
 /// its own composer and transcript, so the two never tell different
 /// stories. A failed local save is the exception, whichever chat it hit:
 /// it outranks the network.
-fn connection_pill_caption(conn: &zeron_proto::Connectivity) -> Option<(&'static str, bool)> {
-    use zeron_proto::{ChatSyncState, ConnectivityState as S};
+fn connection_pill_caption(conn: &zend_proto::Connectivity) -> Option<(&'static str, bool)> {
+    use zend_proto::{ChatSyncState, ConnectivityState as S};
     if conn
         .chats
         .iter()
@@ -277,7 +277,7 @@ fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
 /// harness runs in (a worktree chat's worktree). Projectless `~` chats have
 /// none. Deliberately not `source_context.repo_root`: that is canonicalized
 /// (symlinks resolved, `\\?\` verbatim prefix on Windows hosts).
-fn chat_copy_path(chat: &zeron_proto::Chat) -> Option<&str> {
+fn chat_copy_path(chat: &zend_proto::Chat) -> Option<&str> {
     chat.cwd
         .as_deref()
         .map(str::trim)
@@ -334,7 +334,7 @@ pub struct SelectPaletteTab(pub usize);
 // ---------------------------------------------------------------------------
 
 /// Where the top-left window-control cluster starts, in px from the window's
-/// left edge (zeron window-controls.tsx: `left: fullscreen ? 12 : 88`). The
+/// left edge (zend window-controls.tsx: `left: fullscreen ? 12 : 88`). The
 /// frameless hiddenInset chrome puts the macOS traffic lights at {14,15};
 /// fullscreen hides them and the cluster reclaims the inset.
 pub fn titlebar_cluster_start(fullscreen: bool) -> f32 {
@@ -383,7 +383,7 @@ pub fn caption_buttons_width(count: usize) -> f32 {
 }
 
 /// Where the cluster's first button starts, from the window's left edge.
-/// `linux_left_captions` is the number of caption buttons zeron draws at the
+/// `linux_left_captions` is the number of caption buttons zend draws at the
 /// top-left on Linux (GNOME `close:…` layouts) — the app cluster follows them
 /// at the shared 2px rhythm.
 pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captions: usize) -> f32 {
@@ -433,7 +433,7 @@ pub fn apply_keymap(
     cx.clear_key_bindings();
     // `clear_key_bindings` also removes the contextual editing actions that
     // gpui-base installed at startup. Reinitialize the component layer before
-    // rebuilding Zeron's bindings so the file editor keymap remains active.
+    // rebuilding Zend's bindings so the file editor keymap remains active.
     gpui_base::init(cx);
     crate::composer::init(cx, composer_send_behavior);
     cx.bind_keys([KeyBinding::new(
@@ -557,7 +557,7 @@ pub fn apply_keymap(
 /// Move every binding to the key the active layout types for it. Combos are
 /// written in US keys, like the macOS menus they mirror; Apple relocates
 /// those per layout (AZERTY ⌘1 is ⌘&, ⌘/ is ⌘:, ⌘[ is ⌘^) and gpui ships
-/// the same table, but `KeyBinding::new` never applies it — to Zeron's
+/// the same table, but `KeyBinding::new` never applies it — to Zend's
 /// bindings or gpui-base's editor map. Order is kept: gpui breaks ties
 /// between equally deep matches by binding order.
 fn localize_key_bindings(cx: &mut App, equivalents: &crate::settings::KeyEquivalents) {
@@ -697,7 +697,7 @@ impl SettingsSection {
         }
     }
 
-    /// Stable name shared by `ui-settings.json` and `ZERON_OPEN_ROUTE`.
+    /// Stable name shared by `ui-settings.json` and `ZEND_OPEN_ROUTE`.
     fn slug(self) -> &'static str {
         match self {
             SettingsSection::Devices => "devices",
@@ -742,7 +742,7 @@ impl SettingsSection {
         matches!(self, Self::Harnesses | Self::Files)
     }
 
-    /// Sidebar + header label (zeron settings-sidebar.tsx SECTIONS / __root.tsx
+    /// Sidebar + header label (zend settings-sidebar.tsx SECTIONS / __root.tsx
     /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
@@ -798,7 +798,7 @@ impl<'de> serde::Deserialize<'de> for SettingsSection {
     }
 }
 
-/// The section a `ZERON_OPEN_ROUTE` value opens: bare `settings` reopens the
+/// The section a `ZEND_OPEN_ROUTE` value opens: bare `settings` reopens the
 /// remembered section, `settings/<slug>` names one (and so becomes the
 /// remembered one). `None` for anything else, including unknown slugs.
 fn settings_open_route(route: &str, remembered: SettingsSection) -> Option<SettingsSection> {
@@ -864,7 +864,7 @@ fn workspace_file_title(path: &str) -> SharedString {
     path.rsplit('/').next().unwrap_or(path).to_string().into()
 }
 
-/// Per-chat panel open flags (zeron parity: `sessionPanels` — the terminal and
+/// Per-chat panel open flags (zend parity: `sessionPanels` — the terminal and
 /// changes panels open *per session*, in memory only; heights and every other
 /// persisted setting stay global).
 ///
@@ -965,7 +965,7 @@ impl SessionPanels {
     }
 }
 
-/// One route-history entry (zeron parity: the renderer's TanStack memory
+/// One route-history entry (zend parity: the renderer's TanStack memory
 /// history — every route the user visited, browser-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavEntry {
@@ -982,7 +982,7 @@ pub enum NavEntry {
 }
 
 /// Browser-style navigation history for the titlebar back/forward buttons
-/// (zeron window-controls.tsx semantics): every route change pushes an entry;
+/// (zend window-controls.tsx semantics): every route change pushes an entry;
 /// Back/Forward walk the stack without changing it; pushing while behind the
 /// tip truncates the entries ahead (a new branch, exactly like a browser).
 #[derive(Debug)]
@@ -1016,7 +1016,7 @@ impl NavHistory {
     }
 
     /// Swap the current entry in place without growing the stack — the native
-    /// equivalent of a `replace: true` navigation (zeron's boot redirect from
+    /// equivalent of a `replace: true` navigation (zend's boot redirect from
     /// `/` into the last-used chat leaves no dead Back target behind).
     pub fn replace(&mut self, entry: NavEntry) {
         self.entries[self.index] = entry;
@@ -1032,7 +1032,7 @@ impl NavHistory {
     }
 
     /// Memory history keeps every entry, so "behind the last entry" is exactly
-    /// "can go forward" (zeron window-controls.tsx).
+    /// "can go forward" (zend window-controls.tsx).
     pub fn can_forward(&self) -> bool {
         self.index + 1 < self.entries.len()
     }
@@ -1219,7 +1219,7 @@ pub(crate) fn chat_title_editor(
 const SIDEBAR_GLASS_FADE_BAND: f32 = 24.0;
 
 /// Target of the sidebar's "Star on GitHub" banner (same as the landing page).
-const GITHUB_REPO_URL: &str = "https://github.com/zeronsh/comet";
+const GITHUB_REPO_URL: &str = "https://github.com/sandyhq/comet";
 
 /// New-thread controls float over the tail of a top-anchored image hero. The
 /// hero reaches below the composer, giving its lower mask room to dissolve
@@ -1958,7 +1958,7 @@ fn account_menu_action(scope: Option<WorkspaceScope>, flow: SyncFlow) -> Option<
 fn sidebar_account_identity(
     scope: Option<WorkspaceScope>,
     flow: SyncFlow,
-    user: Option<&zeron_proto::UserProfile>,
+    user: Option<&zend_proto::UserProfile>,
 ) -> (SharedString, SharedString) {
     match scope {
         Some(WorkspaceScope::Local) => {
@@ -2040,7 +2040,7 @@ struct OrgGateUi {
 /// read-only transcript entity whose drop tears the view down.
 struct SubagentTab {
     doc_id: String,
-    harness: Option<zeron_proto::HarnessId>,
+    harness: Option<zend_proto::HarnessId>,
     title: SharedString,
     transcript: Entity<Transcript>,
     /// Keeps a frozen-blob fetch alive (it falls back to a live doc watch).
@@ -2102,7 +2102,7 @@ pub struct Shell {
     /// Above the composer, only while the orchestrator's own chat is open.
     voice_composer_orb: Entity<crate::orb::Orb>,
     /// The stage caption's streaming veil (shared with mobile).
-    voice_caption: zeron_veil::CaptionVeil,
+    voice_caption: zend_veil::CaptionVeil,
     voice_stage_focus: FocusHandle,
     voice_stage_was_open: bool,
     /// Last rendered route, used to distinguish navigation from staying in Settings.
@@ -2343,7 +2343,7 @@ pub struct Shell {
     sync_flow: SyncFlow,
     /// First-run setup in place of the Ready shell; built on first Ready
     /// render from `onboarding_pending` (a fresh install, or
-    /// `ZERON_ONBOARDING=<step>`).
+    /// `ZEND_ONBOARDING=<step>`).
     onboarding: Option<Entity<crate::onboarding::Onboarding>>,
     /// Chats whose explorer showed their Cloud machine asleep: once it is
     /// up, what failed while it slept is listed again.
@@ -2389,8 +2389,8 @@ pub struct Shell {
     /// Last observed `window.is_window_active()` — rising edge fires a
     /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
     was_window_active: bool,
-    /// Dev/testing knobs (`ZERON_OPEN_DIALOG`, `ZERON_FORCE_GATE`,
-    /// `ZERON_DEMO_UPLOAD`) — see [`Shell::new`].
+    /// Dev/testing knobs (`ZEND_OPEN_DIALOG`, `ZEND_FORCE_GATE`,
+    /// `ZEND_DEMO_UPLOAD`) — see [`Shell::new`].
     debug_dialog: Option<String>,
     debug_gate: Option<GatePhase>,
     debug_upload: Option<String>,
@@ -2479,7 +2479,7 @@ pub struct Shell {
     /// Armed by mouse-down on a titlebar strip; the next mouse-move hands the
     /// drag to the compositor (zed's platform-titlebar pattern).
     titlebar_should_move: bool,
-    /// The caption buttons zeron itself draws on Linux under client-side
+    /// The caption buttons zend itself draws on Linux under client-side
     /// decorations, per side, already filtered to what the compositor
     /// supports — `None` off Linux or under server decorations (where the WM
     /// draws real buttons). Re-resolved every frame at the top of `render`.
@@ -2648,12 +2648,12 @@ impl Shell {
         crate::appshots::set_capture_sound_enabled(settings.appshot_sound_enabled);
         // Bind the customizable shortcuts from the persisted keymap.
         apply_keymap(cx, &settings.keymap, settings.composer_send_behavior);
-        // Dev/testing knob: `ZERON_OPEN_ROUTE=settings[/<section>]` boots
+        // Dev/testing knob: `ZEND_OPEN_ROUTE=settings[/<section>]` boots
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors. Bare
         // `settings` reopens the remembered section; a named one is
         // remembered like any other link to a section.
-        let open_route = std::env::var("ZERON_OPEN_ROUTE").ok();
+        let open_route = std::env::var("ZEND_OPEN_ROUTE").ok();
         let route = match open_route.as_deref() {
             Some("pull-requests") => Route::PullRequests,
             Some(route) if route == "settings" || route.starts_with("settings/") => {
@@ -2677,29 +2677,29 @@ impl Shell {
             }
             _ => Route::Chat,
         };
-        // More capture knobs of the same kind: `ZERON_OPEN_DIALOG=rename|delete`
+        // More capture knobs of the same kind: `ZEND_OPEN_DIALOG=rename|delete`
         // opens that dialog for the first chat once chats land; `=model` pops
         // the combined harness/model menu once the shell is Ready;
-        // `ZERON_FORCE_GATE=signin|org|failed` renders that gate regardless of
+        // `ZEND_FORCE_GATE=signin|org|failed` renders that gate regardless of
         // real auth state (display-only — for styling passes).
-        let debug_dialog = std::env::var("ZERON_OPEN_DIALOG").ok();
-        // `ZERON_DEMO_UPLOAD=<pct>:<image path>` fabricates an in-flight image
+        let debug_dialog = std::env::var("ZEND_OPEN_DIALOG").ok();
+        // `ZEND_DEMO_UPLOAD=<pct>:<image path>` fabricates an in-flight image
         // send on the selected chat (echo bubble + frozen thumbnail progress
         // ring) — display-only; a real upload can't be paused for a capture.
-        let debug_upload = std::env::var("ZERON_DEMO_UPLOAD").ok();
-        // `ZERON_ONBOARDING=<step>` opens first-run setup at that step
+        let debug_upload = std::env::var("ZEND_DEMO_UPLOAD").ok();
+        // `ZEND_ONBOARDING=<step>` opens first-run setup at that step
         // (welcome, appearance, sync, providers, done) even when finished.
-        let onboarding_pending = std::env::var("ZERON_ONBOARDING")
+        let onboarding_pending = std::env::var("ZEND_ONBOARDING")
             .ok()
             .map(|step| crate::onboarding::Step::parse(&step))
             .or_else(|| {
                 (!settings.onboarding_completed).then_some(crate::onboarding::Step::Welcome)
             });
-        let debug_gate = match std::env::var("ZERON_FORCE_GATE").ok().as_deref() {
+        let debug_gate = match std::env::var("ZEND_FORCE_GATE").ok().as_deref() {
             Some("signin") => Some(GatePhase::SignIn),
             Some("org") => Some(GatePhase::OrgGate),
             Some("failed") => Some(GatePhase::Failed(
-                "Could not reach the zeron engine on port 27901".into(),
+                "Could not reach the zend engine on port 27901".into(),
             )),
             _ => None,
         };
@@ -2727,7 +2727,7 @@ impl Shell {
             voice_footer_orb,
             voice_stage_orb,
             voice_composer_orb,
-            voice_caption: zeron_veil::CaptionVeil::new(voice_stage::STAGE_CAPTION_CHARS),
+            voice_caption: zend_veil::CaptionVeil::new(voice_stage::STAGE_CAPTION_CHARS),
             voice_stage_focus: cx.focus_handle(),
             voice_stage_was_open: false,
             voice_stage_route: Route::Chat,
@@ -3096,7 +3096,7 @@ impl Shell {
                 _ => {}
             }
         }
-        // Capture knob: `ZERON_DEMO_UPLOAD=<pct>:<image path>` — once a chat
+        // Capture knob: `ZEND_DEMO_UPLOAD=<pct>:<image path>` — once a chat
         // is selected, push a fake sending echo carrying that image as a
         // pending attachment and freeze upload progress at <pct>, so the
         // thumbnail progress ring can be styled/screenshotted (a real upload
@@ -3126,10 +3126,10 @@ impl Shell {
                     "Here is the screenshot of the bug.",
                     std::slice::from_ref(&pending_path),
                 );
-                let echo = zeron_doc::SessionMessageEntry {
+                let echo = zend_doc::SessionMessageEntry {
                     id: "demo-upload-echo".into(),
-                    role: zeron_doc::MessageRole::User,
-                    parts: vec![zeron_doc::MessagePart::Text {
+                    role: zend_doc::MessageRole::User,
+                    parts: vec![zend_doc::MessagePart::Text {
                         id: "t0".into(),
                         text,
                     }],
@@ -3184,9 +3184,9 @@ impl Shell {
                 )
             };
             // Background-only banners: `active_window()` is app-level (any
-            // Zeron window being key), so a ping for a *background chat* in a
+            // Zend window being key), so a ping for a *background chat* in a
             // focused app still stays a chime — you're already looking at
-            // Zeron; the sidebar dot carries the rest.
+            // Zend; the sidebar dot carries the rest.
             let app_focused = cx.active_window().is_some();
             // The engine posts the banners when it can (with the window
             // closed too); the app then only chimes.
@@ -3241,8 +3241,8 @@ impl Shell {
                     && !(self.settings.notifications_background_only && app_focused)
                 {
                     let body = match connectivity {
-                        zeron_proto::ConnectivityState::Offline => "Your device is offline",
-                        _ => "Zeron is trying to reconnect",
+                        zend_proto::ConnectivityState::Offline => "Your device is offline",
+                        _ => "Zend is trying to reconnect",
                     };
                     crate::notify::post("Connection unavailable", body, None);
                 }
@@ -3259,8 +3259,8 @@ impl Shell {
             for status in &state.harness_updates {
                 if matches!(
                     status.phase,
-                    zeron_proto::HarnessUpdatePhase::Current
-                        | zeron_proto::HarnessUpdatePhase::Updated
+                    zend_proto::HarnessUpdatePhase::Current
+                        | zend_proto::HarnessUpdatePhase::Updated
                 ) {
                     self.harness_update_seen.remove(
                         &harness_updates::versionless_notification_key(device, status.harness),
@@ -3401,7 +3401,7 @@ impl Shell {
             self.active_chat = selected;
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched boot canvas REPLACES that entry —
-            // zeron's `/` route redirected into the last-used chat, leaving no
+            // zend's `/` route redirected into the last-used chat, leaving no
             // dead Back target. Walking history lands here too, but the
             // destination already equals `current()`, so the push dedups.
             if matches!(self.route, Route::Chat) {
@@ -4090,10 +4090,10 @@ impl Shell {
             .and_then(crate::pull_request_detail::pull_request_link);
         let mut resolved = activation.clone();
         if resolved.action == LinkAction::Primary {
-            // "Open links in Zeron" decides whether a click stays in Zeron;
+            // "Open links in Zend" decides whether a click stays in Zend;
             // a pull request leaves too when Settings sends pull requests to
             // the default browser.
-            resolved.action = if settings.open_web_links_in_zeron
+            resolved.action = if settings.open_web_links_in_zend
                 && !(pull_request.is_some()
                     && settings.pull_request_destination == PullRequestDestination::External)
             {
@@ -4102,7 +4102,7 @@ impl Shell {
                 LinkAction::External
             };
         }
-        // A pull request that stays opens Zeron's own view in this session's
+        // A pull request that stays opens Zend's own view in this session's
         // pane when Settings asks for it, else a Browser tab like any link.
         if resolved.action == LinkAction::Internal
             && settings.pull_request_destination == PullRequestDestination::Native
@@ -4515,7 +4515,7 @@ impl Shell {
     /// (user request).
     fn add_commit_diff_surface(
         &mut self,
-        commit: zeron_proto::GitHistoryCommit,
+        commit: zend_proto::GitHistoryCommit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -4619,8 +4619,8 @@ impl Shell {
             let Some(harness) = chat.config.as_ref().map(|config| config.harness) else {
                 return;
             };
-            let target = if zeron_proto::is_cloud_device(&chat.device_id, "") {
-                Some(zeron_proto::CLOUD_ACCOUNTS_DEVICE.to_string())
+            let target = if zend_proto::is_cloud_device(&chat.device_id, "") {
+                Some(zend_proto::CLOUD_ACCOUNTS_DEVICE.to_string())
             } else if state.local_device_id.as_deref() == Some(chat.device_id.as_str()) {
                 None
             } else {
@@ -4755,17 +4755,17 @@ impl Shell {
                 .background_executor()
                 .spawn(async move {
                     let value = reply.ok()?;
-                    let entries: Vec<zeron_doc::SessionMessageEntry> =
+                    let entries: Vec<zend_doc::SessionMessageEntry> =
                         serde_json::from_str(value.get("text")?.as_str()?).ok()?;
-                    let update = zeron_doc::TranscriptUpdate {
-                        replay_baseline: Some(zeron_doc::TranscriptBaseline::capture(&entries)),
-                        frame: zeron_doc::TranscriptFrame::Reset { reset: entries },
+                    let update = zend_doc::TranscriptUpdate {
+                        replay_baseline: Some(zend_doc::TranscriptBaseline::capture(&entries)),
+                        frame: zend_doc::TranscriptFrame::Reset { reset: entries },
                         context_usage: None,
                     };
                     let prepared = crate::transcript::TranscriptPreparation::default()
                         .prepare(&update)
                         .ok()?;
-                    let zeron_doc::TranscriptFrame::Reset { reset } = update.frame else {
+                    let zend_doc::TranscriptFrame::Reset { reset } = update.frame else {
                         unreachable!()
                     };
                     Some((reset, prepared))
@@ -5087,7 +5087,7 @@ impl Shell {
 
     /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
-    /// The flag is per chat (zeron `sessionPanels`).
+    /// The flag is per chat (zend `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.terminal_geometry.get().height;
         let key = self.panel_key(cx);
@@ -5100,7 +5100,7 @@ impl Shell {
                 .update(cx, |composer, _| composer.focus_pending = false);
             panel.update(cx, |panel, cx| panel.request_focus(cx));
             // Opening lands keyboard focus IN the shell — typing goes straight
-            // to the prompt, no click needed (zeron terminal-panel.tsx: the
+            // to the prompt, no click needed (zend terminal-panel.tsx: the
             // visible+active effect calls `terminal.focus()` on every open).
             // The handle is focusable before the panel's first paint; once the
             // terminal body mounts with `track_focus` it receives the keys.
@@ -5109,7 +5109,7 @@ impl Shell {
             // Hiding the panel removes the (likely focused) terminal view;
             // with nothing focused, window key bindings stop dispatching, so
             // hand focus to the composer. (Cmd+J is a pure toggle — a second
-            // press closes even while the terminal is focused, as in zeron's
+            // press closes even while the terminal is focused, as in zend's
             // `useHotkey(toggleShortcut, ... setOpenScoped(!open))`.)
             window.focus(&self.composer.focus_handle(cx), cx);
         }
@@ -5530,7 +5530,7 @@ impl Shell {
             .and_then(|chat| chat.harness_session_id.as_deref())
             .is_some_and(|id| !id.trim().is_empty());
         let has_path = chat.as_ref().and_then(chat_copy_path).is_some();
-        let zeron_id = chat_id.to_owned();
+        let zend_id = chat_id.to_owned();
         let harness_id = chat_id.to_owned();
         let session_chat_id = chat_id.to_owned();
         let path_chat_id = chat_id.to_owned();
@@ -5554,8 +5554,8 @@ impl Shell {
                 )))
             })
             .child(
-                item("chat-copy-zeron", "Zeron conversation link".into()).on_click(cx.listener(
-                    move |this, _, _, cx| this.copy_zeron_conversation_link(&zeron_id, cx),
+                item("chat-copy-zend", "Zend conversation link".into()).on_click(cx.listener(
+                    move |this, _, _, cx| this.copy_zend_conversation_link(&zend_id, cx),
                 )),
             )
             .when_some(harness_link, |menu, link| {
@@ -5583,7 +5583,7 @@ impl Shell {
             .into_any_element()
     }
 
-    fn copy_zeron_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+    fn copy_zend_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let link = {
             let state = self.state.read(cx);
             crate::links::workspace_locator(
@@ -5591,11 +5591,11 @@ impl Shell {
                 state.auth.as_ref(),
                 state.local_device_id.as_deref(),
             )
-            .map(|workspace| crate::links::zeron_conversation_link(chat_id, &workspace))
+            .map(|workspace| crate::links::zend_conversation_link(chat_id, &workspace))
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.show_notice(crate::toast::ToastKind::Success, "Zeron conversation link copied", cx);
+            self.show_notice(crate::toast::ToastKind::Success, "Zend conversation link copied", cx);
         } else {
             self.show_notice(crate::toast::ToastKind::Error, "Conversation link is not ready yet", cx);
         }
@@ -6090,11 +6090,11 @@ impl Shell {
                         continue;
                     }
                     let online = state.device_online(&device.id, chrono::Utc::now());
-                    let compatible = device.supports(zeron_proto::voice::remote::CAPABILITY);
+                    let compatible = device.supports(zend_proto::voice::remote::CAPABILITY);
                     let detail = if !online {
                         "Offline"
                     } else if !compatible {
-                        "Update Zeron to use remote voice"
+                        "Update Zend to use remote voice"
                     } else {
                         "Available"
                     };
@@ -6499,7 +6499,7 @@ impl Shell {
             Err("Pins are still syncing")
         } else {
             let current = self.active_sidebar_pins(cx);
-            zeron_proto::validate_sidebar_pin_update(&current, pins)
+            zend_proto::validate_sidebar_pin_update(&current, pins)
         };
         if let Err(message) = result {
             self.show_notice(crate::toast::ToastKind::Error, message, cx);
@@ -6512,7 +6512,7 @@ impl Shell {
     fn apply_sidebar_pin_change(
         &mut self,
         profile_key: String,
-        change: zeron_proto::SidebarPinChange,
+        change: zend_proto::SidebarPinChange,
         cx: &mut Context<Self>,
     ) -> bool {
         let mut pinned_session_ids = self.raw_sidebar_pins(cx);
@@ -6568,13 +6568,13 @@ impl Shell {
             return;
         }
         let change = if pinned {
-            zeron_proto::SidebarPinChange::Pin {
+            zend_proto::SidebarPinChange::Pin {
                 session_id: chat_id.clone(),
                 after: pins.last().cloned(),
                 before: None,
             }
         } else {
-            zeron_proto::SidebarPinChange::Unpin {
+            zend_proto::SidebarPinChange::Unpin {
                 session_id: chat_id.clone(),
             }
         };
@@ -6823,7 +6823,7 @@ impl Shell {
                         shell.org = None;
                         // An explicit sign-out returns to the workspace. The
                         // boot-time fallback from a signed-out synced runtime
-                        // keeps an open Settings page (and `ZERON_OPEN_ROUTE`).
+                        // keeps an open Settings page (and `ZEND_OPEN_ROUTE`).
                         if sign_out {
                             shell.set_route(Route::Chat, cx);
                         }
@@ -7169,7 +7169,7 @@ impl Shell {
                     },
                     Err(err) => {
                         shell.runtime_change_error = Some(format!(
-                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Zeron."
+                            "Could not stop the remote engine: {err}. Run `zend daemon stop`, then quit and reopen Zend."
                         ).into());
                         cx.notify();
                     }
@@ -7317,7 +7317,7 @@ impl Shell {
         } else if remote_engine {
             "Stop daemon and quit"
         } else {
-            "Quit Zeron"
+            "Quit Zend"
         };
         let signed_in_email: Option<SharedString> = match self.state.read(cx).auth.as_ref() {
             Some(AuthState::SignedIn { user, .. }) => Some(SharedString::from(user.email.clone())),
@@ -7372,7 +7372,7 @@ impl Shell {
                         "Bring {phrase} from this device into your synced workspace, or start it fresh."
                     )
                     .into(),
-                    None => "Zeron can switch to your synced workspace now.".into(),
+                    None => "Zend can switch to your synced workspace now.".into(),
                 };
                 let mut forward = Vec::new();
                 if work_phrase.is_some() {
@@ -7565,9 +7565,9 @@ impl Shell {
                         &theme,
                         "Restart to finish",
                         if remote_engine {
-                            "Zeron is using a background daemon. Stop it and quit Zeron, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Zend is using a background daemon. Stop it and quit Zend, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         } else {
-                            "Quit and reopen Zeron to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Quit and reopen Zend to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         },
                     ))
                     .children(error_line(self.runtime_change_error.clone()))
@@ -7609,7 +7609,7 @@ impl Shell {
                 .child(heading(
                     theme,
                     "Finish logging in",
-                    "We opened your browser to log in to Zeron. Come back when you're done — this page moves on by itself.",
+                    "We opened your browser to log in to Zend. Come back when you're done — this page moves on by itself.",
                 ))
                 .child(status_block(theme, spinner, "Waiting for your browser…", false))
                 .into_any_element(),
@@ -7769,7 +7769,7 @@ impl Shell {
     /// Evaluate a width tween at the frame time (see [`WidthTween`]).
     /// Mid-flight: lerp on the tween's curve, flagging `motion_active` so
     /// render schedules the next frame. Finished, stale, absent, or under
-    /// reduced motion: exactly `target`. Honors `ZERON_MOTION_SCALE`.
+    /// reduced motion: exactly `target`. Honors `ZEND_MOTION_SCALE`.
     fn eval_tween(&self, tween: Option<WidthTween>, target: f32) -> f32 {
         let Some(WidthTween {
             from,
@@ -7920,11 +7920,11 @@ impl Shell {
     }
 
     /// The header's content row with the animated left inset — the native port
-    /// of zeron __root.tsx `transition-[padding-left] duration-200 ease-out` +
+    /// of zend __root.tsx `transition-[padding-left] duration-200 ease-out` +
     /// `style={{ paddingLeft: headerInset }}`: on sidebar toggles (and macOS
     /// fullscreen flips) the SAME element's padding tweens, so the title
     /// glides to its new x-position. Route changes SNAP: the tween is killed
-    /// by every route transition (zeron remounts the keyed header variants —
+    /// by every route transition (zend remounts the keyed header variants —
     /// instant swap, zero horizontal motion).
     /// Where unified-titlebar content (tabs / the settings label) starts: past
     /// the traffic lights + control cluster, riding the fullscreen inset tween.
@@ -7948,7 +7948,7 @@ impl Shell {
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
-    /// pattern (zeron's `.drag` region): mark it a [`WindowControlArea::Drag`]
+    /// pattern (zend's `.drag` region): mark it a [`WindowControlArea::Drag`]
     /// (macOS app-owned titlebar), hand the drag to the compositor once the
     /// pointer moves with the button down, and double-click zooms.
     fn titlebar_drag_region(
@@ -8000,7 +8000,7 @@ impl Shell {
     }
 
     /// The ONE top-left window-control cluster (sidebar toggle + back/forward —
-    /// zeron window-controls.tsx): rendered once, in a paint-only overlay layer
+    /// zend window-controls.tsx): rendered once, in a paint-only overlay layer
     /// pinned at the window's top-left, ABOVE the sidebar and headers. The
     /// sidebar width animates *beneath* it, so the buttons keep their element
     /// identity and never move or remount on collapse/expand; only the
@@ -8181,7 +8181,7 @@ impl Shell {
         titlebar_new_session_alpha(&self.route, self.state.read(cx).selected_chat.is_some())
     }
 
-    /// Native Windows caption controls integrated into Zeron's unified
+    /// Native Windows caption controls integrated into Zend's unified
     /// titlebar. `WindowControlArea` maps these hit targets to HTMINBUTTON,
     /// HTMAXBUTTON, and HTCLOSE, so Windows owns their behavior (including
     /// Snap Layouts) while GPUI renders the system Segoe caption glyphs.
@@ -8231,7 +8231,7 @@ impl Shell {
         )
     }
 
-    /// Which caption buttons zeron itself must draw on Linux: under
+    /// Which caption buttons zend itself must draw on Linux: under
     /// client-side decorations (the Wayland default) nobody else will —
     /// without these the window has NO minimize/maximize/close at all.
     /// Server-side decorations (X11 WMs, KDE with SSD) already draw real
@@ -8292,7 +8292,7 @@ impl Shell {
     }
 
     /// Right padding titlebar content needs to clear the platform's caption
-    /// controls (native Windows cluster / zeron-drawn Linux buttons).
+    /// controls (native Windows cluster / zend-drawn Linux buttons).
     pub(super) fn titlebar_right_pad(&self, base: f32) -> f32 {
         titlebar_right_padding(
             cfg!(target_os = "windows"),
@@ -8301,7 +8301,7 @@ impl Shell {
         )
     }
 
-    /// Zeron-drawn Linux caption controls, one overlay per populated side.
+    /// Zend-drawn Linux caption controls, one overlay per populated side.
     /// Shell-level chrome like the Windows cluster: mounted at the root so
     /// they stay above the splash and every auth/org/error gate.
     fn render_linux_caption_controls(&self, window: &Window, cx: &App) -> Vec<AnyElement> {
@@ -8518,7 +8518,7 @@ impl Shell {
     }
 
     fn render_sidebar(&mut self, _cx: &mut Context<Self>) -> AnyElement {
-        // The sidebar is part of the resolved theme. A second fixed-Zeron
+        // The sidebar is part of the resolved theme. A second fixed-Zend
         // palette here made imported families look split in half and froze
         // activity/glyph personality independently of the selected variant.
         let inner = self.sidebar_pane.clone().cached(
@@ -8831,9 +8831,9 @@ impl Shell {
         time_ago: SharedString,
         space_name: SharedString,
         branch: Option<SharedString>,
-        change_request: Option<zeron_proto::ChangeRequestSummary>,
-        harness: Option<zeron_proto::HarnessId>,
-        status: zeron_proto::ChatIndicator,
+        change_request: Option<zend_proto::ChangeRequestSummary>,
+        harness: Option<zend_proto::HarnessId>,
+        status: zend_proto::ChatIndicator,
         selected: bool,
         archived: bool,
         preview: bool,
@@ -8891,7 +8891,7 @@ impl Shell {
         // remote-device globe.
         let remote_glyph = if host
             .as_deref()
-            .is_some_and(|host| zeron_proto::is_cloud_device(host, ""))
+            .is_some_and(|host| zend_proto::is_cloud_device(host, ""))
         {
             icons::CLOUD
         } else {
@@ -8934,18 +8934,18 @@ impl Shell {
             Some("Queued")
         } else {
             match status {
-                zeron_proto::ChatIndicator::Working | zeron_proto::ChatIndicator::Waiting => {
+                zend_proto::ChatIndicator::Working | zend_proto::ChatIndicator::Waiting => {
                     Some("Working")
                 }
-                zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
-                zeron_proto::ChatIndicator::Errored => Some("Failed"),
-                zeron_proto::ChatIndicator::Completed => Some("Done"),
-                zeron_proto::ChatIndicator::Idle => None,
+                zend_proto::ChatIndicator::AwaitingInput => Some("Input"),
+                zend_proto::ChatIndicator::Errored => Some("Failed"),
+                zend_proto::ChatIndicator::Completed => Some("Done"),
+                zend_proto::ChatIndicator::Idle => None,
             }
         };
         let shows_metadata = branch.is_some() || change_request.is_some();
         let queued = queued && !undelivered;
-        let working = status == zeron_proto::ChatIndicator::Working && !queued && !undelivered;
+        let working = status == zend_proto::ChatIndicator::Working && !queued && !undelivered;
         // Subagents running under this chat show as a "● N" pill beside the
         // row's own activity indicator, never in place of it: the pill takes
         // the time stamp's spot (compact) or leads the status (regular), and
@@ -8970,7 +8970,7 @@ impl Shell {
                     cx,
                 )
                 .into_any_element()
-            } else if status == zeron_proto::ChatIndicator::Completed && !queued && !undelivered {
+            } else if status == zend_proto::ChatIndicator::Completed && !queued && !undelivered {
                 icon(icons::CHECK)
                     .size(px(11.0))
                     .text_color(status_color)
@@ -9066,7 +9066,7 @@ impl Shell {
                     // Glyph slot: Working wears the preset's animated pixel
                     // glyph beside its label, Done wears the check, and the
                     // remaining statuses use a compact dot.
-                    let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
+                    let glyph: AnyElement = if status == zend_proto::ChatIndicator::Completed {
                         icon(icons::CHECK)
                             .size(px(11.0))
                             .flex_none()
@@ -9209,7 +9209,7 @@ impl Shell {
             && self.session_hover_card.shown() == Some(id.as_str()))
         .then(|| self.render_session_hover_card(&id, time_ago.clone(), cx));
         let card_id = id.clone();
-        // Hover fades over transition-colors (zeron session-row.tsx) — both
+        // Hover fades over transition-colors (zend session-row.tsx) — both
         // the wash and the title brighten ride the same 150ms blend.
         let fade_key = format!("{row_id}-hover");
         let rest_bg = if selected {
@@ -10352,7 +10352,7 @@ impl Shell {
     /// installs (macOS bundles, Windows installs, Linux managed installs) show
     /// the background download and then "restart to apply"; installs that
     /// can't replace themselves explain why; advisory installs point at
-    /// `zeron update` or the GitHub releases page and dismiss per version.
+    /// `zend update` or the GitHub releases page and dismiss per version.
     fn render_update_strip(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let update = crate::app_update::AppUpdate::global(cx)?;
         let (label, action) = update.read(cx).strip()?;
@@ -10419,7 +10419,7 @@ impl Shell {
             StripAction::Explain => update.update(cx, |update, cx| update.show_result(cx)),
             StripAction::Advise { open_releases } => {
                 if open_releases {
-                    cx.open_url(zeron_update::RELEASES_PAGE);
+                    cx.open_url(zend_update::RELEASES_PAGE);
                 }
                 update.update(cx, |update, cx| update.dismiss_advisory(cx));
             }
@@ -10454,13 +10454,13 @@ impl Shell {
         use crate::app_update::{AppUpdate, Flow, Prompt};
         let update = AppUpdate::global(cx)?;
         let theme = Theme::of(cx).for_popup();
-        let current = zeron_update::current_version();
+        let current = zend_update::current_version();
         let (title, body, buttons): (SharedString, SharedString, Vec<UpdatePromptButton>) = {
             let update = update.read(cx);
             match update.prompt()? {
                 Prompt::Checking => (
                     "Checking for updates…".into(),
-                    format!("You're on Zeron {current}.").into(),
+                    format!("You're on Zend {current}.").into(),
                     vec![UpdatePromptButton::Close("Cancel")],
                 ),
                 Prompt::CheckFailed(message) => (
@@ -10474,21 +10474,21 @@ impl Shell {
                 Prompt::Result => match update.available() {
                     None => match update.held() {
                         Some((latest, why)) => (
-                            format!("Zeron {latest} can't be installed yet").into(),
+                            format!("Zend {latest} can't be installed yet").into(),
                             why.to_owned().into(),
                             vec![UpdatePromptButton::Close("OK")],
                         ),
                         None => (
-                            "Zeron is up to date".into(),
+                            "Zend is up to date".into(),
                             format!("Version {current} is the newest release.").into(),
                             vec![UpdatePromptButton::Close("OK")],
                         ),
                     },
                     Some(latest) => {
                         let title: SharedString = if update.switching() {
-                            format!("Zeron {latest} (Stable) is available").into()
+                            format!("Zend {latest} (Stable) is available").into()
                         } else {
-                            format!("Zeron {latest} is available").into()
+                            format!("Zend {latest} is available").into()
                         };
                         if let Some(blocker) = update.blocker() {
                             (
@@ -10516,8 +10516,8 @@ impl Shell {
                                     vec![UpdatePromptButton::Close("Hide")],
                                 ),
                                 Flow::Ready { version, .. } => (
-                                    format!("Zeron {version} is ready").into(),
-                                    "Restart to finish updating. If you don't, it installs the next time you quit Zeron."
+                                    format!("Zend {version} is ready").into(),
+                                    "Restart to finish updating. If you don't, it installs the next time you quit Zend."
                                         .into(),
                                     vec![
                                         UpdatePromptButton::Close("Later"),
@@ -10535,17 +10535,17 @@ impl Shell {
                             }
                         } else if matches!(
                             update.install(),
-                            zeron_update::InstallKind::Managed { .. }
+                            zend_update::InstallKind::Managed { .. }
                         ) {
                             (
                                 title,
-                                "Run `zeron update` in a terminal to install it.".into(),
+                                "Run `zend update` in a terminal to install it.".into(),
                                 vec![UpdatePromptButton::Close("OK")],
                             )
                         } else {
                             (
                                 title,
-                                "This copy of Zeron wasn't set up by an installer (for example, a source build), so it can't update itself."
+                                "This copy of Zend wasn't set up by an installer (for example, a source build), so it can't update itself."
                                     .into(),
                                 vec![
                                     UpdatePromptButton::Close("Later"),
@@ -10604,7 +10604,7 @@ impl Shell {
                     popover::btn_primary(&theme, "Open download page")
                         .id("update-prompt-downloads")
                         .on_click(cx.listener(|_, _, _, cx| {
-                            cx.open_url(zeron_update::LATEST_RELEASE_PAGE);
+                            cx.open_url(zend_update::LATEST_RELEASE_PAGE);
                             if let Some(update) = crate::app_update::AppUpdate::global(cx) {
                                 update.update(cx, |update, cx| update.dismiss_prompt(cx));
                             }
@@ -10623,7 +10623,7 @@ impl Shell {
     }
 
     /// "Get beta updates" in the Check for Updates dialog (macOS app installs):
-    /// the beta channel, the next Zeron's interface, for testers. Turning it
+    /// the beta channel, the next Zend's interface, for testers. Turning it
     /// off returns to Stable, even to an older version.
     fn render_update_channel_row(
         &self,
@@ -10642,7 +10642,7 @@ impl Shell {
             if on {
                 "You're getting beta updates. Turn this off to go back to Stable.".into()
             } else {
-                format!("Try the next Zeron early. Needs macOS {} or later.", zeron_update::channel::BETA_MINIMUM_MACOS).into()
+                format!("Try the next Zend early. Needs macOS {} or later.", zend_update::channel::BETA_MINIMUM_MACOS).into()
             }
         });
         Some(
@@ -10836,7 +10836,7 @@ impl Shell {
                 cx.notify();
             }))
             .child(
-                // Avatar: white circle, initial in near-black (zeron user-menu.tsx).
+                // Avatar: white circle, initial in near-black (zend user-menu.tsx).
                 div()
                     .size(px(SIDEBAR_FOOTER_AVATAR_SIZE))
                     .flex_none()
@@ -11059,7 +11059,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Zeron will remove your credentials, close the synced workspace, and continue in local mode.",
+                        "Zend will remove your credentials, close the synced workspace, and continue in local mode.",
                     )),
                 )
                 .child(
@@ -11442,7 +11442,7 @@ impl Shell {
                     .unwrap_or_else(|| "New session".into()),
             );
             // A Cloud chat's machine goes with it (the engine deletes it).
-            let on_cloud = chat.is_some_and(|c| zeron_proto::is_cloud_device(&c.device_id, ""));
+            let on_cloud = chat.is_some_and(|c| zend_proto::is_cloud_device(&c.device_id, ""));
             let body = if on_cloud {
                 format!(
                     "\u{201C}{title}\u{201D} and its Cloud machine will be permanently deleted, \
@@ -11845,7 +11845,7 @@ impl Shell {
                         .flex_col()
                         .items_center()
                         .child(
-                            icon(icons::ZERON_LOGO)
+                            icon(icons::ZEND_LOGO)
                                 .w(px(41.9))
                                 .h(px(48.0))
                                 .text_color(theme.text.opacity(0.09)),
@@ -12647,7 +12647,7 @@ impl Shell {
             .items_center()
             .text_center()
             .child(
-                icon(icons::ZERON_LOGO)
+                icon(icons::ZEND_LOGO)
                     .w(px(31.4))
                     .h(px(36.0))
                     .text_color(theme.text),
@@ -12668,7 +12668,7 @@ impl Shell {
                     .line_height(px(19.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(
-                        "Zeron removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
+                        "Zend removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
                     )),
             )
             .when_some(self.runtime_change_error.clone(), |card, error| {
@@ -12850,7 +12850,7 @@ impl Shell {
                         .read(cx)
                         .sub_transcript(&tab.doc_id)
                         .last()
-                        .is_some_and(|e| e.status == Some(zeron_doc::MessageStatus::Streaming))
+                        .is_some_and(|e| e.status == Some(zend_doc::MessageStatus::Streaming))
                 }),
                 _ => false,
             };
@@ -13202,7 +13202,7 @@ impl Shell {
             return crate::onboarding::render_page(slot.into_page(), window);
         }
         let (key, body): (&'static str, AnyElement) = match phase {
-            // Backend unreachable: quiet centered copy (zeron Gate `Failed`),
+            // Backend unreachable: quiet centered copy (zend Gate `Failed`),
             // plus a Retry affordance (the native engine doesn't self-redial).
             GatePhase::Failed(error) => (
                 "gate-failed",
@@ -13224,7 +13224,7 @@ impl Shell {
                     )
                     .into_any_element(),
             ),
-            // Log in: the logo, "Log in to Zeron", the copy and a wide Log in
+            // Log in: the logo, "Log in to Zend", the copy and a wide Log in
             // button, centered on the window like the setup welcome.
             _ => (
                 "gate-signin",
@@ -13234,7 +13234,7 @@ impl Shell {
                     .items_center()
                     .text_center()
                     .child(
-                        icon(icons::ZERON_LOGO)
+                        icon(icons::ZEND_LOGO)
                             .w(px(31.4))
                             .h(px(36.0))
                             .text_color(theme.text),
@@ -13246,7 +13246,7 @@ impl Shell {
                             .line_height(px(28.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text)
-                            .child(SharedString::from("Log in to Zeron")),
+                            .child(SharedString::from("Log in to Zend")),
                     )
                     .child(
                         div()
@@ -13382,11 +13382,11 @@ impl Shell {
 
         let blurb: SharedString = match email {
             Some(email) => format!(
-                "Zeron is organized around workspaces — create one for yourself or your team. Signed in as {email}."
+                "Zend is organized around workspaces — create one for yourself or your team. Signed in as {email}."
             )
             .into(),
             None => {
-                "Zeron is organized around workspaces — create one for yourself or your team."
+                "Zend is organized around workspaces — create one for yourself or your team."
                     .into()
             }
         };
@@ -13453,7 +13453,7 @@ impl Shell {
     }
 }
 
-/// A size-6 icon button for the titlebar strip (zeron window-controls.tsx:
+/// A size-6 icon button for the titlebar strip (zend window-controls.tsx:
 /// `grid size-6 place-items-center rounded-md text-muted-foreground`).
 fn window_control_button(
     id: &'static str,
@@ -13486,7 +13486,7 @@ fn window_control_button_with(
         .justify_center()
         .rounded(px(6.0))
         .cursor_pointer()
-        // zeron window-controls.tsx: `transition-colors` — the wash fades.
+        // zend window-controls.tsx: `transition-colors` — the wash fades.
         .bg(motion::hover_blend(
             &fade_key,
             theme.glass_hover().opacity(0.0),
@@ -13519,7 +13519,7 @@ const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
 const WINDOWS_CAPTION_WIDTH: f32 = WINDOWS_CAPTION_BUTTON_WIDTH * 3.0;
 
 /// Right padding for titlebar content: past the native Windows caption
-/// cluster, or past zeron's own Linux caption buttons (10px edge inset +
+/// cluster, or past zend's own Linux caption buttons (10px edge inset +
 /// the button row) when the layout puts any on the right.
 fn titlebar_right_padding(is_windows: bool, linux_right_captions: usize, base: f32) -> f32 {
     base + if is_windows {
@@ -13573,7 +13573,7 @@ fn windows_caption_button(
         .child(glyph)
 }
 
-/// A Linux caption button in zeron's own cluster style (24px, rounded-6,
+/// A Linux caption button in zend's own cluster style (24px, rounded-6,
 /// 16px linear icon). gpui's `WindowControlArea` hit-testing is inert on
 /// Linux, so unlike the Windows cluster these carry explicit click handlers
 /// (`minimize_window` / `zoom_window` / `remove_window`), the same calls
@@ -13625,7 +13625,7 @@ fn linux_caption_button(
         )
 }
 
-/// A titlebar history button (zeron window-controls.tsx): enabled it is a
+/// A titlebar history button (zend window-controls.tsx): enabled it is a
 /// normal window-control button; disabled it dims to 35% opacity and ignores
 /// the pointer (`disabled:pointer-events-none disabled:opacity-35`).
 fn nav_history_button(
@@ -13656,7 +13656,7 @@ fn nav_history_button(
     window_control_button(id, icon_path, label, theme, on_click).into_any_element()
 }
 
-/// A size-7 icon button for the main-panel header (zeron __root.tsx:
+/// A size-7 icon button for the main-panel header (zend __root.tsx:
 /// `grid size-7 place-items-center rounded-md text-muted-foreground`).
 fn header_icon_button(
     id: &'static str,
@@ -13688,7 +13688,7 @@ fn header_icon_button_with(
         .justify_center()
         .rounded(px(6.0))
         .cursor_pointer()
-        // zeron __root.tsx header buttons: `transition-colors`.
+        // zend __root.tsx header buttons: `transition-colors`.
         .bg(motion::hover_blend(
             &fade_key,
             crate::theme::wash(0.0),
@@ -14030,7 +14030,7 @@ impl Render for Shell {
             .on_drag_move(cx.listener(Self::on_files_panel_drag))
             .on_drag_move(cx.listener(Self::on_terminal_drag))
             // The panel shortcuts are chat-scoped chrome: in Settings they are
-            // no-ops (zeron __root.tsx gates the hotkey on `!isSettings`, and
+            // no-ops (zend __root.tsx gates the hotkey on `!isSettings`, and
             // the terminal panel is only mounted on session routes). The
             // sidebar toggle stays live everywhere, as in the original.
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
@@ -14259,7 +14259,7 @@ impl Render for Shell {
                     let unseen_selected = {
                         let s = self.state.read(cx);
                         s.selected_chat_row()
-                            .filter(|c| zeron_proto::view::has_unseen_activity(c, s.session_for(&c.id)))
+                            .filter(|c| zend_proto::view::has_unseen_activity(c, s.session_for(&c.id)))
                             .map(|c| c.id.clone())
                     };
                     if let Some(chat_id) = unseen_selected {
@@ -14267,7 +14267,7 @@ impl Render for Shell {
                             .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
                     }
                 }
-                // Capture knob: `ZERON_OPEN_DIALOG=model` pops the combined
+                // Capture knob: `ZEND_OPEN_DIALOG=model` pops the combined
                 // harness/model menu (needs `window`, so it fires here rather
                 // than in `on_state_changed`).
                 if self.debug_dialog.as_deref() == Some("model") {
@@ -14407,7 +14407,7 @@ impl Render for Shell {
                 });
                 let main = self.render_main(window, main_content_width, transcript_width, cx);
                 // The Changes pane is chat-scoped chrome: the Settings route
-                // never renders it (zeron __root.tsx `!isSettings && activeChat`
+                // never renders it (zend __root.tsx `!isSettings && activeChat`
                 // around the diff column) — the per-session open flags stay
                 // intact for the return trip.
                 let right_open = on_chat && self.right_pane_shown(cx);
@@ -14474,7 +14474,7 @@ impl Render for Shell {
                     .opacity(under_stage)
                     .child(main)
                     .into_any_element();
-                // The whole app page is one keyed `animate-in` entrance (zeron
+                // The whole app page is one keyed `animate-in` entrance (zend
                 // App.tsx `<div key={phase} className="animate-in h-full">`):
                 // arriving from the splash or any gate fades the page in; the
                 // splash-out crossfades over it on boot.
@@ -14654,8 +14654,8 @@ mod tests {
     pub(super) fn chat_with_path(
         cwd: Option<&str>,
         source: Option<(&str, &str)>,
-    ) -> zeron_proto::Chat {
-        zeron_proto::Chat {
+    ) -> zend_proto::Chat {
+        zend_proto::Chat {
             id: "chat".into(),
             device_id: "remote-device".into(),
             title: None,
@@ -14664,7 +14664,7 @@ mod tests {
             branch: None,
             checkout_id: None,
             source_context: source.map(|(source_cwd, repo_root)| {
-                zeron_proto::ConversationSourceContext {
+                zend_proto::ConversationSourceContext {
                     checkout_id: "checkout".into(),
                     repo_root: repo_root.into(),
                     cwd: source_cwd.into(),
@@ -14735,7 +14735,7 @@ mod tests {
 
     #[test]
     fn connection_pill_is_global_only() {
-        use zeron_proto::{ChatConnectivity, ChatSyncState as S, Connectivity, ConnectivityState};
+        use zend_proto::{ChatConnectivity, ChatSyncState as S, Connectivity, ConnectivityState};
 
         let chat = |chat_id: &str, sync_state| ChatConnectivity {
             chat_id: chat_id.into(),
@@ -14994,10 +14994,10 @@ mod tests {
 
     fn clock_session(
         chat_id: &str,
-        status: zeron_proto::SessionStatus,
+        status: zend_proto::SessionStatus,
         updated_at: DateTime<Utc>,
-    ) -> zeron_proto::Session {
-        zeron_proto::Session {
+    ) -> zend_proto::Session {
+        zend_proto::Session {
             last_completed_turn: None,
             chat_id: chat_id.into(),
             device_id: "remote".into(),
@@ -15075,11 +15075,11 @@ mod tests {
         // A failed run, a pending question and a reconnecting pill show no
         // clock: only the relative-time minute remains.
         state.sessions = vec![
-            clock_session("failed", zeron_proto::SessionStatus::Errored, now),
-            clock_session("idle", zeron_proto::SessionStatus::Idle, now),
+            clock_session("failed", zend_proto::SessionStatus::Errored, now),
+            clock_session("idle", zend_proto::SessionStatus::Idle, now),
         ];
         state.selected_chat = Some("failed".into());
-        state.connectivity.state = zeron_proto::ConnectivityState::Reconnecting;
+        state.connectivity.state = zend_proto::ConnectivityState::Reconnecting;
         assert_redraw_at(
             cx,
             &state,
@@ -15094,14 +15094,14 @@ mod tests {
         let mut state = AppState::new();
         state.sessions = vec![clock_session(
             "chat",
-            zeron_proto::SessionStatus::Working,
+            zend_proto::SessionStatus::Working,
             now,
         )];
         state.selected_chat = Some("chat".into());
         assert_redraw_at(cx, &state, now, now + chrono::TimeDelta::seconds(1));
         // Awaiting input shows no elapsed timer; its staleness cutoff is an
         // AppState notification, not a shell tick.
-        state.sessions[0].status = zeron_proto::SessionStatus::AwaitingInput;
+        state.sessions[0].status = zend_proto::SessionStatus::AwaitingInput;
         assert_redraw_at(cx, &state, now, now + chrono::TimeDelta::minutes(1));
     }
 
@@ -15328,7 +15328,7 @@ mod tests {
             edge_token: None,
             org_id: None,
             workos_client_id: Some("client_test".into()),
-            default_harness: zeron_proto::HarnessId::Mock,
+            default_harness: zend_proto::HarnessId::Mock,
         };
         let synced = crate::state::EngineHandle::bootstrap(boot.clone())
             .await
@@ -15407,12 +15407,12 @@ mod tests {
 
     #[test]
     fn sidebar_footer_names_the_account_or_falls_back_to_local() {
-        let named = zeron_proto::UserProfile {
+        let named = zend_proto::UserProfile {
             id: "u".into(),
             email: "wing@example.com".into(),
             name: Some("Wing".into()),
         };
-        let unnamed = zeron_proto::UserProfile {
+        let unnamed = zend_proto::UserProfile {
             name: Some("  ".into()),
             ..named.clone()
         };
@@ -15431,7 +15431,7 @@ mod tests {
     #[test]
     fn local_sign_in_offers_the_in_place_switch() {
         let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: zend_proto::UserProfile {
                 id: "user-1".into(),
                 email: "user@example.com".into(),
                 name: None,
@@ -15543,7 +15543,7 @@ mod tests {
     #[test]
     fn dismissed_import_failure_stays_reachable_on_a_synced_runtime() {
         let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: zend_proto::UserProfile {
                 id: "user-1".into(),
                 email: "user@example.com".into(),
                 name: None,
@@ -15586,7 +15586,7 @@ mod tests {
     #[test]
     fn switch_lifecycle_survives_the_runtime_replacement_window() {
         let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: zend_proto::UserProfile {
                 id: "user-1".into(),
                 email: "user@example.com".into(),
                 name: None,
@@ -15621,7 +15621,7 @@ mod tests {
     #[test]
     fn synced_sign_out_blocks_every_viewport_and_cannot_switch_accounts() {
         let signed_in_as_another_user = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
+            user: zend_proto::UserProfile {
                 id: "user-2".into(),
                 email: "other@example.com".into(),
                 name: None,
@@ -15659,8 +15659,8 @@ mod tests {
     }
 
     #[test]
-    fn titlebar_cluster_matches_zeron_window_controls() {
-        // zeron window-controls.tsx: `left: fullscreen ? 12 : 88` — the
+    fn titlebar_cluster_matches_zend_window_controls() {
+        // zend window-controls.tsx: `left: fullscreen ? 12 : 88` — the
         // cluster clears the {14,15} traffic lights, and reclaims the inset
         // when fullscreen hides them.
         assert_eq!(titlebar_cluster_start(false), 88.0);
@@ -15739,7 +15739,7 @@ mod tests {
         );
     }
 
-    // ---- per-session panel flags (§1.10/1.11 parity: zeron sessionPanels) ----
+    // ---- per-session panel flags (§1.10/1.11 parity: zend sessionPanels) ----
 
     #[test]
     fn session_panels_default_closed_per_chat() {
@@ -15879,7 +15879,7 @@ mod tests {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16086,7 +16086,7 @@ mod tests {
     #[test]
     fn nav_push_truncates_the_forward_branch() {
         // a → b → c, back to a, then push d: the b/c branch is gone (browser
-        // semantics — zeron's memory history PUSH truncates entries ahead).
+        // semantics — zend's memory history PUSH truncates entries ahead).
         let mut nav = NavHistory::new(chat("a"));
         nav.push(chat("b"));
         nav.push(chat("c"));
@@ -16183,7 +16183,7 @@ mod exit_regressions {
             edge_token: None,
             org_id: None,
             workos_client_id: None,
-            default_harness: zeron_proto::HarnessId::Mock,
+            default_harness: zend_proto::HarnessId::Mock,
         };
         for (connection, expected) in [
             (ConnectionStatus::Connecting, SplashPhase::Visible),
@@ -16236,7 +16236,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16308,7 +16308,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16417,7 +16417,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16426,13 +16426,13 @@ mod exit_regressions {
             .into_iter()
             .enumerate()
         {
-            let open_links_in_zeron = index % 2 == 0;
-            let terminal_family = if open_links_in_zeron {
+            let open_links_in_zend = index % 2 == 0;
+            let terminal_family = if open_links_in_zend {
                 crate::typography::UiFontFamily::System
             } else {
                 crate::typography::UiFontFamily::Geist
             };
-            let code_family = if open_links_in_zeron {
+            let code_family = if open_links_in_zend {
                 crate::typography::UiFontFamily::Geist
             } else {
                 crate::typography::UiFontFamily::System
@@ -16460,10 +16460,10 @@ mod exit_regressions {
                         settings.wallpaper_history =
                             vec![dir.path().join("wallpapers/current.png")];
                         settings.window_geometry = geometry;
-                        settings.open_web_links_in_zeron = open_links_in_zeron;
+                        settings.open_web_links_in_zend = open_links_in_zend;
                         settings.pull_request_destination =
                             settings::PullRequestDestination::External;
-                        settings.last_pull_request_repository = Some("acme/zeron".into());
+                        settings.last_pull_request_repository = Some("acme/zend".into());
                         settings.last_pull_request_device = Some("remote-pr-device".into());
                         settings.terminal_font_family = terminal_family.clone();
                         settings.terminal_font_size = terminal_size;
@@ -16471,9 +16471,9 @@ mod exit_regressions {
                         settings.code_font_size = code_size;
                         settings.transcript_width = transcript_width;
                         settings.skill_completion_by_harness.insert(
-                            zeron_proto::HarnessId::ClaudeCode,
+                            zend_proto::HarnessId::ClaudeCode,
                             settings::SkillCompletionSettings {
-                                dollar: open_links_in_zeron,
+                                dollar: open_links_in_zend,
                                 separate_from_slash: true,
                             },
                         );
@@ -16498,7 +16498,7 @@ mod exit_regressions {
                         );
                         assert_eq!(
                             current.last_pull_request_repository.as_deref(),
-                            Some("acme/zeron")
+                            Some("acme/zend")
                         );
                         assert_eq!(
                             current.last_pull_request_device.as_deref(),
@@ -16506,7 +16506,7 @@ mod exit_regressions {
                         );
                         assert_eq!(current.window_geometry, geometry);
                         assert_eq!(current.new_thread_background_effect, effect);
-                        assert_eq!(current.open_web_links_in_zeron, open_links_in_zeron);
+                        assert_eq!(current.open_web_links_in_zend, open_links_in_zend);
                         assert_eq!(
                             current.pull_request_destination,
                             settings::PullRequestDestination::External
@@ -16518,13 +16518,13 @@ mod exit_regressions {
                         assert_eq!(current.transcript_width, transcript_width);
                         assert_eq!(
                             current
-                                .skill_completion(zeron_proto::HarnessId::ClaudeCode)
+                                .skill_completion(zend_proto::HarnessId::ClaudeCode)
                                 .dollar,
-                            open_links_in_zeron
+                            open_links_in_zend
                         );
                         assert!(
                             current
-                                .skill_completion(zeron_proto::HarnessId::ClaudeCode)
+                                .skill_completion(zend_proto::HarnessId::ClaudeCode)
                                 .separate_from_slash
                         );
                     }
@@ -16532,7 +16532,7 @@ mod exit_regressions {
                     let loaded = settings::UiSettings::load(dir.path());
                     assert_eq!(
                         loaded.last_pull_request_repository.as_deref(),
-                        Some("acme/zeron")
+                        Some("acme/zend")
                     );
                     assert_eq!(
                         loaded.last_pull_request_device.as_deref(),
@@ -16549,7 +16549,7 @@ mod exit_regressions {
                         Some(dir.path().join("wallpapers/current.png"))
                     );
                     assert_eq!(loaded.new_thread_background_effect, effect);
-                    assert_eq!(loaded.open_web_links_in_zeron, open_links_in_zeron);
+                    assert_eq!(loaded.open_web_links_in_zend, open_links_in_zend);
                     assert_eq!(
                         loaded.pull_request_destination,
                         settings::PullRequestDestination::External
@@ -16594,7 +16594,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16636,7 +16636,7 @@ mod exit_regressions {
     }
 
     #[gpui::test]
-    fn workspace_slash_commands_open_existing_zeron_surfaces(cx: &mut TestAppContext) {
+    fn workspace_slash_commands_open_existing_zend_surfaces(cx: &mut TestAppContext) {
         use crate::composer::WorkspaceCommand;
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -16663,7 +16663,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16737,7 +16737,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16789,7 +16789,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -16871,7 +16871,7 @@ mod exit_regressions {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: zend_proto::HarnessId::Mock,
                     },
                     cx,
                 )
@@ -16930,7 +16930,7 @@ mod exit_regressions {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: zend_proto::HarnessId::Mock,
                     },
                     cx,
                 )
@@ -16984,7 +16984,7 @@ mod exit_regressions {
         let (shell, cx) = cx.add_window_view(|_, cx| {
             let state = cx.new(|_| {
                 let mut state = AppState::new();
-                state.connection = zeron_proto::view::ConnectionStatus::Ready;
+                state.connection = zend_proto::view::ConnectionStatus::Ready;
                 state
             });
             Shell::new(
@@ -16996,7 +16996,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -17244,7 +17244,7 @@ mod exit_regressions {
         let (shell, cx) = cx.add_window_view(|_, cx| {
             let state = cx.new(|_| {
                 let mut state = AppState::new();
-                state.connection = zeron_proto::view::ConnectionStatus::Ready;
+                state.connection = zend_proto::view::ConnectionStatus::Ready;
                 state
             });
             Shell::new(
@@ -17256,7 +17256,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -17441,14 +17441,14 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
         });
         window
             .update(cx, |shell, _, cx| {
-                let space = |id: &str, device: &str| zeron_proto::Space {
+                let space = |id: &str, device: &str| zend_proto::Space {
                     github_repo: None,
                     id: id.into(),
                     device_id: device.into(),
@@ -17544,7 +17544,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -17629,7 +17629,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -17710,7 +17710,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -17718,7 +17718,7 @@ mod exit_regressions {
         window
             .update(cx, |shell, _, cx| {
                 shell.state.update(cx, |state, _| {
-                    state.apply_spaces(vec![zeron_proto::Space {
+                    state.apply_spaces(vec![zend_proto::Space {
                         id: "repo".into(),
                         device_id: "local".into(),
                         path: "/repo".into(),
@@ -17784,12 +17784,12 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
         });
-        let space = |id: &str, device: &str| zeron_proto::Space {
+        let space = |id: &str, device: &str| zend_proto::Space {
             id: id.into(),
             device_id: device.into(),
             path: format!("/{id}"),
@@ -17806,7 +17806,7 @@ mod exit_regressions {
             .update(cx, |shell, _, cx| {
                 shell.state.update(cx, |state, cx| {
                     state.apply_spaces(vec![space("mine", "local"), space("other", "remote")]);
-                    state.apply_chats(vec![zeron_proto::Chat {
+                    state.apply_chats(vec![zend_proto::Chat {
                         id: "elsewhere".into(),
                         device_id: "remote".into(),
                         title: None,
@@ -17873,12 +17873,12 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
         });
-        let space = |id: &str| zeron_proto::Space {
+        let space = |id: &str| zend_proto::Space {
             id: id.into(),
             device_id: "local".into(),
             path: format!("/{id}"),
@@ -17937,7 +17937,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -17945,7 +17945,7 @@ mod exit_regressions {
         window
             .update(cx, |shell, _, cx| {
                 shell.state.update(cx, |state, cx| {
-                    state.apply_spaces(vec![zeron_proto::Space {
+                    state.apply_spaces(vec![zend_proto::Space {
                         id: "repo".into(),
                         device_id: "local".into(),
                         path: "/repo".into(),
@@ -17996,7 +17996,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18033,7 +18033,7 @@ mod exit_regressions {
                 shell.activate_session_link(&activation, window, cx);
                 assert_eq!(shell.browsers.len(), 2);
                 settings::update(settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.open_web_links_in_zeron = false;
+                    settings.open_web_links_in_zend = false;
                 });
                 assert_eq!(
                     shell.activate_session_link(&activation, window, cx),
@@ -18106,8 +18106,8 @@ mod exit_regressions {
 
     /// "In-app browser" opens pull requests in a Browser tab beside the
     /// conversation, from a link or a badge, and in the default browser off a
-    /// session. "Default browser" keeps a clicked link out of Zeron while the
-    /// explicit "Open in Zeron" still opens a Browser tab.
+    /// session. "Default browser" keeps a clicked link out of Zend while the
+    /// explicit "Open in Zend" still opens a Browser tab.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[gpui::test]
     fn pull_requests_open_in_browser_tabs_when_settings_ask(cx: &mut TestAppContext) {
@@ -18132,7 +18132,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18171,12 +18171,12 @@ mod exit_regressions {
                     Some("https://github.com/c/d/pull/2")
                 );
                 assert_eq!(shell.browsers.len(), 2);
-                // "Default browser": a click leaves Zeron, links stay in
-                // Zeron otherwise, and "Open in Zeron" opens a Browser tab.
+                // "Default browser": a click leaves Zend, links stay in
+                // Zend otherwise, and "Open in Zend" opens a Browser tab.
                 settings::update(settings::SavePolicy::Immediate, cx, |settings| {
                     settings.pull_request_destination = settings::PullRequestDestination::External;
                 });
-                assert!(settings::current(cx).open_web_links_in_zeron);
+                assert!(settings::current(cx).open_web_links_in_zend);
                 assert_eq!(
                     shell.activate_session_link(&link, window, cx),
                     LinkOutcome::External("https://github.com/a/b/pull/1/files".into())
@@ -18243,7 +18243,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18312,7 +18312,7 @@ mod exit_regressions {
                 // different file under the linking chat's checkout.
                 let project = dir.path().join("other-project");
                 shell.state.update(cx, |state, _| {
-                    state.apply_spaces(vec![zeron_proto::Space {
+                    state.apply_spaces(vec![zend_proto::Space {
                         id: "other".into(),
                         device_id: "local".into(),
                         path: project.to_string_lossy().into_owned(),
@@ -18364,7 +18364,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18462,7 +18462,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18471,7 +18471,7 @@ mod exit_regressions {
             .update(cx, |shell, window, cx| {
                 shell.active_chat = "session".into();
                 shell.state.update(cx, |state, _| {
-                    state.workspace_scope = Some(zeron_proto::WorkspaceScope::Local);
+                    state.workspace_scope = Some(zend_proto::WorkspaceScope::Local);
                     state.local_device_id = Some("device-a".into());
                 });
                 // Selecting the identity happens before navigation, without requiring a render.
@@ -18544,7 +18544,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18622,7 +18622,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18720,7 +18720,7 @@ mod exit_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -18898,7 +18898,7 @@ mod right_tab_mouse_regressions {
                         edge_token: None,
                         org_id: None,
                         workos_client_id: None,
-                        default_harness: zeron_proto::HarnessId::Mock,
+                        default_harness: zend_proto::HarnessId::Mock,
                     },
                     cx,
                 );
@@ -18952,8 +18952,8 @@ mod right_tab_mouse_regressions {
         });
         // Rechecks and repeated versionless availability remain deduplicated.
         for phase in [
-            zeron_proto::HarnessUpdatePhase::Checking,
-            zeron_proto::HarnessUpdatePhase::Available,
+            zend_proto::HarnessUpdatePhase::Checking,
+            zend_proto::HarnessUpdatePhase::Available,
         ] {
             shell.update(cx, |shell, cx| {
                 shell
@@ -18967,12 +18967,12 @@ mod right_tab_mouse_regressions {
         // another commit-only update to notify even if the version is unchanged.
         shell.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
-                state.harness_updates[1].phase = zeron_proto::HarnessUpdatePhase::Current
+                state.harness_updates[1].phase = zend_proto::HarnessUpdatePhase::Current
             });
             shell.on_state_changed(&shell.state.clone(), cx);
             assert_eq!(shell.harness_update_seen.len(), 1);
             shell.state.update(cx, |state, _| {
-                state.harness_updates[1].phase = zeron_proto::HarnessUpdatePhase::Available
+                state.harness_updates[1].phase = zend_proto::HarnessUpdatePhase::Available
             });
             shell.on_state_changed(&shell.state.clone(), cx);
         });
@@ -19427,7 +19427,7 @@ mod settings_modal_regressions {
                     edge_token: None,
                     org_id: None,
                     workos_client_id: None,
-                    default_harness: zeron_proto::HarnessId::Mock,
+                    default_harness: zend_proto::HarnessId::Mock,
                 },
                 cx,
             )
@@ -19498,7 +19498,7 @@ mod settings_modal_regressions {
                 edge_token: None,
                 org_id: None,
                 workos_client_id: None,
-                default_harness: zeron_proto::HarnessId::Mock,
+                default_harness: zend_proto::HarnessId::Mock,
             },
             cx,
         )
@@ -19666,7 +19666,7 @@ mod settings_modal_regressions {
     }
 
     /// Localizing moves exactly the bindings whose key the layout relocates —
-    /// Zeron's and gpui-base's alike — and keeps the rest, in order.
+    /// Zend's and gpui-base's alike — and keeps the rest, in order.
     #[gpui::test]
     fn azerty_keymap_moves_only_relocated_keys(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -19870,7 +19870,7 @@ mod settings_modal_regressions {
         shell.read_with(cx, |shell, cx| {
             let text = shell.composer.read(cx).input.read(cx).text().to_owned();
             assert!(
-                text.contains("[Chat older](zeron-chat:older)"),
+                text.contains("[Chat older](zend-chat:older)"),
                 "the drop mentions the chat: {text:?}"
             );
             assert!(shell.sidebar_session_transfer.is_none());
@@ -19893,7 +19893,7 @@ mod settings_modal_regressions {
 
         shell.update(cx, |shell, cx| {
             shell.voice.update(cx, |voice, _| {
-                voice.phase = zeron_proto::voice::VoicePhase::Active
+                voice.phase = zend_proto::voice::VoicePhase::Active
             });
             shell.set_voice_stage_open(true, cx);
         });
@@ -19913,15 +19913,15 @@ mod settings_modal_regressions {
     /// need both).
     fn sign_in(state: &Entity<AppState>, cx: &mut App) {
         state.update(cx, |state, _| {
-            state.auth = Some(zeron_proto::AuthState::SignedIn {
-                user: zeron_proto::UserProfile {
+            state.auth = Some(zend_proto::AuthState::SignedIn {
+                user: zend_proto::UserProfile {
                     id: "user-a".into(),
                     email: "user@example.com".into(),
                     name: None,
                 },
                 org_id: Some("org-a".into()),
             });
-            state.cloud_status = Some(zeron_proto::CloudStatus {
+            state.cloud_status = Some(zend_proto::CloudStatus {
                 available: true,
                 ..Default::default()
             });

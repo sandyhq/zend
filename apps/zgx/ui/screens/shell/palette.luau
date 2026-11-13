@@ -59,6 +59,7 @@ local function session_items(): { Item }
 				time = c.updated,
 				agent = c.agent,
 				project = if p then p.name else nil,
+				project_id = if p then p.id else nil,
 				hue = if p then (route.look(p.id) or { hue = route.hue(p.id) }).hue else nil,
 				src = if p then (route.look(p.id) or {}).src else nil,
 				emoji = if p then (route.look(p.id) or {}).emoji else nil,
@@ -98,11 +99,12 @@ local function projects_page(): any
 		placeholder = locale.s("shell.palette.search_projects"),
 		items = function(): { Item }
 			local out: { Item } = {}
-			for _, p in sessions.now:get().projects do
+			for _, p in sessions.projects:get() do
 				table.insert(out, {
 					id = `project:{p.id}`,
 					label = p.name,
 					section = locale.s("shell.palette.projects"),
+					project = p.id,
 					hue = (route.look(p.id) or { hue = route.hue(p.id) }).hue,
 					src = (route.look(p.id) or {}).src,
 					emoji = (route.look(p.id) or {}).emoji,
@@ -154,7 +156,7 @@ local function theme_page(): any
 	return { id = "theme", title = locale.s("shell.palette.theme"), items = items }
 end
 
--- The templates you can run Zeron in, Zeron's own first: picking one uses it
+-- The templates you can run Zend in, Zend's own first: picking one uses it
 -- as the Templates page's Use does (the engine's UseTemplate), live. The
 -- one in use is checked.
 local function template_items(): { Item }
@@ -185,7 +187,7 @@ local function template_items(): { Item }
 	return out
 end
 
--- Every theme Zeron can wear, Zeron's first: picking one wears it for each
+-- Every theme Zend can wear, Zend's first: picking one wears it for each
 -- scheme it has, as the Themes page's Use does. One worn for every scheme
 -- it can be is checked.
 local function theme_items(): { Item }
@@ -240,7 +242,7 @@ local LISTED: { [string]: boolean } = {
 	["shell.palette"] = true,
 }
 -- The host's own way back from any template (its "Use Default Interface").
-local DEFAULT_INTERFACE = "zeron.use-zeron-template"
+local DEFAULT_INTERFACE = "zend.use-zend-template"
 local function command_items(): { Item }
 	local out: { Item } = {}
 	for _, c in menu_commands:get() do
@@ -300,7 +302,7 @@ local function opened_files(session: any, project: any): { string }
 end
 
 -- The open session's files, found by name, the workspace's own search
--- (Zeron's palette Files): a promise of rows, best first; a file opens in
+-- (Zend's palette Files): a promise of rows, best first; a file opens in
 -- the session's panel. Nothing typed: its recent files, those its panel
 -- has open first, then what the workspace changed lately (the search's
 -- answer to nothing), each once. No session open: none.
@@ -319,7 +321,7 @@ local function search_files(query: string): any
 	end
 	return {
 		-- (Told again as more comes: the names at once, then what's in the
-		-- files, as Zeron's palette fills its In Files.)
+		-- files, as Zend's palette fills its In Files.)
 		after = function(_, ok: (any) -> (), fail: ((any) -> ())?)
 			local names: { Item } = {}
 			local inside: { Item } = {}
@@ -368,7 +370,7 @@ local function search_files(query: string): any
 					fail(err)
 				end
 			end)
-			-- What's in the files (Zeron's In Files: up to three lines a file),
+			-- What's in the files (Zend's In Files: up to three lines a file),
 			-- looked again while the engine is still indexing them.
 			if recent or not files_api.search_content then
 				return
@@ -488,7 +490,7 @@ local function root(): { Item }
 	end
 	table.insert(out, {
 		id = "a-reload",
-		label = locale.s("shell.palette.reload_zeron"),
+		label = locale.s("shell.palette.reload_zend"),
 		section = locale.s("shell.palette.app"),
 		icon = "restart",
 		shortcut = key_of("shell.reload"),
@@ -554,7 +556,7 @@ return function(): Node
 			open = view.palette,
 			recent = recent,
 			-- (Its placeholder read as it's drawn: the locale shown then.)
-			root = setmetatable({ id = "root", title = "Zeron", items = root, search = search_files, scopes = true }, {
+			root = setmetatable({ id = "root", title = "Zend", items = root, search = search_files, scopes = true }, {
 				__index = function(_, field: string): any
 					return if field == "placeholder" then locale.s("shell.palette.search") else nil
 				end,

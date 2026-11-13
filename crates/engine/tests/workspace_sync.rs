@@ -4,8 +4,8 @@
 //! The in-memory bridge below stands in for the edge room: it cross-imports Loro
 //! updates (`export(updates)`) between the two engines' workspace docs on a timer,
 //! which is exactly what `RoomClient` + the SessionRoom DO do over the wire. A live
-//! variant against a real edge runs behind `#[ignore]` (ZERON_EDGE_WS, like
-//! zeron-sync's edge_convergence test).
+//! variant against a real edge runs behind `#[ignore]` (ZEND_EDGE_WS, like
+//! zend-sync's edge_convergence test).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,14 +14,14 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{CommandBasedOn, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use zend_doc::{CommandBasedOn, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
+use zend_engine::{EngineCore, HarnessRegistry};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_proto::{
     AgentEvent, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SessionStatus, SteeringMode,
 };
-use zeron_rpc::methods;
+use zend_rpc::methods;
 
 const VIEWER: &str = "viewer-device";
 
@@ -122,8 +122,8 @@ fn assemble(dir: &std::path::Path, device_id: &str) -> EngineCore {
 async fn bridge(
     a: &EngineCore,
     b: &EngineCore,
-) -> zeron_sync::registry::mock_server::MockRegistryServer {
-    let server = zeron_sync::registry::mock_server::MockRegistryServer::start().await;
+) -> zend_sync::registry::mock_server::MockRegistryServer {
+    let server = zend_sync::registry::mock_server::MockRegistryServer::start().await;
     a.workspace.connect_registry_url(&server.url());
     b.workspace.connect_registry_url(&server.url());
     server
@@ -230,8 +230,8 @@ async fn two_engines_share_a_workspace() {
 
     // CreateSpace + CreateChat on A (Mutate over the real RPC surface), hosted
     // by dev-a via the space.
-    let client_a = zeron_rpc::memory_client(a.rpc_service());
-    let client_b = zeron_rpc::memory_client(b.rpc_service());
+    let client_a = zend_rpc::memory_client(a.rpc_service());
+    let client_b = zend_rpc::memory_client(b.rpc_service());
     client_a
         .call(
             methods::MUTATE,
@@ -442,7 +442,7 @@ async fn projectless_claim_syncs_after_offline_creation_and_survives_viewer_rest
     assert_eq!(row.device_id, "dev-a");
     assert_eq!(row.space_id, None);
     // The claim gives the new chat its own scratch folder, not `~`.
-    assert!(zeron_proto::projectless::is_scratch_cwd(
+    assert!(zend_proto::projectless::is_scratch_cwd(
         row.cwd.as_deref().unwrap()
     ));
     assert!(a.workspace.read_spaces().unwrap().is_empty());
@@ -467,7 +467,7 @@ async fn projectless_claim_syncs_after_offline_creation_and_survives_viewer_rest
 async fn claim_resolves_a_worktree_cwd_to_the_repo_root_space() {
     let dir = tempfile::tempdir().unwrap();
     let core = assemble(dir.path(), "dev-a");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
 
     // A checkout with a linked worktree — fs layout only; the claim path
     // reads `.git` without spawning git.
@@ -619,7 +619,7 @@ async fn chat_config_selects_the_run_harness() {
         || {
             handle.doc().read_entries().unwrap_or_default().iter().any(|e| {
                 e.parts.iter().any(
-                    |p| matches!(p, zeron_doc::MessagePart::Text { text, .. } if text == "From cursor"),
+                    |p| matches!(p, zend_doc::MessagePart::Text { text, .. } if text == "From cursor"),
                 )
             })
         },
@@ -634,15 +634,15 @@ async fn chat_config_selects_the_run_harness() {
 /// the TS edge (`wrangler dev` in `edge/` with AUTH_MODE=dev):
 ///
 /// ```sh
-/// ZERON_EDGE_WS=ws://127.0.0.1:8787 cargo test -p zeron-engine -- --ignored
+/// ZEND_EDGE_WS=ws://127.0.0.1:8787 cargo test -p zend-engine -- --ignored
 /// ```
 #[tokio::test]
-#[ignore = "requires a live edge: set ZERON_EDGE_WS (e.g. ws://127.0.0.1:8787)"]
+#[ignore = "requires a live edge: set ZEND_EDGE_WS (e.g. ws://127.0.0.1:8787)"]
 async fn two_engines_converge_through_a_real_workspace_room() {
-    use zeron_engine::doc_host::EdgeConfig;
+    use zend_engine::doc_host::EdgeConfig;
 
-    let base = std::env::var("ZERON_EDGE_WS")
-        .expect("set ZERON_EDGE_WS to the edge origin, e.g. ws://127.0.0.1:8787");
+    let base = std::env::var("ZEND_EDGE_WS")
+        .expect("set ZEND_EDGE_WS to the edge origin, e.g. ws://127.0.0.1:8787");
     let org = format!("org-{}", uuid::Uuid::new_v4().simple());
 
     let assemble_live = |dir: &std::path::Path, device_id: &str, user: &str| {
@@ -704,15 +704,15 @@ async fn two_engines_converge_through_a_real_workspace_room() {
 
 #[tokio::test]
 async fn legacy_workspace_doc_migrates_instantly_on_first_boot() {
-    use zeron_proto::{Chat, Device, Session, Space};
+    use zend_proto::{Chat, Device, Session, Space};
 
     let dir_a = tempfile::tempdir().unwrap();
     // Seed the identity-scoped store with a LEGACY Loro workspace snapshot —
     // what an updated engine finds on its first boot after the registry change.
     let org_dir = dir_a.path().join("orgs").join("dev-org").join("dev-user");
     {
-        let store = zeron_sync::DocsStore::open(&org_dir).expect("open store");
-        let legacy = zeron_doc::WorkspaceDoc::new();
+        let store = zend_sync::DocsStore::open(&org_dir).expect("open store");
+        let legacy = zend_doc::WorkspaceDoc::new();
         let now = chrono::Utc::now();
         legacy
             .upsert_device(&Device {
@@ -840,10 +840,10 @@ async fn legacy_workspace_doc_migrates_instantly_on_first_boot() {
     b.shutdown().await;
 
     // The registry snapshot now exists; the legacy snapshot is kept for rollback.
-    let store = zeron_sync::DocsStore::open(&org_dir).expect("reopen store");
+    let store = zend_sync::DocsStore::open(&org_dir).expect("reopen store");
     assert!(
         store
-            .load_snapshot(zeron_doc::REGISTRY_DOC_ID)
+            .load_snapshot(zend_doc::REGISTRY_DOC_ID)
             .expect("load registry snapshot")
             .is_some(),
         "registry snapshot persisted"
@@ -964,4 +964,199 @@ async fn cloud_projects_group_with_a_full_clone_of_their_repository() {
     assert_eq!(repo_of("cloud-late").as_deref(), Some("commit:root1"));
 
     a.shutdown().await;
+}
+
+fn git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .expect("git spawns");
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// What a project shows on `core`: its name, and its icon's emoji.
+fn project_look(core: &EngineCore, id: &str) -> Option<(String, Option<String>)> {
+    let space = core.workspace.read_spaces().ok()?.into_iter().find(|s| s.id == id)?;
+    Some((space.display_name().to_owned(), space.icon.and_then(|icon| icon.emoji)))
+}
+
+#[tokio::test]
+async fn a_repositorys_name_and_icon_are_the_same_on_every_device() {
+    let (dir_a, dir_b, dir_c) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let a = assemble(dir_a.path(), "dev-a");
+    let b = assemble(dir_b.path(), "dev-b");
+    let link = bridge(&a, &b).await;
+
+    // Real clones, stamped by each engine itself; and beside them, histories
+    // with nothing safe to match (`local:`), which stay their own.
+    let folders = tempfile::tempdir().unwrap();
+    let folder = |name: &str| folders.path().join(name);
+    std::fs::create_dir_all(folder("flint")).unwrap();
+    git(&folder("flint"), &["init", "-q", "-b", "main"]);
+    git(&folder("flint"), &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(folders.path(), &["clone", "-q", "flint", "flint-work"]);
+    git(folders.path(), &["clone", "-q", "flint", "flint-three"]);
+    for name in ["scratch", "scratch-b/scratch"] {
+        std::fs::create_dir_all(folder(name)).unwrap();
+        git(&folder(name), &["init", "-q", "-b", "main"]);
+    }
+
+    let path = |name: &str| folder(name).to_str().unwrap().to_owned();
+    a.workspace.create_space("copy-a", "dev-a", &path("flint"), None, true).unwrap();
+    b.workspace.create_space("copy-b", "dev-b", &path("flint-work"), None, true).unwrap();
+    a.workspace.create_space("scratch-a", "dev-a", &path("scratch"), None, true).unwrap();
+    b.workspace.create_space("scratch-b", "dev-b", &path("scratch-b/scratch"), None, true).unwrap();
+    let identity = |core: &EngineCore, id: &str| {
+        let spaces = core.workspace.read_spaces().unwrap_or_default();
+        spaces.into_iter().find(|s| s.id == id).and_then(|s| s.repository_id)
+    };
+    wait_for(
+        || {
+            identity(&a, "copy-a").is_some_and(|i| i.starts_with("commit:"))
+                && identity(&a, "copy-b") == identity(&a, "copy-a")
+                && identity(&b, "copy-a") == identity(&a, "copy-a")
+                && identity(&a, "scratch-a").is_some_and(|i| i.starts_with("local:"))
+                && identity(&a, "scratch-b").is_some_and(|i| i.starts_with("local:"))
+        },
+        "the engines to stamp their copies",
+    )
+    .await;
+
+    // Renamed on A, over the RPC surface every app uses; icon set on B.
+    let client_a = zend_rpc::memory_client(a.rpc_service());
+    let client_b = zend_rpc::memory_client(b.rpc_service());
+    client_a
+        .call(methods::MUTATE, serde_json::json!({ "op": "renameSpace", "spaceId": "copy-a", "name": "Flint" }))
+        .await
+        .expect("rename");
+    client_b
+        .call(
+            methods::MUTATE,
+            serde_json::json!({ "op": "setSpaceIcon", "spaceId": "copy-b", "icon": { "emoji": "🚀" } }),
+        )
+        .await
+        .expect("set icon");
+    client_a
+        .call(methods::MUTATE, serde_json::json!({ "op": "renameSpace", "spaceId": "scratch-a", "name": "Mine" }))
+        .await
+        .expect("rename local");
+
+    let shared = Some(("Flint".to_owned(), Some("🚀".to_owned())));
+    for core in [&a, &b] {
+        wait_for(
+            || project_look(core, "copy-a") == shared && project_look(core, "copy-b") == shared,
+            "the same look on both copies",
+        )
+        .await;
+    }
+    wait_for(|| project_look(&b, "scratch-a").is_some_and(|l| l.0 == "Mine"), "the local rename").await;
+    assert_eq!(project_look(&a, "scratch-b"), Some(("scratch".to_owned(), None)));
+
+    // A third device, added later, inherits both once it knows what it holds.
+    let c = assemble(dir_c.path(), "dev-c");
+    c.workspace.connect_registry_url(&link.url());
+    c.workspace.create_space("copy-c", "dev-c", &path("flint-three"), None, true).unwrap();
+    wait_for(|| project_look(&c, "copy-c") == shared, "the look on the newcomer").await;
+    wait_for(|| project_look(&a, "copy-c") == shared, "the newcomer on A").await;
+    assert_eq!(project_look(&a, "copy-a"), shared, "its arrival changes nobody");
+
+    a.shutdown().await;
+    b.shutdown().await;
+    c.shutdown().await;
+}
+
+/// Settings → Devices' Remove: another device, gone from the account on
+/// every device, its chats kept. Never this device (its engine writes the row
+/// back at boot), never one of Cloud's, never one online now (its engine is
+/// running, maybe with live chats, which would drop out from under it).
+#[tokio::test]
+async fn remove_device_retires_an_away_device_everywhere_and_refuses_the_rest() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let a = assemble(dir_a.path(), "dev-a");
+    let b = assemble(dir_b.path(), "dev-b");
+    let device = |id: &str, platform: &str, capabilities: Vec<String>| zend_proto::Device {
+        id: id.into(),
+        name: format!("{id} name"),
+        platform: platform.into(),
+        last_seen_at: None,
+        created_at: None,
+        version: None,
+        cursor_sdk_version: None,
+        capabilities,
+    };
+    // An old computer that hasn't opened Zend in a long while, with a chat
+    // of its own; and a Cloud session's machine.
+    b.workspace.upsert_device_row(&device("dev-old", "linux", Vec::new()));
+    b.workspace.upsert_device_row(&device(
+        "sess-machine",
+        "linux",
+        vec![zend_proto::CLOUD_SESSION_CAPABILITY.into()],
+    ));
+    let link = bridge(&a, &b).await;
+    let client_b = zend_rpc::memory_client(b.rpc_service());
+    client_b
+        .call(
+            methods::MUTATE,
+            serde_json::json!({ "op": "createChat", "chatId": "old-chat", "deviceId": "dev-old" }),
+        )
+        .await
+        .expect("a chat hosted on the old computer");
+    wait_for(
+        || {
+            let devices = a.workspace.read_devices().unwrap_or_default();
+            devices.iter().any(|d| d.id == "dev-old") && a.workspace.chat("old-chat").ok().flatten().is_some()
+        },
+        "the old computer and its chat on A",
+    )
+    .await;
+
+    let remove = |id: &str| {
+        let client = &client_b;
+        let params = serde_json::json!({ "op": "removeDevice", "deviceId": id });
+        async move { client.call(methods::MUTATE, params).await.map_err(|e| e.to_string()) }
+    };
+    // This device, and Cloud's: refused, nothing written.
+    assert!(remove("dev-b").await.unwrap_err().contains("this_device"));
+    assert!(remove("sess-machine").await.unwrap_err().contains("cloud_device"));
+    assert!(remove("cloud-acct").await.unwrap_err().contains("cloud_device"));
+    // A, beating in the room now: online, refused.
+    wait_for(
+        || b.workspace.peer_liveness("dev-a") == zend_rpc::PeerLiveness::Live,
+        "A's presence on B",
+    )
+    .await;
+    assert!(remove("dev-a").await.unwrap_err().contains("device_online"));
+    let ids = |core: &EngineCore| -> Vec<String> {
+        let mut ids: Vec<String> = core.workspace.read_devices().unwrap_or_default().into_iter().map(|d| d.id).collect();
+        ids.sort();
+        ids
+    };
+    assert!(ids(&b).contains(&"dev-a".to_string()));
+    assert!(ids(&b).contains(&"dev-b".to_string()));
+    assert!(ids(&b).contains(&"sess-machine".to_string()));
+
+    // The old computer: gone on both, never dialed again, its chat kept.
+    remove("dev-old").await.expect("remove the old computer");
+    wait_for(|| !ids(&a).contains(&"dev-old".to_string()), "the old computer gone on A").await;
+    assert!(!ids(&b).contains(&"dev-old".to_string()));
+    for core in [&a, &b] {
+        assert_eq!(core.workspace.peer_liveness("dev-old"), zend_rpc::PeerLiveness::Dark);
+        assert!(core.workspace.chat("old-chat").ok().flatten().is_some());
+    }
+    // Again: already gone, nothing to do.
+    remove("dev-old").await.expect("removing it again is a no-op");
+
+    drop(link);
+    a.shutdown().await;
+    b.shutdown().await;
 }

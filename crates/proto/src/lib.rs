@@ -1,6 +1,6 @@
-//! zeron-proto — wire types shared by engine, UI, and RPC.
+//! zend-proto — wire types shared by engine, UI, and RPC.
 //!
-//! Ported from zeron's `packages/control/src/wire.ts` + `packages/harness/src/types.ts`.
+//! Ported from zend's `packages/control/src/wire.ts` + `packages/harness/src/types.ts`.
 //! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
 
 pub mod agent;
@@ -20,6 +20,7 @@ pub mod preview;
 pub mod program_status;
 pub mod projectless;
 pub mod redact;
+pub mod relay_gen;
 pub mod providers;
 pub mod run_errors;
 pub mod sidebar_pins;

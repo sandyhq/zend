@@ -1,7 +1,7 @@
-//! Who a template's power is up to: you, in Zeron's own window.
+//! Who a template's power is up to: you, in Zend's own window.
 //!
 //! A template is a whole app, so it runs with the app's powers. It gets them
-//! only once you've kept it in Zeron's own consent window
+//! only once you've kept it in Zend's own consent window
 //! (`template_consent`, its keep sheet, or allowing its package there).
 //! Until then (one an agent made or switched to, one imported and signed by
 //! "you", one edited since you kept it) it runs as a **preview**: it draws
@@ -13,20 +13,20 @@
 //! app reads, so don't word a preview as safe.
 //!
 //! What you kept is bound to the template's content: the sha256 of every
-//! file it lays over Zeron's own (`digest`). The record lives in the app's
+//! file it lays over Zend's own (`digest`). The record lives in the app's
 //! own data folder (`approvals_path`). The engine never writes it, and no
-//! IPC, MCP tool or plugin reaches it, so an agent with only Zeron's tools
+//! IPC, MCP tool or plugin reaches it, so an agent with only Zend's tools
 //! can make, edit and switch templates but never give one power. (Code
 //! running as you with a shell can write any file of yours; that's outside
 //! what this guards.)
 //!
 //! **Safe mode** (`safe`) is the way back that no template can undo: "Use
-//! Default Interface" in the host's menu, Revert in its toast, holding ⌥ as Zeron opens,
+//! Default Interface" in the host's menu, Revert in its toast, holding ⌥ as Zend opens,
 //! or a template that crashed the window at launch twice running. It runs
-//! Zeron's own whatever `.active` says (a template re-selecting itself from
+//! Zend's own whatever `.active` says (a template re-selecting itself from
 //! a timer, a terminal or an agent changes nothing), closes the terminals
 //! templates started, and stays on across launches until you pick a
-//! template on Zeron's Templates page.
+//! template on Zend's Templates page.
 
 use std::{
     cell::RefCell,
@@ -74,6 +74,7 @@ pub const BLOCKED: &[&str] = &[
     "chat.queue_edit",
     "chat.queue_finish",
     "chat.retry",
+    "chat.remove_held",
     // (Only one that says what an agent may do unasked: `chat.configure`.)
     "chat.configure",
     "agents.install",
@@ -87,11 +88,17 @@ pub const BLOCKED: &[&str] = &[
     "home.run_action",
     "home.save_action",
     "sessions.delete",
+    "sessions.remove_device",
     "projects.clone",
     "projects.delete",
     "github.disconnect",
     "engine.restart",
     "billing.checkout",
+    // (Each runs a machine, or says which one new chats run on: credits.)
+    "cloud.wake",
+    "cloud.sleep",
+    "cloud.retry",
+    "cloud.set_machine",
 ];
 
 pub fn blocked(action: &str) -> bool {
@@ -109,13 +116,13 @@ thread_local! {
     static NOW: RefCell<Option<Preview>> = const { RefCell::new(None) };
     /// What's told of the change (the host's toast and menu follow it).
     static HEARD: RefCell<Vec<Box<dyn Fn(Option<&Preview>)>>> = RefCell::default();
-    /// Terminals started while a template other than Zeron's own ran:
+    /// Terminals started while a template other than Zend's own ran:
     /// closed when safe mode starts. `(id, device)`.
     static TEMPLATE_TERMINALS: RefCell<Vec<(String, Option<String>)>> = RefCell::default();
 }
 
 static SAFE: AtomicBool = AtomicBool::new(false);
-/// A template other than Zeron's own is laid over it now (approved or not).
+/// A template other than Zend's own is laid over it now (approved or not).
 static TEMPLATE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn current() -> Option<Preview> {
@@ -147,8 +154,8 @@ pub fn set_template_running(on: bool) {
 pub fn refuse(action: &str) -> Result<(), String> {
     match current() {
         Some(p) if blocked(action) => {
-            eprintln!("zeron-zgx: preview: {action} refused while {} isn't kept", p.id);
-            Err(format!("{} is a preview. Keep it first, or go back to Zeron v3.", p.name))
+            eprintln!("zend-zgx: preview: {action} refused while {} isn't kept", p.id);
+            Err(format!("{} is a preview. Keep it first, or go back to Zend v3.", p.name))
         }
         _ => Ok(()),
     }
@@ -164,7 +171,7 @@ pub fn refuse_aloud(action: &str) -> bool {
 
 /// Actions the guard refuses itself, rather than each with a friendly answer
 /// of its own: a plugin's own (`plugin.<id>.…`, its programs among them), run
-/// as that plugin. Only the app's VM is asked, a plugin's isn't, and Zeron's
+/// as that plugin. Only the app's VM is asked, a plugin's isn't, and Zend's
 /// own screens call none of them.
 const REFUSED_BY_GUARD: &[&str] = &["plugin."];
 
@@ -186,7 +193,7 @@ pub fn refused(error: &str) -> bool {
 pub fn guard(kind: zgx_script::GuardKind, name: &str) -> Result<(), String> {
     use zgx_script::GuardKind as Kind;
     let Some(p) = current() else { return Ok(()) };
-    let refused = || Err(format!("{}{IS_A_PREVIEW}. Keep it first, or go back to Zeron v3.", p.name));
+    let refused = || Err(format!("{}{IS_A_PREVIEW}. Keep it first, or go back to Zend v3.", p.name));
     match kind {
         Kind::Clipboard | Kind::Dialog | Kind::File | Kind::Folder | Kind::Notification | Kind::Window => Ok(()),
         Kind::Action | Kind::AsyncAction | Kind::Function => match REFUSED_BY_GUARD.iter().any(|b| name.starts_with(b)) {
@@ -207,7 +214,7 @@ pub fn guard(kind: zgx_script::GuardKind, name: &str) -> Result<(), String> {
 
 // ── Approvals ───────────────────────────────────────────────────────────────
 
-/// What a template lays over Zeron's own, as one hash: each file it supplies
+/// What a template lays over Zend's own, as one hash: each file it supplies
 /// (by its path, its length and its bytes), as `live::compose` takes them.
 pub fn digest(template: &Path) -> String {
     let mut h = Sha256::new();
@@ -258,8 +265,8 @@ pub fn approve(id: &str, digest: &str) -> Result<(), String> {
 }
 
 /// Whether template `id` in `templates` runs with the app's powers: the
-/// default, one of Zeron's official templates exactly as this build wrote it
-/// (`official::verified`: Zeron's own code, as the default is), or one you
+/// default, one of Zend's official templates exactly as this build wrote it
+/// (`official::verified`: Zend's own code, as the default is), or one you
 /// kept as it is.
 pub fn trusted(templates: &Path, id: &str) -> bool {
     id == live::BUILTIN || approvals_path().is_some_and(|p| trusted_at(templates, id, &p))
@@ -280,7 +287,7 @@ fn safe_path() -> Option<PathBuf> {
     zgx_script::app_data_dir(crate::APP_ID).map(|d| d.join("template-trust").join("safe-mode"))
 }
 
-/// Safe mode is on: Zeron's own runs, whatever `.active` says. (Read from
+/// Safe mode is on: Zend's own runs, whatever `.active` says. (Read from
 /// the look's worker threads too: a process-wide flag.)
 pub fn safe() -> bool {
     #[cfg(test)]
@@ -301,7 +308,7 @@ pub fn enter_safe_for_test(on: bool) {
     TEST_SAFE.with(|s| s.set(Some(on)));
 }
 
-/// Read once at launch: on if it was on when Zeron last closed, if ⌥ is
+/// Read once at launch: on if it was on when Zend last closed, if ⌥ is
 /// held now, or if the last two launches with a template crashed before the
 /// window settled (`launch_started`/`launch_settled`).
 pub fn read_at_launch() {
@@ -309,14 +316,15 @@ pub fn read_at_launch() {
     let crashed = crash_looping();
     let on = held || crashed || safe_path().is_some_and(|p| p.is_file());
     if held || crashed {
-        eprintln!("zeron-zgx: safe mode ({})", if held { "⌥ held at launch" } else { "the template crashed Zeron twice" });
+        let key = if cfg!(target_os = "macos") { "⌥ held at launch" } else { "Alt held at launch" };
+        eprintln!("zend-zgx: safe mode ({})", if held { key } else { "the template crashed Zend twice" });
         let _ = write_safe(true);
         LAUNCH_REASON.store(if held { 1 } else { 2 }, Ordering::Relaxed);
     }
     SAFE.store(on, Ordering::Relaxed);
 }
 
-/// Why safe mode started as Zeron opened (the host's toast says so once).
+/// Why safe mode started as Zend opened (the host's toast says so once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SafeReason {
     /// ⌥ held as it opened.
@@ -349,17 +357,17 @@ fn write_safe(on: bool) -> std::io::Result<()> {
     }
 }
 
-/// Into safe mode: Zeron's own from now on (and across launches), and the
+/// Into safe mode: Zend's own from now on (and across launches), and the
 /// terminals templates started closed.
 pub fn enter_safe() {
     SAFE.store(true, Ordering::Relaxed);
     if let Err(error) = write_safe(true) {
-        eprintln!("zeron-zgx: safe mode isn't remembered: {error}");
+        eprintln!("zend-zgx: safe mode isn't remembered: {error}");
     }
     close_template_terminals();
 }
 
-/// Out of safe mode: only Zeron's own Templates page does this, as you pick
+/// Out of safe mode: only Zend's own Templates page does this, as you pick
 /// a template there.
 pub fn leave_safe() {
     if SAFE.swap(false, Ordering::Relaxed) {
@@ -368,7 +376,7 @@ pub fn leave_safe() {
 }
 
 /// A terminal opened by the window (`terminal.claimed`): kept to close in
-/// safe mode if a template other than Zeron's own was running.
+/// safe mode if a template other than Zend's own was running.
 pub fn terminal_opened(id: &str, device: Option<String>) {
     if TEMPLATE_RUNNING.load(Ordering::Relaxed) && !id.is_empty() {
         TEMPLATE_TERMINALS.with(|t| t.borrow_mut().push((id.to_string(), device)));
@@ -384,7 +392,7 @@ fn close_template_terminals() {
                 params["targetDeviceId"] = serde_json::json!(device);
             }
             if let Err(error) = crate::engine::get().call("CloseTerminal", params).await {
-                eprintln!("zeron-zgx: safe mode: a template's terminal didn't close: {error}");
+                eprintln!("zend-zgx: safe mode: a template's terminal didn't close: {error}");
             }
         });
     }
@@ -404,7 +412,7 @@ fn crash_looping() -> bool {
         .is_some_and(|n| n >= 2)
 }
 
-/// The main window opens with a template other than Zeron's own: counted
+/// The main window opens with a template other than Zend's own: counted
 /// until it settles.
 pub fn launch_started(template: bool) {
     let Some(path) = launches_path() else { return };
@@ -423,7 +431,7 @@ pub fn launch_settled() {
     }
 }
 
-/// ⌥ (Option, Alt) held as Zeron opens.
+/// ⌥ (Option, Alt) held as Zend opens.
 #[cfg(target_os = "macos")]
 fn option_held() -> bool {
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -436,11 +444,79 @@ fn option_held() -> bool {
     flags & 0x0008_0000 != 0
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Alt held as Zend opens (either one), or `ZEND_SAFE_MODE` set.
+/// (`--safe-mode` is the same, asked on the command line: src/main.rs.)
+#[cfg(windows)]
 fn option_held() -> bool {
-    // Linux and Windows: `ZERON_SAFE_MODE=1` (and `--zeron-template`) until
-    // the platform's modifier state is read here.
-    std::env::var_os("ZERON_SAFE_MODE").is_some()
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetAsyncKeyState(key: i32) -> i16;
+    }
+    const VK_MENU: i32 = 0x12;
+    // SAFETY: a plain query of a key's state; the high bit is "down now".
+    let down = unsafe { GetAsyncKeyState(VK_MENU) } < 0;
+    down || std::env::var_os("ZEND_SAFE_MODE").is_some()
+}
+
+/// Alt held as Zend opens, as the X server has the keyboard (Linux on X11,
+/// libX11 opened as it's needed: nothing links it), or `ZEND_SAFE_MODE`
+/// set. On Wayland no app reads the keyboard before it has a window, so
+/// there it's `--safe-mode`, or Ctrl+Alt+Shift+Home once the window is up
+/// (src/menu_bar.rs `DEFAULT_INTERFACE_KEY`).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn option_held() -> bool {
+    std::env::var_os("ZEND_SAFE_MODE").is_some() || x11_alt_held()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn x11_alt_held() -> bool {
+    use std::ffi::{c_char, c_int, c_ulong, c_void};
+    // The X server's keyboard isn't ours to read in a Wayland session
+    // (XWayland's says only what its own windows hear): nothing held.
+    if std::env::var_os("DISPLAY").is_none() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return false;
+    }
+    type Open = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+    type Close = unsafe extern "C" fn(*mut c_void) -> c_int;
+    type Keymap = unsafe extern "C" fn(*mut c_void, *mut c_char) -> c_int;
+    type Keycode = unsafe extern "C" fn(*mut c_void, c_ulong) -> u8;
+    // SAFETY: libX11's own functions, by their C signatures, on a display
+    // opened and closed here; the keymap is the 32 bytes XQueryKeymap fills.
+    unsafe {
+        let lib = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+        if lib.is_null() {
+            return false;
+        }
+        let symbol = |name: &std::ffi::CStr| libc::dlsym(lib, name.as_ptr());
+        let (open, close, keymap, keycode) =
+            (symbol(c"XOpenDisplay"), symbol(c"XCloseDisplay"), symbol(c"XQueryKeymap"), symbol(c"XKeysymToKeycode"));
+        let held = if [open, close, keymap, keycode].iter().any(|s| s.is_null()) {
+            false
+        } else {
+            let (open, close, keymap, keycode): (Open, Close, Keymap, Keycode) = (
+                std::mem::transmute::<*mut c_void, Open>(open),
+                std::mem::transmute::<*mut c_void, Close>(close),
+                std::mem::transmute::<*mut c_void, Keymap>(keymap),
+                std::mem::transmute::<*mut c_void, Keycode>(keycode),
+            );
+            let display = open(std::ptr::null());
+            if display.is_null() {
+                false
+            } else {
+                let mut keys = [0 as c_char; 32];
+                keymap(display, keys.as_mut_ptr());
+                // XK_Alt_L, XK_Alt_R, and XK_ISO_Level3_Shift (AltGr) left out.
+                let down = [0xffe9_u64, 0xffea].iter().any(|&sym| {
+                    let code = keycode(display, sym as c_ulong) as usize;
+                    code != 0 && (keys[code / 8] as u8) & (1 << (code % 8)) != 0
+                });
+                close(display);
+                down
+            }
+        };
+        libc::dlclose(lib);
+        held
+    }
 }
 
 #[cfg(test)]
@@ -476,34 +552,34 @@ mod tests {
 
     /// R7: a template an agent made and switched to (MCP create_template +
     /// use_template, which only write files and `.active`) never runs with
-    /// Zeron's powers: it's a preview, refused the dangerous actions, until
-    /// kept in Zeron's own window; and edited after, it's a preview again.
+    /// Zend's powers: it's a preview, refused the dangerous actions, until
+    /// kept in Zend's own window; and edited after, it's a preview again.
     #[test]
     fn an_agent_s_template_goes_live_as_a_preview_not_at_full_power() {
         let root = dir("agent");
         let templates = root.join("templates");
         let approvals = root.join("trust/approvals.json");
         // What the engine's create_template and use_template leave.
-        write(&templates, "agent-made/zeron-template.json", r#"{"id":"agent-made","name":"Sleek"}"#);
+        write(&templates, "agent-made/zend-template.json", r#"{"id":"agent-made","name":"Sleek"}"#);
         write(&templates, "agent-made/screens/shell/sidebar.luau", "ui.call('terminal.start', {})");
         live::set_active(&templates, "agent-made").unwrap();
         let id = live::active(&templates);
         assert_eq!(id, "agent-made");
-        assert!(!trusted_at(&templates, &id, &approvals), "never approved in Zeron's window");
+        assert!(!trusted_at(&templates, &id, &approvals), "never approved in Zend's window");
         // What the window does with it (`looked`): a preview, gated.
         set((!trusted_at(&templates, &id, &approvals)).then(|| Preview { id: id.clone(), name: "Sleek".into() }));
         assert!(refuse("terminal.start").is_err() && refuse("account.sign_out").is_err() && refuse("plugins.install").is_err());
         // Signed by "you" and installed at once by the engine: the same.
-        write(&templates, "mine/zeron-template.json", r#"{"id":"mine"}"#);
+        write(&templates, "mine/zend-template.json", r#"{"id":"mine"}"#);
         write(&templates, "mine/.imported.json", r#"{"key":"k","author":{"kind":"you"}}"#);
         write(&templates, "mine/screens/x.luau", "-- x");
         assert!(!trusted_at(&templates, "mine", &approvals));
-        // Kept in Zeron's window: its powers, until its files change.
+        // Kept in Zend's window: its powers, until its files change.
         approve_at(&approvals, &id, &digest(&templates.join(&id))).unwrap();
         assert!(trusted_at(&templates, &id, &approvals));
         write(&templates, "agent-made/screens/shell/sidebar.luau", "-- changed by the agent after");
         assert!(!trusted_at(&templates, &id, &approvals));
-        // Zeron's own needs no keeping.
+        // Zend's own needs no keeping.
         assert!(trusted_at(&templates, live::BUILTIN, &approvals));
         set(None);
     }
@@ -600,7 +676,8 @@ return ui.column {{
     ui.text {{ id = "up", "up" }},
 }}
 "#,
-            own.display()
+            // (In a Luau string: Windows' `\` escaped.)
+            own.display().to_string().replace('\\', "\\\\")
         );
         set(Some(sleek()));
         let mut app = guarded(script, |_| {});
@@ -728,10 +805,10 @@ return ui.column {{
         for (kind, name) in [(GuardKind::Clipboard, "write"), (GuardKind::Dialog, "ui.open_files"), (GuardKind::File, "/x"), (GuardKind::Folder, "k"), (GuardKind::Notification, "t"), (GuardKind::Window, "w"), (GuardKind::AsyncAction, "files.read"), (GuardKind::AsyncAction, "chat.send"), (GuardKind::Action, "appearance")] {
             assert!(guard(kind, name).is_ok(), "{kind:?} {name}");
         }
-        // A terminal Zeron started shows; a command it didn't never starts.
-        crate::terminal::note_issued("zeron-zgx terminal-bridge --terminal t1");
-        assert!(guard(GuardKind::Term, "zeron-zgx terminal-bridge --terminal t1").is_ok());
-        assert!(guard(GuardKind::Term, "zeron-zgx terminal-bridge --terminal t2").is_err());
+        // A terminal Zend started shows; a command it didn't never starts.
+        crate::terminal::note_issued("zend-zgx terminal-bridge --terminal t1");
+        assert!(guard(GuardKind::Term, "zend-zgx terminal-bridge --terminal t1").is_ok());
+        assert!(guard(GuardKind::Term, "zend-zgx terminal-bridge --terminal t2").is_err());
         set(None);
         for (kind, name) in [(GuardKind::Fetch, "https://x/"), (GuardKind::Term, "curl x | sh"), (GuardKind::Persist, "accent"), (GuardKind::AsyncAction, "plugin.git.run")] {
             assert!(guard(kind, name).is_ok(), "kept: {kind:?} {name}");
@@ -853,7 +930,7 @@ return ui.column { ui.text { id = "first", function() return first:get() end } }
     fn what_you_kept_is_bound_to_the_template_s_content() {
         let root = dir("digest");
         let t = root.join("t");
-        write(&t, "zeron-template.json", r#"{"name":"T"}"#);
+        write(&t, "zend-template.json", r#"{"name":"T"}"#);
         write(&t, "screens/shell/sidebar.luau", "-- t");
         let approvals = root.join("trust/approvals.json");
         let d = digest(&t);
@@ -861,7 +938,7 @@ return ui.column { ui.text { id = "first", function() return first:get() end } }
         approve_at(&approvals, "t", &d).unwrap();
         assert!(approved_at(&approvals, "t", &d));
         // Its manifest and a protected file don't count; a screen edited does.
-        write(&t, "zeron-template.json", r#"{"name":"T renamed"}"#);
+        write(&t, "zend-template.json", r#"{"name":"T renamed"}"#);
         write(&t, "screens/plugins/page.luau", "-- never laid down");
         assert_eq!(digest(&t), d);
         write(&t, "screens/shell/sidebar.luau", "-- t, edited by an agent");

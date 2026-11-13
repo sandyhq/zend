@@ -1,15 +1,15 @@
 //! Isolated MCP stdio instance for manual discovery/create/converse smoke tests.
-//! Run with `cargo run -p zeron-engine --example mcp_standalone_smoke`.
+//! Run with `cargo run -p zend-engine --example mcp_standalone_smoke`.
 //! Uses a temporary profile and scripted harness, never the user's workspace.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls, mock::MockHarness};
-use zeron_mcp::{Origin, Tools, Zeron};
-use zeron_proto::{
+use zend_engine::{EngineCore, HarnessRegistry};
+use zend_harness::{Harness, HarnessError, RunControls, mock::MockHarness};
+use zend_mcp::{Origin, Tools, Zend};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
 };
 
@@ -30,15 +30,15 @@ async fn main() -> anyhow::Result<()> {
     core.workspace
         .create_chat("smoke-origin", Some("smoke-project"), None, None, None)?;
     core.workspace.rename_chat("smoke-origin", "Coordinator")?;
-    let tools = Tools::new(Arc::new(Zeron::with_client(
-        zeron_rpc::memory_client(core.rpc_service()),
+    let tools = Tools::new(Arc::new(Zend::with_client(
+        zend_rpc::memory_client(core.rpc_service()),
         Origin {
             chat_id: Some("smoke-origin".into()),
             device_id: Some("smoke-device".into()),
             ..Default::default()
         },
     )));
-    zeron_mcp::serve_stdio(Arc::new(tools)).await?;
+    zend_mcp::serve_stdio(Arc::new(tools)).await?;
     core.shutdown().await;
     Ok(())
 }
@@ -65,6 +65,7 @@ impl Harness for SmokeHarness {
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![Model {
+            default: false,
             id: "smoke-1".into(),
             label: "Smoke 1".into(),
             description: None,

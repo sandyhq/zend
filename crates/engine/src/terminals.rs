@@ -1,5 +1,5 @@
 //! Terminals — PTY sessions owned by this device (feature-inventory §3.4; port of
-//! zeron's `terminals.ts` over `portable-pty`).
+//! zend's `terminals.ts` over `portable-pty`).
 //!
 //! - `open` spawns the user's login shell in the chat's cwd; `subscribe` replays a
 //!   bounded 1MB window (resumable via `afterSeq`) then tails live output — sent
@@ -10,7 +10,7 @@
 //!   Only EXITED sessions expire (30min TTL on their inert replay buffers), and
 //!   [`MAX_TERMINALS`] bounds leakage from renderers that lost their tab state.
 //! - Ownership: M5 is single-user local — every IPC/relay caller is the device
-//!   owner, so the per-user owner re-checks from zeron's Router land with real
+//!   owner, so the per-user owner re-checks from zend's Router land with real
 //!   multi-account auth in M6.
 
 use std::collections::{HashMap, VecDeque};
@@ -27,8 +27,8 @@ use portable_pty::{CommandBuilder, native_pty_system};
 mod windows;
 use tokio::sync::{mpsc, watch};
 
-use zeron_doc::TERMINAL_OUTPUT_BATCH_MS;
-use zeron_proto::{TerminalActivity, TerminalEvent, TerminalSession, TerminalStatus};
+use zend_doc::TERMINAL_OUTPUT_BATCH_MS;
+use zend_proto::{TerminalActivity, TerminalEvent, TerminalSession, TerminalStatus};
 
 pub mod link;
 mod program_status;
@@ -136,6 +136,8 @@ impl LiveTerminal {
 struct TerminalsInner {
     sessions: Mutex<HashMap<String, Arc<Mutex<LiveTerminal>>>>,
     activity_tx: watch::Sender<Vec<(String, TerminalActivity)>>,
+    /// Bumped as each terminal opens ([`Terminals::watch_opened`]).
+    opened_tx: watch::Sender<u64>,
     /// Each terminal's chat, kept past the terminal's close: a server it
     /// backgrounded outlives it and still belongs to that chat's previews.
     chats: Mutex<VecDeque<(String, String)>>,
@@ -227,7 +229,7 @@ fn clamp_size(cols: u16, rows: u16) -> PtySize {
 /// The user's interactive shell: `$SHELL`, else the platform default.
 fn selected_shell() -> String {
     if cfg!(windows) {
-        return std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into());
+        return windows_shell(|name| std::env::var_os(name), |path| path.is_file());
     }
     std::env::var("SHELL")
         .ok()
@@ -241,6 +243,44 @@ fn selected_shell() -> String {
         })
 }
 
+/// Windows' interactive shell: PowerShell 7 (`pwsh.exe` on `PATH`), else
+/// the Windows PowerShell every Windows has, else `%COMSPEC%` (cmd.exe).
+/// PowerShell, not cmd: its prompt ends in a space and PSReadLine colours
+/// what's typed, as a terminal on macOS or Linux does.
+fn windows_shell(
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> String {
+    let pwsh = var("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join("pwsh.exe"))
+        .find(|path| exists(path));
+    let windows_powershell = var("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .filter(|path| exists(path));
+    pwsh.or(windows_powershell)
+        .map(|path| path.to_string_lossy().into_owned())
+        .or_else(|| var("COMSPEC").map(|comspec| comspec.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "cmd.exe".into())
+}
+
+/// Whether `shell` is PowerShell (7's `pwsh` or Windows PowerShell), which
+/// prints a banner as it starts unless told `-NoLogo`. Its last part, split
+/// at either slash: a Windows path reads the same wherever it's asked
+/// (`std::path` splits at `\` only on Windows, and the tests run on all).
+fn is_powershell(shell: &str) -> bool {
+    let file = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    matches!(stem.to_ascii_lowercase().as_str(), "pwsh" | "powershell")
+}
+
 impl Terminals {
     /// Requires a tokio runtime (spawns the exited-session reaper).
     pub fn new() -> Self {
@@ -249,6 +289,7 @@ impl Terminals {
             inner: Arc::new(TerminalsInner {
                 sessions: Mutex::new(HashMap::new()),
                 activity_tx,
+                opened_tx: watch::Sender::new(0),
                 chats: Mutex::new(VecDeque::new()),
             }),
         };
@@ -260,9 +301,14 @@ impl Terminals {
         self.inner.activity_tx.subscribe()
     }
 
+    /// Changes as each terminal opens (preview discovery wakes on it).
+    pub(crate) fn watch_opened(&self) -> watch::Receiver<u64> {
+        self.inner.opened_tx.subscribe()
+    }
+
     /// Seen results no longer compete with new results in other program
     /// records or terminals. Keep the records themselves for app inheritance.
-    pub(crate) fn refresh_seen(&self, chats: &[zeron_proto::Chat]) {
+    pub(crate) fn refresh_seen(&self, chats: &[zend_proto::Chat]) {
         let mut changed = false;
         for session in lock(&self.inner.sessions).values() {
             let mut session = lock(session);
@@ -301,7 +347,7 @@ impl Terminals {
 
     /// Terminal id → chat for every terminal opened for a chat, open or
     /// since closed (the newest [`REMEMBERED_TERMINAL_CHATS`]). Everything a
-    /// terminal starts carries its id (see [`zeron_proto::ORIGIN_ENV`]).
+    /// terminal starts carries its id (see [`zend_proto::ORIGIN_ENV`]).
     pub fn chats(&self) -> HashMap<String, String> {
         lock(&self.inner.chats).iter().cloned().collect()
     }
@@ -390,8 +436,8 @@ impl Terminals {
         let id = new_id();
         let mut environment = environment.clone();
         environment.insert(
-            zeron_proto::ORIGIN_ENV.to_owned(),
-            zeron_proto::terminal_origin(&id),
+            zend_proto::ORIGIN_ENV.to_owned(),
+            zend_proto::terminal_origin(&id),
         );
         let environment = &environment;
 
@@ -400,11 +446,11 @@ impl Terminals {
         #[cfg(not(windows))]
         let (initial_script, bootstrap) = if let Some(command) = command {
             let (suffix, source) = match shell_name.as_str() {
-                "fish" => (".fish", "source \"$ZERON_ACTION_SCRIPT\"\r"),
-                _ => (".sh", ". \"$ZERON_ACTION_SCRIPT\"\r"),
+                "fish" => (".fish", "source \"$ZEND_ACTION_SCRIPT\"\r"),
+                _ => (".sh", ". \"$ZEND_ACTION_SCRIPT\"\r"),
             };
             let mut script = tempfile::Builder::new()
-                .prefix("zeron-action-")
+                .prefix("zend-action-")
                 .suffix(suffix)
                 .tempfile()?;
             script.write_all(command.as_bytes())?;
@@ -431,12 +477,12 @@ impl Terminals {
             cmd.cwd(cwd);
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
-            cmd.env("TERM_PROGRAM", "Zeron");
+            cmd.env("TERM_PROGRAM", "Zend");
             for (name, value) in environment {
                 cmd.env(name, value);
             }
             if let Some(script) = initial_script.as_ref() {
-                cmd.env("ZERON_ACTION_SCRIPT", script.path());
+                cmd.env("ZEND_ACTION_SCRIPT", script.path());
             }
             let child = pair
                 .slave
@@ -483,6 +529,7 @@ impl Terminals {
             applied_inputs: HashMap::new(),
         }));
         lock(&self.inner.sessions).insert(id.clone(), session.clone());
+        self.inner.opened_tx.send_modify(|n| *n = n.wrapping_add(1));
 
         // Raw PTY bytes: blocking reader thread → batcher task.
         let (raw_tx, raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -943,7 +990,7 @@ mod windows_tests {
 
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
-    use zeron_proto::TerminalEvent;
+    use zend_proto::TerminalEvent;
 
     use super::Terminals;
 
@@ -1026,6 +1073,50 @@ mod windows_tests {
                 .unwrap()
                 .unwrap();
             close_thread.join().unwrap();
+        });
+    }
+
+    /// An engine the app started ignores Ctrl+C (its own process group), as
+    /// this test makes itself: Ctrl+C in its terminal still interrupts what
+    /// the shell runs.
+    #[test]
+    fn ctrl_c_interrupts_a_program_though_the_engine_ignores_it() {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        // SAFETY: a null handler with TRUE sets this process's ignore flag,
+        // as CREATE_NEW_PROCESS_GROUP does for a detached engine.
+        unsafe { SetConsoleCtrlHandler(None, 1) };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let terminals = Terminals::new();
+            let terminal = terminals
+                .open_with_shell(
+                    tmp.path().to_str().unwrap(),
+                    80,
+                    24,
+                    Some(powershell().to_str().unwrap()),
+                )
+                .unwrap();
+            wait_for_shell_prompt(&terminals, &terminal.id).await;
+            let mut rx = terminals.subscribe(&terminal.id, None).unwrap();
+            let mut events = Vec::new();
+            write_line(&terminals, &terminal.id, "ping -t localhost");
+            collect_until(&mut rx, &mut events, |events| {
+                decoded(events).contains("Reply from")
+            })
+            .await;
+            terminals
+                .write(&terminal.id, &BASE64.encode("\u{3}"))
+                .unwrap();
+            // Interrupted, ping sums up what it sent; left running, it never does.
+            collect_until(&mut rx, &mut events, |events| {
+                decoded(events).contains("Ping statistics")
+            })
+            .await;
+            terminals.close(&terminal.id).unwrap();
         });
     }
 
@@ -1375,6 +1466,69 @@ mod windows_tests {
     }
 }
 
+#[cfg(test)]
+mod windows_shell_tests {
+    use super::{is_powershell, windows_shell};
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    const ROOT: &str = "root";
+
+    fn env(path: &[&str], comspec: Option<&str>) -> impl Fn(&str) -> Option<OsString> {
+        let path = std::env::join_paths(path.iter().map(PathBuf::from)).unwrap();
+        let comspec = comspec.map(OsString::from);
+        move |name| match name {
+            "PATH" => Some(path.clone()),
+            "SystemRoot" => Some(ROOT.into()),
+            "COMSPEC" => comspec.clone(),
+            _ => None,
+        }
+    }
+
+    fn windows_powershell() -> PathBuf {
+        Path::new(ROOT)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+    }
+
+    #[test]
+    fn powershell_7_on_path_comes_first() {
+        let pwsh = Path::new("pwsh7").join("pwsh.exe");
+        let shell = windows_shell(env(&["other", "pwsh7"], Some("cmd.exe")), |p| {
+            p == pwsh || p == windows_powershell()
+        });
+        assert_eq!(shell, pwsh.to_string_lossy());
+    }
+
+    #[test]
+    fn windows_powershell_without_powershell_7() {
+        let shell = windows_shell(env(&["other"], Some("cmd.exe")), |p| {
+            p == windows_powershell()
+        });
+        assert_eq!(shell, windows_powershell().to_string_lossy());
+    }
+
+    #[test]
+    fn comspec_when_there_is_no_powershell() {
+        assert_eq!(
+            windows_shell(env(&["other"], Some("C:\\cmd.exe")), |_| false),
+            "C:\\cmd.exe"
+        );
+        assert_eq!(windows_shell(env(&[], None), |_| false), "cmd.exe");
+    }
+
+    #[test]
+    fn powershell_is_told_no_logo() {
+        assert!(is_powershell(r"C:\Program Files\PowerShell\7\pwsh.exe"));
+        assert!(is_powershell("powershell.exe"));
+        assert!(is_powershell("PWSH"));
+        assert!(!is_powershell(r"C:\WINDOWS\system32\cmd.exe"));
+        assert!(!is_powershell("/bin/zsh"));
+    }
+}
+
 #[cfg(all(test, unix))]
 mod initial_command_tests {
     use super::*;
@@ -1513,7 +1667,7 @@ mod initial_command_tests {
                     root.path().to_str().unwrap(),
                     80,
                     24,
-                    Some("/nonexistent/zeron-test-shell"),
+                    Some("/nonexistent/zend-test-shell"),
                     &HashMap::new(),
                     Some("echo test"),
                 )

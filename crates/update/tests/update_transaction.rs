@@ -2,7 +2,7 @@
 //! into a real `app/<version>/` layout, plays both the old and the new engine. It
 //! really replaces itself with the new binary, really gets killed by the watchdog,
 //! and really crashes (`abort`) at each step. The test plays the service manager,
-//! starting `app/current/zeron` until the update has settled.
+//! starting `app/current/zend` until the update has settled.
 //!
 //! The databases here are plain files, since only their bytes matter to the backup.
 
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use zeron_update::transaction::{self, BootOptions, Layout, Phase, RestartMode};
+use zend_update::transaction::{self, BootOptions, Layout, Phase, RestartMode};
 
 const DATA_ENV: &str = "FAKE_ENGINE_DATA";
 const ORIGINAL: &str = "original";
@@ -23,16 +23,16 @@ fn this_version() -> String {
     // On Windows: a trial is told where it's installed; once there, a file says.
     #[cfg(windows)]
     {
-        if std::env::var_os(zeron_update::INSTALLED_AT_ENV).is_some() {
+        if std::env::var_os(zend_update::INSTALLED_AT_ENV).is_some() {
             return "2.0.0".into();
         }
-        std::fs::read_to_string(dir.join("zeron-version")).unwrap_or_else(|_| "1.0.0".into())
+        std::fs::read_to_string(dir.join("zend-version")).unwrap_or_else(|_| "1.0.0".into())
     }
     // A macOS bundle says in its Info.plist; a versioned folder is its name.
     #[cfg(unix)]
     {
         if dir.ends_with("Contents/MacOS") {
-            return zeron_update::bundle_app_version(dir.parent().unwrap().parent().unwrap())
+            return zend_update::bundle_app_version(dir.parent().unwrap().parent().unwrap())
                 .unwrap();
         }
         dir.file_name().unwrap().to_str().unwrap().to_owned()
@@ -84,6 +84,19 @@ fn fake_engine() {
                 migrate(&data);
                 std::process::exit(1);
             }
+            // What the engine does on SIGTERM during its trial: says so, and
+            // drains like any stop.
+            "interrupted" => {
+                migrate(&data);
+                transaction::note_trial_interrupted();
+                std::process::exit(0);
+            }
+            // What the panic hook does during a trial.
+            "panics" => {
+                migrate(&data);
+                transaction::note_trial_panicked("index out of bounds: the len is 0 but the index is 3");
+                std::process::abort();
+            }
             "gives-up" => {
                 migrate(&data);
                 transaction::note_trial_failure(&data, "It couldn't reach anything.");
@@ -106,12 +119,49 @@ fn fake_engine() {
         .open(data.join("ran"))
         .unwrap();
     writeln!(ran, "{version}").unwrap();
+    drop(ran);
+    if std::env::var_os(STAYS_ENV).is_some() {
+        stay_for_the_next_update(&data, &options);
+    }
     std::process::exit(0);
+}
+
+/// Set for an engine that, like the app's background engine, keeps running
+/// after it's up and carries out the next update asked of it itself.
+const STAYS_ENV: &str = "FAKE_ENGINE_STAYS";
+
+/// What `run_managed` does for `ApplyUpdate` with no app and no service
+/// manager: refuse unless this process will start the trial (`starts_here`),
+/// else stop and run `boot` again, which becomes the new version in place.
+/// Waits for a `next` file in the data directory; a `done` file ends it.
+fn stay_for_the_next_update(data: &Path, options: &BootOptions) {
+    let note = |what: &str| {
+        use std::io::Write as _;
+        let mut ran = std::fs::OpenOptions::new().append(true).open(data.join("ran")).unwrap();
+        writeln!(ran, "{what}").unwrap();
+    };
+    let waited = Instant::now();
+    while waited.elapsed() < Duration::from_secs(60) {
+        if data.join("done").exists() {
+            return;
+        }
+        if std::fs::remove_file(data.join("next")).is_ok() {
+            if !transaction::starts_here(data) {
+                note("refused");
+                continue;
+            }
+            // Doesn't return when it hands over.
+            let booted = transaction::boot(data, options, || -> anyhow::Result<()> { Ok(()) });
+            note(&format!("stranded {booted:?}"));
+            std::process::exit(3);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
 fn fake_watchdog() {
-    if std::env::var_os("ZERON_UPDATE_WATCH_ID").is_none() {
+    if std::env::var_os("ZEND_UPDATE_WATCH_ID").is_none() {
         return;
     }
     transaction::run_watchdog().unwrap();
@@ -126,6 +176,8 @@ struct Rig {
     mac: Option<MacRig>,
     /// A Windows install: its folder and the new exe's.
     windows: Option<(PathBuf, PathBuf)>,
+    /// `ZEND_DEVICE_PLATFORM` for the engine's starts.
+    platform: Option<&'static str>,
 }
 
 struct MacRig {
@@ -137,7 +189,7 @@ fn write_bundle(bundle: &Path, version: &str, behavior: &str) {
     let dir = bundle.join("Contents/MacOS");
     std::fs::create_dir_all(&dir).unwrap();
     let exe = std::env::current_exe().unwrap();
-    std::fs::copy(&exe, dir.join("zeron")).unwrap();
+    std::fs::copy(&exe, dir.join("zend")).unwrap();
     std::fs::write(dir.join("behavior"), behavior).unwrap();
     std::fs::write(
         bundle.join("Contents/Info.plist"),
@@ -150,9 +202,9 @@ impl Rig {
     fn new(behavior: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        let data = root.join(".zeron");
+        let data = root.join(".zend");
         let app = data.join("app");
-        let rig = Self { _dir: dir, data, app, mac: None, windows: None };
+        let rig = Self { _dir: dir, data, app, mac: None, windows: None, platform: None };
         std::fs::create_dir_all(docs(&rig.data).parent().unwrap()).unwrap();
         std::fs::write(docs(&rig.data), ORIGINAL).unwrap();
         std::fs::write(docs(&rig.data).with_file_name("docs.sqlite3-wal"), "the wal").unwrap();
@@ -167,20 +219,20 @@ impl Rig {
         rig
     }
 
-    /// The same, as a Windows install: `zeron.exe`, and the new one in a folder of
+    /// The same, as a Windows install: `zend.exe`, and the new one in a folder of
     /// its own inside the installation's.
     #[cfg(windows)]
     fn new_windows(behavior: &str) -> Self {
         let mut rig = Self::new(behavior);
-        let directory = rig.data.parent().unwrap().join("Zeron");
-        let incoming = directory.join(".zeron-update-test");
+        let directory = rig.data.parent().unwrap().join("Zend");
+        let incoming = directory.join(".zend-update-test");
         std::fs::create_dir_all(&incoming).unwrap();
         let exe = std::env::current_exe().unwrap();
-        std::fs::copy(&exe, directory.join("zeron.exe")).unwrap();
-        std::fs::copy(&exe, incoming.join("zeron.exe")).unwrap();
+        std::fs::copy(&exe, directory.join("zend.exe")).unwrap();
+        std::fs::copy(&exe, incoming.join("zend.exe")).unwrap();
         std::fs::write(directory.join("behavior"), "ok").unwrap();
         std::fs::write(incoming.join("behavior"), behavior).unwrap();
-        rig.windows = Some((directory, incoming.join("zeron.exe")));
+        rig.windows = Some((directory, incoming.join("zend.exe")));
         rig
     }
 
@@ -189,8 +241,8 @@ impl Rig {
         let mut rig = Self::new(behavior);
         let applications = rig.data.parent().unwrap().join("Applications");
         let mac = MacRig {
-            bundle: applications.join("Zeron.app"),
-            incoming: applications.join(".Zeron.app.new-test"),
+            bundle: applications.join("Zend.app"),
+            incoming: applications.join(".Zend.app.new-test"),
         };
         write_bundle(&mac.bundle, "1.0.0", "ok");
         write_bundle(&mac.incoming, "2.0.0", behavior);
@@ -221,7 +273,7 @@ impl Rig {
         let exe = std::env::current_exe().unwrap();
         // A copy, not a hard link: which name a process's image goes by decides
         // things here, and links to one file across installs muddle that.
-        std::fs::copy(&exe, dir.join("zeron")).unwrap();
+        std::fs::copy(&exe, dir.join("zend")).unwrap();
         std::fs::write(dir.join("behavior"), behavior).unwrap();
     }
 
@@ -253,18 +305,22 @@ impl Rig {
     /// `current` is at that moment.
     fn start(&self, crash_at: Option<&str>) -> std::process::ExitStatus {
         let installed = match (&self.mac, &self.windows) {
-            (Some(mac), _) => mac.bundle.join("Contents/MacOS/zeron"),
-            (_, Some((directory, _))) => directory.join("zeron.exe"),
-            _ => self.app.join("current/zeron"),
+            (Some(mac), _) => mac.bundle.join("Contents/MacOS/zend"),
+            (_, Some((directory, _))) => directory.join("zend.exe"),
+            _ => self.app.join("current/zend"),
         };
         let mut command = Command::new(installed);
         command
             .args(["--exact", "fake_engine", "--test-threads=1", "--nocapture"])
             .env(DATA_ENV, &self.data)
-            .env_remove("ZERON_UPDATE_CRASH_AT")
+            .env_remove("ZEND_UPDATE_CRASH_AT")
+            .env_remove("ZEND_DEVICE_PLATFORM")
             .stdout(std::process::Stdio::null());
+        if let Some(platform) = self.platform {
+            command.env("ZEND_DEVICE_PLATFORM", platform);
+        }
         if let Some(step) = crash_at {
-            command.env("ZERON_UPDATE_CRASH_AT", step);
+            command.env("ZEND_UPDATE_CRASH_AT", step);
         }
         let status = command.status().unwrap();
         eprintln!("start ({crash_at:?}) ended {status:?}, phase {:?}", transaction::read(&self.data).map(|t| t.phase));
@@ -289,11 +345,11 @@ impl Rig {
 
     fn current(&self) -> String {
         if let Some((directory, _)) = &self.windows {
-            return std::fs::read_to_string(directory.join("zeron-version"))
+            return std::fs::read_to_string(directory.join("zend-version"))
                 .unwrap_or_else(|_| "1.0.0".into());
         }
         if let Some(mac) = &self.mac {
-            return zeron_update::bundle_app_version(&mac.bundle).unwrap();
+            return zend_update::bundle_app_version(&mac.bundle).unwrap();
         }
         let target = std::fs::read_link(self.app.join("current")).unwrap();
         target.file_name().unwrap().to_str().unwrap().to_owned()
@@ -332,7 +388,7 @@ impl Rig {
                 .unwrap()
                 .flatten()
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name != "Zeron.app")
+                .filter(|name| name != "Zend.app")
                 .collect()
         };
         // What the engine does a moment after committing: at the commit itself
@@ -383,7 +439,169 @@ mod versioned {
         let id = rig.request(Rig::service(), 60);
         rig.run_until_settled();
         rig.assert_updated(&id);
-        assert_eq!(rig.record().report().state, zeron_update::UpdateState::Updated);
+        assert_eq!(rig.record().report().state, zend_update::UpdateState::Updated);
+    }
+
+    impl Rig {
+        /// Versions installed long ago, never run here.
+        fn install_old(&self, versions: &[&str]) {
+            for version in versions {
+                std::fs::create_dir_all(self.app.join(version)).unwrap();
+                std::fs::write(self.app.join(version).join("zend"), version).unwrap();
+            }
+        }
+
+        /// What `app/` holds once a moment after the commit has passed (the old
+        /// version's watchdog runs from its folder until then).
+        fn app_settles_to(&self, expected: &[&str]) {
+            let left = || -> Vec<String> {
+                let mut names: Vec<String> = std::fs::read_dir(&self.app)
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                names
+            };
+            // The engine's own later tidy, as this platform has it.
+            let kept = if self.platform == Some("cloud") { 0 } else { 1 };
+            let record = self.record();
+            let abandoned = matches!(record.phase, Phase::RolledBack | Phase::Failed)
+                .then_some(record.target.as_str());
+            let waited = Instant::now();
+            while left() != expected && waited.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(100));
+                zend_update::prune_installed_versions(&self.app, kept, abandoned);
+            }
+            assert_eq!(left(), expected, "platform {:?}", self.platform);
+        }
+    }
+
+    /// Every version a machine ever ran used to stay on its disk. A Cloud machine's
+    /// disk is copied back in on every wake, with all of it read in beside the
+    /// engine that's starting, so each one kept slowed every wake after.
+    #[test]
+    fn a_settled_update_keeps_the_version_before_except_on_cloud() {
+        for (platform, expected) in [
+            (None, &["1.0.0", "2.0.0", "current"][..]),
+            (Some("cloud"), &["2.0.0", "current"][..]),
+        ] {
+            let mut rig = Rig::new("ok");
+            rig.platform = platform;
+            rig.install_old(&["0.8.0", "0.9.0"]);
+            // The desktop's background engine, as the release ships it.
+            for version in ["1.0.0", "2.0.0"] {
+                std::fs::write(rig.app.join(version).join("zend-engine"), "desktop").unwrap();
+            }
+            let id = rig.request(Rig::service(), 60);
+            rig.run_until_settled();
+            rig.assert_updated(&id);
+            rig.app_settles_to(expected);
+            // A Cloud machine never runs it, and copies it back in on every wake.
+            assert_eq!(
+                rig.app.join("2.0.0/zend-engine").exists(),
+                platform.is_none(),
+                "platform {platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_release_it_went_back_from_is_removed() {
+        let mut rig = Rig::new("exit-1");
+        rig.platform = Some("cloud");
+        let id = rig.request(Rig::service(), 60);
+        rig.run_until_settled();
+        rig.assert_back_on_the_old_version(&id, Phase::RolledBack);
+        rig.app_settles_to(&["1.0.0", "current"]);
+    }
+
+    /// Machines that piled versions up before this get tidied on their next start.
+    #[test]
+    fn a_start_after_a_settled_update_removes_what_piled_up() {
+        let mut rig = Rig::new("ok");
+        rig.platform = Some("cloud");
+        let id = rig.request(Rig::service(), 60);
+        rig.run_until_settled();
+        rig.assert_updated(&id);
+        rig.app_settles_to(&["2.0.0", "current"]);
+        rig.install_old(&["0.8.0", "1.0.0"]);
+        rig.start(None);
+        rig.app_settles_to(&["2.0.0", "current"]);
+    }
+
+    /// A wake updates before it answers. A bad release's rollback has to end with
+    /// the old version up and answering, and with that boot not trying it again,
+    /// or a machine would go round for as long as the release stayed out.
+    #[test]
+    fn a_boot_doesnt_try_again_a_release_it_went_back_from() {
+        for (behavior, deadline) in [("exit-1", 60), ("gives-up", 60), ("hang", 2)] {
+            let rig = Rig::new(behavior);
+            let reason = |latest| zend_update::boot_skip_reason(&rig.data, latest, "1.0.0");
+            assert_eq!(reason("2.0.0"), None, "{behavior}: nothing against it yet");
+            let id = rig.request(Rig::service(), deadline);
+            assert_eq!(reason("2.0.0"), Some(zend_update::BootSkipReason::InProgress), "{behavior}");
+            rig.run_until_settled();
+            rig.assert_back_on_the_old_version(&id, Phase::RolledBack);
+            assert_eq!(reason("2.0.0"), Some(zend_update::BootSkipReason::WentBack), "{behavior}");
+            // The next release is a new chance.
+            assert_eq!(reason("2.0.1"), None, "{behavior}");
+        }
+    }
+
+    /// The machine going to sleep (or the service restarting) mid-trial isn't the
+    /// release's fault: back on the old version for now, saying so, and the next
+    /// boot tries the release again instead of leaving it for good.
+    #[test]
+    fn a_trial_stopped_from_outside_goes_back_and_is_tried_again() {
+        let rig = Rig::new("interrupted");
+        let id = rig.request(Rig::service(), 60);
+        rig.run_until_settled();
+        rig.assert_back_on_the_old_version(&id, Phase::RolledBack);
+        let record = rig.record();
+        assert!(record.interrupted);
+        let reason = record.reason.unwrap();
+        assert!(reason.starts_with("Zend was stopped while it was trying the new version"), "{reason}");
+        assert!(reason.ends_with("will try 2.0.0 again."), "{reason}");
+        assert_eq!(zend_update::boot_skip_reason(&rig.data, "2.0.0", "1.0.0"), None);
+        // Kept for the next try, unlike a release it gave up on.
+        assert!(rig.app.join("2.0.0").join("zend").exists());
+    }
+
+    /// A trial that crashes says what it said, so a rollback found later can be
+    /// explained without its log.
+    #[test]
+    fn a_trial_that_panics_goes_back_saying_why() {
+        let rig = Rig::new("panics");
+        let id = rig.request(Rig::service(), 60);
+        rig.run_until_settled();
+        rig.assert_back_on_the_old_version(&id, Phase::RolledBack);
+        let record = rig.record();
+        assert!(!record.interrupted);
+        let reason = record.reason.unwrap();
+        assert!(
+            reason.starts_with("The new version crashed while starting (index out of bounds"),
+            "{reason}"
+        );
+        assert_eq!(
+            zend_update::boot_skip_reason(&rig.data, "2.0.0", "1.0.0"),
+            Some(zend_update::BootSkipReason::WentBack)
+        );
+    }
+
+    #[test]
+    fn a_trial_something_waits_on_gets_a_shorter_deadline() {
+        let rig = Rig::new("ok");
+        let requested = transaction::request_within(
+            &rig.data,
+            rig.layout(),
+            "1.0.0",
+            "2.0.0",
+            Rig::service(),
+            Duration::from_secs(5 * 60),
+        )
+        .unwrap();
+        assert_eq!(requested.deadline_secs, 5 * 60);
     }
 
     #[test]
@@ -392,7 +610,7 @@ mod versioned {
         let id = rig.request(Rig::service(), 60);
         rig.run_until_settled();
         rig.assert_back_on_the_old_version(&id, Phase::RolledBack);
-        assert_eq!(rig.record().report().state, zeron_update::UpdateState::RolledBack);
+        assert_eq!(rig.record().report().state, zend_update::UpdateState::RolledBack);
     }
 
     /// A clean exit is still a failed trial, whatever a service manager makes of it.
@@ -563,7 +781,7 @@ mod versioned {
         std::fs::remove_dir_all(rig.app.join("2.0.0")).unwrap();
         rig.run_until_settled();
         rig.assert_back_on_the_old_version(&id, Phase::Failed);
-        assert_eq!(rig.record().report().state, zeron_update::UpdateState::Failed);
+        assert_eq!(rig.record().report().state, zend_update::UpdateState::Failed);
     }
 
     /// A binary that can't even be started: it never ran, so nothing was restored
@@ -573,7 +791,7 @@ mod versioned {
         use std::os::unix::fs::PermissionsExt as _;
         let rig = Rig::new("ok");
         let id = rig.request(Rig::service(), 60);
-        let broken = rig.app.join("2.0.0/zeron");
+        let broken = rig.app.join("2.0.0/zend");
         std::fs::remove_file(&broken).unwrap();
         std::fs::write(&broken, "not a program").unwrap();
         std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -713,14 +931,122 @@ mod mac {
         }
     }
 
+    /// An engine that stays up, started once with no app and no service
+    /// manager: nothing else ever starts an engine, as on m1-laptop.
+    fn start_headless(rig: &Rig) -> std::process::Child {
+        Command::new(rig.mac.as_ref().unwrap().bundle.join("Contents/MacOS/zend"))
+            .args(["--exact", "fake_engine", "--test-threads=1", "--nocapture"])
+            .env(DATA_ENV, &rig.data)
+            .env(STAYS_ENV, "1")
+            .env_remove("ZEND_UPDATE_CRASH_AT")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// The 3.0.0 release, and an update to it asked of the running engine.
+    fn ask_for_the_next_update(rig: &Rig, behavior: &str) -> String {
+        let mac = rig.mac.as_ref().unwrap();
+        let incoming = mac.bundle.with_file_name(".Zend.app.new-next");
+        write_bundle(&incoming, "3.0.0", behavior);
+        let layout = Layout::MacBundle { bundle: mac.bundle.clone(), incoming };
+        let id = transaction::request(&rig.data, layout, "2.0.0", "3.0.0", RestartMode::Relaunch)
+            .unwrap()
+            .id;
+        std::fs::write(rig.data.join("next"), "").unwrap();
+        id
+    }
+
+    /// m1-laptop, Nov 11. The background engine had become 0.2.138 as an
+    /// update's trial, so it ran from `.Zend.app.new-<id>`, which its commit
+    /// renamed to `Zend.app`. Asked from another device for the next update,
+    /// with the app closed, it stopped, didn't recognise its own installation,
+    /// and nothing started again. Now it becomes the new version itself.
+    #[test]
+    fn a_headless_engine_from_an_earlier_update_carries_out_the_next() {
+        let rig = Rig::new_mac("ok");
+        let first = rig.request(RestartMode::Relaunch, 60);
+        let mut engine = start_headless(&rig);
+        wait_until(&rig, "2.0.0");
+        rig.assert_updated(&first);
+        // Still running, from a path that's gone.
+        assert!(engine.try_wait().unwrap().is_none(), "the engine stopped");
+        assert!(!rig.mac.as_ref().unwrap().incoming.exists());
+
+        let second = ask_for_the_next_update(&rig, "ok");
+        wait_until(&rig, "3.0.0");
+        let record = rig.record();
+        assert_eq!((record.id.as_str(), record.phase), (second.as_str(), Phase::Updated));
+        assert_eq!(rig.current(), "3.0.0");
+        // The same process throughout: what macOS attributes to the app.
+        assert!(engine.try_wait().unwrap().is_none(), "the engine stopped");
+        std::fs::write(rig.data.join("done"), "").unwrap();
+        engine.wait().unwrap();
+    }
+
+    /// The same engine, and a next release that dies on trial: the watchdog
+    /// (started from the installed bundle: this engine's own path is gone)
+    /// puts the data back and starts the installed version again.
+    #[test]
+    fn a_failed_trial_from_a_headless_engine_rolls_back_and_comes_back_up() {
+        let rig = Rig::new_mac("ok");
+        rig.request(RestartMode::Relaunch, 60);
+        let mut engine = start_headless(&rig);
+        wait_until(&rig, "2.0.0");
+
+        let second = ask_for_the_next_update(&rig, "migrate-then-exit");
+        let _ = engine.wait();
+        // Not ours to start: the watchdog relaunches the installed engine.
+        let waited = Instant::now();
+        while !(rig.record().id == second && rig.record().phase_finished()
+            && rig.last_ran().as_deref() == Some("2.0.0")
+            && ran_count(&rig, "2.0.0") >= 2)
+        {
+            assert!(
+                waited.elapsed() < Duration::from_secs(60),
+                "never came back: {:?} ran {:?}",
+                rig.record(),
+                std::fs::read_to_string(rig.data.join("ran"))
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let record = rig.record();
+        assert_eq!(record.phase, Phase::RolledBack, "{:?}", record.reason);
+        assert_eq!(rig.current(), "2.0.0");
+        assert_eq!(rig.database(), MIGRATED, "the first update's data, as it was");
+        std::fs::write(rig.data.join("done"), "").unwrap();
+    }
+
+    fn ran_count(rig: &Rig, what: &str) -> usize {
+        std::fs::read_to_string(rig.data.join("ran"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == what)
+            .count()
+    }
+
+    #[track_caller]
+    fn wait_until(rig: &Rig, version: &str) {
+        let waited = Instant::now();
+        while rig.last_ran().as_deref() != Some(version) {
+            let ran = std::fs::read_to_string(rig.data.join("ran")).unwrap_or_default();
+            assert!(
+                !ran.contains("stranded") && waited.elapsed() < Duration::from_secs(60),
+                "{version} never came: {:?} ran {ran:?}",
+                transaction::read(&rig.data),
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// #1037: a bundle something runs from isn't deleted, however finished with
     /// it the update is, and goes once nothing does.
     #[test]
     fn a_bundle_in_use_is_kept_until_nothing_runs_from_it() {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        let bundle = root.join("Zeron.app");
-        let retired = root.join(".Zeron.app.old-123");
+        let bundle = root.join("Zend.app");
+        let retired = root.join(".Zend.app.old-123");
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::create_dir_all(retired.join("Contents/MacOS")).unwrap();
         let sleeper = retired.join("Contents/MacOS/sleeper");
@@ -733,14 +1059,14 @@ mod mac {
         }
         let mut running = Command::new(&sleeper).spawn().unwrap();
         std::thread::sleep(Duration::from_millis(200));
-        assert!(zeron_update::process_runs_from(&retired));
-        zeron_update::prune_retired_mac_bundles(&bundle);
+        assert!(zend_update::process_runs_from(&retired));
+        zend_update::prune_retired_mac_bundles(&bundle);
         assert!(retired.exists(), "deleted from under a running process");
 
         running.kill().unwrap();
         running.wait().unwrap();
-        assert!(!zeron_update::process_runs_from(&retired));
-        zeron_update::prune_retired_mac_bundles(&bundle);
+        assert!(!zend_update::process_runs_from(&retired));
+        zend_update::prune_retired_mac_bundles(&bundle);
         assert!(!retired.exists(), "left behind once nothing ran from it");
         assert!(bundle.exists());
     }

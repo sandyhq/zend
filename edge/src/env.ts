@@ -13,17 +13,34 @@ export interface Env {
    * replacing SessionRoom's loro-aware s2 rooms (docs/chat2-sync.md). */
   CHAT_ROOMS: DurableObjectNamespace;
   BLOBS: R2Bucket;
+  /** Per-user limits on attachment bytes stored and not yet collected by a
+   * Cloud machine (attachment-blobs.ts). Unset ⇒ 1 GiB and 500 files. */
+  ATTACHMENT_QUOTA_BYTES?: string;
+  ATTACHMENT_QUOTA_OBJECTS?: string;
   /** Release artifacts (headless tarballs, dmgs, latest.txt) served at
    * /releases/* for the curl-install flow. */
   RELEASES: R2Bucket;
+  /** The hosted model list this deployment serves at /models/v1.json
+   * (src/model-list.ts): "staging", or unset for none (404). */
+  MODEL_LIST?: string;
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */
   AUTH_MODE: string;
+  /** zend self-hosting: comma-separated bearers (`userId@orgId`) dev mode
+   * accepts. Set ⇒ any other bearer, and every dev runner bearer, is refused,
+   * so a long random userId works as the shared secret. Unset ⇒ dev mode as
+   * upstream (everyone). */
+  DEV_USERS?: string;
   /** "1": ChatRoom also stores its head on every push. Set this and wait out
    * one bookkeeping flush (5 min) before rolling back past the release that
    * derives the head from the rows: older code reads the stored copy, and a
    * stale one collides on `rows.seq`. */
   CHAT_ROOM_WRITE_THROUGH?: string;
+  /** "1": RegistryRoom also stores its seq on every push. Set this and wait
+   * out one bookkeeping flush (5 min) before rolling back past the release
+   * that derives the seq from the rows: older code reads the stored copy,
+   * and a stale one would stamp new rows below cursors clients already hold. */
+  REGISTRY_ROOM_WRITE_THROUGH?: string;
   /** Who the chat rooms offer the relay layer to (docs/design/relay-layer.md): "1" for
    * everyone, or a comma-separated list of user ids. Empty, nothing changes at all. */
   CHAT_RELAY_LAYER?: string;
@@ -45,7 +62,7 @@ export interface Env {
    * key id. Unset ⇒ session notifications are decided and logged, not sent. */
   APNS_KEY_P8?: string;
   APNS_KEY_ID?: string;
-  /** Apple team id and the app's bundle id (defaults: the Zeron iOS app). */
+  /** Apple team id and the app's bundle id (defaults: the Zend iOS app). */
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
 
@@ -60,7 +77,7 @@ export interface Env {
   CLOUD_WAKE?: Workflow<LifecycleParams>;
   CLOUD_SLEEP?: Workflow<LifecycleParams>;
   CLOUD_DELETE?: Workflow<LifecycleParams>;
-  /** zeron-vault's `VaultApi` entrypoint (service binding; no HTTP). */
+  /** zend-vault's `VaultApi` entrypoint (service binding; no HTTP). */
   VAULT?: VaultRpc;
   /** Provider for NEW Cloud sandboxes (cloud/providers): "boat" (default)
    * or "fake" (in-memory, local dev only). */
@@ -75,12 +92,18 @@ export interface Env {
   BOAT_API_BASE?: string;
   /** Idle minutes before an unused Cloud session sleeps (default 20). */
   CLOUD_IDLE_MINUTES?: string;
+  /** Seconds before a wake reads `slow` and a stuck resume is kicked (default 45). */
+  CLOUD_WAKE_SLOW_SECONDS?: string;
   /** Credits a user gets the first time they turn Cloud on (default 0). */
   CLOUD_STARTING_CREDITS?: string;
-  /** Provider billable seconds per credit (default 60): set to what the
-   * provider bills for a minute of the default machine, so a credit is a
+  /** Provider billable seconds per credit from `CLOUD_CREDIT_RATE_FROM` on:
+   * what the provider bills for a minute of a small machine, so a credit is a
    * minute of it. Larger machines scale by the provider's multiplier. */
   CLOUD_CREDIT_SECONDS?: string;
+  /** The first UTC day (`YYYY-MM-DD`) charged at `CLOUD_CREDIT_SECONDS`; every
+   * day before it stays at 60. Anything else means no cutover: every day at
+   * 60, whatever `CLOUD_CREDIT_SECONDS` says. */
+  CLOUD_CREDIT_RATE_FROM?: string;
   /** Stripe (cloud/stripe.ts): API key, webhook signing secret and the
    * Price ids of the monthly plans and the credit pack. Billing reads as
    * unavailable until all are set. */
@@ -115,7 +138,7 @@ export interface Env {
    * `/home/user`); a local stack whose machines are processes on one
    * computer points it at a scratch folder (scripts/cloud-dev.sh). */
   CLOUD_PROJECTS_ROOT?: string;
-  /** Machine size for session sandboxes: small · default · large. */
+  /** Machine size for new sessions without a default of their own: small · default · large · xlarge. */
   CLOUD_MACHINE?: string;
   /** ES256 JWK (JSON) pair for runner JWTs (secrets). */
   RUNNER_JWT_PRIVATE_KEY?: string;
@@ -138,39 +161,38 @@ export const apnsConfig = (env: Env) =>
         keyP8: env.APNS_KEY_P8,
         keyId: env.APNS_KEY_ID,
         teamId: env.APNS_TEAM_ID ?? "5XY3M483YQ",
-        topic: env.APNS_TOPIC ?? "sh.zeron.ios"
+        topic: env.APNS_TOPIC ?? "sh.zend.ios"
       }
     : undefined;
 
 /** Header the Worker stamps on requests it forwards into DOs after verifying
  * the caller's JWT. DOs trust it blindly — they are only reachable through
  * the Worker (design §2: "DO never sees an unauthenticated frame"). */
-export const AUTH_USER_HEADER = "x-zeron-auth-user";
-
+export const AUTH_USER_HEADER = "x-zend-auth-user";
 /** Worker-controlled, like the user header: the caller's org, for a chat room
  * that has to ask the registry who hosts its chat. */
-export const AUTH_ORG_HEADER = "x-zeron-auth-org";
+export const AUTH_ORG_HEADER = "x-zend-auth-org";
 
 /** Header the Worker stamps on requests forwarded into workspace-doc rooms
  * (`ws/{orgId}`). Membership (JWT org claim == orgId) is enforced at the
  * Worker; the SessionRoom DO sees this and skips its per-chat
  * claim-on-first-join ownership discipline for the room. */
-export const ROOM_KIND_HEADER = "x-zeron-room-kind";
+export const ROOM_KIND_HEADER = "x-zend-room-kind";
 
 /** Header the Worker stamps on every DO forward made with a RUNNER bearer
  * (the Cloud device): the verified device id from the runner JWT's `dev`
  * claim. Always stripped from inbound requests first, so only the Worker can
  * assert it. RegistryRoom restricts such callers to rows their device owns
  * (registry-runner.ts). */
-export const RUNNER_DEVICE_HEADER = "x-zeron-runner-device";
+export const RUNNER_DEVICE_HEADER = "x-zend-runner-device";
 
 /** Companion of RUNNER_DEVICE_HEADER: the runner's account (logical Cloud
  * device, JWT `cld`). A session runner may read its account's project
  * spaces. Same strip-then-stamp discipline. */
-export const RUNNER_ACCOUNT_HEADER = "x-zeron-runner-account";
+export const RUNNER_ACCOUNT_HEADER = "x-zend-runner-account";
 
 /** Header the Worker stamps on a device-room client dial whose calling device
  * it verified (device-link.ts): a runner's own device, or a device that
  * proved possession of its registered plugin key. DeviceRoom puts it on every
  * frame that client relays (`fromDevice`). Same strip-then-stamp discipline. */
-export const CALLER_DEVICE_HEADER = "x-zeron-caller-device";
+export const CALLER_DEVICE_HEADER = "x-zend-caller-device";

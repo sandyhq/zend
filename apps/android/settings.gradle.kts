@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Zeron"
+rootProject.name = "Zend"
 include(":app")

@@ -1,19 +1,19 @@
 -- What the composer's `/` and `$` offer: the agent's slash commands and
 -- skills for where it works (a chat's folder, or a new chat's project, on
--- its device), as Zeron's composer finds them (crates/ui/src/composer.rs):
+-- its device), as Zend's composer finds them (crates/ui/src/composer.rs):
 -- read from the engine by the host (`chat.invocations`, src/completion.rs),
 -- commands first in the agent's order, then its enabled skills, each with
 -- what it does.
 --
 -- Each list is kept by agent and place (kept state: a reload reads none
 -- again) and read again each time a `/` or `$` opens afresh, the last list
--- showing meanwhile, as Zeron's does.
+-- showing meanwhile, as Zend's does.
 --
 -- A command or skill picked lands in the draft as its token (`/review`,
 -- `$code-review`); what it stands for is remembered, and the send writes
--- each such token as its canonical reference (`[/review](zeron-invoke:…)`),
+-- each such token as its canonical reference (`[/review](zend-invoke:…)`),
 -- which the engine gives each agent in its own form. A token typed by hand,
--- not picked, stays the words it is (Zeron's: only references made by
+-- not picked, stays the words it is (Zend's: only references made by
 -- completion are read).
 
 local M = {}
@@ -72,6 +72,38 @@ function M.load(harness: string, target: Target)
 	end, function(err: any)
 		put(key, { state = "failed", rows = if was then was.rows else {}, error = tostring(err) })
 	end)
+end
+
+-- A link to one of the agent's skills: its SKILL.md, wherever the agent
+-- keeps it (`…/skills/<name>/SKILL.md`), whose name is in the list for
+-- `harness` at `target`: that name; nil otherwise. A list not read yet is
+-- read (once): the answer follows it as it lands.
+function M.skill_of(link: string, harness: string?, target: Target?): string?
+	local name = string.match(link, "/skills/([^/]+)/SKILL%.md$")
+	if not name then
+		return nil
+	end
+	local key = M.key(harness, target)
+	if not key or not harness or not target then
+		return nil
+	end
+	local catalog = CATALOGS:get()[key]
+	if catalog == nil then
+		-- (Not while what asked is being built: once it's done.)
+		local h, t = harness, target
+		ui.after(0, function()
+			if CATALOGS:peek()[key] == nil then
+				M.load(h, t)
+			end
+		end)
+		return nil
+	end
+	for _, r in catalog.rows do
+		if r.kind == "skill" and r.name == name then
+			return r.name
+		end
+	end
+	return nil
 end
 
 -- The list kept for `key` (followed), or nil.

@@ -1,4 +1,4 @@
-//! Logging and process setup for `zeron`'s modes: stdout or stderr, a
+//! Logging and process setup for `zend`'s modes: stdout or stderr, a
 //! bounded log file per long-running mode, panics into the log, and glibc's
 //! arenas kept trimmed.
 
@@ -31,8 +31,8 @@ pub fn spawn_malloc_trimmer() {
     }
 }
 
-/// Logging for a process: stdout (stderr for `zeron mcp`, whose stdout is
-/// the protocol), mirrored to `{data_dir}/logs/zeron-{mode}.log` for
+/// Logging for a process: stdout (stderr for `zend mcp`, whose stdout is
+/// the protocol), mirrored to `{data_dir}/logs/zend-{mode}.log` for
 /// long-running modes — a process launched from Finder or by the app has no
 /// visible output. Long-running modes log at info, one-shot commands at warn
 /// (`RUST_LOG` overrides either).
@@ -88,15 +88,23 @@ pub fn long_running_setup() {
         tracing::error!(panic = %info,
             backtrace = %std::backtrace::Backtrace::force_capture(),
             "application panic");
+        // A new version on trial that dies of this: the old one says why.
+        zend_update::transaction::note_trial_panicked(&info.to_string());
         default_hook(info);
     }));
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     spawn_malloc_trimmer();
 }
 
-/// `{data_dir}/logs/zeron-{mode}.log`, previous launch preserved as `.old`.
+/// `{data_dir}/logs/zend-{mode}.log`, earlier launches kept as `.old` (the
+/// one before), `.old.2`, … up to [`KEEP_PREVIOUS`], within [`HISTORY_LIMIT`].
 /// Headed and headless are separate files so an embedded-engine app and a
 /// daemon on the same machine never interleave writes.
+///
+/// More than one: a Cloud machine starts its engine on every wake, and an update
+/// on wake starts it twice more (the new version's trial, and the old one again
+/// if the trial fails). Keeping only the last launch lost the log that said why a
+/// trial failed by the time anyone looked.
 ///
 /// The returned file holds an exclusive `flock` for the process lifetime:
 /// rotate-on-launch is only safe when nothing is still WRITING the current
@@ -105,7 +113,7 @@ pub fn long_running_setup() {
 /// second unlinked it entirely, and the daemon spent the rest of the incident
 /// logging to an orphaned inode (an entire day of sync diagnostics gone at
 /// the exact moment they were needed). A launch that finds the canonical file
-/// locked logs to `zeron-{mode}.{pid}.log` instead; the next lock-holding
+/// locked logs to `zend-{mode}.{pid}.log` instead; the next lock-holding
 /// launch sweeps pid-suffixed files older than a week.
 pub fn open_log_file(mode: &str) -> Option<(std::fs::File, std::path::PathBuf)> {
     let dir = paths::data_dir().join("logs");
@@ -113,9 +121,65 @@ pub fn open_log_file(mode: &str) -> Option<(std::fs::File, std::path::PathBuf)> 
 }
 
 /// How large a log grows before it moves to `.old`: the background engine
-/// and `zeron headless` run for weeks, and rotating only at launch would let
+/// and `zend headless` run for weeks, and rotating only at launch would let
 /// their logs fill the disk.
 const LOG_LIMIT: u64 = 64 * 1024 * 1024;
+
+/// Earlier logs kept: `.old`, then `.old.2` … `.old.{KEEP_PREVIOUS}`.
+const KEEP_PREVIOUS: usize = 10;
+
+/// What the earlier logs may weigh together; the oldest go first. `.old` stays
+/// whatever its size. A Cloud machine's disk is copied back in on every wake, so
+/// this is no more than the one `.old` a log could already reach.
+const HISTORY_LIMIT: u64 = LOG_LIMIT;
+
+/// The earlier log `generation` launches (or rotations) back: 1 is `.old`.
+fn previous_log(path: &std::path::Path, generation: usize) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".old");
+    if generation > 1 {
+        name.push(format!(".{generation}"));
+    }
+    name.into()
+}
+
+/// Move the earlier logs back one place, dropping the oldest, then `path` to
+/// `.old`. Renames and removals only: nothing is read, so a disk restoring itself
+/// lazily (a woken Cloud machine) fetches none of it. `Err` when `path` couldn't
+/// move (Windows, while it's open).
+fn shift_logs(path: &std::path::Path, keep: usize, limit: u64) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(previous_log(path, keep));
+    for generation in (1..keep).rev() {
+        let _ = std::fs::rename(
+            previous_log(path, generation),
+            previous_log(path, generation + 1),
+        );
+    }
+    let moved = if keep == 0 {
+        std::fs::remove_file(path)
+    } else {
+        std::fs::rename(path, previous_log(path, 1))
+    };
+    // Within the limit, newest first; `.old` is always kept.
+    let mut total = 0u64;
+    let mut over = false;
+    for generation in 1..=keep {
+        let previous = previous_log(path, generation);
+        if over {
+            let _ = std::fs::remove_file(&previous);
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&previous) else {
+            continue;
+        };
+        total = total.saturating_add(meta.len());
+        if generation > 1 && total > limit {
+            let _ = std::fs::remove_file(&previous);
+            over = true;
+        }
+    }
+    moved
+}
 
 /// A long-running process's log, kept to a bounded size: past `limit` bytes
 /// the file moves to `.old` (replacing the previous one) and a fresh one
@@ -147,10 +211,8 @@ impl RotatingLog {
         // Whatever happens, count afresh: a failed rotation is retried only
         // after another `limit` of writes, never on every line.
         state.written = 0;
-        let mut old = self.path.clone().into_os_string();
-        old.push(".old");
         // Windows can't rename a file it holds open: keep writing to it then.
-        if std::fs::rename(&self.path, &old).is_err() {
+        if shift_logs(&self.path, KEEP_PREVIOUS, HISTORY_LIMIT).is_err() {
             return;
         }
         if let Ok(file) = std::fs::File::create(&self.path) {
@@ -193,7 +255,7 @@ fn open_log_file_in(
     mode: &str,
 ) -> Option<(std::fs::File, std::path::PathBuf)> {
     std::fs::create_dir_all(dir).ok()?;
-    let path = dir.join(format!("zeron-{mode}.log"));
+    let path = dir.join(format!("zend-{mode}.log"));
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
@@ -209,7 +271,7 @@ fn open_log_file_in(
         let rc = unsafe { libc::flock(existing.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc != 0 {
             // A live process owns the canonical log — leave it alone.
-            let overflow = dir.join(format!("zeron-{mode}.{}.log", std::process::id()));
+            let overflow = dir.join(format!("zend-{mode}.{}.log", std::process::id()));
             return std::fs::File::create(&overflow)
                 .ok()
                 .map(|file| (file, overflow));
@@ -219,7 +281,7 @@ fn open_log_file_in(
         // to rotate — the probe itself created the empty file.)
         drop(existing);
         if preexisting {
-            let _ = std::fs::rename(&path, dir.join(format!("zeron-{mode}.log.old")));
+            let _ = shift_logs(&path, KEEP_PREVIOUS, HISTORY_LIMIT);
         }
         let file = std::fs::File::create(&path).ok()?;
         unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -228,7 +290,7 @@ fn open_log_file_in(
     }
     #[cfg(not(unix))]
     {
-        let _ = std::fs::rename(&path, dir.join(format!("zeron-{mode}.log.old")));
+        let _ = shift_logs(&path, KEEP_PREVIOUS, HISTORY_LIMIT);
         std::fs::File::create(&path).ok().map(|file| (file, path))
     }
 }
@@ -241,7 +303,7 @@ mod rotating_log_tests {
     #[test]
     fn a_log_past_its_limit_moves_to_old_and_starts_over() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("zeron-engine.log");
+        let path = dir.path().join("zend-engine.log");
         let file = std::fs::File::create(&path).unwrap();
         let log = RotatingLog::new(file, path.clone(), 100);
         let mut writer = &log;
@@ -249,9 +311,100 @@ mod rotating_log_tests {
         // Over the limit: the next write rotates first.
         writer.write_all(b"fresh\n").unwrap();
         writer.flush().unwrap();
-        let old = dir.path().join("zeron-engine.log.old");
+        let old = dir.path().join("zend-engine.log.old");
         assert_eq!(std::fs::metadata(&old).unwrap().len(), 120);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh\n");
+    }
+
+    #[test]
+    fn rotating_again_keeps_the_log_before_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zend-headless.log");
+        let file = std::fs::File::create(&path).unwrap();
+        let log = RotatingLog::new(file, path.clone(), 10);
+        let mut writer = &log;
+        writer.write_all(b"first-----\n").unwrap();
+        writer.write_all(b"second----\n").unwrap();
+        writer.write_all(b"third\n").unwrap();
+        writer.flush().unwrap();
+        let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(read("zend-headless.log"), "third\n");
+        assert_eq!(read("zend-headless.log.old"), "second----\n");
+        assert_eq!(read("zend-headless.log.old.2"), "first-----\n");
+    }
+}
+
+#[cfg(test)]
+mod log_history_tests {
+    use super::{previous_log, shift_logs};
+
+    fn launch(path: &std::path::Path, text: &str, keep: usize, limit: u64) {
+        if path.exists() {
+            shift_logs(path, keep, limit).unwrap();
+        }
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn read(path: &std::path::Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
+
+    /// A woken Cloud machine that updates starts three times (the wake, the new
+    /// version's trial, the old version after a failed trial): the trial's log has
+    /// to outlive the start after it, and the wake after that.
+    #[test]
+    fn several_launches_back_are_kept_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zend-headless.log");
+        for n in 1..=5 {
+            launch(&path, &format!("launch {n}\n"), 10, 1 << 20);
+        }
+        assert_eq!(read(&path).as_deref(), Some("launch 5\n"));
+        assert_eq!(
+            dir.path().join("zend-headless.log.old"),
+            previous_log(&path, 1)
+        );
+        for (generation, n) in [(1, 4), (2, 3), (3, 2), (4, 1)] {
+            assert_eq!(
+                read(&previous_log(&path, generation)),
+                Some(format!("launch {n}\n")),
+                "generation {generation}"
+            );
+        }
+        assert!(!previous_log(&path, 5).exists());
+    }
+
+    #[test]
+    fn only_so_many_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zend-headless.log");
+        for n in 1..=7 {
+            launch(&path, &format!("launch {n}\n"), 3, 1 << 20);
+        }
+        assert_eq!(read(&previous_log(&path, 1)).as_deref(), Some("launch 6\n"));
+        assert_eq!(read(&previous_log(&path, 3)).as_deref(), Some("launch 4\n"));
+        assert!(!previous_log(&path, 4).exists());
+        let files = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(files, 4, "the log and three before it");
+    }
+
+    #[test]
+    fn the_oldest_go_once_they_weigh_too_much_but_the_last_one_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zend-headless.log");
+        launch(&path, &"a".repeat(40), 10, 100);
+        launch(&path, &"b".repeat(40), 10, 100);
+        launch(&path, &"c".repeat(40), 10, 100);
+        launch(&path, &"d".repeat(40), 10, 100);
+        // .old (c) + .old.2 (b) = 80 fit; a would make 120.
+        assert_eq!(read(&previous_log(&path, 1)), Some("c".repeat(40)));
+        assert_eq!(read(&previous_log(&path, 2)), Some("b".repeat(40)));
+        assert!(!previous_log(&path, 3).exists());
+        // One log bigger than the whole limit is still the one before.
+        launch(&path, &"e".repeat(500), 10, 100);
+        launch(&path, "f", 10, 100);
+        assert_eq!(read(&previous_log(&path, 1)), Some("e".repeat(500)));
+        assert!(!previous_log(&path, 2).exists());
     }
 }
 
@@ -265,14 +418,14 @@ mod log_file_tests {
         let dir = dir.path();
         // First launch owns the canonical file and keeps writing.
         let first = open_log_file_in(dir, "headed").expect("first log");
-        assert!(dir.join("zeron-headed.log").is_file());
+        assert!(dir.join("zend-headed.log").is_file());
         // Second launch while the first is alive: canonical file untouched,
         // pid-suffixed overflow file instead (the 2026-08-04 clobber).
         let second = open_log_file_in(dir, "headed").expect("second log");
-        let pid_path = dir.join(format!("zeron-headed.{}.log", std::process::id()));
+        let pid_path = dir.join(format!("zend-headed.{}.log", std::process::id()));
         assert!(pid_path.is_file(), "expected pid-suffixed overflow log");
         assert!(
-            !dir.join("zeron-headed.log.old").exists(),
+            !dir.join("zend-headed.log.old").exists(),
             "live canonical log must not be rotated away"
         );
         drop(second);
@@ -280,21 +433,36 @@ mod log_file_tests {
         drop(first);
         let third = open_log_file_in(dir, "headed").expect("third log");
         assert!(
-            dir.join("zeron-headed.log.old").is_file(),
+            dir.join("zend-headed.log.old").is_file(),
             "rotation resumes"
         );
         drop(third);
     }
+
+    #[test]
+    fn each_launch_keeps_the_ones_before() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        for n in 1..=3 {
+            let (mut file, _) = open_log_file_in(dir, "headless").expect("log");
+            writeln!(file, "launch {n}").unwrap();
+        }
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        assert_eq!(read("zend-headless.log"), "launch 3\n");
+        assert_eq!(read("zend-headless.log.old"), "launch 2\n");
+        assert_eq!(read("zend-headless.log.old.2"), "launch 1\n");
+    }
 }
 
-/// Delete `zeron-{mode}.{pid}.log` overflow files older than a week — they
+/// Delete `zend-{mode}.{pid}.log` overflow files older than a week — they
 /// only exist when a second instance raced a live one for the canonical log.
 #[cfg(unix)]
 fn sweep_stale_pid_logs(dir: &std::path::Path, mode: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let prefix = format!("zeron-{mode}.");
+    let prefix = format!("zend-{mode}.");
     let week = std::time::Duration::from_secs(7 * 24 * 60 * 60);
     for entry in entries.flatten() {
         let name = entry.file_name();

@@ -1,9 +1,9 @@
--- Settings → About & updates: which Zeron this is, and its updates, as the
+-- Settings → About & updates: which Zend this is, and its updates, as the
 -- shipping app has them (its About panel and "Check for Updates…", crates/ui
 -- app_menus.rs, app_update.rs; the engine's updater, crates/update).
 --
--- As the Zeron app (the beta: `self_updating`), it updates itself as
--- Zeron.app does (src/about.rs): a new version downloads in the background,
+-- As the Zend app (the beta: `self_updating`), it updates itself as
+-- Zend.app does (src/about.rs): a new version downloads in the background,
 -- "Restart to update" installs it, and one nobody restarted for installs on
 -- quit. "Get beta updates" chooses the release channel; leaving beta goes
 -- back to Stable even when that's an older version.
@@ -27,8 +27,8 @@ local M = {}
 M.ID = "about"
 M.TITLE = "About & updates"
 
-M.RELEASES = "https://github.com/zeronsh/comet/releases"
-M.WEBSITE = "https://zeron.sh"
+M.RELEASES = "https://github.com/sandyhq/comet/releases"
+M.WEBSITE = "https://zend.invalid"
 
 search.index(M.ID, ui.t("settings.about.title"), ui.t("settings.about.terms"), {
 	{ key = "version", title = ui.t("settings.about.version.label"), terms = ui.t("settings.about.version.terms") },
@@ -172,7 +172,7 @@ function M.describe(a: About, doing: string): Update
 	end
 	local retry = ui.t("common.retry"):get()
 	if a.self_updating then
-		-- The Zeron app's own updates (Zeron.app's lifecycle).
+		-- The Zend app's own updates (Zend.app's lifecycle).
 		local mine = a.app_version
 		if doing == "checking" then
 			return { title = s("checking"), line = s("checking_line") }
@@ -244,7 +244,7 @@ end
 -- reads them).
 function M.summary(a: About): string
 	local lines = {
-		`Zeron engine: {a.engine_version or "not connected"}`,
+		`Zend engine: {a.engine_version or "not connected"}`,
 	}
 	if a.engine_build then
 		table.insert(lines, `Engine build: {a.engine_build}`)
@@ -281,7 +281,7 @@ function M.view(): Node
 		ds.Settings.Section {
 			ds.Settings.Group {
 				row("version", {
-					label = "Zeron",
+					label = "Zend",
 					description = function(): string
 						return M.build(M.now:get().engine_build) or ui.t("settings.about.version.description"):get()
 					end,
@@ -362,7 +362,7 @@ function M.view(): Node
 							}),
 						},
 					}),
-					-- The release channel (a macOS app install).
+					-- The release channel (an install that follows channels).
 					-- (A row that comes and goes brings its own hairline: none under the
 					-- one above while it's away.)
 					ui.show(function(): boolean
@@ -377,9 +377,12 @@ function M.view(): Node
 							if a.channel_note then
 								return a.channel_note
 							end
-							return if a.channel == "beta"
-								then ui.t("settings.about.beta.on"):get()
-								else ui.t("settings.about.beta.off", { version = a.beta_minimum or "13.0" }):get()
+							if a.channel == "beta" then
+								return ui.t("settings.about.beta.on"):get()
+							end
+							return if a.beta_minimum
+								then ui.t("settings.about.beta.off", { version = a.beta_minimum }):get()
+								else ui.t("settings.about.beta.off_any"):get()
 						end,
 						control = ds.Switch { value = beta, label = ui.t("settings.about.beta.label"), on_change = M.set_beta },
 						}),
@@ -404,7 +407,7 @@ function M.view(): Node
 				}),
 				row("website", {
 					label = ui.t("settings.about.website.label"),
-					description = "zeron.sh",
+					description = "zend.invalid",
 					on_click = function()
 						host.invoke("open_url", M.WEBSITE)
 					end,

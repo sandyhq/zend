@@ -1,5 +1,5 @@
 //! Auth — the engine owns the WorkOS session for its device (feature-inventory §3.7,
-//! ARCHITECTURE §5). Port of zeron's `apps/backend/src/auth.ts`.
+//! ARCHITECTURE §5). Port of zend's `apps/backend/src/auth.ts`.
 //!
 //! The engine is a public client: it builds the AuthKit authorize URL itself but
 //! delegates the secret-bearing **code exchange** and **refresh** to the edge Worker
@@ -34,13 +34,18 @@ use tokio::sync::watch;
 
 use crate::EngineError;
 use crate::http_error::describe_http_error;
-use zeron_rpc::TokenError;
+use zend_rpc::TokenError;
 
 const SIGN_IN_TTL: Duration = Duration::from_secs(15 * 60);
 /// Refresh when the cached token has less than this much life left.
 const TOKEN_SLACK: Duration = Duration::from_secs(30);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const REFRESH_RETRY_BASE: Duration = Duration::from_secs(1);
+/// A Cloud runner has nothing else to do until its first token, and a machine
+/// just restored often loses its first outbound connection: try again soon,
+/// and don't let one lost SYN hold a whole `HTTP_TIMEOUT`.
+const RUNNER_RETRY_BASE: Duration = Duration::from_millis(250);
+const RUNNER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// DNS can recover without an OS path event. Keep polling even at the cap.
 const REFRESH_RETRY_CAP: Duration = Duration::from_secs(5);
 /// A runner whose key the edge rejected (device deleted/revoked) retries
@@ -96,7 +101,7 @@ pub struct OrgMembership {
 }
 
 /// AuthStatus stream payload (`SignedOut | NeedsOrganization{user} |
-/// SignedIn{user, orgId?}`). Serializes as the canonical [`zeron_proto::AuthState`]
+/// SignedIn{user, orgId?}`). Serializes as the canonical [`zend_proto::AuthState`]
 /// wire shape (`{"state": "signedIn", …}`) so every client parses one form.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthState {
@@ -130,18 +135,18 @@ impl AuthState {
     }
 
     /// The proto wire twin — the one shape the engine emits over AuthStatus.
-    pub fn to_proto(&self) -> zeron_proto::AuthState {
-        let profile = |user: &AuthUser| zeron_proto::UserProfile {
+    pub fn to_proto(&self) -> zend_proto::AuthState {
+        let profile = |user: &AuthUser| zend_proto::UserProfile {
             id: user.id.clone(),
             email: user.email.clone(),
             name: user.name.clone(),
         };
         match self {
-            AuthState::SignedOut => zeron_proto::AuthState::SignedOut,
-            AuthState::NeedsOrganization { user } => zeron_proto::AuthState::NeedsOrganization {
+            AuthState::SignedOut => zend_proto::AuthState::SignedOut,
+            AuthState::NeedsOrganization { user } => zend_proto::AuthState::NeedsOrganization {
                 user: profile(user),
             },
-            AuthState::SignedIn { user, org_id } => zeron_proto::AuthState::SignedIn {
+            AuthState::SignedIn { user, org_id } => zend_proto::AuthState::SignedIn {
                 user: profile(user),
                 org_id: org_id.clone(),
             },
@@ -207,7 +212,7 @@ pub struct AuthConfig {
     pub workos_client_id: Option<String>,
     /// WorkOS API base (authorize URL host).
     pub workos_api_base: String,
-    /// Dev-mode bearer/user id (mirrors the old `ZERON_EDGE_TOKEN` behavior).
+    /// Dev-mode bearer/user id (mirrors the old `ZEND_EDGE_TOKEN` behavior).
     pub dev_user_id: String,
     /// Loopback callback port; `None` = ephemeral.
     pub callback_port: Option<u16>,
@@ -379,7 +384,7 @@ impl std::fmt::Display for DeleteAccountError {
         match self {
             DeleteAccountError::StepUpRequired => write!(f, "Sign in again to confirm it's you, then delete the account"),
             DeleteAccountError::SignedOut => write!(f, "Sign in first"),
-            DeleteAccountError::Offline(why) => write!(f, "Zeron couldn't reach its server: {why}"),
+            DeleteAccountError::Offline(why) => write!(f, "Zend couldn't reach its server: {why}"),
             DeleteAccountError::Refused { code, organization } => match (code.as_str(), organization) {
                 ("invalid", _) => write!(f, "That isn't this account's email address"),
                 ("last_admin", Some(org)) => write!(f, "You're the only admin of {org}: make someone else an admin first"),
@@ -460,10 +465,11 @@ impl Auth {
         let (state_tx, _) = watch::channel(initial);
         let (token_tx, _) = watch::channel(0);
         let (retry_tx, _) = watch::channel(0);
-        let http = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let mut http = reqwest::Client::builder().timeout(HTTP_TIMEOUT);
+        if runner.is_some() {
+            http = http.connect_timeout(RUNNER_CONNECT_TIMEOUT);
+        }
+        let http = http.build().unwrap_or_else(|_| reqwest::Client::new());
         Self {
             inner: Arc::new(AuthInner {
                 config,
@@ -631,8 +637,8 @@ impl Auth {
                 return;
             }
             let mut state_rx = auth.watch_state();
-            let mut wake = zeron_sync::wake::subscribe();
-            let mut online = zeron_sync::wake::subscribe_online();
+            let mut wake = zend_sync::wake::subscribe();
+            let mut online = zend_sync::wake::subscribe_online();
             let mut retry_rx = auth.inner.retry_tx.subscribe();
             loop {
                 if !state_rx.borrow().is_signed_in() {
@@ -848,7 +854,7 @@ impl Auth {
     async fn finish_exchange(&self, state: &str, result: SignInResult, generation: u64) -> Result<(), EngineError> {
         if lock(&self.inner.step_up_states).remove(state) {
             if self.user_id().as_deref() != Some(result.user.id.as_str()) {
-                return Err(EngineError::Other("That was another account: sign in as the one using Zeron here".into()));
+                return Err(EngineError::Other("That was another account: sign in as the one using Zend here".into()));
             }
             let fresh = result.step_up.is_some();
             self.keep_step_up(result.step_up);
@@ -1094,7 +1100,7 @@ impl Auth {
         let sign_in = lock(&self.inner.sign_in);
         if sign_in.generation != generation {
             return Err(EngineError::Other(
-                "sign-in was canceled — start again from Zeron".into(),
+                "sign-in was canceled — start again from Zend".into(),
             ));
         }
         let org_id = jwt_claims(&result.access_token).and_then(|c| c.org_id);
@@ -1116,7 +1122,7 @@ impl Auth {
         let sign_in = lock(&self.inner.sign_in);
         if sign_in.generation != generation {
             return Err(EngineError::Other(
-                "sign-in was canceled — start again from Zeron".into(),
+                "sign-in was canceled — start again from Zend".into(),
             ));
         }
         tracing::info!(email = %user.email, org = org_id.as_deref().unwrap_or("<none>"),
@@ -1221,8 +1227,12 @@ impl Auth {
             match &result {
                 Err(err) if organization_id.is_none() => {
                     retry.failures = retry.failures.saturating_add(1);
-                    let backoff =
-                        REFRESH_RETRY_BASE.saturating_mul(1 << (retry.failures - 1).min(8));
+                    let base = if self.inner.runner.is_some() {
+                        RUNNER_RETRY_BASE
+                    } else {
+                        REFRESH_RETRY_BASE
+                    };
+                    let backoff = base.saturating_mul(1 << (retry.failures - 1).min(8));
                     let jitter =
                         Duration::from_millis(u64::from(uuid::Uuid::new_v4().as_bytes()[0]));
                     let delay = if self.runner_rejected() {
@@ -1431,6 +1441,7 @@ impl Auth {
                 })?;
             let status = res.status().as_u16();
             if res.status().is_success() {
+                crate::wake_trace::mark(crate::wake_trace::Stage::Token);
                 break res;
             }
             let body = crate::runner::EdgeErrorBody::read(res).await;
@@ -1612,7 +1623,7 @@ fn state_for(user: AuthUser, org_id: Option<String>) -> AuthState {
 struct SessionBearer(Auth);
 
 #[async_trait::async_trait]
-impl zeron_rpc::TokenSource for SessionBearer {
+impl zend_rpc::TokenSource for SessionBearer {
     async fn token(&self) -> Result<String, TokenError> {
         self.0.access_token().await
     }
@@ -1623,15 +1634,15 @@ impl Auth {
     /// ([`Auth::on_fresh_ticket`]): the session's bearer, already there
     /// though the sign-in isn't announced yet (the plain source says signed
     /// out until it is).
-    pub fn session_bearer(&self) -> Arc<dyn zeron_rpc::TokenSource> {
+    pub fn session_bearer(&self) -> Arc<dyn zend_rpc::TokenSource> {
         Arc::new(SessionBearer(self.clone()))
     }
 }
 
-/// The relay/room token seam: `Auth` IS a [`zeron_rpc::TokenSource`], so the host relay
+/// The relay/room token seam: `Auth` IS a [`zend_rpc::TokenSource`], so the host relay
 /// and link cache always dial with a fresh bearer after refreshes.
 #[async_trait::async_trait]
-impl zeron_rpc::TokenSource for Auth {
+impl zend_rpc::TokenSource for Auth {
     async fn token(&self) -> Result<String, TokenError> {
         if self.inner.workos.is_some() && !self.state().is_signed_in() {
             return Err(TokenError::SignedOut);
@@ -1699,7 +1710,7 @@ async fn handle_loopback_conn(
         let invalid_callback = || {
             (
                 "400 Bad Request",
-                page("Invalid or expired sign-in link. Start again from Zeron."),
+                page("Invalid or expired sign-in link. Start again from Zend."),
             )
         };
         match (code, state) {
@@ -1708,14 +1719,14 @@ async fn handle_loopback_conn(
                     Ok(result) => match auth.finish_exchange(state, result, generation).await {
                         Ok(()) => (
                             "200 OK",
-                            page("Signed in. You can close this tab and return to Zeron."),
+                            page("Signed in. You can close this tab and return to Zend."),
                         ),
                         Err(err) => {
                             tracing::info!(error = %err, "auth: discarded canceled callback exchange");
                             (
                                 "409 Conflict",
                                 page(
-                                    "This sign-in was canceled. Start again from Zeron if you still want to enable sync.",
+                                    "This sign-in was canceled. Start again from Zend if you still want to enable sync.",
                                 ),
                             )
                         }
@@ -1724,7 +1735,7 @@ async fn handle_loopback_conn(
                         tracing::warn!(error = %err, "auth: loopback code exchange failed");
                         (
                             "502 Bad Gateway",
-                            page("Sign-in failed during token exchange — check the Zeron logs."),
+                            page("Sign-in failed during token exchange — check the Zend logs."),
                         )
                     }
                 },
@@ -1903,7 +1914,7 @@ mod tests {
         let edge = crate::EdgeConfig::new("https://edge.invalid", Arc::new(auth.clone()));
         assert!(matches!(
             edge.room_url("/registry/org_1/ws").url().await,
-            Err(zeron_sync::SyncError::TemporarilyUnavailable(message)) if &message == reason
+            Err(zend_sync::SyncError::TemporarilyUnavailable(message)) if &message == reason
         ));
         assert!(matches!(
             auth.list_orgs().await,
@@ -1983,8 +1994,8 @@ mod tests {
             })
         );
         // The proto type itself round-trips the emitted value.
-        let parsed: zeron_proto::AuthState = serde_json::from_value(value).expect("proto parse");
-        assert!(matches!(parsed, zeron_proto::AuthState::SignedIn { .. }));
+        let parsed: zend_proto::AuthState = serde_json::from_value(value).expect("proto parse");
+        assert!(matches!(parsed, zend_proto::AuthState::SignedIn { .. }));
         assert_eq!(
             serde_json::to_value(AuthState::SignedOut).expect("json"),
             serde_json::json!({"state": "signedOut"})
@@ -2000,7 +2011,7 @@ mod tests {
 }
 
 #[async_trait::async_trait]
-impl zeron_preview::signaling::TokenSource for Auth {
+impl zend_preview::signaling::TokenSource for Auth {
     async fn token(&self) -> anyhow::Result<String> {
         Ok(self.access_token().await?)
     }

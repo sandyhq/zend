@@ -8,6 +8,8 @@
 -- "name:detail" each). `ui.command`s change the data as the edge would on
 -- its own, or make the next change fail:
 --   settings_stub.sign_in          signed in as Ada, in org_1 (else signed out)
+--   settings_stub.restoring        the engine hasn't answered yet
+--   settings_stub.signed_out       the engine says signed out
 --   settings_stub.open_account     a way in to `settings/account` (a link)
 --   settings_stub.member_joins     someone accepts an invitation
 --   settings_stub.refuse_next      the next change is refused ("refused")
@@ -117,8 +119,8 @@ local engine: { [string]: any } = {
 	GetCommitCredit = { enabled = false, cloud = false },
 	GetWorktreeSettings = {
 		settings = { useCustomDirectory = false },
-		defaultDirectory = "~/.zeron/worktrees",
-		effectiveDirectory = "~/.zeron/worktrees",
+		defaultDirectory = "~/.zend/worktrees",
+		effectiveDirectory = "~/.zend/worktrees",
 	},
 	GetTitleSettings = {},
 	GetNativeSubagents = { switchable = { "claude-code" }, off = {} },
@@ -137,6 +139,9 @@ end
 local answers: { [string]: (arg: any) -> any } = {
 	["account.me"] = function()
 		return settled(table.clone(me))
+	end,
+	["dictation.call"] = function(arg: any)
+		return settled(if arg.op == "status" then { installed = false, size = 670479942 } elseif arg.op == "inputs" then {} else nil)
 	end,
 	["account.rename"] = function(name: string)
 		local r = change(nil)
@@ -173,13 +178,13 @@ local answers: { [string]: (arg: any) -> any } = {
 			return settled(nil, word)
 		end
 		photo_n += 1
-		me.avatar = string.format("https://staging.zeron.sh/auth/avatars/%032x", photo_n)
+		me.avatar = string.format("https://staging.zend.invalid/auth/avatars/%032x", photo_n)
 		last_crop:set({ x = arg.x, y = arg.y, side = arg.side })
 		return settled(table.clone(me))
 	end,
 	-- A photo's file: the app's own PNG, whatever the address.
 	["account.photo_file"] = function()
-		return settled("assets/favicons/zeron.png")
+		return settled("assets/favicons/zend.png")
 	end,
 	["account.remove_photo"] = function()
 		me.avatar = nil
@@ -383,7 +388,7 @@ end
 -- A photo picked: the app's own PNG, so a headless host can draw it.
 stub.open_files = function(_opts: any): any
 	log("open_files")
-	return settled({ { path = "assets/favicons/zeron.png", name = "zeron.png", size = 1, type = "image/png" } })
+	return settled({ { path = "assets/favicons/zend.png", name = "zend.png", size = 1, type = "image/png" } })
 end
 
 -- The account's own calls (account/api), the same way.
@@ -504,6 +509,22 @@ auths.sign_out = function(done: (() -> ())?)
 	end
 end
 
+-- The launch before the engine has answered, and the engine saying signed out.
+ui.command {
+	id = "settings_stub.restoring",
+	title = "The engine hasn't answered yet",
+	run = function()
+		auth.account:set({ state = "restoring", env = "staging" } :: any)
+	end,
+}
+ui.command {
+	id = "settings_stub.signed_out",
+	title = "The engine says signed out",
+	run = function()
+		auth.account:set({ state = "signed_out", env = "staging" } :: any)
+	end,
+}
+
 ui.command {
 	id = "settings_stub.member_joins",
 	title = "A member joins",
@@ -555,13 +576,25 @@ ui.command {
 		local t = require("@ds/look").window_theme() or {}
 		window_theme:set({
 			accent = t.accent,
-			keyword = t["zeron.syntax.keyword"],
+			keyword = t["zend.syntax.keyword"],
 			body = t["font.size.md"],
-			window = t["zeron.window"],
+			window = t["zend.window"],
 			sans = t["font.sans"],
 			mono = t["font.mono"],
 			secondary = t["text.secondary"],
 			tertiary = t["text.tertiary"],
+			-- "Accent colour throughout": a status dot, a find's highlight,
+			-- an @file token, a list marker, and a link's ink (nil: the
+			-- text's own).
+			working_dot = t["zend.status.dot.working"],
+			working = t["zend.status.working"],
+			find = t["zend.editor.match"],
+			file_token = t["zend.composer.token.file"],
+			marker = t["zend.prose.marker"],
+			link = require("@ds/look").accented_ink(nil)(),
+			-- What the accent's own token is, and what the theme's says.
+			accented_ink = ui.theme.get("zend.accented.ink"),
+			accent_ink = ui.theme.get("accent"),
 		})
 	end,
 }

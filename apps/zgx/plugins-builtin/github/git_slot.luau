@@ -44,22 +44,22 @@ local function compare_url(b: any): string?
 	return `https://github.com/{repo}/compare/{encoded(base)}...{encoded(b.branch)}?expand=1`
 end
 
-return function(zeron: any, watch: any)
+return function(zend: any, watch: any)
 	local M = {}
 	M.compare_url = compare_url
 
 	-- What goes in the slot: built once per Changes head, following the
 	-- branch and its pull request as they change.
 	function M.build(): Node
-		local branch = zeron.live("git_branch")
-		local here = zeron.context("session")
+		local branch = zend.live("git_branch")
+		local here = zend.context("session")
 		local first = branch()
 		local session = (first and first.session) or (here and here.id)
 		if type(session) ~= "string" then
 			return ui.div {}
 		end
 		local pr = watch.pr(session)
-		local panel = zeron.context("panel")
+		local panel = zend.context("panel")
 		local function open_pr()
 			local now = pr()
 			if now and panel then
@@ -85,17 +85,17 @@ return function(zeron: any, watch: any)
 		end
 		return ui.presence(which, function(key: string): Node
 			if key == "pr" then
-				return ui.row { id = "github-git-pr", shrink = 0, items = "center", PrBadge { words = zeron, pr = pr, on_open = open_pr } }
+				return ui.row { id = "github-git-pr", shrink = 0, items = "center", PrBadge { words = zend, pr = pr, on_open = open_pr } }
 			elseif key == "create" then
 				return Button {
-					zeron.t("git_slot.create"),
+					zend.t("git_slot.create"),
 					id = "github-git-create-pr",
 					tone = "secondary",
 					size = "xs",
 					on_click = function()
 						local url = compare_url(branch())
 						if url then
-							zeron.open_url(url)
+							zend.open_url(url)
 						end
 					end,
 				}

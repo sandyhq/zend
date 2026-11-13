@@ -1,7 +1,7 @@
 //! Agent visuals in the design system (ds/visual) on the real host
 //! (src/visuals.rs, the shipping app's crates/visual): ui/visuals_fixture's
 //! scripts, every node type, mounted headless and used as a reader uses
-//! them. `cargo test --bin zeron-zgx visuals_tests`.
+//! them. `cargo test --bin zend-zgx visuals_tests`.
 
 use zgx_script::{ScriptHost, testing::TestApp};
 
@@ -119,6 +119,18 @@ fn a_failing_handler_is_contained_with_its_message() {
 #[test]
 fn scenes_and_shaders_render_on_the_gpu_thread() {
     let mut app = mount(None);
+    // A machine with no GPU adapter at all (a CI runner without a Vulkan
+    // driver): a scene falls back to the software renderer and shows; a
+    // shader can't, and says so in place, as a reader's would.
+    if let Some(why) = zend_visual_gpu::unavailable_reason() {
+        eprintln!("no GPU here ({why}): checking the software scene and the shader's notice");
+        let error = "#visual-shader >> .visual-error";
+        app.wait_until(|app| app.find(error).is_some());
+        assert!(has(&mut app, error), "the shader without a GPU: no notice\n{}", app.tree());
+        assert!(!has(&mut app, "#visual-scene >> .visual-error"), "the scene without a GPU\n{}", app.tree());
+        assert!(has(&mut app, "#visual-scene >> img \"Materials\""), "the scene without a GPU: not drawn\n{}", app.tree());
+        return;
+    }
     let drawn = |id: &str| crate::visuals::surfaces(id);
     let ready = app.wait_until(|_| {
         let (shaders, _) = drawn("v:fixture-shader");
@@ -128,6 +140,120 @@ fn scenes_and_shaders_render_on_the_gpu_thread() {
     assert!(ready, "frames: shader {:?}, scene {:?}", drawn("v:fixture-shader"), drawn("v:fixture-scene"));
     assert!(!has(&mut app, "#visual-shader >> .visual-error"), "{}", app.tree());
     assert!(!has(&mut app, "#visual-scene >> .visual-error"), "{}", app.tree());
+}
+
+const COUNTER: &str = r#"
+local count = 0
+local scale = math.random(1, 1000000)
+return function()
+    return ui.column {
+        ui.text("count " .. count .. " of " .. scale),
+        ui.button { label = "Add", on_click = function() count += 1 end },
+    }
+end
+"#;
+
+#[test]
+fn a_visual_at_rest_lets_its_vm_go_and_shows_the_same_thing() {
+    crate::visuals::preload("rest-same", "Rest", COUNTER);
+    let shown = crate::visuals::snapshot("rest-same");
+    let versions = crate::visuals::versions("rest-same");
+    assert!(crate::visuals::awake("rest-same"));
+    crate::visuals::rest();
+    assert!(!crate::visuals::awake("rest-same"), "nothing here to lose");
+    assert_eq!(crate::visuals::snapshot("rest-same"), shown);
+    assert_eq!(crate::visuals::versions("rest-same"), versions, "nothing rebuilds");
+}
+
+#[test]
+fn a_control_used_after_rest_acts_on_the_same_visual_and_keeps_its_vm() {
+    crate::visuals::preload("rest-control", "Rest", COUNTER);
+    let scale = |shown: &zgx_script::Value| {
+        let text = format!("{shown:?}");
+        text.split("count ").nth(1).and_then(|s| s.split('"').next()).map(str::to_string).expect("its text")
+    };
+    let first = scale(&crate::visuals::snapshot("rest-control"));
+    assert!(first.starts_with("0 of "), "{first}");
+    crate::visuals::rest();
+    // (Handler 0 is the button: the same number in the tree it restarted to.)
+    crate::visuals::event("rest-control", 0);
+    let second = scale(&crate::visuals::snapshot("rest-control"));
+    assert_eq!(second, first.replacen('0', "1", 1), "the same random data, one click on");
+    // It has state its source doesn't give now: rest keeps it.
+    crate::visuals::rest();
+    assert!(crate::visuals::awake("rest-control"));
+    crate::visuals::event("rest-control", 0);
+    assert!(scale(&crate::visuals::snapshot("rest-control")).starts_with("2 of "));
+}
+
+fn canvas_arg(pointer: bool) -> zgx_script::Value {
+    use zgx_script::Value;
+    let mut fields = vec![("h", Value::Num(0.)), ("w", Value::Num(100.)), ("ht", Value::Num(50.)), ("t", Value::Num(0.))];
+    if pointer {
+        fields.extend([("px", Value::Num(1.)), ("py", Value::Num(1.))]);
+    }
+    Value::record(fields)
+}
+
+#[test]
+fn a_still_canvas_draws_the_same_after_rest_without_rebuilding() {
+    let id = "rest-canvas";
+    crate::visuals::preload(
+        id,
+        "Rest",
+        r#"
+local dots = {}
+for i = 1, 8 do dots[i] = math.random(0, 100) end
+return ui.canvas { height = 50, draw = function(g, w, h)
+    for i, x in dots do g:circle(x, i, 1) end
+end }
+"#,
+    );
+    let before = crate::visuals::draw(id, canvas_arg(false));
+    let versions = crate::visuals::versions(id);
+    crate::visuals::rest();
+    assert!(!crate::visuals::awake(id));
+    assert_eq!(crate::visuals::draw(id, canvas_arg(false)), before);
+    assert_eq!(crate::visuals::versions(id), versions, "waking draws nothing again by itself");
+    // Drawn for the pointer, it may hold what the pointer did.
+    crate::visuals::draw(id, canvas_arg(true));
+    crate::visuals::rest();
+    assert!(crate::visuals::awake(id));
+}
+
+#[test]
+fn what_draws_over_time_keeps_its_vm_but_a_shader_needs_none() {
+    let id = "rest-animated";
+    crate::visuals::preload(
+        id,
+        "Rest",
+        r#"
+local n = 0
+return ui.canvas { height = 50, animate = true, draw = function(g) n += 1 end }
+"#,
+    );
+    crate::visuals::rest();
+    assert!(crate::visuals::awake(id), "its script may carry on from the last draw");
+
+    let id = "rest-shader";
+    crate::visuals::preload(
+        id,
+        "Rest",
+        r#"
+return ui.shader { height = 50, code = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }" }
+"#,
+    );
+    assert_eq!(crate::visuals::snapshot(id).field("error"), None);
+    crate::visuals::rest();
+    assert!(!crate::visuals::awake(id), "a shader never runs the script");
+}
+
+#[test]
+fn a_visual_that_failed_keeps_what_it_has() {
+    let id = "rest-failed";
+    crate::visuals::preload(id, "Rest", "return function() error('no') end");
+    crate::visuals::rest();
+    assert!(crate::visuals::awake(id), "its message stays, and so does the VM that gave it");
 }
 
 #[test]
@@ -148,7 +274,7 @@ fn a_visual_being_read_says_so() {
 /// stores them) drawn as a reply draws it, with no script error and none
 /// saying it stopped: for checking a chat's worth of real visuals. Run on
 /// purpose:
-/// `VISUALS_DIR=… cargo test --bin zeron-zgx visuals_tests::scripts_in -- --ignored --nocapture`
+/// `VISUALS_DIR=… cargo test --bin zend-zgx visuals_tests::scripts_in -- --ignored --nocapture`
 #[test]
 #[ignore = "run on purpose, on a folder of visual scripts"]
 fn scripts_in_a_folder_draw_without_errors() {
@@ -243,7 +369,7 @@ fn shoot(app: &mut TestApp, out: &std::path::Path) {
 /// zgx's GPU renderer every frame: idle (1.5 s of real time, its own
 /// animation running if it has one) and with the pointer sweeping across
 /// it. Prints ms of this thread a frame and script calls. Run on purpose:
-/// `VISUALS_DIR=… cargo test --bin zeron-zgx visuals_tests::cost -- --ignored --nocapture`
+/// `VISUALS_DIR=… cargo test --bin zend-zgx visuals_tests::cost -- --ignored --nocapture`
 #[test]
 #[ignore = "run on purpose: a cost probe"]
 fn cost_of_each_visual() {
@@ -341,25 +467,25 @@ fn cost_of_each_visual() {
 
 /// How long crates/visual-gpu takes for one frame of a shader and a scene at
 /// a few sizes, warm: where a frame's time goes. Run on purpose:
-/// `cargo test --bin zeron-zgx visuals_tests::gpu_frame_bench -- --ignored --nocapture`
+/// `cargo test --bin zend-zgx visuals_tests::gpu_frame_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "run on purpose: a benchmark"]
 fn gpu_frame_bench() {
     use std::time::Instant;
-    use zeron_visual as zv;
-    println!("GPU: available {} {:?}", zeron_visual_gpu::available(), zeron_visual_gpu::unavailable_reason());
+    use zend_visual as zv;
+    println!("GPU: available {} {:?}", zend_visual_gpu::available(), zend_visual_gpu::unavailable_reason());
     let code = "void mainImage(out vec4 c, in vec2 p) { vec2 uv = p / iResolution.xy; c = vec4(uv, 0.5 + 0.5 * sin(iTime), 1.0); }";
     for (w, h, bloom) in [(800u32, 300u32, 0.0f32), (1600, 600, 0.0), (1600, 600, 0.8), (800, 300, 0.8)] {
-        let spec = zeron_visual_gpu::ShaderSpec { image: code, buffers: &[], inputs: &[], blend: zv::shader::Blend::Light, bloom, textures: &[] };
+        let spec = zend_visual_gpu::ShaderSpec { image: code, buffers: &[], inputs: &[], blend: zv::shader::Blend::Light, bloom, textures: &[] };
         let mut state = None;
         let mut uniforms = zv::shader::ShaderUniforms { resolution: [w as f32, h as f32, 2., 0.], ..Default::default() };
         for _ in 0..3 {
-            zeron_visual_gpu::render_shader(&spec, &uniforms, w, h, &mut state).unwrap();
+            zend_visual_gpu::render_shader(&spec, &uniforms, w, h, &mut state).unwrap();
         }
         let start = Instant::now();
         for i in 0..20 {
             uniforms.time[0] = i as f32 * 0.03;
-            zeron_visual_gpu::render_shader(&spec, &uniforms, w, h, &mut state).unwrap();
+            zend_visual_gpu::render_shader(&spec, &uniforms, w, h, &mut state).unwrap();
         }
         println!("shader {w}x{h} bloom {bloom}: {:.2} ms/frame", start.elapsed().as_secs_f64() * 50.);
     }
@@ -376,12 +502,12 @@ fn gpu_frame_bench() {
         let mut state = None;
         let camera = zv::Camera { yaw: 0.5, pitch: 0.4, zoom: 1. };
         for _ in 0..3 {
-            zeron_visual_gpu::render_scene(&scene, camera, w, h, scale, &rgba, &mut state).expect("GPU scene");
+            zend_visual_gpu::render_scene(&scene, camera, w, h, scale, &rgba, &mut state).expect("GPU scene");
         }
         let start = Instant::now();
         for i in 0..20 {
             let camera = zv::Camera { yaw: 0.5 + i as f32 * 0.02, pitch: 0.4, zoom: 1. };
-            zeron_visual_gpu::render_scene(&scene, camera, w, h, scale, &rgba, &mut state).expect("GPU scene");
+            zend_visual_gpu::render_scene(&scene, camera, w, h, scale, &rgba, &mut state).expect("GPU scene");
         }
         println!("scene {w}x{h} @{scale}x: {:.2} ms/frame", start.elapsed().as_secs_f64() * 50.);
     }
@@ -435,7 +561,7 @@ fn a_visual_scrolled_away_does_not_animate() {
 /// (a long reply: a few show, the rest scrolled away), scrolled from top to
 /// bottom and back over 3 s, drawn by zgx's GPU renderer each frame: this
 /// thread's ms a frame and the GPU thread's frames. Run on purpose:
-/// `VISUALS_DIR=… cargo test --bin zeron-zgx visuals_tests::cost_together -- --ignored --nocapture`
+/// `VISUALS_DIR=… cargo test --bin zend-zgx visuals_tests::cost_together -- --ignored --nocapture`
 #[test]
 #[ignore = "run on purpose: a cost probe"]
 fn cost_together() {
@@ -534,7 +660,7 @@ fn a_show_visual_call_leaves_no_tool_row_and_its_visual_sits_in_place() {
     );
     let mcp = |id: &str, tool: &str, error: bool, output: &str| {
         json!({ "kind": "tool", "id": id, "resolved": true, "isError": error, "output": output,
-                "call": { "kind": "mcp", "server": "zeron", "tool": tool, "input": {} } })
+                "call": { "kind": "mcp", "server": "zend", "tool": tool, "input": {} } })
     };
     let exec = |id: &str| {
         json!({ "kind": "tool", "id": id, "resolved": true, "isError": false,

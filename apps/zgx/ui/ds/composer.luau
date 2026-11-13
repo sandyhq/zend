@@ -1,4 +1,4 @@
--- Zeron's composer, from the design system's parts: a pill holding the
+-- Zend's composer, from the design system's parts: a pill holding the
 -- draft, + on the left to attach, the microphone and Send on the right;
 -- under it a footer of chips the same size: the access mode (with plan
 -- mode's switch in its panel) and where it works (a folder or worktree,
@@ -9,7 +9,7 @@
 -- the chips sit on the composer rather than on the art. The
 -- footer keeps to one line: short of room, it folds a step at a time:
 -- "Plan" goes, then the access mode's name (leaving its icon, in the accent
--- while plan mode is on), then the branch's, leaving its icon at the left. Its geometry is Zeron's
+-- while plan mode is on), then the branch's, leaving its icon at the left. Its geometry is Zend's
 -- (crates/ui/src/composer.rs): 26-point corners, 28-point round controls,
 -- one 49-point line while the draft fits beside the controls.
 --
@@ -52,6 +52,7 @@ local dock = require("@self/composer_dock")
 local ask = require("@self/composer_ask")
 local mentions = require("@self/composer_mentions")
 local locale = require("@self/locale")
+local VoiceWave = require("@self/voice_wave").VoiceWave
 local context_usage = require("@self/context_usage")
 local motion = require("@self/motion")
 local EditorMenu = require("@self/editor_menu")
@@ -83,6 +84,9 @@ export type Notice = {
 	spinner: boolean?,
 	action: string?,
 	dismissable: boolean?,
+	-- Worth knowing, not worth raising: read with the deck's alerts once
+	-- they're open, never putting up the pill on its own.
+	quiet: boolean?,
 }
 export type Answer = { values: { string }, text: string }
 -- Where an existing chat works (`branch_fixed`).
@@ -124,6 +128,12 @@ export type Props = {
 	harnesses: { ModelPicker.Harness } | State<{ ModelPicker.Harness }> | () -> { ModelPicker.Harness },
 	models: { ModelPicker.Model } | State<{ ModelPicker.Model }> | () -> { ModelPicker.Model },
 	models_loading: (() -> boolean)?,
+	-- The model's name while the catalog doesn't list it (ds.ModelPicker's
+	-- `model_label`).
+	model_label: (() -> string?)?,
+	-- What runs while no model is chosen, shown and not sent
+	-- (ds.ModelPicker's `default_model`).
+	default_model: (() -> string?)?,
 	-- A model's agent's accounts, putting one in use, and asking after them
 	-- again (ds.ModelPicker's).
 	accounts: ((harness: string, model: string) -> { ModelPicker.Account }?)?,
@@ -135,7 +145,7 @@ export type Props = {
 	-- Or what it holds (tokens and window, as the agent reports them): the
 	-- ring shows only once a window is reported (an agent that never says
 	-- one has none), and hovering or focusing it opens a card saying the
-	-- numbers, as Zeron's does (crates/ui/src/context_usage.rs).
+	-- numbers, as Zend's does (crates/ui/src/context_usage.rs).
 	usage: (() -> Usage?)?,
 	-- The footer stands over a wallpaper (a new chat's art): the pill's glass
 	-- continues under it as a tray, the chips on it rather than on the art,
@@ -243,6 +253,11 @@ export type Props = {
 	dictating: State<boolean>?,
 	on_dictate: (() -> ())?,
 	on_cancel_dictation: (() -> ())?,
+	-- Dictation for real (screens/chat/dictation's `bind`): its microphone,
+	-- the editor's events it follows, and Send waiting for its words. With
+	-- its `levels` and `phase`, the track's waveform follows the microphone
+	-- (ds/voice_wave); without, it moves from the time alone.
+	dictation: any?,
 	-- Nothing can be written (a chat archived, an agent gone): dimmed, the
 	-- notice saying why.
 	disabled: (boolean | () -> boolean)?,
@@ -270,9 +285,15 @@ export type Props = {
 	-- send).
 	on_mention: ((item: any, trigger: string, token: string) -> ())?,
 	mention_empty: { [string]: string }?,
+	-- Whose draft it shows (a composer that moves between chats: the
+	-- chat), so a mention list put away is that draft's alone.
+	draft_key: (() -> any)?,
+	-- A trigger whose list is a launcher, by trigger: its sections, in order
+	-- (ds/composer_mentions `sections`).
+	mention_sections: { [string]: { { id: string, label: any } } }?,
 }
 
--- Zeron's geometry. The one line: 47 points inside the hairline, the text
+-- Zend's geometry. The one line: 47 points inside the hairline, the text
 -- centred in it. Opened out: the text box (16 above the text, 4 below)
 -- between its floor and cap, then the controls' row (2, a 32-point chip
 -- zone, 8). Round controls are 28 across, concentric with the pill's
@@ -288,11 +309,11 @@ local HAIRLINES = 2
 local CONTROL = 28
 local INSET_LINE = (ONE_LINE - CONTROL) / 2
 local function open_inset(): number
-	return control.nest("$zeron.composer.radius", 1) - CONTROL / 2
+	return control.nest("$zend.composer.radius", 1) - CONTROL / 2
 end
 -- The controls' row opened out: its 42 points, or more where a rounder
 -- pill (a template's) sets its controls further in from the foot, so they
--- keep the room over them they have at Zeron's own corner (its controls'
+-- keep the room over them they have at Zend's own corner (its controls'
 -- top 3 under the row's) rather than rising into the text.
 local ACTIONS_OVER = 3
 local function actions(): number
@@ -329,14 +350,14 @@ local CHIP_H, CHIP_RADIUS = 24, "$radius.lg"
 -- Its words lifted a point, as the footer's other chips' are (ds/dropdown's
 -- chip): centred by their capitals, lowercase reads low beside a glyph. (A
 -- margin under them of twice that: their box stays centred, a point up.)
-local LIFT = "$zeron.space.hair"
+local LIFT = "$zend.space.hair"
 type Folded = { level: number, access_at: { [string]: number }, where_icon: number?, model_at: { [string]: number }? }
 local FOOTER_SIDES, FOOTER_GAP = 20, 4
 -- With cargo or a question over the draft, the draft keeps the strip's
 -- `below` over it (the theme's; read as the composer is built) rather than
 -- the open text box's own top.
 local function head_gap(): number
-	local v = ui.theme.get("zeron.composer.chip.below")
+	local v = ui.theme.get("zend.composer.chip.below")
 	return if type(v) == "number" then v else 12
 end
 -- A pill narrower than this is short of room: the trays' rows fold their
@@ -360,7 +381,7 @@ local function worded(t: { [string]: any }, words: { [string]: string }): any
 	return out
 end
 
--- The access modes, as Zeron offers them; their icons (Central Icons,
+-- The access modes, as Zend offers them; their icons (Central Icons,
 -- centralicons.com, round outlined, radius 2, stroke 1.5) say what each
 -- does: it waits for you (a raised hand), edits go through (a pencil with
 -- sparkles), nothing is held back (an open padlock). (Made as they're
@@ -394,7 +415,7 @@ local function plan_row(plan: State<boolean>): Node
 		ui.column {
 			grow = 1,
 			min_w = 0,
-			gap = "$zeron.space.hair",
+			gap = "$zend.space.hair",
 			ui.text {
 				locale.t("ds.composer.plan.mode"),
 				text_size = "$font.size.md",
@@ -421,7 +442,7 @@ end
 -- out of reach).
 type Choice = Dropdown.Item
 
--- The checkouts, as Zeron offers them (made as they're read).
+-- The checkouts, as Zend offers them (made as they're read).
 local function CHECKOUTS(): { Choice }
 	return {
 	worded({ value = "local", icon = "folder" }, {
@@ -464,6 +485,7 @@ local function list_of(given: any): any
 end
 
 local function submenu(
+	siblings: { State<boolean> },
 	label: Message,
 	value: State<string?>,
 	choices: { Choice } | () -> { Choice },
@@ -487,7 +509,16 @@ local function submenu(
 		-- (None yet, as a list still coming: a blank row.)
 		return listed[fallback] or listed[1] or { value = "", label = "" }
 	end
+	local own: State<boolean>? = nil
+	local function close_siblings()
+		for _, open in siblings do
+			if open ~= own then
+				open:set(false)
+			end
+		end
+	end
 	return Dropdown {
+		on_open = close_siblings,
 		value = value,
 		items = choices,
 		actions = actions,
@@ -495,16 +526,37 @@ local function submenu(
 		label = label :: any,
 		search = search or false,
 		width = 260,
+		submenu = true,
 		-- Close beside the panel, as a submenu sits: 2 from its edge (the
 		-- row it opens from sits 5 inside it, its inset and border).
 		placement = { side = "right", align = "start", offset = 7 },
 		trigger = function(menu: Dropdown.Menu): Node
-			return menu_row {
+			own = menu.open
+			table.insert(siblings, menu.open)
+			return ui.menu_item(Menu.look {
 				label = label,
 				bg = function()
 					return if menu.open:get() then "$hover" else "#00000000"
 				end,
-				on_click = menu.toggle,
+				-- A press opens it, as hovering does; one already open stays
+				-- open (a hover opened it just before), as a system menu's row.
+				on_click = function()
+					close_siblings()
+					if not menu.open:peek() then
+						menu.toggle()
+					end
+				end,
+				on_hover = function(inside: boolean)
+					if menu.on_hover then
+						menu.on_hover(inside)
+					end
+					if inside then
+						close_siblings()
+						if not menu.open:peek() then
+							menu.toggle()
+						end
+					end
+				end,
 				-- The choice's own tile (a project's hue or artwork), else its
 				-- icon: one or the other, following the choice.
 				ui.presence(function(): string
@@ -524,6 +576,10 @@ local function submenu(
 							end,
 							emoji = function(): string?
 								return current().emoji
+							end,
+							-- (A project's choice: its tile `.project-icon`.)
+							project = function(): string?
+								return (current() :: any).project
 							end,
 							size = 18,
 						}
@@ -549,7 +605,7 @@ local function submenu(
 					Icon { name = "wifi-off", size = 12 },
 				}),
 				Menu.chevron(),
-			}
+			})
 		end,
 	}
 end
@@ -598,6 +654,7 @@ local function work_in(
 	device: State<string?>?,
 	devices: ({ Device } | State<{ Device }> | () -> { Device })?
 ): Node
+	local siblings: { State<boolean> } = {}
 	local rows: { Node } = {
 		Menu.Heading { locale.t("ds.composer.work_in") },
 	}
@@ -623,7 +680,7 @@ local function work_in(
 			rows,
 			ui.show(function(): boolean
 				return #choices() > 0
-			end, submenu(locale.t("ds.composer.device.label"), device, choices, 1, locale.s("ds.composer.device.search")))
+			end, submenu(siblings, locale.t("ds.composer.device.label"), device, choices, 1, locale.s("ds.composer.device.search")))
 		)
 	end
 	if project and projects then
@@ -646,15 +703,19 @@ local function work_in(
 			end
 			return out
 		end
-		-- Under the projects, together: working in none, and making one.
+		-- Under the projects, together: working in none, and making one. (Not
+		-- none on Cloud: its machine clones a project's repository.)
 		local p = project
 		table.insert(
 			rows,
-			submenu(locale.t("ds.composer.project.label"), project, choices, 1, locale.s("ds.composer.project.search"), {
+			submenu(siblings, locale.t("ds.composer.project.label"), project, choices, 1, locale.s("ds.composer.project.search"), {
 				worded({
 					icon = "close",
 					on_click = function()
 						p:set(NO_PROJECT)
+					end,
+					shown = function(): boolean
+						return not on_cloud(device, devices)
 					end,
 				}, { label = "ds.composer.project.none_action" }),
 				worded({ icon = "plus", on_click = on_new_project }, { label = "ds.composer.project.new" }),
@@ -684,7 +745,7 @@ local function work_in(
 			rows,
 			ui.show(function(): boolean
 				return (project == nil or project:get() ~= NO_PROJECT) and not plain() and not on_cloud(device, devices)
-			end, submenu(locale.t("ds.composer.checkout.label"), checkout, CHECKOUTS, 2))
+			end, submenu(siblings, locale.t("ds.composer.checkout.label"), checkout, CHECKOUTS, 2))
 		)
 	end
 	return ui.column { w_full = true, table.unpack(rows) }
@@ -705,7 +766,7 @@ local function ring(used: number | () -> number, usage: (() -> Usage?)?, side: (
 		return ui.row {
 			id = "composer-context",
 			h = CHIP_H,
-			px = "$zeron.space.tight",
+			px = "$zend.space.tight",
 			items = "center",
 			rounded = CHIP_RADIUS,
 			hover = { bg = "$hover" },
@@ -895,7 +956,8 @@ local function place_line(p: Place): { Child }
 	}
 end
 
--- The voice, while dictating: bars across the track, each breathing on
+-- The voice, while dictating with no levels to follow (the gallery, fixtures:
+-- ds/voice_wave draws the microphone): bars across the track, each breathing on
 -- its own, from the time alone (no script per frame). params[0]: the ink.
 local VOICE = ui.shader([[
 fn fill(input: FillInput) -> vec4<f32> {
@@ -931,7 +993,7 @@ return ui.component(function(props: Props): Node
 	-- On the tray, the step under the pill and above the tray's foot (one
 	-- token: the footer's margins and the tray's height both read it), and
 	-- how far the tray tucks up behind the pill, its top hidden there.
-	local TRAY_GAP, TRAY_TUCK = "zeron.space.tight", 40
+	local TRAY_GAP, TRAY_TUCK = "zend.space.tight", 40
 	local function tray_gap(): number
 		local _ = ui.theme.current:get()
 		return (ui.theme.get(TRAY_GAP) :: number?) or 6
@@ -941,7 +1003,11 @@ return ui.component(function(props: Props): Node
 	end
 	local value = props.value
 	local running = props.running
-	local field = ui.ref()
+	local spoken = props.dictation
+	if spoken then
+		props.dictating, props.on_cancel_dictation = spoken.dictating, spoken.cancel
+	end
+	local field = if spoken then spoken.editor else ui.ref()
 	local pill = ui.ref()
 
 	-- What it is laid out from, as layout last measured it (0: not yet):
@@ -1046,6 +1112,9 @@ return ui.component(function(props: Props): Node
 		value:set("")
 	end
 	local function send()
+		if spoken and spoken.before_send() then
+			return
+		end
 		local text = value:peek()
 		if asking() then
 			answer()
@@ -1059,8 +1128,11 @@ return ui.component(function(props: Props): Node
 		end
 		value:set("")
 	end
+	if spoken then
+		spoken.send = send
+	end
 	local function stopping(): boolean
-		return running ~= nil and running:get() and not has_text() and not has_cargo() and not asking()
+		return running ~= nil and running:get() and not has_text() and not has_cargo() and not asking() and not dictating()
 	end
 
 	-- Mentions at the caret.
@@ -1071,6 +1143,8 @@ return ui.component(function(props: Props): Node
 		enabled = props.mention_enabled,
 		empty = props.mention_empty,
 		on_choose = props.on_mention,
+		key = props.draft_key,
+		sections = props.mention_sections,
 		in_view = function(): boolean
 			return (pill_w:get() or 0) > 0
 		end,
@@ -1392,6 +1466,8 @@ return ui.component(function(props: Props): Node
 			harnesses = props.harnesses :: any,
 			models = props.models :: any,
 			loading = props.models_loading,
+			model_label = props.model_label,
+			default_model = props.default_model,
 			accounts = props.accounts,
 			on_account = props.on_account,
 			on_accounts_open = props.on_accounts_open,
@@ -1459,8 +1535,9 @@ return ui.component(function(props: Props): Node
 			return locale.s(if running and running:get() then "ds.composer.queue_message" else "ds.composer.send_message")
 		end,
 		disabled = function()
-			return disabled() or not (has_text() or has_cargo())
+			return disabled() or not (has_text() or has_cargo() or dictating())
 		end,
+		on_press = if spoken then spoken.on_send_press else nil,
 		on_click = send,
 		Icon { name = "arrow-up", size = 14 },
 	}
@@ -1470,7 +1547,7 @@ return ui.component(function(props: Props): Node
 		icon = true,
 		label = locale.t("ds.composer.stop"),
 		on_click = props.on_stop,
-		ui.div { w = 10, h = 10, rounded = ui.raw(3, "the stop glyph's corner"), bg = "$zeron.primary.text" },
+		ui.div { w = 10, h = 10, rounded = ui.raw(3, "the stop glyph's corner"), bg = "$zend.primary.text" },
 	}
 	-- A question's way through: Back (from the second page), then Submit
 	-- (or Next, with pages to come), dimmed until something is picked or
@@ -1584,13 +1661,13 @@ return ui.component(function(props: Props): Node
 			left = by_open(INSET_LINE + CONTROL + 8, INSET_OPEN + CONTROL + 8),
 			right = by_open(INSET_LINE + CONTROL * 2 + 8 + 8, INSET_OPEN + CONTROL * 2 + 8 + 8),
 			bottom = by_open(INSET_LINE, INSET_OPEN),
-			h = "$zeron.composer.voice.h",
+			h = "$zend.composer.voice.h",
 			ref = track_w,
 			overflow = "hidden",
 			rounded = "$radius.full",
 			pointer_events = "none",
 			ui.presence(function(): string?
-				return if dictating() then "on" else nil
+				return if dictating() then `on:{ui.theme.current:get()}` else nil
 			end, function(_k: string): Node
 				return ui.row {
 					absolute = true,
@@ -1605,28 +1682,26 @@ return ui.component(function(props: Props): Node
 					gap = "$space.2",
 					items = "center",
 					rounded = "$radius.full",
-					bg = "$zeron.composer.voice.bg",
+					bg = "$zend.composer.voice.bg",
 					ui.div {
 						w = 8,
 						h = 8,
 						shrink = 0,
 						rounded = "$radius.full",
-						bg = "$zeron.composer.voice.ink",
+						bg = "$zend.composer.voice.ink",
 						opacity = ui.loop { from = 0.35, to = 1, duration = 900, fps = 30 },
 					},
-					ui.text {
-						locale.t("ds.composer.listening"),
-						shrink = 0,
-						text_size = "$font.size.sm",
-						weight = "$font.weight.medium",
-						color = "$text.primary",
-					},
-					ui.div {
+					if spoken and spoken.levels and spoken.phase then VoiceWave { levels = spoken.levels, phase = spoken.phase } else ui.div {
 						grow = 1,
 						h = 16,
 						min_w = 24,
 						bg_shader = VOICE,
-						shader_params = { "$zeron.composer.voice.ink", { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
+						-- (The engine steps its time: without it, it holds its first frame.)
+						shader_clock = true,
+						-- (Its ink as a colour, not a token: a clocked shader's parameters
+						-- drop theme tokens, zgx 4809bcce. Its presence's key holds the
+						-- theme, so the bar is made again as that changes.)
+						shader_params = { ui.theme.get("zend.composer.voice.ink"), { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
 					},
 					ui.text {
 						clock,
@@ -1716,7 +1791,7 @@ return ui.component(function(props: Props): Node
 						if props.on_open_cargo then
 							return nil
 						end
-						local radius = ui.theme.get("zeron.composer.chip.radius")
+						local radius = ui.theme.get("zend.composer.chip.radius")
 						return Lightbox.source(group, item.id, if type(radius) == "number" then radius else 0)
 					end,
 				},
@@ -1743,6 +1818,18 @@ return ui.component(function(props: Props): Node
 		return if type(own) == "string" then own else own:get()
 	end
 
+	-- A press on the composer's blank room (the pill's padding, its controls'
+	-- rows between them, under the draft): the draft takes the keys, its
+	-- caret at its end.
+	local function to_draft()
+		local el = field:peek()
+		if el then
+			el:focus()
+			local n = #value:peek()
+			el:set_selection_bytes(n, n)
+		end
+	end
+
 	local surface = ui.div {
 		ref = pill,
 		on_resize = measure(pill_w, "w"),
@@ -1754,7 +1841,7 @@ return ui.component(function(props: Props): Node
 		-- over it: one surface. Its own corner only clips what's in it, and
 		-- its edge, clear, keeps the room the frame's takes, so everything in
 		-- it sits where it always has.)
-		rounded = "$zeron.composer.radius",
+		rounded = "$zend.composer.radius",
 		border = 1,
 		border_color = "#00000000",
 		-- (Neither `on_files` nor its overlay: files are what's around it to
@@ -1772,7 +1859,10 @@ return ui.component(function(props: Props): Node
 				end
 			end
 			else nil,
-		-- A press anywhere but a control goes to the draft.
+		-- A press anywhere but a control goes to the draft (its caret at
+		-- its end). (Under the pill's controls and draft, which take their
+		-- own; `focus_on_press = false`, so zgx doesn't move focus off it
+		-- to what's under the press after.)
 		ui.div {
 			absolute = true,
 			left = 0,
@@ -1780,12 +1870,8 @@ return ui.component(function(props: Props): Node
 			top = 0,
 			bottom = 0,
 			cursor = "text",
-			on_press = function()
-				local el = field:peek()
-				if el then
-					el:focus()
-				end
-			end,
+			focus_on_press = false,
+			on_press = to_draft,
 		},
 		-- The measures: the draft on one line, and wrapped as it would be
 		-- opened out (a mark after it, so a last empty line counts).
@@ -1796,8 +1882,8 @@ return ui.component(function(props: Props): Node
 			top = 0,
 			opacity = 0,
 			pointer_events = "none",
-			text_size = "$zeron.composer.text",
-			line_height = "$zeron.composer.line",
+			text_size = "$zend.composer.text",
+			line_height = "$zend.composer.line",
 			function()
 				return value:get()
 			end,
@@ -1811,8 +1897,8 @@ return ui.component(function(props: Props): Node
 			opacity = 0,
 			pointer_events = "none",
 			wrap = true,
-			text_size = "$zeron.composer.text",
-			line_height = "$zeron.composer.line",
+			text_size = "$zend.composer.text",
+			line_height = "$zend.composer.line",
 			function()
 				return value:get() .. "\u{200B}"
 			end,
@@ -1825,31 +1911,12 @@ return ui.component(function(props: Props): Node
 			right = eased(text_right),
 			top = eased(text_top),
 			h = eased(text_h),
-			-- Its placeholder, the composer's own (it changes with what is
-			-- asked): over the empty draft, taking no pointer.
-			ui.show(
-				function()
-					return value:get() == ""
-				end,
-				ui.text {
-					placeholder,
-					absolute = true,
-					left = 0,
-					top = 0,
-					right = 0,
-					truncate = true,
-					pointer_events = "none",
-					aria_hidden = true,
-					text_size = "$zeron.composer.text",
-					line_height = "$zeron.composer.line",
-					color = "$text.tertiary",
-				}
-			),
 			ui.textarea(EditorMenu.on({
 				ref = field,
 				value = value,
 				label = locale.t("ds.composer.message"),
-				placeholder = "",
+				placeholder = placeholder,
+				placeholder_color = "$text.tertiary",
 				read_only = disabled,
 				w_full = true,
 				h_full = true,
@@ -1860,18 +1927,37 @@ return ui.component(function(props: Props): Node
 				bg = "#00000000",
 				focus = { border = 0, outline = 0 },
 				wrap = true,
-				text_size = "$zeron.composer.text",
-				line_height = "$zeron.composer.line",
+				text_size = "$zend.composer.text",
+				line_height = "$zend.composer.line",
 				color = "$text.primary",
-				-- The caret: the accent, two points wide, as Zeron's.
-				caret_color = "$zeron.composer.caret",
-				caret_width = ui.theme.get("zeron.composer.caret_width"),
+				-- The caret: the accent, two points wide, as Zend's.
+				caret_color = "$zend.composer.caret",
+				caret_width = ui.theme.get("zend.composer.caret_width"),
 				-- Markdown as it is typed: its markers greyed, bold, italic
 				-- and struck text in their faces, code washed; and a wash
 				-- behind each file, command or skill mentioned.
 				highlight = mentions.highlight,
 				active_descendant = m.descendant,
-				on_caret = m.on_caret,
+				on_caret = if spoken
+					then function(line, column, anchor, focus)
+						m.on_caret(line, column, anchor, focus)
+						spoken.on_caret()
+					end
+					else m.on_caret,
+				on_change = if spoken then spoken.on_change else nil,
+				on_focus = function()
+					m.on_focus(true)
+					if spoken and spoken.on_focus then
+						spoken.on_focus()
+					end
+				end,
+				on_blur = function()
+					m.on_focus(false)
+					if spoken and spoken.on_blur then
+						spoken.on_blur()
+					end
+				end,
+				on_key_up = if spoken then spoken.on_key_up else nil,
 				on_paste = function(e)
 					-- (Files first: a copied file puts its name in `text` too.)
 					if e.files and #e.files > 0 and props.on_files then
@@ -1995,7 +2081,7 @@ return ui.component(function(props: Props): Node
 			end, ui.row {
 				items = "center",
 				gap = "$space.2",
-				mic,
+				if spoken then spoken.mic() else mic,
 				ui.show(stopping, stop_button),
 				ui.show(function()
 					return not stopping()
@@ -2003,7 +2089,7 @@ return ui.component(function(props: Props): Node
 			}),
 		},
 		-- Files over it: the pill says what a drop does, over everything, as
-		-- Zeron's drop overlay does (shell.rs `attachment_drop_overlay`): the
+		-- Zend's drop overlay does (shell.rs `attachment_drop_overlay`): the
 		-- scrim, the words in the text's ink, there while files are over it.
 		-- (Not when the caller covers more than the pill with its own.)
 		if props.drop_overlay ~= false
@@ -2118,8 +2204,8 @@ return ui.component(function(props: Props): Node
 					return ui.button {
 						label = locale.t("ds.composer.branch.label"),
 						h = CHIP_H,
-						px = "$zeron.space.tight",
-						gap = "$zeron.space.tight",
+						px = "$zend.space.tight",
+						gap = "$zend.space.tight",
 						items = "center",
 						min_w = 0,
 						rounded = CHIP_RADIUS,
@@ -2149,8 +2235,8 @@ return ui.component(function(props: Props): Node
 			local static: Node? = if fixed
 				then ui.row {
 					h = CHIP_H,
-					px = "$zeron.space.tight",
-					gap = "$zeron.space.tight",
+					px = "$zend.space.tight",
+					gap = "$zend.space.tight",
 					items = "center",
 					min_w = 0,
 					text_size = "$font.size.sm",
@@ -2204,6 +2290,7 @@ return ui.component(function(props: Props): Node
 		footer = ui.row {
 			id = props.toolbar_id,
 			on_resize = measure(footer_w, "w"),
+			relative = true,
 			h = 24,
 			-- On the tray: a tight step under the pill and above the tray's
 			-- foot (the pill's full control inset read too airy there), and
@@ -2216,14 +2303,28 @@ return ui.component(function(props: Props): Node
 				return if on_tray() then `${TRAY_GAP}` else 0
 			end :: any,
 			px = function(): any
-				return if on_tray() then ui.raw(TRAY_INSET, "the pill's controls' inset") else "$zeron.space.snug"
+				return if on_tray() then ui.raw(TRAY_INSET, "the pill's controls' inset") else "$zend.space.snug"
 			end :: any,
 			items = "center",
 			gap = "$space.1",
+			-- Its blank room, between and beside its controls: the draft's,
+			-- as the pill's is.
+			ui.div {
+				absolute = true,
+				left = 0,
+				right = 0,
+				top = 0,
+				bottom = 0,
+				focus_on_press = false,
+				on_press = to_draft,
+			},
 			-- Clipped: past every fold, it gives way under the right group
 			-- rather than running beneath it.
 			ui.row {
 				hook = "chat.composer.toolbar.start",
+				-- (Its blank room passes the press on, to the draft's;
+				-- its controls take their own.)
+				pointer_events = "none",
 				gap = "$space.1",
 				items = "center",
 				min_w = 0,
@@ -2233,6 +2334,7 @@ return ui.component(function(props: Props): Node
 			},
 			ui.row {
 				hook = "chat.composer.toolbar.end",
+				pointer_events = "none",
 				on_resize = measure(right_w, "w"),
 				items = "center",
 				shrink = 0,
@@ -2271,6 +2373,7 @@ return ui.component(function(props: Props): Node
 					action = n.action,
 					spinner = n.spinner,
 					dismissable = n.dismissable == true,
+					quiet = n.quiet == true,
 				})
 			end
 			if props.alerts then
@@ -2332,7 +2435,7 @@ return ui.component(function(props: Props): Node
 		w_full = true,
 		relative = true,
 		opacity = function(): number
-			return if disabled() then (ui.theme.get("zeron.disabled") :: number?) or 0.4 else 1
+			return if disabled() then (ui.theme.get("zend.disabled") :: number?) or 0.4 else 1
 		end,
 		-- The tray (over a wallpaper): the pill's glass continued under the
 		-- footer, tucked behind the pill (its top hidden under it, its sides
@@ -2356,11 +2459,11 @@ return ui.component(function(props: Props): Node
 				-- its own anywhere: it is the pill's glass continued (the pill
 				-- keeps its edge). A rounded top, or a hairline, showed a second
 				-- curve against the pill's own.
-				rounded = "$zeron.composer.tray.radius",
+				rounded = "$zend.composer.tray.radius",
 				rounded_tl = 0,
 				rounded_tr = 0,
 				bg = function(): string
-					return if material.see_through() then "$zeron.composer.tint" else "$zeron.composer.solid"
+					return if material.see_through() then "$zend.composer.tint" else "$zend.composer.solid"
 				end,
 				backdrop_blur = function(): number
 					return if material.see_through() then 16 else 0
@@ -2393,17 +2496,17 @@ return ui.component(function(props: Props): Node
 				top = 0,
 				bottom = 0,
 				pointer_events = "none",
-				rounded = "$zeron.composer.radius",
+				rounded = "$zend.composer.radius",
 				border = 1,
-				border_color = "$zeron.composer.edge",
+				border_color = "$zend.composer.edge",
 				bg = function()
-					return if material.see_through() then "$zeron.composer.tint" else "$zeron.composer.solid"
+					return if material.see_through() then "$zend.composer.tint" else "$zend.composer.solid"
 				end,
 				backdrop_blur = function()
 					return if material.see_through() then 16 else 0
 				end,
 				shadow = function()
-					return if material.see_through() then "$zeron.composer.rest" else "$zeron.composer.shadow"
+					return if material.see_through() then "$zend.composer.rest" else "$zend.composer.shadow"
 				end,
 			},
 			trays,

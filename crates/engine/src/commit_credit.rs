@@ -1,6 +1,6 @@
-//! Credit Zeron in the commits its agents make: a
-//! `Co-authored-by: zeronsh[bot]` trailer, which GitHub counts as a
-//! contribution by the Zeron app.
+//! Credit Zend in the commits its agents make: a
+//! `Co-authored-by: sandyhq[bot]` trailer, which GitHub counts as a
+//! contribution by the Zend app.
 //!
 //! Agents commit with `git` themselves (every harness, any repository), so
 //! the trailer comes from a git hook that only the agents' processes see:
@@ -10,7 +10,7 @@
 //! repository or user config, else `.git/hooks` — and `commit-msg` then adds
 //! the trailer once that hook passed. Commits made by hand never see it.
 //!
-//! Always on for a Cloud machine (Zeron's own); on a user's device while its
+//! Always on for a Cloud machine (Zend's own); on a user's device while its
 //! setting is on (off by default: the user's own repositories).
 
 use std::collections::BTreeMap;
@@ -22,10 +22,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::EngineError;
 
-/// The GitHub App's bot account (`zeronsh[bot]`, user id 346184242): its
+/// The GitHub App's bot account (`sandyhq[bot]`, user id 346184242): its
 /// noreply address is what GitHub resolves a co-author trailer to.
 pub const TRAILER: &str =
-    "Co-authored-by: zeronsh[bot] <346184242+zeronsh[bot]@users.noreply.github.com>";
+    "Co-authored-by: sandyhq[bot] <346184242+sandyhq[bot]@users.noreply.github.com>";
 
 /// Hooks the wrappers stand in for. `reference-transaction` and
 /// `post-index-change` are left out: they run on every ref or index write,
@@ -108,7 +108,7 @@ impl CommitCredit {
     pub fn set(&self, enabled: bool) -> Result<CommitCreditStatus, EngineError> {
         if self.cloud {
             return Err(EngineError::Other(
-                "Cloud machines always credit Zeron in their commits.".into(),
+                "Cloud machines always credit Zend in their commits.".into(),
             ));
         }
         let next = Stored { enabled };
@@ -175,8 +175,8 @@ fn add_git_config(env: &mut BTreeMap<String, String>, key: &str, value: &str) {
 fn wrapper_script() -> String {
     format!(
         r#"#!/bin/sh
-# Zeron: run this repository's own hook, then credit Zeron in the commit.
-# Written by the Zeron engine (commit_credit.rs); safe to delete.
+# Zend: run this repository's own hook, then credit Zend in the commit.
+# Written by the Zend engine (commit_credit.rs); safe to delete.
 name=$(basename "$0")
 here=$(cd "$(dirname "$0")" && pwd -P)
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_commits_credit_zeron_and_keep_the_repositorys_hooks() {
+    fn agent_commits_credit_zend_and_keep_the_repositorys_hooks() {
         let data = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let none = BTreeMap::new();
@@ -324,7 +324,7 @@ mod tests {
             .status
             .success()
         );
-        assert!(!message(repo.path()).contains("zeronsh"));
+        assert!(!message(repo.path()).contains("sandyhq"));
     }
 
     #[test]

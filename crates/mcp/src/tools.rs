@@ -1,7 +1,7 @@
 //! The tool catalog and its dispatch.
 //!
 //! Every tool is a thin composition of engine reads/writes from
-//! [`Zeron`]; the only logic that lives here is argument resolution (chat
+//! [`Zend`]; the only logic that lives here is argument resolution (chat
 //! by prefix, project by path), sender attribution, and the "how do I
 //! deliver a message to a chat in this state" choice the composer makes
 //! for humans.
@@ -13,14 +13,14 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use zeron_doc::{SessionCommandPayload, TranscriptWindow};
-use zeron_proto::{
+use zend_doc::{SessionCommandPayload, TranscriptWindow};
+use zend_proto::{
     AccessMode, Chat, ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, Session, SessionStatus,
     Space, UserInputAnswer,
 };
 
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
-use crate::zeron::{HarnessInfo, TranscriptFollow, TurnOutcome, Zeron, session_for, short};
+use crate::zend::{HarnessInfo, TranscriptFollow, TurnOutcome, Zend, session_for, short};
 
 mod plugins;
 mod themes;
@@ -43,7 +43,7 @@ pub struct ToolDef {
 }
 
 pub struct Tools {
-    zeron: Arc<Zeron>,
+    zend: Arc<Zend>,
     // Remember successful sends on this MCP connection so wait_for_turn after
     // wait:false also waits for a newly created chat with no session row yet.
     pending_turns: tokio::sync::Mutex<HashMap<String, Arc<PendingTurn>>>,
@@ -67,6 +67,8 @@ fn chat_key_schema(extra: Value) -> Value {
     json!({ "type": "object", "properties": properties, "required": ["chat"] })
 }
 
+const DEVICE_STATS: &str = "device_stats";
+
 fn device_schema() -> Value {
     json!({ "type": "string", "description": "Host device id or exact name. Omit for the local engine." })
 }
@@ -82,6 +84,11 @@ fn catalog() -> Vec<ToolDef> {
             name: "list_devices",
             description: "Devices in this workspace (the local engine's device is flagged). Chats and projects are hosted on a device.",
             input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: DEVICE_STATS,
+            description: "One device's machine stats, asked live of that device (local when omitted): OS (name, version, kernel, architecture), CPU (model, physical and logical cores), memory (total and available bytes), storage (the volumes holding Zend's data and the home folder, plus every local volume: mount point, filesystem, total/available/used bytes), GPU names where the platform says them cheaply, uptime, load average (Unix), battery, and the Zend engine version. Any field is null when that machine can't say. Another device answers within about 5 s, or the error says it's offline (with when it was last seen) or its Zend is too old. Reports are cached for 5 s.",
+            input_schema: json!({ "type": "object", "properties": { "device": device_schema() } }),
         },
         ToolDef {
             name: "list_projects",
@@ -296,7 +303,7 @@ fn catalog() -> Vec<ToolDef> {
 }
 
 /// Shows a page in the CALLING chat, so it is offered only to an agent that
-/// Zeron launched (`ZERON_CHAT_ID` set).
+/// Zend launched (`ZEND_CHAT_ID` set).
 const SHOW_VISUAL: &str = "show_visual";
 
 /// Shows an image file in the CALLING chat; offered like `show_visual`.
@@ -319,7 +326,7 @@ inside your turn instead.";
 const SHOW_IMAGE_DESCRIPTION: &str = "\
 Show an image file (a screenshot, a rendered chart or diagram, a photo) inline in this chat, above \
 your final text reply; call it before writing that reply, once per image, in the order they should \
-appear. PNG, JPEG, WebP, or GIF, at most 10 MB and 4096 pixels on a side. Zeron copies the file \
+appear. PNG, JPEG, WebP, or GIF, at most 10 MB and 4096 pixels on a side. Zend copies the file \
 into the chat, so it stays visible after the file changes or is deleted. The reader \
 already sees the image, so the reply should not announce or describe it: add only what the image \
 doesn't show.";
@@ -331,10 +338,10 @@ than prose. The reader already sees it, so the reply should not announce, locate
 only what the visual doesn't say. To show an image file as it is (a screenshot, a photo), use \
 show_image instead.\n\
 \n\
-A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Zeron runs it in a \
+A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Zend runs it in a \
 sandbox (no I/O or network; math.random is seeded, so data is the same on every render) and renders \
-what it returns with Zeron's own native interface. Build data and state at the top level, then return \
-a view function. Zeron calls the view again after every handler, so handlers just assign to state:\n\
+what it returns with Zend's own native interface. Build data and state at the top level, then return \
+a view function. Zend calls the view again after every handler, so handlers just assign to state:\n\
 \n\
 local s = ui.state { metric = \"p95\" }\n\
 local data = { { region = \"us-east\", p95 = 182, p99 = 240 }, { region = \"eu-west\", p95 = 140, p99 = 210 } }\n\
@@ -348,7 +355,7 @@ return function()\n\
   }\n\
 end\n\
 \n\
-Zeron runs the script before showing it (setup, render, every draw, and each tab, toggle, slider, and \
+Zend runs the script before showing it (setup, render, every draw, and each tab, toggle, slider, and \
 button once) and returns the first error with its line; fix it and call again.\n\
 \n\
 Nodes are props tables: children are the array part, strings are plain text, nil and false children \
@@ -386,7 +393,7 @@ radians clockwise from 3 o'clock), g:text(x, y, str, { size, color, weight, alig
 effects with it); t is seconds, and animate = true redraws every frame while visible.\n\
 - ui.scene { height = 320, draw = function(s, t) ... end, orbit = true, spin = 0.3 (turntable \
 radians per second), camera = { yaw = 0.6, pitch = 0.45, zoom = 1 }, animate = bool }: real 3D, y up, \
-rendered on the GPU with depth, soft shadows from a key light, and bloom. Zeron frames the camera on \
+rendered on the GPU with depth, soft shadows from a key light, and bloom. Zend frames the camera on \
 your geometry and the reader drags to orbit. Solids (box, sphere, cylinder, surface, mesh) take \
 material props: roughness (0 mirror to 1 matte), metal (0-1), glow (emits its color and blooms; \
 use for lamps, beams, highlights), glass = true (refracts what's behind it; ior = 1.5, dispersion \
@@ -443,11 +450,19 @@ chart5, chart6 (series, in order; \
 chart1 is the accent). They follow the reader's theme, light or dark, on frosted glass or an opaque \
 surface, so never assume a background color.\n\
 \n\
+Hover must not move the page. A visual sits in a transcript, so anything you show only while the \
+pointer is on something (a custom readout, a detail line, a hint, a row's or canvas's hover state) must \
+not change the visual's height, or everything under it jumps as the pointer crosses it. Reserve its \
+space at rest (a placeholder or an empty line of the same height, e.g. ui.text { s.picked or \" \" }), \
+or draw it where it takes no layout space (inside a ui.canvas with g.pointer, or a scene point's hint). \
+Don't add or remove nodes, or lengthen text onto another line, on hover. ui.chart's hover readout \
+never changes the chart's height.\n\
+\n\
 Style, enforced: layout nodes have no fill, border, shadow, padding, or font props. A visual is part \
 of the reply, not a widget, so lay content directly on the chat with type, spacing, and alignment: no \
 cards, tiles, boxed panels, banners, or canvas backgrounds. Stats are a row of plain ui.stat figures; \
 a chart is a plain heading, then the chart; separate sections with gap or one ui.rule. Text renders \
-in Zeron's interface font at the reader's text size: body for most text, sm and xs for labels and \
+in Zend's interface font at the reader's text size: body for most text, sm and xs for labels and \
 notes, lg and xl for headings, 2xl for a headline figure. The width is the reply column (about 720px, \
 as narrow as 360px), so lay out fluidly with grow, wrap, and grid, and give charts, canvases, and \
 scenes heights of 160-420px.";
@@ -458,7 +473,7 @@ async fn read_visual_assets(
     assets: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<serde_json::Map<String, Value>> {
     use base64::Engine as _;
-    use zeron_proto::{
+    use zend_proto::{
         VISUAL_MAX_ASSET_BYTES as MAX_ASSET_BYTES, VISUAL_MAX_ASSETS as MAX_ASSETS,
         VISUAL_MAX_TOTAL_ASSET_BYTES as MAX_TOTAL_ASSET_BYTES,
         valid_visual_asset_name as valid_name,
@@ -524,7 +539,7 @@ async fn read_visual_assets(
 /// directory), bounded however the file changes (or lies about its size).
 async fn read_image(path: &str) -> anyhow::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt as _;
-    use zeron_proto::IMAGE_MAX_BYTES;
+    use zend_proto::IMAGE_MAX_BYTES;
     let too_large = || anyhow::anyhow!("{path} is over {} MB", IMAGE_MAX_BYTES / (1024 * 1024));
     let metadata = tokio::fs::metadata(path)
         .await
@@ -747,11 +762,11 @@ fn status_of(session: Option<&Session>) -> (String, Option<i64>) {
         return ("idle".into(), None);
     };
     let age = chrono::Utc::now() - session.updated_at;
-    let label = match zeron_proto::view::effective_indicator(Some(session), chrono::Utc::now()) {
-        zeron_proto::view::Indicator::Working => "working",
-        zeron_proto::view::Indicator::AwaitingInput => "awaitingInput",
-        zeron_proto::view::Indicator::Errored => "errored",
-        zeron_proto::view::Indicator::None => "idle",
+    let label = match zend_proto::view::effective_indicator(Some(session), chrono::Utc::now()) {
+        zend_proto::view::Indicator::Working => "working",
+        zend_proto::view::Indicator::AwaitingInput => "awaitingInput",
+        zend_proto::view::Indicator::Errored => "errored",
+        zend_proto::view::Indicator::None => "idle",
     };
     (label.into(), Some(age.num_seconds().max(0)))
 }
@@ -764,7 +779,7 @@ fn summarize_chat(chat: &Chat, spaces: &[Space], sessions: &[Session]) -> Value 
     let session = session_for(sessions, chat);
     let (_, status_age) = status_of(session.as_ref());
     let now = chrono::Utc::now();
-    let status = zeron_proto::view::display_status(chat, session.as_ref(), now);
+    let status = zend_proto::view::display_status(chat, session.as_ref(), now);
     json!({
         "id": chat.id,
         "title": chat.title,
@@ -784,7 +799,7 @@ fn summarize_chat(chat: &Chat, spaces: &[Space], sessions: &[Session]) -> Value 
         "childKind": chat.child_kind,
         "status": status,
         "sessionStatus": session.as_ref().map(|s| s.status),
-        "statusStale": session.as_ref().is_some_and(|s| zeron_proto::view::session_stale(s, now)),
+        "statusStale": session.as_ref().is_some_and(|s| zend_proto::view::session_stale(s, now)),
         "lastTurnOutcome": session.as_ref().and_then(|s| s.last_turn_outcome),
         "terminalActivity": session.as_ref().and_then(|s| s.terminal_activity.as_ref()),
         "statusAgeSecs": status_age,
@@ -797,9 +812,9 @@ fn summarize_chat(chat: &Chat, spaces: &[Space], sessions: &[Session]) -> Value 
 // ---- dispatch ----------------------------------------------------------------
 
 impl Tools {
-    pub fn new(zeron: Arc<Zeron>) -> Self {
+    pub fn new(zend: Arc<Zend>) -> Self {
         Self {
-            zeron,
+            zend,
             pending_turns: Default::default(),
             plugins: Default::default(),
         }
@@ -808,18 +823,18 @@ impl Tools {
     /// Whether the host launched this server's agent without its own
     /// subagent tools, so `initialize` says to delegate through chats.
     pub fn side_chats_only(&self) -> bool {
-        self.zeron.origin().side_chats_only
+        self.zend.origin().side_chats_only
     }
 
     /// Whether this server's agent is offered `wait_on_background`: a
     /// chat's, on a runtime that wakes it as background work ends.
     pub fn waits_on_background(&self) -> bool {
-        let origin = self.zeron.origin();
+        let origin = self.zend.origin();
         origin.chat_id.is_some() && origin.waits_on_background
     }
 
     pub fn list(&self) -> Vec<ToolDef> {
-        let in_chat = self.zeron.origin().chat_id.is_some();
+        let in_chat = self.zend.origin().chat_id.is_some();
         let waits = self.waits_on_background();
         catalog()
             .into_iter()
@@ -841,6 +856,7 @@ impl Tools {
         let result = match name {
             "whoami" => self.whoami().await,
             "list_devices" => self.list_devices().await,
+            DEVICE_STATS => self.device_stats(parse(args)?).await,
             "list_projects" => self.list_projects(parse(args)?).await,
             "list_harnesses" => self.list_harnesses(parse(args)?).await,
             "list_models" => self.list_models(parse(args)?).await,
@@ -864,6 +880,7 @@ impl Tools {
             plugins::PLUGIN_STATUS => return self.plugin_status(args).await,
             plugins::INSTALL_PLUGIN => return self.install_plugin(args).await,
             plugins::UPDATE_PLUGIN => return self.update_plugin(args).await,
+            plugins::EXPORT_PLUGIN => return self.export_plugin(args).await,
             plugins::LIST_TEMPLATES
             | plugins::CREATE_TEMPLATE
             | plugins::USE_TEMPLATE
@@ -919,14 +936,14 @@ impl Tools {
     }
 
     async fn whoami(&self) -> anyhow::Result<Value> {
-        let origin = self.zeron.origin().clone();
-        let local_device = self.zeron.local_device_id().await?;
-        let engine = self.zeron.engine_info().await.unwrap_or(Value::Null);
+        let origin = self.zend.origin().clone();
+        let local_device = self.zend.local_device_id().await?;
+        let engine = self.zend.engine_info().await.unwrap_or(Value::Null);
         let chat = match origin.chat_id.as_deref() {
-            Some(id) => match self.zeron.resolve_chat(id).await {
+            Some(id) => match self.zend.resolve_chat(id).await {
                 Ok(chat) => {
                     let (spaces, sessions) =
-                        tokio::try_join!(self.zeron.spaces(), self.zeron.sessions())?;
+                        tokio::try_join!(self.zend.spaces(), self.zend.sessions())?;
                     summarize_chat(&chat, &spaces, &sessions)
                 }
                 Err(_) => json!({ "id": id }),
@@ -948,7 +965,7 @@ impl Tools {
 
     async fn list_devices(&self) -> anyhow::Result<Value> {
         let (devices, local) =
-            tokio::try_join!(self.zeron.devices(), self.zeron.local_device_id())?;
+            tokio::try_join!(self.zend.devices(), self.zend.local_device_id())?;
         Ok(json!({
             "devices": devices.iter().map(|d| json!({
                 "id": d.id,
@@ -961,10 +978,39 @@ impl Tools {
         }))
     }
 
+    /// The chosen device's machine stats (`DeviceStats`, routed by
+    /// `targetDeviceId`). The engine words a remote failure (offline, too
+    /// old, no answer); only this engine lacking the method is said here.
+    async fn device_stats(&self, args: DeviceArgs) -> anyhow::Result<Value> {
+        let (devices, local) =
+            tokio::try_join!(self.zend.devices(), self.zend.local_device_id())?;
+        let device = self.zend.resolve_device_id(args.device.as_deref()).await?;
+        let mut params = json!({});
+        if device != local {
+            params["targetDeviceId"] = json!(device);
+        }
+        let stats = match self
+            .zend
+            .call_rpc(zend_rpc::methods::DEVICE_STATS, params)
+            .await
+        {
+            Ok(stats) => stats,
+            Err(zend_rpc::RpcError::UnknownMethod(_)) => anyhow::bail!(
+                "This device's running Zend is too old to report stats: update Zend and restart it"
+            ),
+            Err(error) => anyhow::bail!("{error}"),
+        };
+        let name = devices.iter().find(|d| d.id == device).map(|d| d.name.clone());
+        Ok(json!({
+            "device": { "id": device, "name": name, "local": device == local },
+            "stats": stats,
+        }))
+    }
+
     async fn list_projects(&self, args: DeviceArgs) -> anyhow::Result<Value> {
-        let (mut spaces, devices) = tokio::try_join!(self.zeron.spaces(), self.zeron.devices())?;
+        let (mut spaces, devices) = tokio::try_join!(self.zend.spaces(), self.zend.devices())?;
         if let Some(device) = args.device.as_deref() {
-            let device = self.zeron.resolve_device_id(Some(device)).await?;
+            let device = self.zend.resolve_device_id(Some(device)).await?;
             spaces.retain(|s| s.device_id == device);
         }
         let device_name = |id: &str| devices.iter().find(|d| d.id == id).map(|d| d.name.clone());
@@ -982,10 +1028,10 @@ impl Tools {
 
     async fn list_harnesses(&self, args: DeviceArgs) -> anyhow::Result<Value> {
         let device = match args.device.as_deref() {
-            Some(key) => Some(self.zeron.resolve_device_id(Some(key)).await?),
+            Some(key) => Some(self.zend.resolve_device_id(Some(key)).await?),
             None => None,
         };
-        let harnesses = self.zeron.harnesses_on(device.as_deref()).await?;
+        let harnesses = self.zend.harnesses_on(device.as_deref()).await?;
         Ok(json!({
             "harnesses": harnesses.iter().map(|h| json!({
                 "id": h.id,
@@ -1006,10 +1052,10 @@ impl Tools {
         let harness: HarnessId =
             parse_enum("harness", &args.harness).map_err(anyhow::Error::msg)?;
         let device = match args.device.as_deref() {
-            Some(key) => Some(self.zeron.resolve_device_id(Some(key)).await?),
+            Some(key) => Some(self.zend.resolve_device_id(Some(key)).await?),
             None => None,
         };
-        let models = self.zeron.models_on(harness, device.as_deref()).await?;
+        let models = self.zend.models_on(harness, device.as_deref()).await?;
         Ok(json!({
             "harness": harness,
             "models": models.iter().map(|m| json!({
@@ -1023,27 +1069,27 @@ impl Tools {
 
     async fn list_chats(&self, args: ListChatsArgs) -> anyhow::Result<Value> {
         let (mut chats, spaces, sessions) = tokio::try_join!(
-            self.zeron.chats(),
-            self.zeron.spaces(),
-            self.zeron.sessions()
+            self.zend.chats(),
+            self.zend.spaces(),
+            self.zend.sessions()
         )?;
         if let Some(project) = args.project.as_deref() {
             let (space, _) = self
-                .zeron
+                .zend
                 .resolve_target(Some(project), args.device.as_deref())
                 .await?;
             let space = space.expect("project provided");
             chats.retain(|c| c.space_id.as_deref() == Some(space.id.as_str()));
         }
         if args.device.is_some() {
-            let device = self.zeron.resolve_device_id(args.device.as_deref()).await?;
+            let device = self.zend.resolve_device_id(args.device.as_deref()).await?;
             chats.retain(|c| c.device_id == device);
         }
         if !args.include_archived {
             chats.retain(|c| !c.archived);
         }
         if let Some(parent) = args.parent.as_deref() {
-            let parent = self.zeron.resolve_chat(parent).await?;
+            let parent = self.zend.resolve_chat(parent).await?;
             chats.retain(|c| c.parent_chat_id.as_deref() == Some(parent.id.as_str()));
         }
         chats.sort_by(|a, b| {
@@ -1062,13 +1108,13 @@ impl Tools {
     }
 
     async fn get_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
-        let (spaces, sessions) = tokio::try_join!(self.zeron.spaces(), self.zeron.sessions())?;
+        let chat = self.zend.resolve_chat(&args.chat).await?;
+        let (spaces, sessions) = tokio::try_join!(self.zend.spaces(), self.zend.sessions())?;
         let mut summary = summarize_chat(&chat, &spaces, &sessions);
         // The chat's facts don't depend on reaching its host.
         match self
-            .zeron
-            .transcript_window(&chat.id, Some(&chat.device_id), TranscriptWindow::tail(1))
+            .zend
+            .window_of(&chat, TranscriptWindow::tail(1))
             .await
         {
             Ok(view) => {
@@ -1102,11 +1148,11 @@ impl Tools {
             None
         } else {
             match explicit_parent {
-                Some(key) => Some(self.zeron.resolve_chat(key).await?.id),
-                None => self.zeron.origin().chat_id.clone(),
+                Some(key) => Some(self.zend.resolve_chat(key).await?.id),
+                None => self.zend.origin().chat_id.clone(),
             }
             // A hidden voice orchestrator creates top-level sessions.
-            .filter(|parent| !zeron_proto::voice::is_orchestrator_chat(parent))
+            .filter(|parent| !zend_proto::voice::is_orchestrator_chat(parent))
         };
         anyhow::ensure!(
             !matches!(args.kind, Some(ChatKind::Side | ChatKind::Subagent)) || parent_chat_id.is_some(),
@@ -1128,10 +1174,10 @@ impl Tools {
         // asks nothing (the engine caps it again: rpc/agent_gate.rs).
         let mut ceiling = AccessMode::FullAccess;
         let mut sandbox_ceiling = SandboxLevel::DangerFullAccess;
-        if let Some(origin) = self.zeron.origin().chat_id.as_deref()
-            && !zeron_proto::voice::is_orchestrator_chat(origin)
+        if let Some(origin) = self.zend.origin().chat_id.as_deref()
+            && !zend_proto::voice::is_orchestrator_chat(origin)
         {
-            let origin = self.zeron.resolve_chat(origin).await?;
+            let origin = self.zend.resolve_chat(origin).await?;
             anyhow::ensure!(
                 origin.parent_chat_id.is_none(),
                 "A delegated chat can't create chats of its own. Do the work in this chat, or ask the chat that started you."
@@ -1142,7 +1188,7 @@ impl Tools {
             }
         }
         if let Some(parent) = parent_chat_id.as_deref() {
-            let parent = self.zeron.resolve_chat(parent).await?;
+            let parent = self.zend.resolve_chat(parent).await?;
             anyhow::ensure!(
                 parent.parent_chat_id.is_none(),
                 "{} is itself a delegated chat: only top-level chats have side chats.",
@@ -1150,10 +1196,10 @@ impl Tools {
             );
         }
         let (space, device_id) = self
-            .zeron
+            .zend
             .resolve_target(args.project.as_deref(), args.device.as_deref())
             .await?;
-        let harnesses = self.zeron.harnesses_on(Some(&device_id)).await?;
+        let harnesses = self.zend.harnesses_on(Some(&device_id)).await?;
         let harness = match args.harness.as_deref() {
             // Cloud runs its own agents, with your Cloud accounts.
             Some(raw) if args.cloud => {
@@ -1177,7 +1223,7 @@ impl Tools {
         };
         // A Cloud machine's catalog is checked when it runs, not here.
         if let Some(model) = args.model.as_deref().filter(|_| !args.cloud) {
-            let models = self.zeron.models_on(harness, Some(&device_id)).await?;
+            let models = self.zend.models_on(harness, Some(&device_id)).await?;
             anyhow::ensure!(
                 models.iter().any(|m| m.id == model),
                 "model {model:?} is not offered by {harness:?} on device {device_id}; available: {}",
@@ -1202,7 +1248,7 @@ impl Tools {
         };
         // Never more than this chat's own: lowered, and the reply says so.
         let (sandbox, access, capped) =
-            zeron_proto::cap_access((asked_sandbox, asked_access), (sandbox_ceiling, ceiling));
+            zend_proto::cap_access((asked_sandbox, asked_access), (sandbox_ceiling, ceiling));
         let capped = capped.then(|| {
             format!(
                 "This chat runs {} in a {} sandbox, so the new chat runs with no more: {}, {} sandbox (asked {}, {}).",
@@ -1252,8 +1298,8 @@ impl Tools {
         if let Some(parent) = &parent_chat_id {
             mutate["parentChatId"] = json!(parent);
             mutate["childKind"] = json!(match kind {
-                ChatKind::Side => zeron_proto::ChildKind::Side,
-                _ => zeron_proto::ChildKind::Subagent,
+                ChatKind::Side => zend_proto::ChildKind::Side,
+                _ => zend_proto::ChildKind::Subagent,
             });
         }
         if let Some(branch) = args
@@ -1276,14 +1322,14 @@ impl Tools {
         if space.is_none()
             && cwd.is_none()
             && !args.cloud
-            && self.zeron.devices().await?.iter().any(|d| {
+            && self.zend.devices().await?.iter().any(|d| {
                 d.id == device_id
                     && d.capabilities
                         .iter()
-                        .any(|c| c == zeron_proto::capabilities::PROJECTLESS_SCRATCH_V1)
+                        .any(|c| c == zend_proto::capabilities::PROJECTLESS_SCRATCH_V1)
             })
         {
-            cwd = Some(zeron_proto::projectless::scratch_cwd(
+            cwd = Some(zend_proto::projectless::scratch_cwd(
                 &chat_id,
                 chrono::Utc::now(),
             ));
@@ -1294,7 +1340,7 @@ impl Tools {
         if args.cloud {
             mutate["cloud"] = json!(true);
         }
-        let created = self.zeron.mutate(mutate).await?;
+        let created = self.zend.mutate(mutate).await?;
         // A Cloud chat's machine and checkout come back from the engine.
         let (device_id, cwd) = if args.cloud {
             (
@@ -1313,7 +1359,7 @@ impl Tools {
             .map(str::trim)
             .filter(|t| !t.is_empty())
         {
-            self.zeron
+            self.zend
                 .mutate(json!({ "op": "renameChat", "chatId": chat_id, "title": title }))
                 .await?;
         }
@@ -1362,8 +1408,8 @@ impl Tools {
                 harness_session_harness: None,
                 parent_chat_id: parent_chat_id.clone(),
                 child_kind: match kind {
-                    ChatKind::Side => Some(zeron_proto::ChildKind::Side),
-                    ChatKind::Subagent => Some(zeron_proto::ChildKind::Subagent),
+                    ChatKind::Side => Some(zend_proto::ChildKind::Side),
+                    ChatKind::Subagent => Some(zend_proto::ChildKind::Subagent),
                     ChatKind::Chat => None,
                 },
                 space_id: space.as_ref().map(|s| s.id.clone()),
@@ -1395,13 +1441,12 @@ impl Tools {
     }
 
     async fn read_chat(&self, args: ReadChatArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+        let chat = self.zend.resolve_chat(&args.chat).await?;
         let limit = args.limit.unwrap_or(40).clamp(1, 500);
         let view = self
-            .zeron
-            .transcript_window(
-                &chat.id,
-                Some(&chat.device_id),
+            .zend
+            .window_of(
+                &chat,
                 TranscriptWindow {
                     limit,
                     offset: args.offset,
@@ -1435,20 +1480,20 @@ impl Tools {
         if text.is_empty() {
             anyhow::bail!("text is empty");
         }
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
-        if self.zeron.origin().chat_id.as_deref() == Some(chat.id.as_str()) {
+        let chat = self.zend.resolve_chat(&args.chat).await?;
+        if self.zend.origin().chat_id.as_deref() == Some(chat.id.as_str()) {
             anyhow::bail!(
                 "refusing to send a message to your own chat ({})",
                 short(&chat.id)
             );
         }
-        let (spaces, sessions) = tokio::try_join!(self.zeron.spaces(), self.zeron.sessions())?;
+        let (spaces, sessions) = tokio::try_join!(self.zend.spaces(), self.zend.sessions())?;
         // Only a chat with no harness of its own needs its host's catalog:
         // the others are delivered through the doc, host reachable or not.
         let harnesses = if chat.config.is_some() {
             Vec::new()
         } else {
-            self.zeron.harnesses_on(Some(&chat.device_id)).await?
+            self.zend.harnesses_on(Some(&chat.device_id)).await?
         };
         let space = chat
             .space_id
@@ -1493,7 +1538,7 @@ impl Tools {
     }
 
     async fn wait_for_turn(&self, args: WaitArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+        let chat = self.zend.resolve_chat(&args.chat).await?;
         let pending = self.pending_turns.lock().await.get(&chat.id).cloned();
         let turn = match pending {
             Some(pending) => {
@@ -1515,9 +1560,9 @@ impl Tools {
     }
 
     async fn archive_chat(&self, args: ArchiveArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+        let chat = self.zend.resolve_chat(&args.chat).await?;
         let archived = args.archived.unwrap_or(true);
-        self.zeron
+        self.zend
             .mutate(json!({ "op": "setChatArchived", "chatId": chat.id, "archived": archived }))
             .await?;
         Ok(json!({ "chatId": chat.id, "title": chat.title, "archived": archived }))
@@ -1525,16 +1570,16 @@ impl Tools {
 
     async fn show_visual(&self, args: ShowVisualArgs) -> anyhow::Result<Value> {
         let chat_id = self
-            .zeron
+            .zend
             .origin()
             .chat_id
             .clone()
-            .context("show_visual only works from an agent Zeron launched in a chat")?;
+            .context("show_visual only works from an agent Zend launched in a chat")?;
         let assets = read_visual_assets(&args.assets).await?;
         let shown = self
-            .zeron
+            .zend
             .call(
-                zeron_rpc::methods::PUBLISH_VISUAL,
+                zend_rpc::methods::PUBLISH_VISUAL,
                 json!({
                     "chatId": chat_id,
                     "title": args.title,
@@ -1552,20 +1597,20 @@ impl Tools {
     async fn show_image(&self, args: ShowImageArgs) -> anyhow::Result<Value> {
         use base64::Engine as _;
         let chat_id = self
-            .zeron
+            .zend
             .origin()
             .chat_id
             .clone()
-            .context("show_image only works from an agent Zeron launched in a chat")?;
+            .context("show_image only works from an agent Zend launched in a chat")?;
         let bytes = read_image(&args.path).await?;
         let name = std::path::Path::new(&args.path)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "image".into());
         let shown = self
-            .zeron
+            .zend
             .call(
-                zeron_rpc::methods::PUBLISH_IMAGE,
+                zend_rpc::methods::PUBLISH_IMAGE,
                 json!({
                     "chatId": chat_id,
                     "name": name,
@@ -1581,16 +1626,16 @@ impl Tools {
 
     async fn wait_on_background(&self, args: WaitOnBackgroundArgs) -> anyhow::Result<Value> {
         let chat_id = self
-            .zeron
+            .zend
             .origin()
             .chat_id
             .clone()
-            .context("wait_on_background only works from an agent Zeron launched in a chat")?;
+            .context("wait_on_background only works from an agent Zend launched in a chat")?;
         let waiting = args.waiting.unwrap_or(true);
         let marked = self
-            .zeron
+            .zend
             .call(
-                zeron_rpc::methods::AWAIT_BACKGROUND,
+                zend_rpc::methods::AWAIT_BACKGROUND,
                 json!({ "chatId": chat_id, "taskIds": args.task_ids, "waiting": waiting }),
             )
             .await?;
@@ -1610,21 +1655,21 @@ impl Tools {
     }
 
     async fn interrupt_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+        let chat = self.zend.resolve_chat(&args.chat).await?;
         let command_id = self
-            .zeron
+            .zend
             .queue_command(&chat.id, &SessionCommandPayload::Interrupt {})
             .await?;
         Ok(json!({ "chatId": chat.id, "commandId": command_id }))
     }
 
     async fn respond_to_input(&self, args: RespondArgs) -> anyhow::Result<Value> {
-        let chat = self.zeron.resolve_chat(&args.chat).await?;
+        let chat = self.zend.resolve_chat(&args.chat).await?;
         let request_id = match args.request_id {
             Some(id) => id,
             None => self
-                .zeron
-                .transcript_window(&chat.id, Some(&chat.device_id), TranscriptWindow::tail(1))
+                .zend
+                .window_of(&chat, TranscriptWindow::tail(1))
                 .await?
                 .info
                 .pending_input
@@ -1645,7 +1690,7 @@ impl Tools {
             })
             .collect();
         let command_id = self
-            .zeron
+            .zend
             .queue_command(
                 &chat.id,
                 &SessionCommandPayload::RespondInput {
@@ -1664,13 +1709,13 @@ impl Tools {
     /// an agent-to-agent message from a typed one. Reply instructions always
     /// use the full id: display prefixes need not uniquely identify a chat.
     async fn attribute(&self, target: &Chat, text: &str) -> String {
-        let Some(origin_id) = self.zeron.origin().chat_id.as_deref() else {
+        let Some(origin_id) = self.zend.origin().chat_id.as_deref() else {
             return text.to_owned();
         };
         if origin_id == target.id {
             return text.to_owned();
         }
-        let title = match self.zeron.resolve_chat(origin_id).await {
+        let title = match self.zend.resolve_chat(origin_id).await {
             Ok(chat) => chat.title,
             Err(_) => None,
         };
@@ -1680,7 +1725,7 @@ impl Tools {
             }
             _ => short(origin_id).to_owned(),
         };
-        zeron_proto::agent_messages::agent_message(&label, origin_id, text)
+        zend_proto::agent_messages::agent_message(&label, origin_id, text)
     }
 
     /// Pick and perform the delivery the composer would.
@@ -1748,7 +1793,7 @@ impl Tools {
                     extra_mcp: Vec::new(),
                 };
                 let id = self
-                    .zeron
+                    .zend
                     .queue_command(
                         &chat.id,
                         &SessionCommandPayload::Run {
@@ -1761,7 +1806,7 @@ impl Tools {
             }
             "steer" => {
                 let id = self
-                    .zeron
+                    .zend
                     .queue_command(
                         &chat.id,
                         &SessionCommandPayload::Steer {
@@ -1774,7 +1819,7 @@ impl Tools {
             }
             // A held message keeps its row's id when it's sent.
             _ => {
-                let id = self.zeron.queue_message(&chat.id, &text).await?;
+                let id = self.zend.queue_message(&chat.id, &text).await?;
                 (id.clone(), id)
             }
         };
@@ -1828,7 +1873,7 @@ impl Tools {
     ) -> anyhow::Result<Value> {
         let deadline = Instant::now() + timeout;
         let (mut outcome, session) = self
-            .zeron
+            .zend
             .wait_for_turn(chat, baseline, expect_turn, timeout)
             .await?;
         // Registry session updates can arrive before the separate transcript
@@ -1849,7 +1894,7 @@ impl Tools {
             let next = tokio::time::timeout(remaining, async {
                 if follow.is_none() {
                     follow = Some(
-                        self.zeron
+                        self.zend
                             .follow_transcript(&chat.id, Some(&chat.device_id), start.window())
                             .await?,
                     );
@@ -1892,22 +1937,22 @@ impl Tools {
             pending_input = view.info.pending_input.map(|p| json!(p));
             replies = render_entries(&view.entries, RenderOptions::default())
                 .into_iter()
-                .filter(|m| m.role == zeron_doc::MessageRole::Assistant)
+                .filter(|m| m.role == zend_doc::MessageRole::Assistant)
                 .collect();
             if !expect_turn
                 || outcome != TurnOutcome::Completed
                 || replies
                     .iter()
-                    .any(|m| m.status != Some(zeron_doc::MessageStatus::Streaming))
+                    .any(|m| m.status != Some(zend_doc::MessageStatus::Streaming))
             {
                 break;
             }
         }
         let now = chrono::Utc::now();
-        let status = zeron_proto::view::display_status(chat, session.as_ref(), now);
+        let status = zend_proto::view::display_status(chat, session.as_ref(), now);
         let stale = session
             .as_ref()
-            .is_some_and(|s| zeron_proto::view::session_stale(s, now));
+            .is_some_and(|s| zend_proto::view::session_stale(s, now));
         let mut turn = json!({
             "outcome": outcome,
             "status": status,
@@ -1953,11 +1998,11 @@ fn default_harness(harnesses: &[HarnessInfo]) -> anyhow::Result<HarnessId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zeron::Origin;
+    use crate::zend::Origin;
     use async_trait::async_trait;
     use futures::StreamExt;
     use std::sync::Mutex;
-    use zeron_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
+    use zend_rpc::{RpcError, RpcReply, RpcService, memory_client, methods};
 
     /// Two devices with distinct catalogs and repeated project paths, plus
     /// two chats with a two-message transcript. Writes are recorded for assertions.
@@ -1972,9 +2017,14 @@ mod tests {
         accounts: Option<Value>,
         remote_accounts: Option<Value>,
         beta_remote: bool,
+        /// `dev-remote` is asleep: every read addressed to it fails, the way
+        /// a dial to a sleeping Cloud machine does.
+        remote_dark: bool,
         extra_chats: Vec<Value>,
         catalog_error: Option<&'static str>,
         reads: Mutex<Vec<(String, Value)>>,
+        /// `DeviceStats` reply; absent = an engine without the method.
+        stats: Option<Value>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1997,6 +2047,15 @@ mod tests {
                 }
             }
             let remote = params["targetDeviceId"] == "dev-remote";
+            if remote && self.remote_dark && method != methods::LIST_HARNESSES {
+                self.reads
+                    .lock()
+                    .unwrap()
+                    .push((method.into(), params.clone()));
+                return Err(RpcError::Transport(
+                    "peer dev-remote: device is offline (no recent presence)".into(),
+                ));
+            }
             Ok(match method {
                 methods::LOCAL_DEVICE => RpcReply::Value(json!({ "deviceId": "dev-local" })),
                 methods::ENGINE_INFO => RpcReply::Value(json!({
@@ -2117,6 +2176,13 @@ mod tests {
                     }
                     RpcReply::Value(json!({ "commandId": "cmd-1", "id": "q-1" }))
                 }
+                methods::DEVICE_STATS if self.stats.is_some() => {
+                    self.reads
+                        .lock()
+                        .unwrap()
+                        .push((method.into(), params.clone()));
+                    RpcReply::Value(self.stats.clone().unwrap_or_default())
+                }
                 other => return Err(RpcError::UnknownMethod(other.into())),
             })
         }
@@ -2124,7 +2190,7 @@ mod tests {
 
     fn tools(world: Arc<World>, origin: Origin) -> Tools {
         let client = memory_client(world);
-        Tools::new(Arc::new(Zeron::with_client(client, origin)))
+        Tools::new(Arc::new(Zend::with_client(client, origin)))
     }
 
     #[tokio::test]
@@ -2140,14 +2206,64 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn device_stats_asks_the_chosen_device_and_names_it() {
+        let def = catalog().into_iter().find(|d| d.name == DEVICE_STATS).expect("listed");
+        assert_eq!(def.input_schema["properties"]["device"]["type"], "string");
+        assert!(def.input_schema.get("required").is_none(), "device is optional");
+
+        let stats = json!({
+            "os": { "name": "Darwin", "arch": "arm64" },
+            "memory": { "totalBytes": 34359738368u64, "availableBytes": null },
+            "zend": { "engineVersion": "0.2.139" }
+        });
+        let world = Arc::new(World { stats: Some(stats.clone()), ..Default::default() });
+        let tools = tools(world.clone(), Origin::default());
+        assert!(tools.has(DEVICE_STATS));
+
+        // Local: no target, the engine answers for itself.
+        let local = tools.call(DEVICE_STATS, json!({})).await.unwrap();
+        assert_eq!(local["device"], json!({ "id": "dev-local", "name": "Laptop", "local": true }));
+        assert_eq!(local["stats"], stats, "the report passes through as is, nulls kept");
+        // By name: routed to that device.
+        let remote = tools.call(DEVICE_STATS, json!({ "device": "worker" })).await.unwrap();
+        assert_eq!(remote["device"], json!({ "id": "dev-remote", "name": "Worker", "local": false }));
+        let reads = world.reads.lock().unwrap().clone();
+        let targets: Vec<&Value> = reads
+            .iter()
+            .filter(|(m, _)| m == methods::DEVICE_STATS)
+            .map(|(_, p)| &p["targetDeviceId"])
+            .collect();
+        assert_eq!(targets, [&Value::Null, &json!("dev-remote")]);
+
+        // Not one of this account's devices: refused before anything is asked.
+        let error = tools.call(DEVICE_STATS, json!({ "device": "someone-elses" })).await.unwrap_err();
+        assert!(error.contains("no device matches"), "{error}");
+        assert_eq!(world.reads.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn device_stats_says_when_a_device_is_away_or_this_engine_is_old() {
+        let dark = Arc::new(World { stats: Some(json!({})), remote_dark: true, ..Default::default() });
+        let error = tools(dark, Origin::default())
+            .call(DEVICE_STATS, json!({ "device": "dev-remote" }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("offline"), "{error}");
+
+        let old = Arc::new(World::default());
+        let error = tools(old, Origin::default()).call(DEVICE_STATS, json!({})).await.unwrap_err();
+        assert!(error.contains("too old to report stats"), "{error}");
+    }
+
     #[test]
     fn the_show_visual_example_passes_its_own_check() {
         let start = SHOW_VISUAL_DESCRIPTION.find("local s = ui.state").unwrap();
         let end = start
             + SHOW_VISUAL_DESCRIPTION[start..]
-                .find("\n\nZeron runs the script")
+                .find("\n\nZend runs the script")
                 .unwrap();
-        let report = zeron_visual::check(&SHOW_VISUAL_DESCRIPTION[start..end], 1).unwrap();
+        let report = zend_visual::check(&SHOW_VISUAL_DESCRIPTION[start..end], 1).unwrap();
         assert_eq!(report.interactions, 2, "both tabs");
     }
 
@@ -2176,7 +2292,7 @@ mod tests {
         );
         assert!(inside.has("show_visual"));
         // The guidance names every color the runtime accepts.
-        for name in zeron_visual::TOKEN_NAMES {
+        for name in zend_visual::TOKEN_NAMES {
             assert!(SHOW_VISUAL_DESCRIPTION.contains(name), "{name}");
         }
         let shown = inside
@@ -2250,7 +2366,7 @@ mod tests {
         let huge = dir.path().join("huge.png");
         std::fs::File::create(&huge)
             .unwrap()
-            .set_len(zeron_proto::IMAGE_MAX_BYTES as u64 + 1)
+            .set_len(zend_proto::IMAGE_MAX_BYTES as u64 + 1)
             .unwrap();
         let error = inside
             .call("show_image", json!({ "path": huge.to_string_lossy() }))
@@ -2323,7 +2439,7 @@ mod tests {
         assert_eq!(params["command"]["kind"], "run");
         let prompt = params["command"]["request"]["prompt"].as_str().unwrap();
         assert!(
-            prompt.starts_with("[Message from Zeron chat Beta (chat-bet)"),
+            prompt.starts_with("[Message from Zend chat Beta (chat-bet)"),
             "{prompt}"
         );
         assert!(prompt.ends_with("please review"));
@@ -2358,7 +2474,7 @@ mod tests {
             },
         );
         let error = orchestrator
-            .zeron
+            .zend
             .resolve_chat("voice-or")
             .await
             .unwrap_err();
@@ -2412,7 +2528,7 @@ mod tests {
     async fn auto_steers_busy_chats_even_at_turn_boundaries_or_after_long_quiet_tools() {
         let world = Arc::new(World::default());
         let tools = tools(world.clone(), Origin::default());
-        let chats = tools.zeron.chats().await.unwrap();
+        let chats = tools.zend.chats().await.unwrap();
         let session = Session {
             chat_id: chats[0].id.clone(),
             device_id: "dev-local".into(),
@@ -3291,6 +3407,37 @@ mod tests {
         }
     }
 
+    /// A sleeping host can't be read, and only a send wakes it: the send must go
+    /// out through this engine's doc regardless, and reading the chat falls back
+    /// to the local replica.
+    #[tokio::test]
+    async fn a_send_to_a_sleeping_host_still_goes_out() {
+        let world = Arc::new(World {
+            beta_remote: true,
+            remote_dark: true,
+            ..Default::default()
+        });
+        let tools = tools(world.clone(), Origin::default());
+        let result = tools
+            .call("send_message", json!({"chat":"Beta", "text":"go"}))
+            .await
+            .unwrap();
+        assert_eq!(result["sent"]["delivery"], "run");
+        {
+            let writes = world.writes.lock().unwrap();
+            let (method, params) = writes.last().unwrap();
+            assert_eq!(method, methods::QUEUE_COMMAND);
+            assert!(params.get("targetDeviceId").is_none(), "a local doc write, which wakes the host");
+        }
+        let read = tools
+            .call("read_chat", json!({"chat":"Beta"}))
+            .await
+            .unwrap();
+        assert!(read["total"].as_u64().unwrap() > 0);
+        let info = tools.call("get_chat", json!({"chat":"Beta"})).await.unwrap();
+        assert!(info["messageCount"].as_u64().unwrap() > 0);
+    }
+
     #[tokio::test]
     async fn wait_allows_a_missing_session_and_a_late_remote_transcript() {
         for create in [true, false] {
@@ -3306,7 +3453,7 @@ mod tests {
                 no_transcript: false,
                 host_skew_millis: 0,
             });
-            let tools = Tools::new(Arc::new(Zeron::with_client(
+            let tools = Tools::new(Arc::new(Zend::with_client(
                 memory_client(service),
                 Origin::default(),
             )));
@@ -3347,7 +3494,7 @@ mod tests {
                 no_transcript: false,
                 host_skew_millis: 0,
             });
-            let tools = Tools::new(Arc::new(Zeron::with_client(
+            let tools = Tools::new(Arc::new(Zend::with_client(
                 memory_client(service),
                 Origin::default(),
             )));
@@ -3397,7 +3544,7 @@ mod tests {
             no_transcript: true,
             host_skew_millis: 0,
         });
-        let tools = Tools::new(Arc::new(Zeron::with_client(
+        let tools = Tools::new(Arc::new(Zend::with_client(
             memory_client(service.clone()),
             Origin::default(),
         )));
@@ -3466,7 +3613,7 @@ mod tests {
                 no_transcript: false,
                 host_skew_millis: -30_000,
             });
-            let tools = Tools::new(Arc::new(Zeron::with_client(
+            let tools = Tools::new(Arc::new(Zend::with_client(
                 memory_client(service),
                 Origin::default(),
             )));
@@ -3502,7 +3649,7 @@ mod tests {
             never_reply: true,
             host_skew_millis: 0,
         });
-        let tools = Tools::new(Arc::new(Zeron::with_client(
+        let tools = Tools::new(Arc::new(Zend::with_client(
             memory_client(service),
             Origin::default(),
         )));
@@ -3533,7 +3680,7 @@ mod tests {
                     no_transcript: false,
                     host_skew_millis,
                 });
-                let tools = Tools::new(Arc::new(Zeron::with_client(
+                let tools = Tools::new(Arc::new(Zend::with_client(
                     memory_client(service),
                     Origin::default(),
                 )));
@@ -3603,7 +3750,7 @@ mod tests {
         )
         .await;
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
-        assert_eq!(init["result"]["serverInfo"]["name"], "zeron");
+        assert_eq!(init["result"]["serverInfo"]["name"], "zend");
         let list =
             crate::jsonrpc::handle_request(&tools, json!(2), "tools/list", Value::Null).await;
         assert!(list["result"]["tools"].as_array().unwrap().len() >= 10);

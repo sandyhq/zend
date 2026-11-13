@@ -15,6 +15,7 @@ local cloud_page = require("@app/screens/settings/cloud")
 local search = require("@app/screens/settings/search")
 local toast = require("@ds/toast")
 local locale = require("@ds/locale")
+local material = require("@ds/material")
 
 local M = {}
 
@@ -47,7 +48,7 @@ function M.price(cents: number): string
 	return string.format("$%d.%02d", cents // 100, cents % 100)
 end
 
--- "about 750 hours" of a standard machine.
+-- "about 750 small-machine hours": a credit is a minute of a small machine.
 function M.hours(credits: number): string
 	return ui.t("settings.billing.hours", { n = group(math.floor(credits / 60 + 0.5)) }):get()
 end
@@ -255,7 +256,7 @@ function M.view(): Node
 				w_full = true,
 				h = 4,
 				rounded = "$radius.full",
-				bg = "$zeron.secondary.bg",
+				bg = "$zend.secondary.bg",
 				overflow = "hidden",
 				role = "img",
 				label = function(): string
@@ -273,7 +274,7 @@ function M.view(): Node
 					w = function(): string
 						return `{share("extra") * 100}%`
 					end,
-					bg = "$zeron.tone.accent.edge",
+					bg = "$zend.tone.accent.edge",
 				},
 			}),
 		}
@@ -340,10 +341,10 @@ function M.view(): Node
 			p = "$space.4",
 			gap = "$space.1",
 			rounded = "$radius.xl",
-			bg = "$zeron.settings.card",
+			bg = material.pick("$zend.settings.tint", "$zend.settings.card"),
 			border = 1,
 			border_color = function(): string
-				return if current() then "$zeron.selected.ring" else "$zeron.settings.edge"
+				return if current() then "$zend.selected.ring" else "$zend.settings.edge"
 			end,
 			role = "group",
 			label = ui.t("settings.billing.plan.card_name", { plan = p.name }),

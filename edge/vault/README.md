@@ -1,4 +1,4 @@
-# zeron-vault
+# zend-vault
 
 The credential vault Worker (design: `docs/design/cloud-device.md`, "Credential vault"). It
 holds users' provider credentials (Codex, Claude, GitHub, API keys) encrypted, refreshes them,
@@ -11,7 +11,7 @@ and hands enrolled devices short-lived **grants**: access tokens only, never ref
   (`VAULT`, `entrypoint: "VaultApi"`), which passes an identity it has already verified
   (WorkOS user or runner JWT). The vault re-validates every field it receives.
 - **Grants need a device signature.** The device key (Ed25519, enrolled per device) signs
-  `zeron-vault-grant\n{userId}\n{deviceId}\n{provider}\n{ts}`. The `ts` must be within ±120 s and
+  `zend-vault-grant\n{userId}\n{deviceId}\n{provider}\n{ts}`. The `ts` must be within ±120 s and
   strictly greater than the device's last one. The device must be enrolled, not revoked, and
   listed in the credential's `authorizedDevices`. Runner callers may only request grants for
   their own device.
@@ -19,14 +19,17 @@ and hands enrolled devices short-lived **grants**: access tokens only, never ref
   `parentId` = the account's logical Cloud device. A credential connected once for that parent
   covers every session. Revoking the parent (even one that never enrolled a key) refuses all its
   children, present and future. Revoking a session touches only that session.
-- **Vault-side GitHub calls.** `githubRepos` lists the repositories of the App installations
-  the GitHub connection can reach, using the stored user token inside the vault, and returns
-  metadata only. Pagination follows `next` links on `api.github.com` only.
-- **GitHub grants are installation tokens.** The user token never leaves the vault. A `github`
+- **Vault-side GitHub calls.** `githubRepos` and `githubListing` list the repositories of the
+  App installations every connected GitHub login can reach, merged, using the stored user tokens
+  inside the vault, and return metadata only. Pagination follows `next` links on
+  `api.github.com` only.
+- **GitHub grants are installation tokens.** User tokens never leave the vault. A `github`
   grant names `repo` (`owner/name`); the vault finds the installation on `owner` among the
-  user's own installations (`/user/installations`, so nobody can name someone else's) and mints
-  a one-hour installation token with an App JWT. Minted tokens are cached sealed per
-  installation and reused while more than 15 minutes remain.
+  session login's own installations (`/user/installations`, so nobody can name someone else's)
+  and mints a one-hour installation token for that repository with an App JWT. Minted tokens are
+  cached sealed per repository and access level and reused while more than 15 minutes remain.
+- **Logins and installations are separate records.** A session keeps both from its first grant
+  (`github_sessions`); docs/design/cloud-device.md, "Several logins", states the rules.
 - **Nothing decrypts from storage alone.** Records are AES-256-GCM under a KEK held as a
   Worker secret (`VAULT_KEK`), never in Durable Object storage, and imported as a
   non-extractable key. AAD `{userId}|{provider}|{generation}` binds each ciphertext to its slot.
@@ -44,8 +47,8 @@ cd edge/vault
 openssl rand -base64 32 | npx wrangler secret put VAULT_KEK   # the KEK, see below
 npx wrangler secret put GITHUB_APP_CLIENT_ID      # GitHub App (device flow + refresh; App JWT iss)
 npx wrangler secret put GITHUB_APP_CLIENT_SECRET
-npx wrangler secret put GITHUB_APP_PRIVATE_KEY < zeron.private-key.pem   # installation tokens
-npx wrangler secret put GITHUB_APP_SLUG           # e.g. zeron, for the install link
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY < zend.private-key.pem   # installation tokens
+npx wrangler secret put GITHUB_APP_SLUG           # e.g. zend, for the install link
 npx wrangler secret put CANARY_USER_ID            # optional, see Canary
 ```
 

@@ -87,6 +87,15 @@ local function note(what: string)
 	table.insert(said, what)
 	calls:set(table.concat(said, ","))
 end
+-- What a toast says, noted (there's no toast host here).
+local stub_toast = ds.toast :: any
+local shown_toast = stub_toast.show
+stub_toast.show = function(t: any): any
+	if type(t.body) == "string" then
+		note(`toast:{t.body}`)
+	end
+	return shown_toast(t)
+end
 local stub = state :: any
 stub.review = function(id: string)
 	note(`review:{id}`)
@@ -153,7 +162,7 @@ ui.command {
 		local p = open_install
 		open_install = nil
 		if p then
-			p.err({ message = "That release has no .zeron-plugin file" })
+			p.err({ message = "rate_limited: GitHub is turning away requests from this device for now" })
 		end
 	end,
 }
@@ -209,7 +218,7 @@ ui.command {
 	run = function()
 		local n = find("notes-tool")
 		n.status = "broken"
-		n.error = "Its manifest asks for a permission Zeron doesn't know: teleport"
+		n.error = "Its manifest asks for a permission Zend doesn't know: teleport"
 		publish()
 	end,
 }
@@ -273,15 +282,15 @@ ui.command {
 	title = "A newer Focus is found, signed by someone else",
 	run = function()
 		local f: any = find("focus")
-		f.update = { version = "6.6.6", added = {}, removed = {}, refused = "The new version is signed by someone else, so it won't be installed" }
+		f.update = { version = "6.6.6", added = {}, removed = {}, refused = "new_signer: The new version is signed by someone else, so it won't be installed" }
 		publish()
 	end,
 }
 ui.command {
 	id = "builtin",
-	title = "Zeron's own GitHub arrives",
+	title = "Zend's own GitHub arrives",
 	run = function()
-		local p = plugin("github", "GitHub", "zeron", "on", { permissions = { "ui.add", "github" } })
+		local p = plugin("github", "GitHub", "zend", "on", { permissions = { "ui.add", "github" } })
 		local any: any = p
 		any.builtin = true
 		any.allowed = { "github", "ui.add" }
@@ -310,7 +319,7 @@ ui.command {
 publish()
 
 -- Light, for pictures of it (src/audit_shots.rs: `!theme_light`).
-ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zeron-light") end }
+ui.command { id = "theme_light", title = "Light theme", run = function() ui.theme.follow_system(false); ui.theme.current:set("zend-light") end }
 
 return ui.scroll {
 	w_full = true,

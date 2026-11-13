@@ -1,6 +1,6 @@
-# Zeron for iOS
+# Zend for iOS
 
-A UIKit viewport onto the zeron mesh, built on the Rust mobile core. The phone
+A UIKit viewport onto the zend mesh, built on the Rust mobile core. The phone
 is a **peer device**: it mirrors the workspace registry, joins per-chat session
 rooms, and drives remote engines through the durable command ledger. No agent
 runs on the phone.
@@ -16,25 +16,25 @@ Requires Xcode 26+ and a Rust toolchain with the iOS targets:
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 cd apps/ios
-xcodebuild -project Zeron.xcodeproj -scheme Zeron \
+xcodebuild -project Zend.xcodeproj -scheme Zend \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
 
-The Zeron target's **Rust core** build phase runs `scripts/ios/build-core.sh`,
+The Zend target's **Rust core** build phase runs `scripts/ios/build-core.sh`,
 which builds `crates/mobile` for the active platform (always optimized — the
 `mobile` cargo profile) and refreshes the committed UniFFI bindings in
-`Zeron/Core/Generated/`. `ZERON_SKIP_CORE=1` reuses the last built library
+`Zend/Core/Generated/`. `ZEND_SKIP_CORE=1` reuses the last built library
 when iterating on Swift only.
 
 ## Layout
 
 ```
-Zeron/
+Zend/
   App/         AppDelegate, SceneDelegate, AppModel (owns CoreClient; maps
                workspace snapshots to view models; Keychain credentials)
   Core/        Generated UniFFI bindings; Fonts (the exact bytes Rust measures,
                registered with CoreText) + CoreText fallback measurer
-  Design/      Palette (Zeron color roles → light/dark), Glass helpers,
+  Design/      Palette (Zend color roles → light/dark), Glass helpers,
                cell-grid status glyph, harness brand marks
   Transcript/  TranscriptListView (virtualized scroll host over LayoutFrame),
                RowView/RowModel (CoreText painter for Rust display lists,
@@ -52,10 +52,10 @@ Zeron/
   Shell/       Tab bar (Sessions, Settings, search; "New session" accessory
                with live summary), sign-in
   Debug/       Transcript lab + hitch meter
-ZeronLiveActivity/  Widget extension: the voice call's Live Activity (Dynamic
+ZendLiveActivity/  Widget extension: the voice call's Live Activity (Dynamic
                Island + Lock Screen), with the orb's states exported from
-               zeron-orb as vector assets
-ZeronShared/   Compiled into the app and the extension: the activity's
+               zend-orb as vector assets
+ZendShared/   Compiled into the app and the extension: the activity's
                attributes and its mute/end App Intents
 ```
 
@@ -77,12 +77,12 @@ A session's subagents, side chats and terminals (`Companions/`):
 
 ### Transcript pipeline
 
-1. `zeron-client` applies session-doc updates incrementally (O(changed
+1. `zend-client` applies session-doc updates incrementally (O(changed
    entries)) and publishes immutable snapshots.
 2. `TranscriptView.attach(client, chatId)` subscribes **in Rust**; the layout
    thread turns entries into rows (one per markdown block / user message / tool
    group), reparses streaming markdown incrementally, and measures every row
-   with `zeron-text` at the viewport width.
+   with `zend-text` at the viewport width.
 3. Each pass publishes a `LayoutFrame`: exact heights + prefix-sum offsets.
    `rowsIn(y0, y1)` is a binary search; `display(i)` builds a display list
    (text runs at exact positions, boxes, links, scrollers, widgets).
@@ -105,6 +105,9 @@ A session's subagents, side chats and terminals (`Companions/`):
 | `-fast` / `-longreply` | Demo stream speed / reply length |
 | `-big` / `-huge` | Demo transcripts with 120 / 600 turns |
 | `-route chat:<id>` / `new` / `more` / `search` | Open a screen at launch |
+| `-send-on-open <text>` | With `-route chat:<id>`: send this once the session is open, for rigs driving a real stack (DEBUG) |
+| `-network-offline` | Report no network path whatever the OS says: a simulator shares its Mac's network (DEBUG) |
+| `-no-relay-layer` | Behave as a build without the relay layer does: an old phone in an account of new devices (DEBUG) |
 | `-companions` / `-terminal [-terminal-demo]` / `-subagent <tool id>` / `-side-chat <id>` | With `-route chat:<id>`: open its companions panel, a terminal (typing a scripted demo), a subagent, or a side chat (DEBUG) |
 | `-signedout` | Clear stored credentials |
 | `-dev <userId> <orgId> [-edge <url>]` | Dev bearer against an `AUTH_MODE=dev` edge (e.g. `wrangler dev`); not persisted |
@@ -117,26 +120,26 @@ A session's subagents, side chats and terminals (`Companions/`):
 
 ```sh
 # Rust
-cargo test -p zeron-text -p zeron-markdown -p zeron-client -p zeron-mobile
-cargo test --release -p zeron-mobile --lib bench_layout -- --ignored --nocapture
+cargo test -p zend-text -p zend-markdown -p zend-client -p zend-mobile
+cargo test --release -p zend-mobile --lib bench_layout -- --ignored --nocapture
 
 # Line-break accuracy vs CoreText (same font bytes), flows, hitch benchmarks
-xcodebuild … -only-testing:ZeronTests/LineBreakAccuracyTests test
-xcodebuild … -only-testing:ZeronUITests/SessionFlowTests test
-xcodebuild … -only-testing:ZeronUITests/ScrollPerformanceTests test
+xcodebuild … -only-testing:ZendTests/LineBreakAccuracyTests test
+xcodebuild … -only-testing:ZendUITests/SessionFlowTests test
+xcodebuild … -only-testing:ZendUITests/ScrollPerformanceTests test
 ```
 
-Live stack (real edge + headless engine; see `ZeronUITests/LiveStackTests.swift`):
+Live stack (real edge + headless engine; see `ZendUITests/LiveStackTests.swift`):
 
 ```sh
 (cd edge && npx wrangler dev --port 27650 --var AUTH_MODE:dev) &
-ZERON_DATA_DIR=/tmp/e2e ZERON_IPC_PORT=27811 ZERON_EDGE_URL=http://localhost:27650 \
-  ZERON_EDGE_TOKEN=alice@org1 ZERON_ORG_ID=org1 ZERON_HARNESS=mock target/debug/zeron headless &
-TEST_RUNNER_ZERON_LIVE_EDGE=http://localhost:27650 xcodebuild … -only-testing:ZeronUITests/LiveStackTests test
+ZEND_DATA_DIR=/tmp/e2e ZEND_IPC_PORT=27811 ZEND_EDGE_URL=http://localhost:27650 \
+  ZEND_EDGE_TOKEN=alice@org1 ZEND_ORG_ID=org1 ZEND_HARNESS=mock target/debug/zend headless &
+TEST_RUNNER_ZEND_LIVE_EDGE=http://localhost:27650 xcodebuild … -only-testing:ZendUITests/LiveStackTests test
 ```
 
 The test launches the app with `-harness mock`: a chat's configured harness
-wins over the engine's `ZERON_HARNESS` default, so without it a real agent
+wins over the engine's `ZEND_HARNESS` default, so without it a real agent
 would run.
 
 ## Session notifications

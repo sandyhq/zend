@@ -1,4 +1,4 @@
--- Icons: Zeron's own (crates/ui/assets/icons, Solar Linear), drawn in the
+-- Icons: Zend's own (crates/ui/assets/icons, Solar Linear), drawn in the
 -- colour of the text around them (a button's, hover included).
 -- `Icon { name = "plus", size = 16 }`.
 
@@ -122,7 +122,7 @@ export type Name =
 	| "tag"
 	| "inbox"
 	| "chat-add"
-	-- Settings' pages, as Zeron's settings sidebar names them: a person, a
+	-- Settings' pages, as Zend's settings sidebar names them: a person, a
 	-- group of people, tuning dials, a plug, a wallet.
 	| "user-rounded"
 	| "users-group-rounded"
@@ -148,7 +148,17 @@ export type Name =
 -- `glyph_stroke`: its lines in the theme's glyph stroke, not its own: for an
 -- icon that stands beside the panel toggles (ds/sidebar_icon), so it weighs as
 -- they do in either theme.
-export type Props = { name: Name | () -> Name, size: number?, glyph_stroke: boolean? }
+-- `absolute`, `left`, `top` and `color`: placed and coloured itself, with no
+-- box around it to do that (a row of thousands' glyph: one node, not three).
+export type Props = {
+	name: Name | () -> Name,
+	size: number?,
+	glyph_stroke: boolean?,
+	absolute: boolean?,
+	left: number?,
+	top: number?,
+	color: any?,
+}
 
 -- One glyph for search everywhere: the sidebar's (an older name for the
 -- magnifying glass draws it too).
@@ -166,7 +176,7 @@ end
 -- `src`, its stroke the theme's, those points at any `size`. (The source is
 -- 24 units across, drawn `size` points across.)
 local function in_glyph_stroke(src: string, size: number): string
-	local points = (ui.theme.get("zeron.glyph.stroke") :: number?) or 1.1667
+	local points = (ui.theme.get("zend.glyph.stroke") :: number?) or 1.1667
 	return (string.gsub(src, 'stroke%-width="[%d%.]+"', `stroke-width="{points * 24 / size}"`))
 end
 
@@ -187,5 +197,9 @@ return function(props: Props): Node
 		-- A glyph says nothing a screen reader needs: what holds it is named.
 		aria_hidden = true,
 		tint = "currentColor",
+		absolute = props.absolute,
+		left = props.left,
+		top = props.top,
+		color = props.color,
 	}
 end

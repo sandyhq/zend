@@ -2,7 +2,7 @@
 //! (MSP): `muse serve` speaking newline-delimited JSON-RPC 2.0 on stdio —
 //! the protocol Muse's own SDK drives, with no adapter in between.
 //!
-//! - One host process per Zeron runtime, one session in it ([`session`]).
+//! - One host process per Zend runtime, one session in it ([`session`]).
 //!   The session is resumed by id on the next runtime; one the host no
 //!   longer has starts fresh with a visible notice.
 //! - Turns end on the host's `turn/completed`, including the turns Muse
@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use serde_json::json;
 use tokio::sync::mpsc;
-use zeron_proto::{
+use zend_proto::{
     AccessMode, AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
 };
 
@@ -145,7 +145,7 @@ impl MuseHarness {
         } else {
             Mode::Session {
                 sandbox: !full_access(&request)
-                    && request.sandbox != zeron_proto::SandboxLevel::DangerFullAccess,
+                    && request.sandbox != zend_proto::SandboxLevel::DangerFullAccess,
             }
         };
         let host = Host::spawn(&exe, Path::new(&request.cwd), mode, &request.env)?;
@@ -267,6 +267,7 @@ impl Harness for MuseHarness {
     }
     fn fallback_models(&self) -> Vec<Model> {
         vec![Model {
+            default: false,
             id: "muse-spark-1.2".into(),
             label: "Muse Spark 1.2".into(),
             description: Some("Muse Code's default coding model".into()),

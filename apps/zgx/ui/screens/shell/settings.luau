@@ -118,17 +118,17 @@ function M.add(page: Page)
 end
 
 -- The list's width (the sidebar's least), and the title bar's strip over
--- the window (Zeron's: the window's buttons sit in it).
+-- the window (Zend's: the window's buttons sit in it).
 local TITLE_H = 38
 -- The group the pages that come and go list ahead of.
-local EXTRAS_BEFORE = "Zeron"
+local EXTRAS_BEFORE = "Zend"
 
 -- Archived: sessions put away (screens/settings/archived), last.
 M.add {
 	id = "archived",
 	title = "Archived",
 	icon = "archive-minimalistic",
-	-- (Under a heading of its own, last: Zeron keeps it in its last run of
+	-- (Under a heading of its own, last: Zend keeps it in its last run of
 	-- pages, apart from the account's and the organization's.)
 	group = "Workspace",
 	view = function(): Node
@@ -149,6 +149,7 @@ local TITLE_KEYS: { [string]: { string } } = {
 	appearance = { "Appearance", "settings.appearance.title" },
 	activity = { "Activity", "settings.activity.title" },
 	notifications = { "Notifications", "settings.notifications.title" },
+	voice = { "Voice", "settings.voice.title" },
 	files = { "Files", "settings.files.title" },
 	browser = { "Browsing", "settings.browser.page_title" },
 	browser_history = { "History", "settings.browser_history.title" },
@@ -156,6 +157,7 @@ local TITLE_KEYS: { [string]: { string } } = {
 	appshots = { "Appshots", "settings.appshots.title" },
 	providers = { "Providers", "settings.providers.title" },
 	devices = { "Devices", "settings.devices.title" },
+	projects = { "Projects", "settings.projects.title" },
 	members = { "Members", "settings.members.title" },
 	profile = { "Account", "settings.profile.title" },
 	cloud = { "Cloud", "settings.cloud.title" },
@@ -284,8 +286,8 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 			h_full = true,
 			shrink = 0,
 			relative = true,
-			rounded = if inset then "$zeron.inset.radius" else nil,
-			bg = if inset then "$zeron.inset.bg" else nil,
+			rounded = if inset then "$zend.inset.radius" else nil,
+			bg = if inset then "$zend.inset.bg" else nil,
 			overflow = if inset then "hidden" else nil,
 			w = if inset
 				then function(): number
@@ -335,7 +337,7 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 					end
 					local last: string? = nil
 					-- Those that come and go (plugins' pages), under their own
-					-- headings: ahead of the "Zeron" group (About and updates
+					-- headings: ahead of the "Zend" group (About and updates
 					-- stay last), or at the end where there's none.
 					local extras_in = false
 					local function add_extras()
@@ -369,7 +371,7 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 				end,
 				head = if head then head() else nil,
 				hide_rows = replaces,
-				foot = ui.slot("settings.nav", { w_full = true, gap = "$zeron.list.gap" }),
+				foot = ui.slot("settings.nav", { w_full = true, gap = "$zend.list.gap" }),
 				-- You and settings, as the main sidebar's foot: you open your
 				-- profile; settings' button, on here, closes them.
 				account = (function(): Node?
@@ -409,10 +411,10 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 					return (require("@app/screens/shell/view") :: any).expanded:get() == true
 				end
 				else nil,
-			rounded = if inset then "$zeron.inset.radius" else nil,
-			bg = if inset then "$zeron.inset.bg" else nil,
+			rounded = if inset then "$zend.inset.radius" else nil,
+			bg = if inset then "$zend.inset.bg" else nil,
 			border = if inset then 1 else nil,
-			border_color = if inset then "$zeron.inset.edge" else nil,
+			border_color = if inset then "$zend.inset.edge" else nil,
 			overflow = if inset then "hidden" else nil,
 			-- (Its strip moves the window, a double click zooming it; inset, the top
 			-- bar does that.)

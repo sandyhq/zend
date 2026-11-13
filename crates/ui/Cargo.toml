@@ -1,5 +1,5 @@
 [package]
-name = "zeron-ui"
+name = "zend-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -117,24 +117,24 @@ name = "session-card-fixture"
 required-features = ["appshots-fixture"]
 
 [dependencies]
-zeron-voice-media.workspace = true
-zeron-voice-session.workspace = true
-zeron-orb.workspace = true
-zeron-veil.workspace = true
-zeron-voice = { path = "../voice" }
+zend-voice-media.workspace = true
+zend-voice-session.workspace = true
+zend-orb.workspace = true
+zend-veil.workspace = true
+zend-voice = { path = "../voice" }
 url = "2"
-zeron-proto.workspace = true
+zend-proto.workspace = true
 similar.workspace = true
-zeron-doc.workspace = true
-zeron-engine.workspace = true
-zeron-harness.workspace = true
-zeron-rpc.workspace = true
-zeron-update.workspace = true
-zeron-notify.workspace = true
-zeron-syntax.workspace = true
-zeron-theme.workspace = true
-zeron-visual.workspace = true
-zeron-visual-gpu.workspace = true
+zend-doc.workspace = true
+zend-engine.workspace = true
+zend-harness.workspace = true
+zend-rpc.workspace = true
+zend-update.workspace = true
+zend-notify.workspace = true
+zend-syntax.workspace = true
+zend-theme.workspace = true
+zend-visual.workspace = true
+zend-visual-gpu.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui_tokio.workspace = true
@@ -147,11 +147,11 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark.workspace = true
-zeron-markdown.workspace = true
+zend-markdown.workspace = true
 zatex = { workspace = true, features = ["bundled"] }
 html5ever = "0.39"
 alacritty_terminal.workspace = true
-zeron-term.workspace = true
+zend-term.workspace = true
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 usvg = "0.46"

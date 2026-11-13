@@ -14,9 +14,9 @@ use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zeron_harness::process::{Command, Stdio};
+use zend_harness::process::{Command, Stdio};
 
-use zeron_proto::{
+use zend_proto::{
     HarnessId, HarnessInstallSource, HarnessUpdateFailure, HarnessUpdateFailureKind,
     HarnessUpdatePhase, HarnessUpdatePolicy, HarnessUpdateProgress, HarnessUpdateStatus,
 };
@@ -59,7 +59,7 @@ const NONINTERACTIVE_ENV: &[(&str, &str)] = &[
     ("npm_config_yes", "true"),
 ];
 /// Between full checks, how often each CLI's binary is looked at (stat only)
-/// for an update made outside zeron — its own auto-updater or the user.
+/// for an update made outside zend — its own auto-updater or the user.
 const BINARY_WATCH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -84,7 +84,7 @@ enum LatestSource {
     /// Muse's release channel manifest (see [`MUSE_CHANNELS`]).
     Muse,
     /// An agent from the ACP registry: the registry's current version
-    /// (`crate::acp_registry`), installed by Zeron.
+    /// (`crate::acp_registry`), installed by Zend.
     Registry,
     /// The release Cursor's installer installs, which `cursor-agent update`
     /// fetches too.
@@ -177,8 +177,8 @@ fn homebrew_tap(receipt: &Path) -> Option<String> {
 
 enum UpdatePlan {
     /// An agent from the ACP registry: the registry's build, installed by
-    /// Zeron in a folder of its own.
-    Registry(zeron_proto::RegistryAgent),
+    /// Zend in a folder of its own.
+    Registry(zend_proto::RegistryAgent),
     Command {
         executable: PathBuf,
         args: &'static [&'static str],
@@ -255,7 +255,7 @@ impl UpdatePlan {
     fn while_chats_run(&self, harness: HarnessId) -> Result<(), &'static str> {
         const REPLACES_FILES: &str = "Updating replaces files running chats still load.";
         match self {
-            // Zeron's own installers: a folder per version, and old ones go only
+            // Zend's own installers: a folder per version, and old ones go only
             // when nothing is running from them.
             UpdatePlan::Registry(_) | UpdatePlan::AntigravityArchive | UpdatePlan::CodexStandalone(_) => Ok(()),
             UpdatePlan::Homebrew(_) => Err("Homebrew deletes the old version straight away."),
@@ -377,8 +377,8 @@ struct CodexPackageManifest {
     path_dir: String,
 }
 
-/// Held for the complete standalone install so Zeron cannot race the Codex
-/// installer (which uses the same lock file) or another Zeron process.
+/// Held for the complete standalone install so Zend cannot race the Codex
+/// installer (which uses the same lock file) or another Zend process.
 struct InstallFileLock {
     file: File,
 }
@@ -523,7 +523,7 @@ fn provider(id: HarnessId) -> ProviderSpec {
         HarnessId::Antigravity => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::AntigravityAcp,
-            // Zeron installs a pinned ACP server archive. It has no registered
+            // Zend installs a pinned ACP server archive. It has no registered
             // self-update command; custom binaries remain installer-managed.
             update_args: None,
             manual_command: "Update the configured Antigravity ACP server",
@@ -566,7 +566,7 @@ struct PlanContext<'a> {
 /// How this install gets updated, decided by who owns it (see [`ownership`]):
 /// a mise pin and a project's copy are the user's; an npm-packaged CLI goes
 /// through the package manager that installed it; then Homebrew, the CLI's
-/// own updater, and zeron's own installers.
+/// own updater, and zend's own installers.
 fn update_plan(
     harness: HarnessId,
     executable: &Path,
@@ -653,7 +653,7 @@ fn update_plan(
         return Ok(UpdatePlan::CodexStandalone(install));
     }
     if harness == HarnessId::Antigravity
-        && zeron_harness::acp::is_managed_antigravity_server(executable)
+        && zend_harness::acp::is_managed_antigravity_server(executable)
     {
         return Ok(UpdatePlan::AntigravityArchive);
     }
@@ -682,7 +682,7 @@ fn manual_update_command(harness: HarnessId, executable: &Path, can_apply: bool)
     if can_apply {
         return None;
     }
-    // An install zeron won't touch says who owns it, not a command that would
+    // An install zend won't touch says who owns it, not a command that would
     // update some other copy.
     if ownership::mise_managed(executable) {
         return Some(ownership::Manual::Mise.instruction().into());
@@ -694,9 +694,9 @@ fn manual_update_command(harness: HarnessId, executable: &Path, can_apply: bool)
         return Some(ownership::Manual::Project.instruction().into());
     }
     if harness == HarnessId::Antigravity
-        && zeron_harness::acp::is_managed_antigravity_server(executable)
+        && zend_harness::acp::is_managed_antigravity_server(executable)
     {
-        return Some("Update Zeron to install this release".into());
+        return Some("Update Zend to install this release".into());
     }
     // Homebrew owns it: the CLI's own updater would write a second copy.
     if let Some(package) = homebrew_package(executable).filter(|package| !package.is_node_runtime())
@@ -761,7 +761,7 @@ impl CompatibilityState {
         &self,
         harness: HarnessId,
         version: &str,
-    ) -> Option<zeron_proto::HarnessCompatibility> {
+    ) -> Option<zend_proto::HarnessCompatibility> {
         self.published
             .verdict(harness, version)
             .or_else(|| self.built_in.verdict(harness, version))
@@ -786,7 +786,7 @@ struct Inner {
     owner_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// The executable each harness's last completed check probed (see
     /// [`BinaryFingerprint`]): a later difference means the CLI changed
-    /// outside zeron, so its status is stale.
+    /// outside zend, so its status is stale.
     checked_binaries: Mutex<HashMap<HarnessId, BinaryFingerprint>>,
     /// Who the last completed check found owning each harness's install
     /// ([`UpdatePlan::identity`]). An update refuses to run a different plan.
@@ -801,7 +801,7 @@ struct Inner {
     client: reqwest::Client,
     /// the registry release the last check reported, installed verbatim by
     /// apply so a registry change in between cannot swap what gets installed.
-    antigravity_release: Mutex<Option<zeron_harness::acp::AntigravityRelease>>,
+    antigravity_release: Mutex<Option<zend_harness::acp::AntigravityRelease>>,
 }
 
 /// Cloneable engine service exposed to RPC and the periodic worker.
@@ -938,7 +938,7 @@ impl HarnessUpdateCoordinator {
                 worker: Mutex::new(None),
                 antigravity_release: Mutex::new(None),
                 client: reqwest::Client::builder()
-                    .user_agent(concat!("zeron/", env!("CARGO_PKG_VERSION")))
+                    .user_agent(concat!("zend/", env!("CARGO_PKG_VERSION")))
                     .timeout(COMMAND_TIMEOUT)
                     .build()
                     .unwrap_or_default(),
@@ -958,7 +958,17 @@ impl HarnessUpdateCoordinator {
             return;
         }
         let coordinator = self.clone();
+        // A Cloud machine is woken by a message: a check started now spawns
+        // the CLI twice on a disk still arriving, and if it finds a release
+        // the install holds the message's run back until it ends.
+        let settle = crate::runner::is_cloud_platform().then_some(crate::runner::CLOUD_BOOT_SETTLE);
         *worker = Some(tokio::spawn(async move {
+            if let Some(settle) = settle {
+                tokio::select! {
+                    _ = coordinator.inner.shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(settle) => {}
+                }
+            }
             let mut retry = FIRST_RETRY;
             'checks: loop {
                 // Shutdown must not wait out slow probes or registry requests.
@@ -1326,7 +1336,7 @@ impl HarnessUpdateCoordinator {
             lock(&self.inner.checked_binaries).insert(harness, fingerprint);
         }
         let source = if harness.registry().is_some() {
-            HarnessInstallSource::ManagedByZeron
+            HarnessInstallSource::ManagedByZend
         } else {
             classify_source(&executable)
         };
@@ -1496,8 +1506,8 @@ impl HarnessUpdateCoordinator {
                 return self.fail_check_with_installed(harness, installed, source, error);
             }
         };
-        // zeron can only install the archive it has pinned and verified; a
-        // newer registry release waits for a zeron update that pins it.
+        // zend can only install the archive it has pinned and verified; a
+        // newer registry release waits for a zend update that pins it.
         let can_apply = can_apply
             && (harness != HarnessId::Antigravity
                 || lock(&self.inner.antigravity_release)
@@ -1854,7 +1864,7 @@ impl HarnessUpdateCoordinator {
         //
         // The wait for the lease can be long. Everything that decides what
         // runs is read again here, with nothing able to change it under us
-        // except the world outside Zeron: who owns the install now, and what's
+        // except the world outside Zend: who owns the install now, and what's
         // installed now.
         let executable = match self.executable(harness) {
             Ok(executable) if self.is_checked_binary(harness, &executable) => executable,
@@ -1912,7 +1922,7 @@ impl HarnessUpdateCoordinator {
             intent.finish();
             return Ok(installed);
         }
-        // Zeron's own installers put each release in a folder of its own; any
+        // Zend's own installers put each release in a folder of its own; any
         // other updater replaces what's at the path chats run.
         let same_launcher = !matches!(plan, UpdatePlan::Registry(_) | UpdatePlan::AntigravityArchive);
         let applied = match plan {
@@ -1961,7 +1971,7 @@ impl HarnessUpdateCoordinator {
                     .filter(|release| current.latest_version.as_ref() == Some(&release.version));
                 match release {
                     Some(release) => match self.begin_install(harness, &cancel) {
-                        Ok(()) => zeron_harness::acp::install_antigravity_release(&release)
+                        Ok(()) => zend_harness::acp::install_antigravity_release(&release)
                             .await
                             .map(drop)
                             .map_err(|error| error.to_string()),
@@ -2067,7 +2077,7 @@ impl HarnessUpdateCoordinator {
             Ok(now) if same_launcher && now != executable => {
                 let _ = self.install_changed(harness);
                 Err(format!(
-                    "the update ran, but Zeron now finds the CLI at {} instead of {}",
+                    "the update ran, but Zend now finds the CLI at {} instead of {}",
                     now.display(),
                     executable.display()
                 ))
@@ -2136,7 +2146,7 @@ impl HarnessUpdateCoordinator {
             let idle = lease.is_some() || self.inner.registry.try_update_lease(harness).is_some();
             if idle {
                 let _ = tokio::task::spawn_blocking(
-                    zeron_harness::acp::prune_superseded_antigravity_installs,
+                    zend_harness::acp::prune_superseded_antigravity_installs,
                 )
                 .await;
             }
@@ -2568,7 +2578,7 @@ impl HarnessUpdateCoordinator {
         let response = self
             .inner
             .client
-            .get(zeron_harness::acp::ANTIGRAVITY_REGISTRY_URL)
+            .get(zend_harness::acp::ANTIGRAVITY_REGISTRY_URL)
             .send()
             .await
             .map_err(|error| format!("Antigravity ACP release check failed: {error}"))?
@@ -2578,7 +2588,7 @@ impl HarnessUpdateCoordinator {
             .json()
             .await
             .map_err(|error| format!("Antigravity ACP release response was invalid: {error}"))?;
-        let release = zeron_harness::acp::antigravity_release(&json)
+        let release = zend_harness::acp::antigravity_release(&json)
             .ok_or("Antigravity ACP release response contained no valid version")?;
         let version = release.version.clone();
         *lock(&self.inner.antigravity_release) = Some(release);
@@ -2713,7 +2723,7 @@ impl HarnessUpdateCoordinator {
         let _install_lock = InstallFileLock::acquire(&install.root)?;
         let releases = install.root.join("releases");
         let nonce = uuid::Uuid::new_v4();
-        let archive = install.root.join(format!(".zeron-codex-{nonce}.tar.gz"));
+        let archive = install.root.join(format!(".zend-codex-{nonce}.tar.gz"));
         let staging = releases.join(format!(".{version}-{}-{nonce}.partial", install.target));
         std::fs::create_dir(&staging)
             .map_err(|error| format!("could not stage Codex update: {error}"))?;
@@ -3093,7 +3103,7 @@ fn activate_codex_release(
     if !canonical_destination.starts_with(canonical_root.join("releases")) {
         return Err("Codex release destination escaped the installation".into());
     }
-    let temporary = root.join(format!(".current.zeron-{nonce}"));
+    let temporary = root.join(format!(".current.zend-{nonce}"));
     symlink(&canonical_destination, &temporary)
         .map_err(|error| format!("could not stage Codex activation: {error}"))?;
     if let Err(error) = std::fs::rename(&temporary, root.join("current")) {
@@ -3394,10 +3404,10 @@ fn parse_hermes_update_check(output: &str) -> Result<UpdateCheck, String> {
 }
 
 /// The version installed: an agent from the ACP registry's is its record's
-/// (Zeron installed it), every other CLI's what it says of itself.
+/// (Zend installed it), every other CLI's what it says of itself.
 async fn installed_version_of(harness: HarnessId, executable: &Path, args: &[&str]) -> Result<String, String> {
     if let Some(agent) = harness.registry() {
-        return zeron_harness::acp_registry::record(agent)
+        return zend_harness::acp_registry::record(agent)
             .map(|record| record.version)
             .filter(|version| !version.is_empty())
             .ok_or_else(|| "the agent isn't added on this device".into());
@@ -3547,7 +3557,7 @@ async fn run_command_output_watched(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env("NO_COLOR", "1")
-        .env("CLAUDE_CODE_ENTRYPOINT", "zeron");
+        .env("CLAUDE_CODE_ENTRYPOINT", "zend");
     for (key, value) in NONINTERACTIVE_ENV.iter().chain(env) {
         if *key != "PATH" {
             command.env(*key, *value);
@@ -3560,7 +3570,7 @@ async fn run_command_output_watched(
         .filter(|(key, _)| *key == "PATH")
         .flat_map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
         .collect();
-    zeron_harness::compose_child_path_ahead(&mut command, executable, &ahead);
+    zend_harness::compose_child_path_ahead(&mut command, executable, &ahead);
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command
@@ -3779,7 +3789,7 @@ fn extract_version(text: &str) -> Option<String> {
 
 fn installed_version(harness: HarnessId, output: &str) -> Option<String> {
     if harness == HarnessId::Antigravity {
-        return zeron_harness::acp::antigravity_build_version(output)
+        return zend_harness::acp::antigravity_build_version(output)
             .or_else(|| output.lines().next().and_then(extract_version));
     }
     if harness == HarnessId::Muse {
@@ -3951,7 +3961,7 @@ impl ScoopApp {
     /// The program and arguments that run `scoop update <app>` with this root's Scoop.
     ///
     /// Not through `shims\scoop.cmd`: it turns each `"` in its arguments into
-    /// `'`, and a batch file's arguments are always quoted when Zeron runs
+    /// `'`, and a batch file's arguments are always quoted when Zend runs
     /// one, so Scoop would be asked for `'update'`. The script the shim runs,
     /// run as the shim runs it (with `-File`, which takes each argument as is).
     fn update_command(&self) -> (PathBuf, Vec<String>) {
@@ -4086,7 +4096,7 @@ fn scoop_app_in(path: &Path) -> Option<ScoopApp> {
 }
 
 /// The Chocolatey package that installed `executable`: `…\chocolatey\lib\<pkg>\…`,
-/// or for a shim in `…\chocolatey\bin`, the package Zeron knows the CLI by.
+/// or for a shim in `…\chocolatey\bin`, the package Zend knows the CLI by.
 fn chocolatey_package(harness: HarnessId, executable: &Path) -> Option<String> {
     let canonical = std::fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
     for path in [executable, canonical.as_path()] {
@@ -4312,8 +4322,8 @@ mod tests {
 
     use async_trait::async_trait;
     use futures::StreamExt as _;
-    use zeron_harness::{Harness, HarnessError, RunControls};
-    use zeron_proto::{
+    use zend_harness::{Harness, HarnessError, RunControls};
+    use zend_proto::{
         AgentEvent, HarnessId, HarnessUpdatePhase, Model, ReasoningLevel, RunRequest, SteeringMode,
     };
 
@@ -4651,7 +4661,7 @@ esac
     #[tokio::test]
     async fn hermes_commit_updates_can_install_without_changing_the_cli_version() {
         use std::os::unix::fs::PermissionsExt;
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
 
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("hermes");
@@ -4758,7 +4768,7 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn notify_cancels_waiting_automatic_but_preserves_explicit_updates() {
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         for automatic in [true, false] {
             let (temp, coordinator) = automatic_fixture();
             coordinator.check_one(HarnessId::Grok).await.unwrap();
@@ -4859,7 +4869,7 @@ esac
 
     #[tokio::test]
     async fn automatic_install_boundary_rechecks_policy_for_commands_and_downloads() {
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         let temp = tempfile::tempdir().unwrap();
         let registry = Arc::new(HarnessRegistry::new());
         registry.register(Arc::new(ExecutableHarness(
@@ -4894,7 +4904,7 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn disabling_an_agent_cancels_its_waiting_automatic_update() {
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         let (temp, coordinator) = automatic_fixture();
         let registry = &coordinator.inner.registry;
         registry.register(Arc::new(ExecutableHarness(
@@ -5000,7 +5010,7 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn enabling_auto_updates_installs_release_discovered_by_its_check() {
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         for phase in [
             HarnessUpdatePhase::Dormant,
             HarnessUpdatePhase::Checking,
@@ -5021,7 +5031,7 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn retrying_one_failed_check_schedules_automatic_installation() {
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         let (temp, coordinator) = automatic_fixture();
         std::fs::write(temp.path().join("fail-check"), "").unwrap();
         coordinator.set_policy(HarnessId::Grok, HarnessUpdatePolicy::AutoWhenIdle);
@@ -5580,7 +5590,7 @@ esac
     #[tokio::test]
     async fn unknown_claude_channel_clears_stale_release_and_never_auto_installs() {
         use std::os::unix::fs::PermissionsExt;
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("claude");
         std::fs::write(&executable, "#!/bin/sh\ncase $1 in\n --version) echo '2.1.100 (Claude Code)' ;;\n doctor) echo 'Old diagnostic with no channel' ;;\n update) exit 42 ;;\nesac\n").unwrap();
@@ -5721,7 +5731,7 @@ esac
         assert!(
             !super::can_apply_update(
                 HarnessId::Codex,
-                std::path::Path::new("/tmp/zeron-not-installed/codex")
+                std::path::Path::new("/tmp/zend-not-installed/codex")
             ),
             "an unclassified codex binary stays manual"
         );
@@ -5819,7 +5829,7 @@ esac
         coordinator.set_compatibility_feed(url);
         super::lock(&coordinator.inner.prefs).policies.insert(
             HarnessId::Grok,
-            zeron_proto::HarnessUpdatePolicy::AutoWhenIdle,
+            zend_proto::HarnessUpdatePolicy::AutoWhenIdle,
         );
         coordinator.check_one(HarnessId::Grok).await.unwrap();
         let fetched = hits.load(std::sync::atomic::Ordering::SeqCst);
@@ -5874,7 +5884,7 @@ esac
         let verdict = status.compatibility.expect("installed release flagged");
         assert_eq!(
             verdict.status,
-            zeron_proto::HarnessCompatibilityStatus::Broken
+            zend_proto::HarnessCompatibilityStatus::Broken
         );
         assert_eq!(verdict.recommended_version.as_deref(), Some("1.0.3"));
         // 1.0.41 isn't listed: still offered.
@@ -5958,7 +5968,7 @@ esac
 
     #[cfg(unix)]
     #[test]
-    fn installs_zeron_cannot_prove_it_owns_stay_manual_with_the_reason() {
+    fn installs_zend_cannot_prove_it_owns_stay_manual_with_the_reason() {
         let mise = std::path::Path::new(
             "/home/u/.local/share/mise/installs/npm-anthropic-ai-claude-code/2.1.0/bin/claude",
         );
@@ -6222,7 +6232,7 @@ esac
     #[cfg(unix)]
     #[tokio::test]
     async fn an_automatic_update_still_waits_for_a_quiet_moment() {
-        use zeron_proto::HarnessUpdatePolicy;
+        use zend_proto::HarnessUpdatePolicy;
         let (temp, coordinator) = cli_fixture("standalone");
         coordinator.check_one(HarnessId::Grok).await.unwrap();
         let running = coordinator.inner.registry.execution_lease(HarnessId::Grok).await;
@@ -6401,16 +6411,16 @@ esac
         prior.phase = HarnessUpdatePhase::Failed;
         prior.installed_version = Some("1.0.0".into());
         prior.latest_version = Some("2.0.0".into());
-        prior.error = Some(zeron_proto::HarnessUpdateFailure {
+        prior.error = Some(zend_proto::HarnessUpdateFailure {
             message: "npm error".into(),
             retryable: true,
-            kind: zeron_proto::HarnessUpdateFailureKind::Install,
+            kind: zend_proto::HarnessUpdateFailureKind::Install,
         });
         assert!(super::kept_install_failure(&prior, "1.0.0", Some("2.0.0"), true).is_some());
         assert!(super::kept_install_failure(&prior, "2.0.0", Some("2.0.0"), false).is_none());
         assert!(super::kept_install_failure(&prior, "1.0.0", Some("2.1.0"), true).is_none());
         assert!(super::kept_install_failure(&prior, "1.5.0", Some("2.0.0"), true).is_none());
-        prior.error.as_mut().unwrap().kind = zeron_proto::HarnessUpdateFailureKind::Check;
+        prior.error.as_mut().unwrap().kind = zend_proto::HarnessUpdateFailureKind::Check;
         assert!(super::kept_install_failure(&prior, "1.0.0", Some("2.0.0"), true).is_none());
     }
 
@@ -6616,7 +6626,7 @@ esac
     }
 
     /// Scoop's `scoop.cmd` shim turns every `"` in its arguments into `'`,
-    /// and a batch file's arguments are always quoted when Zeron runs one:
+    /// and a batch file's arguments are always quoted when Zend runs one:
     /// through the shim, Scoop is asked for `'update'`, which it doesn't know.
     /// The root's own `scoop.ps1` is run instead, as the shim itself does.
     #[cfg(windows)]
@@ -6803,7 +6813,7 @@ esac
         }
     }
 
-    /// An updater that writes a new copy elsewhere, which Zeron then finds
+    /// An updater that writes a new copy elsewhere, which Zend then finds
     /// first, didn't update the copy that was asked about: not "Updated".
     #[cfg(unix)]
     #[tokio::test]

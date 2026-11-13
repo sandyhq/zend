@@ -246,7 +246,7 @@ export type LanesProps = {
 	options: (() -> { ContextMenu.Entry }?)?,
 	-- A "+" on each group's header under the pointer, as the sidebar's
 	-- project headers have: `new_label` names it ("New side chat in
-	-- zeron"), and `on_new` is handed the header's groups, the outermost
+	-- zend"), and `on_new` is handed the header's groups, the outermost
 	-- first and its own last (a project's, a device's, or both). Nil, none.
 	on_new: ((groups: { LaneGroup }) -> ())?,
 	new_label: ((group: LaneGroup) -> string)?,
@@ -348,7 +348,7 @@ function M.Lanes(props: LanesProps): Node
 		if level == "project" then
 			local p = l.project
 			if p then
-				return { key = `{prefix}project:{p.id}`, name = p.name, kind = "project", hue = p.hue or "gray", src = p.src, emoji = p.emoji }
+				return { key = `{prefix}project:{p.id}`, name = p.name, kind = "project", hue = p.hue or "gray", src = p.src, emoji = p.emoji, project = p.id }
 			end
 			return { key = `{prefix}project:none`, name = locale.s("shell.sidebar.chats"), kind = "project", hue = "gray" }
 		end
@@ -643,6 +643,9 @@ function M.Lanes(props: LanesProps): Node
 	local shown = ui.use_state(height:peek())
 	local target = shown:peek()
 	local going: any = nil
+	-- (By number: a callback holding its own clip would keep both for good, what
+	-- Rust keeps of a clip being out of the collector's sight.)
+	local slide = 0
 	ui.effect(function()
 		local to = height:get()
 		if to == target then
@@ -654,13 +657,14 @@ function M.Lanes(props: LanesProps): Node
 		if going then
 			going:cancel()
 		end
-		local this: any = nil
-		this = anime.animate(shown, motion.params({
+		slide += 1
+		local this = slide
+		going = anime.animate(shown, motion.params({
 			value = to,
 			duration = SLIDE.duration,
 			ease = SLIDE.ease,
 			onComplete = function()
-				if going == this then
+				if slide == this then
 					going = nil
 				end
 				if away then
@@ -669,7 +673,6 @@ function M.Lanes(props: LanesProps): Node
 				end
 			end,
 		}))
-		going = this
 	end)
 	local function list_h(): number
 		return math.floor(math.min(shown:get(), drawn_h:get()) + 0.5)
@@ -795,7 +798,7 @@ function M.Lanes(props: LanesProps): Node
 								string.upper(string.sub(g.name, 1, 1)),
 								text_size = "$font.size.xs",
 								weight = "$font.weight.semibold",
-							}, badge, g.hue or "gray", g.src, g.emoji)
+							}, badge, g.hue or "gray", g.src, g.emoji, g.project)
 						end
 						return SessionRow.tile(Icon { name = if g.here then "laptop" else "remote-server", size = 12 }, badge)
 					end,
@@ -853,7 +856,7 @@ function M.Lanes(props: LanesProps): Node
 					if not p then
 						return ui.div {}
 					end
-					return Tile { label = p.name, hue = p.hue, src = p.src, emoji = p.emoji, size = 16 }
+					return Tile { label = p.name, hue = p.hue, src = p.src, emoji = p.emoji, size = 16, project = p.id }
 				end),
 				-- (Where its group isn't its project, and the view shows project
 				-- icons: as the sidebar's rows.)
@@ -921,7 +924,7 @@ function M.Lanes(props: LanesProps): Node
 				if not (el and at) then
 					return
 				end
-				local menu_w = (ui.theme.get("zeron.menu.width") :: number?) or 232
+				local menu_w = (ui.theme.get("zend.menu.width") :: number?) or 232
 				local x, y, w, h = el.x or 0, el.y or 0, el.width or 0, el.height or 0
 				at(x + w - menu_w, y + h + 4)
 			end,
@@ -931,7 +934,7 @@ function M.Lanes(props: LanesProps): Node
 		id = props.id,
 		class = "panel-home-fold",
 		w_full = true,
-		gap = "$zeron.list.gap",
+		gap = "$zend.list.gap",
 		SessionRow.Section {
 			title = props.label :: any,
 			open = props.open,

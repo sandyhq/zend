@@ -1,5 +1,5 @@
 -- Settings → Archived: the sessions put away, hidden from the sidebar until
--- restored (Zeron's: crates/ui/src/settings/archived.rs). Searched from one
+-- restored (Zend's: crates/ui/src/settings/archived.rs). Searched from one
 -- field and laid out by when each last moved (today, yesterday, this week,
 -- earlier), each group a card of settings rows (as Plugins' are, washed
 -- edge to edge under the pointer): its project's tile, its title, where it
@@ -37,7 +37,7 @@ local function all(): { sessions.Chat }
 	return sessions.now:get().archived or {}
 end
 local function device_of(id: string?): sessions.Device?
-	for _, d in sessions.now:get().devices or {} do
+	for _, d in sessions.devices:get() or {} do
 		if d.id == id then
 			return d
 		end
@@ -45,7 +45,7 @@ local function device_of(id: string?): sessions.Device?
 	return nil
 end
 local function project_of(id: string?): sessions.Project?
-	for _, p in sessions.now:get().projects or {} do
+	for _, p in sessions.projects:get() or {} do
 		if p.id == id then
 			return p
 		end
@@ -166,14 +166,14 @@ local Row = ui.component(function(props: { now: State<any> }): Node
 				items = "center",
 				justify = "center",
 				rounded = "$radius.lg",
-				bg = "$zeron.secondary.bg",
+				bg = "$zend.secondary.bg",
 				SessionRow.mark(cur, function(): boolean
 					return true
 				end),
 			}
 		end
 		local l = route.look(p.id) or { hue = route.hue(p.id) }
-		return Tile { label = p.name, hue = l.hue, src = l.src, emoji = l.emoji, size = 28 }
+		return Tile { label = p.name, hue = l.hue, src = l.src, emoji = l.emoji, size = 28, project = p.id }
 	end)
 	local function lit(): boolean
 		return over:get()
@@ -349,7 +349,7 @@ local function delete_all_button(): Node
 		-- the cards' end edge, gone under it when narrow the words' edge. Out
 		-- by the ghost's own padding either side.)
 		ui.div {
-			mx = ui.raw(-((ui.theme.get("zeron.space.snug") :: number?) or 10), "the ghost's own padding"),
+			mx = ui.raw(-((ui.theme.get("zend.space.snug") :: number?) or 10), "the ghost's own padding"),
 			ds.Button {
 				id = "archived-delete-all",
 				tone = "ghost",

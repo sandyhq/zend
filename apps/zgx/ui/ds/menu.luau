@@ -70,18 +70,18 @@ local OWN = {
 -- same place, with a glyph or without.
 function M.glyph(name: Icon.Name | () -> Icon.Name, ink: string?): Node
 	return ui.div {
-		w = "$zeron.menu.glyph.box",
-		h = "$zeron.menu.glyph.box",
+		w = "$zend.menu.glyph.box",
+		h = "$zend.menu.glyph.box",
 		shrink = 0,
 		items = "center",
 		justify = "center",
 		color = ink or "$text.secondary",
-		Icon { name = name, size = (ui.theme.get("zeron.menu.glyph.size") :: number?) or 16 },
+		Icon { name = name, size = (ui.theme.get("zend.menu.glyph.size") :: number?) or 16 },
 	}
 end
 
 local function empty_glyph(): Node
-	return ui.div { w = "$zeron.menu.glyph.box", h = "$zeron.menu.glyph.box", shrink = 0 }
+	return ui.div { w = "$zend.menu.glyph.box", h = "$zend.menu.glyph.box", shrink = 0 }
 end
 
 -- A glyph's box, empty: a row without a glyph among rows with them.
@@ -106,7 +106,7 @@ end
 -- A row's corner: concentric with the panel, through its edge and its
 -- group's inset (the token ds/tokens makes of them).
 function M.row_radius(): string
-	return "$zeron.menu.row_radius"
+	return "$zend.menu.row_radius"
 end
 
 -- A row's look without its content: for a row built by hand (a
@@ -118,11 +118,11 @@ function M.look(props: { [any]: any }, tall: boolean?): { [any]: any }
 	props.gap = "$space.2"
 	props.rounded = M.row_radius()
 	if tall then
-		props.min_h = "$zeron.menu.row"
+		props.min_h = "$zend.menu.row"
 		props.py = "$space.2"
 		props.items = props.items or "start"
 	else
-		props.h = props.h or "$zeron.menu.row"
+		props.h = props.h or "$zend.menu.row"
 		props.items = props.items or "center"
 	end
 	if props.cursor == nil then
@@ -192,12 +192,12 @@ function M.Row(props: RowProps): Node
 	end
 	local hover: Styles? = p.hover
 	if props.danger and enabled and hover and hover.bg == "$hover" then
-		p.hover = { bg = "$zeron.menu.danger" }
-		p.active = { bg = "$zeron.menu.danger" }
+		p.hover = { bg = "$zend.menu.danger" }
+		p.active = { bg = "$zend.menu.danger" }
 	end
 	local lit = props.lit
 	if lit then
-		local wash = if props.danger then "$zeron.menu.danger" else "$hover"
+		local wash = if props.danger then "$zend.menu.danger" else "$hover"
 		local rest: (Color | () -> Color)? = p.bg
 		p.bg = function(): Color
 			if lit() then
@@ -238,7 +238,7 @@ function M.Row(props: RowProps): Node
 				ui.column {
 					grow = 1,
 					min_w = 0,
-					gap = "$zeron.space.hair",
+					gap = "$zend.space.hair",
 					name,
 					ui.text {
 						props.description,
@@ -269,13 +269,17 @@ function M.Row(props: RowProps): Node
 end
 
 -- A group's title, over its rows: small, quiet, a short row of its own so
--- the gap under it is the rows'.
+-- the gap under it is the rows'. `first`: it opens its list, so it has no
+-- room over it of its own (the list's inset is that room): the space over
+-- a list's first line is its inset whatever that line is, as under its last.
 function M.Heading(props: { [any]: any }): Node
+	local first = props.first == true
 	return ui.row {
 		w_full = true,
-		h = "$zeron.menu.heading",
+		h = if first then nil else "$zend.menu.heading",
+		pb = if first then "$space.1" else nil,
 		px = "$space.2",
-		items = "center",
+		items = if first then "end" else "center",
 		shrink = 0,
 		aria_hidden = true,
 		ui.text {
@@ -300,14 +304,110 @@ function M.Group(props: { heading: (string | Message)?, [any]: any }): Node
 	p.heading = nil
 	p.w_full = true
 	p.p = p.p or "$space.1"
-	p.gap = p.gap or "$zeron.list.gap"
+	p.gap = p.gap or "$zend.list.gap"
 	p.shrink = 0
 	if heading then
 		p.role = p.role or "group"
 		p.label = p.label or heading
-		table.insert(p, 1, M.Heading { heading })
+		table.insert(p, 1, M.Heading { heading, first = true })
 	end
 	return ui.column(p)
+end
+
+-- A menu's list that scrolls: its lines (rows, headings) in a scroll inset
+-- from the panel's edge as a group is, the list's gap between them. `h` is
+-- the scroll's height, `M.list_height` of what it holds: its lines' own,
+-- up to whole rows (a scroll isn't as tall as its content of itself), so
+-- the space over the first line and under the last is the inset alone,
+-- whatever it holds (a line, a full list scrolled, nothing at all).
+-- `before`: lines over the scroll in the same inset (a heading, what an
+-- empty or loading list says). `id` names the list; other props go to the
+-- scroll (its role, its label, its `offset`: a list whose highlight the
+-- keys move keeps it in view with `M.reveal`).
+function M.List(props: { lines: Node, h: any, before: { Node }?, [any]: any }): Node
+	local scroll: { [any]: any } = { w_full = true, overscroll = "contain" }
+	for k, v in props do
+		if k ~= "lines" and k ~= "before" and k ~= "id" and type(k) ~= "number" then
+			scroll[k] = v
+		end
+	end
+	table.insert(scroll, props.lines)
+	local col: { [any]: any } = { id = props.id, w_full = true, shrink = 0, p = "$space.1", gap = 0 }
+	for _, n in props.before or {} do
+		table.insert(col, n)
+	end
+	table.insert(col, ui.scroll(scroll))
+	return ui.column(col)
+end
+
+-- A line's height there: a row's `row`, a heading's the theme's (a first
+-- one's without the room over it).
+local function line_height(line: string, i: number, row: number): number
+	if line == "heading" then
+		local heading = (ui.theme.get("zend.menu.heading") :: number?) or 24
+		local inset = (ui.theme.get("space.1") :: number?) or 4
+		return if i == 1 then heading - inset else heading
+	end
+	return row
+end
+local function list_gap(): number
+	return (ui.theme.get("zend.list.gap") :: number?) or 2
+end
+
+-- How tall a list's lines stand, up to its first `rows` rows (with the
+-- headings among them): a list's scroll's height, whole rows and nothing
+-- under them. `lines` in order, each `"heading"` or `"row"`; `row` a row's
+-- height. (A first heading's as `M.Heading` lays it: no room over it.)
+function M.list_height(lines: { string }, rows: number, row: number): number
+	local h, n, any = 0, 0, false
+	local gap = list_gap()
+	for i, line in lines do
+		if line == "row" then
+			n += 1
+			if n > rows then
+				break
+			end
+		end
+		if any then
+			h += gap
+		end
+		any = true
+		h += line_height(line, i, row)
+	end
+	return h
+end
+
+-- Scroll a list (its scroll's `offset`) as little as brings its line `at`
+-- into view whole, with the heading over it if one is (going up, a
+-- section's first row shows under its name). `lines`, `rows` and `row` as
+-- `M.list_height` takes them: the view is the height it gives. A list the
+-- keys move a highlight through calls it as they move it (not as the
+-- pointer does: a row it's over is in view, and the wheel is its own).
+function M.reveal(offset: State<number>, lines: { string }, at: number, rows: number, row: number)
+	if not lines[at] then
+		return
+	end
+	local from = if at > 1 and lines[at - 1] == "heading" then at - 1 else at
+	local gap = list_gap()
+	local y, top = 0, 0
+	for i = 1, at do
+		if i > 1 then
+			y += gap
+		end
+		if i == from then
+			top = y
+		end
+		y += line_height(lines[i], i, row)
+	end
+	local view = M.list_height(lines, rows, row)
+	-- (A heading and its row taller than the view: the row.)
+	top = math.max(top, y - view)
+	local o = offset:peek()
+	if top < o then
+		offset:set(top)
+	elseif y > o + view then
+		offset:set(y - view)
+	end
 end
 
 -- A panel of the menus' glass, its groups and rules edge to edge.

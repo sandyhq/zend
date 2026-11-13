@@ -12,6 +12,7 @@
 local Icon = require("@self/icon")
 local Hint = require("@self/hint")
 local control = require("@self/control")
+local material = require("@self/material")
 local EditorMenu = require("@self/editor_menu")
 
 local M = {}
@@ -77,13 +78,13 @@ local function notes(props: WrapProps): Node?
 			if count.say then
 				local _, warns = count.say(n)
 				if warns then
-					return "$zeron.tone.warning.ink"
+					return "$zend.tone.warning.ink"
 				end
 			end
 			if count.max and n > count.max then
-				return "$zeron.tone.danger.ink"
+				return "$zend.tone.danger.ink"
 			elseif count.soft and n > count.soft then
-				return "$zeron.tone.warning.ink"
+				return "$zend.tone.warning.ink"
 			end
 			return "$text.tertiary"
 		end
@@ -114,7 +115,7 @@ local function notes(props: WrapProps): Node?
 				then ui.show(problem, ui.row {
 					gap = "$space.1",
 					items = "center",
-					color = "$zeron.tone.danger.ink",
+					color = "$zend.tone.danger.ink",
 					live = "polite",
 					-- Half a point up: an icon beside text sits on its
 					-- x-height, not its box.
@@ -156,7 +157,7 @@ function M.wrap(props: WrapProps): Node
 	local label = props.label
 	local n = notes(props)
 	return ui.column {
-		gap = "$zeron.space.tight",
+		gap = "$zend.space.tight",
 		w = props.w,
 		w_full = props.w_full,
 		grow = props.grow,
@@ -166,7 +167,7 @@ function M.wrap(props: WrapProps): Node
 		disabled = props.disabled,
 		opacity = if props.disabled
 			then function(): any
-				return if control.value(props.disabled) then "$zeron.disabled" else nil
+				return if control.value(props.disabled) then "$zend.disabled" else nil
 			end
 			else nil,
 		if label then M.label(label, props.size) else nil,
@@ -203,19 +204,19 @@ function M.frame(props: FrameProps): Node
 		border = 1,
 		bg = function()
 			if joined() then
-				return "$zeron.menu.solid"
+				return "$zend.menu.solid"
 			end
-			return if hovered:get() and not focused:get() then "$zeron.field.hover" else "$zeron.field.bg"
+			return if material.see_through() then (if hovered:get() and not focused:get() then "$zend.field.glass_hover" else "$zend.field.glass") elseif hovered:get() and not focused:get() then "$zend.field.hover" else "$zend.field.bg"
 		end,
 		border_color = function()
 			if invalid() then
-				return "$zeron.field.edge_error"
+				return "$zend.field.edge_error"
 			elseif focused:get() or joined() then
-				return "$zeron.field.edge_focus"
+				return "$zend.field.edge_focus"
 			elseif hovered:get() then
-				return "$zeron.field.edge_hover"
+				return "$zend.field.edge_hover"
 			end
-			return "$zeron.field.edge"
+			return "$zend.field.edge"
 		end,
 		cursor = "text",
 		-- A press anywhere on it focuses its input: a group round the input
@@ -282,7 +283,7 @@ function M.input(props: InputProps, size: control.Size, focused: State<boolean>)
 	p.focus = { border = 0, outline = 0 }
 	p.text_size = control.TEXT[size]
 	p.color = "$text.primary"
-	p.placeholder_color = "$zeron.field.placeholder"
+	p.placeholder_color = "$zend.field.placeholder"
 	p.caret_color = "$accent"
 	local on_focus, on_blur = props.on_focus, props.on_blur
 	p.on_focus = function(...)

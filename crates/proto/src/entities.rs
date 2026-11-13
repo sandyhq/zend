@@ -1,6 +1,6 @@
 //! Synced entity rows (workspace doc) and local projections.
 //!
-//! In zeron these were synced Postgres rows; in zeron they live in the per-org
+//! In zend these were synced Postgres rows; in zend they live in the per-org
 //! workspace Loro doc (see ARCHITECTURE.md §2.2) with the same field surface.
 
 use chrono::{DateTime, Utc};
@@ -79,7 +79,7 @@ pub struct Device {
     pub name: String,
     pub platform: String,
     pub last_seen_at: Option<DateTime<Utc>>,
-    /// First registration time (zeron devices.created_at — the Devices page
+    /// First registration time (zend devices.created_at — the Devices page
     /// "Added …" fragment). Optional so pre-existing docs stay readable.
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
@@ -115,7 +115,9 @@ pub struct Space {
     pub device_id: String,
     /// Absolute folder path on the owning device.
     pub path: String,
-    /// User rename; absent ⇒ display = basename(path).
+    /// User rename; absent ⇒ display = basename(path). As read from the
+    /// registry, its repository's: the same on every copy with a shared
+    /// `repository_id` (any but `local:`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Owner-stamped: is `path` inside a git work tree?
@@ -142,7 +144,8 @@ pub struct Space {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_repo: Option<String>,
     /// The picture its people chose for it (LWW, from any device); absent ⇒
-    /// its default tile (its repository's artwork, else its initial).
+    /// its default tile (its repository's artwork, else its initial). Shared
+    /// by a repository's copies like `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<SpaceIcon>,
     pub created_at: DateTime<Utc>,
@@ -276,7 +279,7 @@ pub struct Chat {
     pub last_message_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// Harness-native session id of the chat's latest run — engine-owned resume
-    /// continuity across engine restarts (zeron's `chats.harness_session_id`).
+    /// continuity across engine restarts (zend's `chats.harness_session_id`).
     /// Empty string = explicit
     /// "do not resume" tombstone after a rejected resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,7 +313,7 @@ pub struct Chat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_gen: Option<u32>,
     /// The chat this one hangs off: the conversation a side chat was forked
-    /// from, or the chat whose agent spawned this one through the Zeron MCP
+    /// from, or the chat whose agent spawned this one through the Zend MCP
     /// server. Children stay out of the main sidebar and list under their
     /// parent instead. Absent for top-level chats; a dangling id (parent
     /// deleted) is tolerated rather than cascaded.
@@ -319,7 +322,7 @@ pub struct Chat {
     /// What a child (`parent_chat_id`) is to its parent: a side chat the
     /// person treats as a conversation of its own, or a subagent the
     /// parent's agent delegated to (listed under the parent's Subagents).
-    /// Recorded when an agent creates the child through the Zeron MCP
+    /// Recorded when an agent creates the child through the Zend MCP
     /// server; `None` on top-level chats, on side chats a person started or
     /// forked, and on rows written before the field existed (all read as
     /// side chats). A value from a newer peer this build doesn't know
@@ -823,7 +826,7 @@ pub struct Worktree {
     pub repo_path: String,
     pub path: String,
     pub branch: String,
-    /// Generated worktree folder name (`zeron/<name>` is its branch).
+    /// Generated worktree folder name (`zend/<name>` is its branch).
     #[serde(default)]
     pub name: String,
     /// Canonical checkout identity (device-scoped hash of the git dir).
@@ -1669,7 +1672,7 @@ pub struct AgentAccount {
     /// False for a live login whose credentials we could not read (e.g. macOS
     /// Keychain denied) or whose account couldn't be identified — shown, but
     /// not re-activatable. Always false for Hermes: Hermes owns its
-    /// credential pool (it picks and rotates entries itself), so zeron lists
+    /// credential pool (it picks and rotates entries itself), so zend lists
     /// it read-only — no switch, no remove; accounts are added through
     /// `hermes auth add`.
     #[serde(default)]
@@ -1922,6 +1925,58 @@ pub struct TransferProgress {
     pub total: u64,
 }
 
+/// A send waiting for its attachment bytes to reach the edge's store before it
+/// enters the chat (`WatchHeldSends`). It survives restarts, so a restarted
+/// interface can still show the message and what it's waiting on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldSendStatus {
+    pub id: String,
+    pub chat_id: String,
+    /// The transcript message it becomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// As the transcript would show it, attachment trailer included.
+    pub prompt: String,
+    /// It becomes a queue row, not a message going out now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue_row: bool,
+    /// Epoch millis.
+    pub created_at: i64,
+    /// Why it stopped trying; it waits for the user's retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+}
+
+/// A message on its way to a chat's agent and not yet taken (`WatchWaitingMessages`):
+/// in the chat's doc for its host to run, or held here while its files upload. A
+/// composer can say how old one is before it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingMessage {
+    /// The command's id, or the outbox row's.
+    pub id: String,
+    pub chat_id: String,
+    /// The transcript message it becomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// As the transcript would show it, attachment trailer included.
+    pub prompt: String,
+    /// The device that sent it.
+    pub issued_by: String,
+    /// Epoch millis: when it went out to the chat (held: when it was sent).
+    pub sent_at: i64,
+    /// Epoch millis past which it won't run. Held sends have none yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// Still in this device's outbox, its files uploading.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    /// Why a held send stopped trying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+}
+
 /// Live edge-connectivity posture (the `WatchConnectivity` stream): the truth
 /// the connection pill, composer honesty, and queued-send badges render.
 /// Derived engine-side from the registry room's reconnect state, the OS
@@ -2037,7 +2092,7 @@ mod tests {
                     provider: "github".into(),
                     number: 90,
                     title: "Model checkout change request status".into(),
-                    url: "https://github.com/acme/zeron/pull/90".into(),
+                    url: "https://github.com/acme/zend/pull/90".into(),
                     state,
                     base_ref: "main".into(),
                     head_ref: "feature/change".into(),
@@ -2151,10 +2206,10 @@ mod tests {
             ci: Default::default(),
             viewer_did_author: None,
             viewer_review_requested: None,
-            repository: "acme/zeron".into(),
+            repository: "acme/zend".into(),
             number: 1,
             title: "No decision".into(),
-            url: "https://github.com/acme/zeron/pull/1".into(),
+            url: "https://github.com/acme/zend/pull/1".into(),
             state: ChangeRequestState::Open,
             is_draft: false,
             review_decision: ChangeRequestReviewDecision::Approved,
@@ -2201,7 +2256,7 @@ mod tests {
         let legacy = serde_json::json!({
             "repoPath": "/repo",
             "path": "/worktree",
-            "branch": "zeron/branch",
+            "branch": "zend/branch",
             "name": "branch",
             "checkoutId": "checkout",
         });

@@ -3,9 +3,9 @@
 //! is run twice over one data dir, asserting
 //! - chats + transcripts survive a graceful shutdown → relaunch;
 //! - the next run in an existing chat carries the chat's stored harness-native
-//!   session id as `RunRequest.resume` (engine-owned, zeron sessions.ts:736);
+//!   session id as `RunRequest.resume` (engine-owned, zend sessions.ts:736);
 //! - a kill -9 style crash recovers the session id from the run journal
-//!   (zeron recoverDraft, sessions.ts:538-552) and stamps streaming entries
+//!   (zend recoverDraft, sessions.ts:538-552) and stamps streaming entries
 //!   `aborted`;
 //! - resume is cwd-scoped (harness session stores are keyed by cwd);
 //! - a startup crash retries once with the resume kept, and a helper that is
@@ -20,16 +20,16 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{
+use zend_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionDoc, SessionMessageEntry,
 };
-use zeron_engine::{EngineCore, HarnessRegistry, RunJournal};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use zend_engine::{EngineCore, HarnessRegistry, RunJournal};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
-use zeron_sync::DocsStore;
+use zend_sync::DocsStore;
 
 const CHAT: &str = "chat-restart";
 
@@ -141,8 +141,12 @@ impl Harness for RecordingHarness {
 fn assemble(dir: &std::path::Path, harness: RecordingHarness) -> EngineCore {
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(harness));
-    EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock, None)
-        .expect("engine core assembles")
+    let core = EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core assembles");
+    // Served, as the engine's port is right after assembly: a turn revived on
+    // boot waits for it (see `a_revived_turn_waits_for_the_port_its_zend_tools_dial`).
+    core.sessions.set_ipc_port(27699);
+    core
 }
 
 fn queue_run(core: &EngineCore, prompt: &str, cwd: &str, message_id: &str) {
@@ -440,7 +444,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
 struct PersistentHarness {
     runs_started: Arc<Mutex<usize>>,
     id: HarnessId,
-    /// Per launch: whether its Zeron server was side-chats-only.
+    /// Per launch: whether its Zend server was side-chats-only.
     side_chats_only: Arc<Mutex<Vec<bool>>>,
 }
 
@@ -557,7 +561,7 @@ async fn persistent_session_serves_multiple_turns_on_one_child() {
     )
     .await;
 
-    // The session PARKS (zeron runsBySession): the second message routes into
+    // The session PARKS (zend runsBySession): the second message routes into
     // the live child instead of spawning a new one.
     queue_run(&core, "second", "/tmp", "msg-user-2");
     wait_for(
@@ -586,11 +590,16 @@ async fn persistent_session_serves_multiple_turns_on_one_child() {
 struct SwitchableCredential(Arc<Mutex<String>>);
 
 #[async_trait]
-impl zeron_engine::registry::RunEnvironment for SwitchableCredential {
-    async fn prepare(&self, _harness: HarnessId, _request: &mut RunRequest) -> Result<(), String> {
+impl zend_engine::registry::RunEnvironment for SwitchableCredential {
+    async fn prepare(
+        &self,
+        _harness: HarnessId,
+        _chat_id: Option<&str>,
+        _request: &mut RunRequest,
+    ) -> Result<(), String> {
         Ok(())
     }
-    async fn credential(&self, _harness: HarnessId) -> Option<String> {
+    async fn credential(&self, _harness: HarnessId, _chat_id: Option<&str>) -> Option<String> {
         Some(self.0.lock().unwrap().clone())
     }
 }
@@ -645,8 +654,66 @@ async fn a_switched_credential_replaces_the_parked_session() {
     core.shutdown().await;
 }
 
+/// An environment that decides a chat's credential while preparing its first
+/// run (a plugin's `run.preparing` pin): unknown before, known after.
+struct DecidedWhilePreparing(Arc<Mutex<Option<String>>>);
+
+#[async_trait]
+impl zend_engine::registry::RunEnvironment for DecidedWhilePreparing {
+    async fn prepare(
+        &self,
+        _harness: HarnessId,
+        chat_id: Option<&str>,
+        _request: &mut RunRequest,
+    ) -> Result<(), String> {
+        if chat_id.is_some() {
+            self.0.lock().unwrap().get_or_insert_with(|| "pinned:1".into());
+        }
+        Ok(())
+    }
+    async fn credential(&self, _harness: HarnessId, _chat_id: Option<&str>) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// A credential decided while the first run was prepared is the one its
+/// session parks on: the next turn keeps the warm child.
+#[tokio::test]
+async fn a_credential_decided_while_preparing_keeps_the_parked_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let runs_started = Arc::new(Mutex::new(0usize));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(PersistentHarness {
+        runs_started: runs_started.clone(),
+        id: HarnessId::Mock,
+        side_chats_only: Default::default(),
+    }));
+    registry.set_run_environment(Arc::new(DecidedWhilePreparing(Arc::new(Mutex::new(None)))));
+    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core assembles");
+    pre_title(&core);
+
+    queue_run(&core, "first", "/tmp", "msg-user-1");
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "first turn to complete",
+    )
+    .await;
+    queue_run(&core, "second", "/tmp", "msg-user-2");
+    wait_for(
+        || complete_assistant_count(&core) == 2,
+        "second turn on the warm child",
+    )
+    .await;
+    assert_eq!(*runs_started.lock().unwrap(), 1, "decided at the first run: same child");
+    core.shutdown().await;
+}
+
 /// Turning a provider's native subagents off (Settings → Providers) between
-/// turns replaces the parked child, whose successor's Zeron server is
+/// turns replaces the parked child, whose successor's Zend server is
 /// side-chats-only; an unchanged setting keeps it warm.
 #[tokio::test]
 async fn switched_native_subagents_replace_the_parked_session() {
@@ -664,7 +731,7 @@ async fn switched_native_subagents_replace_the_parked_session() {
     }));
     let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::ClaudeCode, None)
         .expect("engine core assembles");
-    // A served IPC port: runs carry Zeron's own MCP server.
+    // A served IPC port: runs carry Zend's own MCP server.
     core.sessions.set_ipc_port(27699);
     pre_title(&core);
 
@@ -759,15 +826,11 @@ async fn a_parked_side_chat_stays_warm_when_native_subagents_switch() {
     core.shutdown().await;
 }
 
-#[tokio::test]
-async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    std::fs::create_dir_all(&dir).unwrap();
+/// Same manufactured kill -9 state as above, but FRESH: the streaming entry
+/// crashed moments ago, inside the 12h revival window.
+fn seed_fresh_crash(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("device-id"), "dev-crash").unwrap();
-
-    // Same manufactured kill -9 state as above, but FRESH: the streaming entry
-    // crashed moments ago, inside the 12h revival window.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -830,6 +893,13 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
             )
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    seed_fresh_crash(&dir);
 
     let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
     let core = assemble(
@@ -841,7 +911,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         },
     );
 
-    // The run is PICKED BACK UP without any user action (zeron: "not just
+    // The run is PICKED BACK UP without any user action (zend: "not just
     // eulogized"): recovery re-dispatches the crashed prompt itself.
     wait_for(
         || complete_assistant_count(&core) == 1,
@@ -892,6 +962,60 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         revived.resume.as_deref(),
         Some("hs-crash"),
         "auto-resume must reattach the crashed harness session"
+    );
+    core.shutdown().await;
+}
+
+/// Boot recovery revives a cut-off turn while the engine is still being
+/// assembled, before it serves its IPC port. Dispatched then, the run went out
+/// with no Zend MCP server: its agent found its Zend tools gone. It waits for
+/// the port, and carries the server once it's recorded.
+#[tokio::test]
+async fn a_revived_turn_waits_for_the_port_its_zend_tools_dial() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    seed_fresh_crash(&dir);
+
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(RecordingHarness {
+        requests: requests.clone(),
+        session_id: "hs-after-crash".into(),
+        fail_starts: Default::default(),
+    }));
+    // Assembled, the port not served yet.
+    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core assembles");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "the revived turn must not go out before the port"
+    );
+
+    core.sessions.set_ipc_port(27699);
+    wait_for(
+        || {
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.prompt.contains("Continue where you left off"))
+        },
+        "the revived turn to dispatch",
+    )
+    .await;
+    let recorded = requests.lock().unwrap().clone();
+    let revived = recorded
+        .iter()
+        .find(|r| r.prompt.contains("Continue where you left off"))
+        .unwrap();
+    let zend = revived
+        .mcp
+        .as_ref()
+        .expect("the revived run carries Zend's MCP server");
+    assert_eq!(
+        zend.env.get("ZEND_IPC_PORT").map(String::as_str),
+        Some("27699")
     );
     core.shutdown().await;
 }
@@ -1222,7 +1346,7 @@ async fn persistent_startup_crash_keeps_stored_session_id() {
 /// the codeword back — the reply can only contain it if the second run resumed
 /// the first run's harness session. Ignored by default: needs an installed,
 /// authenticated `claude` CLI and spends real tokens (haiku, two tiny turns).
-/// Run with: `cargo test -p zeron-engine --test restart_resume -- --ignored`
+/// Run with: `cargo test -p zend-engine --test restart_resume -- --ignored`
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires installed+authenticated claude CLI; spends tokens"]
 async fn real_claude_remembers_codeword_across_engine_restart() {
@@ -1253,7 +1377,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
     let assemble_real = || {
         EngineCore::assemble(
             &dir,
-            Arc::new(zeron_engine::default_registry()),
+            Arc::new(zend_engine::default_registry()),
             HarnessId::ClaudeCode,
             None,
         )

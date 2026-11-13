@@ -19,13 +19,15 @@ use zgx_script::{ScriptHost, Value, testing::TestApp};
 const W: f32 = 1200.;
 const H: f32 = 800.;
 
-/// Zeron's title line beside the traffic lights: 21 down (38 tall, 4 of pad).
+/// The title line beside the traffic lights: their middle, 20 down (zgx
+/// centres them in its 40-point inset strip). Elsewhere the bar's own 21.
 
 /// The room between the page's controls and the window's buttons at the right,
 /// one rhythm by ink: the panel toggle's glyph (12 of ink in its 24) to
 /// Minimize's (10 in its 46) as far as one caption glyph to the next (36).
 const DIVIDED: f32 = 12.;
-const MAC_LINE: f32 = 21.;
+const MAC_LINE: f32 = 20.;
+const BAR_LINE: f32 = 21.;
 
 /// What a window reports: its title bar's free strip and its buttons.
 #[derive(Clone, Copy, Debug)]
@@ -48,12 +50,21 @@ fn gnome(w: f32) -> Report {
 /// macOS: the traffic lights' frames as zgx's inset title bar reports them,
 /// 12 in and 60 across.
 fn macos(w: f32) -> Report {
-    Report { area: Some(Rect::new(72., 0., w - 72., 40.)), controls: Some(Rect::new(12., 13., 60., 16.)) }
+    Report { area: Some(Rect::new(72., 0., w - 72., 40.)), controls: Some(Rect::new(12., 12., 60., 16.)) }
 }
 
 fn mount(report: Report) -> TestApp {
+    mount_on(report, "linux")
+}
+
+/// As `mount`, the host saying which system it runs on (`platform`).
+fn mount_on(report: Report, platform: &'static str) -> TestApp {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/shell_fixture.luau");
-    let app = TestApp::new(|runtime| ScriptHost::new(runtime, path));
+    let app = TestApp::new(|runtime| {
+        let host = ScriptHost::new(runtime, path);
+        host.shared("platform", platform);
+        host
+    });
     let (area, controls) = (app.ui.signal(report.area), app.ui.signal(report.controls));
     app.host.window_chrome(area, controls);
     app.ui.scene.borrow_mut().resize(W, H);
@@ -102,7 +113,7 @@ fn on_line(app: &mut TestApp, line: f32, when: &str) {
 }
 
 #[test]
-fn beside_windows_caption_buttons_zerons_controls_start_at_the_left_on_their_line() {
+fn beside_windows_caption_buttons_zends_controls_start_at_the_left_on_their_line() {
     let mut app = mount(windows(W));
     let caption = W - 138.;
     // No gap kept for traffic lights: the toggle 10 in, as the shipping
@@ -175,20 +186,19 @@ fn beside_gnomes_buttons_at_the_right_the_line_stays_and_the_toggle_starts_at_th
     // (Their strip, 40, is the bar's height or more: the bar's own line.)
     let toggle = app.bounds(TOGGLE);
     assert_eq!(toggle.x, 10., "the toggle {toggle:?}");
-    on_line(&mut app, MAC_LINE, "a new chat");
+    on_line(&mut app, BAR_LINE, "a new chat");
     app.click("#shell-sidebar >> role:button \"Fix the build\"");
     app.frames(30);
     let panel = app.bounds(PANEL);
     assert!((panel.x + panel.width - (W - 104. - 10.)).abs() <= 0.5, "the panel's toggle {panel:?} isn't the row's padding before the window's buttons");
 }
 
-/// macOS exactly as before: the toggle 88 in beside the lights, the line 21
-/// down, and collapsed, the tabs past the controls (Forward's end, 172) by 8, on
+/// macOS: the toggle 88 in beside the lights, on their line (20 down), and collapsed, the tabs past the controls (Forward's end, 172) by 8, on
 /// that line.
 #[test]
 fn beside_the_traffic_lights_nothing_moves() {
     for (report, when) in [(macos(W), "the lights reported"), (Report { area: None, controls: None }, "nothing reported (full screen)")] {
-        let mut app = mount(report);
+        let mut app = mount_on(report, "macos");
         assert_eq!(app.bounds(TOGGLE).x, 88., "{when}");
         on_line(&mut app, MAC_LINE, when);
         app.click("#shell-sidebar >> role:button \"Fix the build\"");
@@ -321,24 +331,24 @@ fn every_menu_item_is_in_the_command_palette() {
     let own = ["shell.new_chat", "shell.new_project", "shell.archive", "shell.toggle_sidebar", "shell.settings", "shell.reload", "shell.reload_interface"];
     for item in &items {
         let (id, title) = (text(item, "id"), text(item, "title"));
-        // (The app's own: Zeron's shell and panel, the host's, plugins'. The
+        // (The app's own: Zend's shell and panel, the host's, plugins'. The
         // fixture's scaffolding commands, standing in for the engine, aren't
         // the app's menu items. Search is the palette itself.)
-        let app_s = id.starts_with("shell.") || id.starts_with("panel.") || id.starts_with("zeron.") || id.contains('/');
+        let app_s = id.starts_with("shell.") || id.starts_with("panel.") || id.starts_with("zend.") || id.contains('/');
         if !app_s || id == "shell.palette" {
             continue;
         }
         assert!(app.host.run_command("shell.palette"), "the palette didn't open");
         app.wait_until(|app| app.find(field).is_some());
         app.frames(20);
-        let label = if id == crate::plugins::USE_ZERON_TEMPLATE { "Use Zeron v3".to_owned() } else { title.clone() };
+        let label = if id == crate::plugins::USE_ZEND_TEMPLATE { "Use Zend v3".to_owned() } else { title.clone() };
         app.type_text(field, &label);
         app.frames(20);
         let row = format!("role:option \"{label}\"");
         assert!(app.find(&row).is_some(), "{id} (\"{title}\") isn't in the palette: {}", app.texts().join("|"));
         // (Run through the menu item's id: checked on rows no other of the
-        // palette's shares a label with, Zeron's Pin and the host's way back.)
-        if !own.contains(&id.as_str()) && (id == "shell.pin" || id == crate::plugins::USE_ZERON_TEMPLATE) {
+        // palette's shares a label with, Zend's Pin and the host's way back.)
+        if !own.contains(&id.as_str()) && (id == "shell.pin" || id == crate::plugins::USE_ZEND_TEMPLATE) {
             // (The fixture's host calls are its stub's, kept in a log:
             // ui/settings_stub.luau.)
             ran.borrow_mut().clear();
@@ -357,7 +367,7 @@ fn every_menu_item_is_in_the_command_palette() {
         }
     }
     let ids: Vec<String> = items.iter().map(|i| text(i, "id")).collect();
-    assert!(ids.iter().any(|i| i == crate::plugins::USE_ZERON_TEMPLATE), "the way back to the default interface: {ids:?}");
+    assert!(ids.iter().any(|i| i == crate::plugins::USE_ZEND_TEMPLATE), "the way back to the default interface: {ids:?}");
     assert!(!ids.iter().any(|i| i == crate::plugins::KEEP_TEMPLATE), "Keep is the preview toast's alone");
 }
 

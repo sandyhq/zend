@@ -1,9 +1,9 @@
 //! Settings → General: device-addressed git settings — where new worktrees
-//! go, and whether agents' commits credit Zeron.
+//! go, and whether agents' commits credit Zend.
 
 use gpui::{AnyElement, Context, Entity, Render, Task, Window, div, prelude::*, px};
-use zeron_proto::{FolderListing, WorktreeSettings, WorktreeSettingsStatus};
-use zeron_rpc::methods;
+use zend_proto::{FolderListing, WorktreeSettings, WorktreeSettingsStatus};
+use zend_rpc::methods;
 
 use super::search::{SearchAnchor, SettingId};
 use super::widgets;
@@ -11,7 +11,7 @@ use crate::icons;
 use crate::popover::Loadable;
 use crate::state::AppState;
 use crate::theme::Theme;
-use zeron_proto::device_paths::{child_folder as child_path, parent_folder as folder_parent};
+use zend_proto::device_paths::{child_folder as child_path, parent_folder as folder_parent};
 
 pub(super) struct WorktreeSettingsCard {
     state: Entity<AppState>,
@@ -27,8 +27,8 @@ pub(super) struct WorktreeSettingsCard {
     browsing: bool,
     folders: Loadable<FolderListing>,
     folder_task: Option<Task<()>>,
-    /// Whether agents' commits on the device credit Zeron.
-    credit: Loadable<zeron_engine::commit_credit::CommitCreditStatus>,
+    /// Whether agents' commits on the device credit Zend.
+    credit: Loadable<zend_engine::commit_credit::CommitCreditStatus>,
     credit_saving: bool,
     credit_task: Option<Task<()>>,
 }
@@ -171,13 +171,13 @@ impl WorktreeSettingsCard {
                 .call(method, params)
                 .await
                 .map_err(|error| match error {
-                    zeron_rpc::RpcError::UnknownMethod(_) => {
-                        "Update Zeron on the selected device to change this.".to_string()
+                    zend_rpc::RpcError::UnknownMethod(_) => {
+                        "Update Zend on the selected device to change this.".to_string()
                     }
                     _ => error.to_string(),
                 })
                 .and_then(|value| {
-                    serde_json::from_value::<zeron_engine::commit_credit::CommitCreditStatus>(value)
+                    serde_json::from_value::<zend_engine::commit_credit::CommitCreditStatus>(value)
                         .map_err(|error| error.to_string())
                 });
             this.update(cx, |card, cx| {
@@ -210,7 +210,7 @@ impl WorktreeSettingsCard {
         let interactive = status.is_some_and(|s| !s.cloud) && !self.credit_saving;
         let meta = match &self.credit {
             Loadable::Ready(s) if s.cloud => "Always on for Cloud".to_string(),
-            Loadable::Ready(_) => "Agents' commits add zeronsh[bot] as a co-author".to_string(),
+            Loadable::Ready(_) => "Agents' commits add sandyhq[bot] as a co-author".to_string(),
             Loadable::Error(error) => error.clone(),
             _ => "Loading…".to_string(),
         };
@@ -219,7 +219,7 @@ impl WorktreeSettingsCard {
                 div()
                     .flex_1()
                     .min_w(px(160.0))
-                    .child(widgets::row_title(theme, "Credit Zeron in commits"))
+                    .child(widgets::row_title(theme, "Credit Zend in commits"))
                     .child(widgets::meta_line(
                         theme,
                         vec![div().truncate().child(meta).into_any_element()],
@@ -230,7 +230,7 @@ impl WorktreeSettingsCard {
                     .id("commit-credit-toggle")
                     .flex_none()
                     .role(gpui::Role::Switch)
-                    .aria_label("Credit Zeron in commits")
+                    .aria_label("Credit Zend in commits")
                     .aria_toggled(if enabled {
                         gpui::Toggled::True
                     } else {
@@ -272,8 +272,8 @@ impl WorktreeSettingsCard {
                 .call(method, params)
                 .await
                 .map_err(|error| match error {
-                    zeron_rpc::RpcError::UnknownMethod(_) => {
-                        "Update Zeron on the selected device to configure worktree locations."
+                    zend_rpc::RpcError::UnknownMethod(_) => {
+                        "Update Zend on the selected device to configure worktree locations."
                             .to_string()
                     }
                     _ => error.to_string(),
@@ -617,7 +617,7 @@ impl Render for WorktreeSettingsCard {
             None => "Loading…".into(),
         }];
         if overridden {
-            meta.push("Set by ZERON_WORKTREES_DIR".into());
+            meta.push("Set by ZEND_WORKTREES_DIR".into());
         }
         let meta = meta
             .into_iter()

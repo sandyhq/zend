@@ -1,23 +1,28 @@
 -- What a chat's composer offers as `@`, `/` and `$` are typed, for whichever
 -- composer shows that chat (the chat page's, a side chat's): the files of where
--- it works, the agent's commands and skills, then Zeron's own.
+-- it works, the agent's commands and skills, then Zend's own.
 --
 --   local c = Completions.bind { key, text, agent, target, files, in_chat, run }
 --   ds.Composer { mentions = c.lists, on_mention = c.on_mention,
 --     mention_enabled = c.enabled, mention_empty = c.empty }
---   c.command_of(draft)   the Zeron command a whole draft is, if any
+--   c.command_of(draft)   the Zend command a whole draft is, if any
 --
 -- `key` names what it keeps (so a reload reads nothing again), `text` is the
 -- draft, `agent` the harness its model runs on, `target` where its commands and
 -- skills are read (`{ chat, device }`, or a new chat's `{ space, device }`),
 -- `files` where `@` searches, `in_chat` whether the chat is made yet, and `run`
--- runs one of Zeron's commands.
+-- runs one of Zend's commands.
 
 local files = require("@app/screens/files/api")
+local sessions = require("@account/sessions")
+local Carried = require("@app/screens/chat/carried")
+local ChatLinks = require("@app/screens/chat/chat_links")
+local locale = require("@ds/locale")
+local route = require("@app/screens/shell/route")
 local mentions = require("@ds/composer_mentions")
 local prefs = require("@app/screens/settings/prefs")
 local Invocations = require("@app/screens/chat/invocations")
-local ZeronCommands = require("@app/screens/chat/zeron_commands")
+local ZendCommands = require("@app/screens/chat/zend_commands")
 
 local M = {}
 
@@ -29,7 +34,27 @@ export type Bind = {
 	files: () -> any?,
 	in_chat: () -> boolean,
 	run: (name: string) -> (),
+	-- What the draft carries (its chips: `@` lists them), and the chat it's
+	-- in (not listed among the chats `@` offers).
+	cargo: (() -> { any })?,
+	chat: (() -> string?)?,
 }
+
+-- `@`'s sections, in their order: the chat's files, other chats, what the
+-- draft carries.
+local SECTIONS = {
+	{ id = "files", key = "chat.composer.mention_sections.files" },
+	{ id = "chats", key = "chat.composer.mention_sections.chats" },
+	{ id = "attachments", key = "chat.composer.mention_sections.attachments" },
+}
+
+-- A name as a token's word (`@Long-chat`): the characters a token takes,
+-- the rest a dash.
+local function word(name: string): string
+	local w = string.gsub(string.gsub(name, "[^%w%._:%-]+", "-"), "^%-+", "")
+	w = string.gsub(w, "%-+$", "")
+	return if w ~= "" then w else "item"
+end
 
 function M.bind(b: Bind): { [string]: any }
 	-- What `@` offers: the files of where it works, searched as the mention is
@@ -38,13 +63,93 @@ function M.bind(b: Bind): { [string]: any }
 	local function invocation_key(): string?
 		return Invocations.key(b.agent(), b.target())
 	end
+	-- `@`'s other chats: each by its title, its project under it, when it
+	-- last moved at its end; picked, Zend's chat mention.
+	local function chats(): { any }
+		local here = if b.chat then b.chat() else nil
+		local now = sessions.now:get()
+		local names: { [string]: string } = {}
+		for _, p in now.projects or {} do
+			names[p.id] = p.name
+		end
+		local out = {}
+		for _, c in now.chats or {} do
+			if c.id ~= here and ChatLinks.valid(c.id) then
+				local title = ChatLinks.title(c.title)
+				table.insert(out, {
+					section = "chats",
+					value = word(title),
+					label = title,
+					-- (When it last moved: "5m", "3d".)
+					side = if type(c.updated) == "number" then locale.ago_short(os.time() - c.updated) else nil,
+					-- (Where it is: its project; and its project's tile, as the
+					-- sidebar draws it. None: the side chat's glyph.)
+					detail = if c.project then names[c.project] else nil,
+					tile = if c.project and names[c.project]
+						then (function(): any
+							local l: any = route.look(c.project) or { hue = route.hue(c.project) }
+							return { label = names[c.project], hue = l.hue, src = l.src, emoji = l.emoji, project = c.project }
+						end)()
+						else nil,
+					icon = "side-chat",
+					link = ChatLinks.link(title, c.id),
+				})
+			end
+		end
+		return out
+	end
+	-- What the draft carries: each by its name, what it is at its end;
+	-- picked, a reference to it (screens/chat/carried `refs`).
+	local function attachments(): { any }
+		local out = {}
+		local carried: { any } = if b.cargo then b.cargo() else {}
+		for _, item in carried do
+			local name = Carried.label(item)
+			-- (What has a link of its own to go as: a picture or a file by
+			-- its number, an attached chat, a browser pick. Not a quote or a
+			-- review comment.)
+			local link = Carried.mention(item)
+			if name and link then
+				local what, icon = Carried.kind(item)
+				local picture = what == "image" or what == "appshot"
+				table.insert(out, {
+					section = "attachments",
+					-- (Its token in the draft: a picture's its number's.)
+					value = if picture and type(item.mention) == "number" then `Image-{item.mention}` else word(name),
+					label = name,
+					-- (What it is: a picture, a file…)
+					detail = ui.t(`chat.composer.attachment_kind.{what}`):get(),
+					icon = icon,
+					-- (A file's icon by its name; not a file of the chat's to
+					-- mention: a pick refers to what's attached.)
+					file_icon = if what == "file" then name else nil,
+					link = link,
+				})
+			end
+		end
+		return out
+	end
 	local lists = ui.computed(function(): any
 		local given = table.clone(sources:get())
+		-- `@`: the files found, then the other chats, then what's carried.
+		local at = {}
+		for _, f in given["@"] or {} do
+			local item = table.clone(f)
+			item.section = "files"
+			table.insert(at, item)
+		end
+		for _, c in chats() do
+			table.insert(at, c)
+		end
+		for _, a in attachments() do
+			table.insert(at, a)
+		end
+		given["@"] = at
 		-- `/` the agent's commands, `$` its skills (nil while they come).
 		local catalog = Invocations.catalog(invocation_key())
 		given["/"] = Invocations.items(catalog, "command")
 		given["$"] = Invocations.items(catalog, "skill")
-		-- No agent to ask: Zeron's own alone. Its list still coming: nil.
+		-- No agent to ask: Zend's own alone. Its list still coming: nil.
 		if b.agent() == nil then
 			given["/"] = {}
 		elseif given["/"] == nil then
@@ -60,8 +165,8 @@ function M.bind(b: Bind): { [string]: any }
 				table.insert(slash, skill)
 			end
 		end
-		-- Then Zeron's own (named clear of the agent's).
-		for _, row in ZeronCommands.rows(taken, b.in_chat()) do
+		-- Then Zend's own (named clear of the agent's).
+		for _, row in ZendCommands.rows(taken, b.in_chat()) do
 			table.insert(slash, row)
 		end
 		given["/"] = slash
@@ -97,7 +202,7 @@ function M.bind(b: Bind): { [string]: any }
 		if not target then
 			return
 		end
-		local key = `{target.chat or target.space or ""}:{t.query}`
+		local key = `{target.device or ""}:{target.chat or target.space or ""}:{t.query}`
 		if key == searched:peek() then
 			return
 		end
@@ -120,7 +225,7 @@ function M.bind(b: Bind): { [string]: any }
 						detail = folder,
 						file = not f.dir,
 						dir = f.dir,
-						-- Sent as Zeron's file mention (screens/chat/shared).
+						-- Sent as Zend's file mention (screens/chat/shared).
 						link = require("@app/screens/chat/shared").file_link(f.path, f.dir),
 					})
 				end
@@ -130,13 +235,19 @@ function M.bind(b: Bind): { [string]: any }
 			end)
 		end)
 	end)
+	local sections = {}
+	for _, s in SECTIONS do
+		table.insert(sections, { id = s.id, label = ui.t(s.key) })
+	end
 	return {
 		lists = lists,
+		-- `@` is a launcher with these sections (ds/composer_mentions).
+		sections = { ["@"] = sections },
 		-- A command, skill or file picked: what its token stands for; one of
-		-- Zeron's own runs (its token gone).
+		-- Zend's own runs (its token gone).
 		on_mention = function(item: any, trigger: string, token: string)
-			if item.zeron then
-				b.run(item.zeron)
+			if item.zend then
+				b.run(item.zend)
 			elseif trigger == "@" then
 				Invocations.remember(item, trigger, token)
 			else
@@ -160,10 +271,10 @@ function M.bind(b: Bind): { [string]: any }
 				return nil
 			end,
 		}) :: any,
-		-- A draft that is only one of Zeron's own commands (its token goes;
+		-- A draft that is only one of Zend's own commands (its token goes;
 		-- anything carried stays).
 		command_of = function(draft: string): string?
-			return ZeronCommands.of_text(draft, (lists:peek() or {})["/"] or {})
+			return ZendCommands.of_text(draft, (lists:peek() or {})["/"] or {})
 		end,
 	}
 end

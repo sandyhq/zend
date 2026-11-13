@@ -11,7 +11,7 @@ export type Size = "sm" | "md" | "lg"
 M.H = { sm = 28, md = 32, lg = 40 } :: { [Size]: number }
 M.RADIUS = { sm = "$radius.md", md = "$radius.lg", lg = "$radius.lg" } :: { [Size]: string }
 M.TEXT = { sm = "$font.size.sm", md = "$font.size.md", lg = "$font.size.lg" } :: { [Size]: string }
-M.PAD = { sm = "$space.2", md = "$zeron.space.snug", lg = "$space.3" } :: { [Size]: string }
+M.PAD = { sm = "$space.2", md = "$zend.space.snug", lg = "$space.3" } :: { [Size]: string }
 -- The same in points, where a token can't go (an absolute node's insets).
 M.PAD_PT = { sm = 8, md = 10, lg = 12 } :: { [Size]: number }
 -- An icon beside a control's text, at each size.
@@ -56,7 +56,7 @@ function M.contain(props: { [any]: any }, box: { radius: any, inset: any, border
 	props.p = box.inset
 	props.theme = {
 		radius = { sm = inner, md = inner, lg = inner, xl = inner },
-		zeron = { icon_button = { radius = inner } },
+		zend = { icon_button = { radius = inner } },
 	}
 	return props
 end
@@ -65,9 +65,9 @@ end
 -- never moves what is inside. Keyboard focus only (zgx's `focus` is
 -- `:focus-visible`).
 M.ring = {
-	outline = "$zeron.focus.width",
-	outline_color = "$zeron.focus.ring",
-	outline_offset = "$zeron.focus.offset",
+	outline = "$zend.focus.width",
+	outline_color = "$zend.focus.ring",
+	outline_offset = "$zend.focus.offset",
 	border = 0,
 } :: Styles
 
@@ -76,11 +76,11 @@ M.ring = {
 function M.ring_when(on: () -> boolean, invalid: (() -> boolean)?): { [string]: any }
 	return {
 		outline = function()
-			return if on() then "$zeron.focus.width" else 0
+			return if on() then "$zend.focus.width" else 0
 		end,
-		outline_offset = "$zeron.focus.offset",
+		outline_offset = "$zend.focus.offset",
 		outline_color = function()
-			return if invalid and invalid() then "$zeron.focus.error" else "$zeron.focus.ring"
+			return if invalid and invalid() then "$zend.focus.error" else "$zend.focus.ring"
 		end,
 	}
 end

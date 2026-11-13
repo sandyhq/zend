@@ -7,7 +7,7 @@ describe("reserved usernames (R17)", () => {
   it("reserves brands, staff and lookalikes", () => {
     for (const name of [
       "github", "anthropic", "openai", "google", "apple", "microsoft", "wing", "winglee", "wingleeio", "admin", "support",
-      "security", "zeron", "zer0n", "zeronhq", "the-zeron", "zer_on", "g1thub", "githubbot", "openai-dev", "anthropic-ai",
+      "security", "zend", "zen_d", "zendhq", "the-zend", "ze_nd", "g1thub", "githubbot", "openai-dev", "anthropic-ai",
       "google-dev", "apple1", "adm1n", "admin-bob", "bob-admin", "support-2", "acme-support", "official", "acme-official",
       "claude", "claude-bot", "cloudflare", "rnicrosoft", "staff", "verified", "username", "user-name", "noreply"
     ]) {
@@ -34,9 +34,9 @@ describe("names in emails (R24)", () => {
 
   it("refuses mixed alphabets and our or vendors' names in org names", () => {
     expect(orgNameProblem("Pаypal")).toBe("mixed_scripts");
-    expect(orgNameProblem("Zeron")).toBe("impersonation");
-    expect(orgNameProblem("ZERON billing")).toBe("impersonation");
-    expect(orgNameProblem("Zer0n")).toBe("impersonation");
+    expect(orgNameProblem("Zend")).toBe("impersonation");
+    expect(orgNameProblem("ZEND billing")).toBe("impersonation");
+    expect(orgNameProblem("Ze-nd")).toBe("impersonation");
     expect(orgNameProblem("Ζеrοn")).toBeDefined();
     expect(orgNameProblem("Git Hub Inc")).toBe("impersonation");
     expect(orgNameProblem("Apple")).toBe("impersonation");

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Provider-update rig (macOS, Linux): the real zeron-engine binary on a
+"""Provider-update rig (macOS, Linux): the real zend-engine binary on a
 throwaway port and data dir, a fake HOME, a GUI-like PATH, and sandboxed
 installs. See README.md.
 
   RIG_DIR=/tmp/rig RIGCLIENT=…/rigclient rig.py setup
   RIG_DIR=/tmp/rig RIGCLIENT=…/rigclient rig.py run <engine-binary> <label> <scenario>...
 
-Nothing outside RIG_DIR is touched: HOME, ZERON_DATA_DIR, npm/pnpm/bun
+Nothing outside RIG_DIR is touched: HOME, ZEND_DATA_DIR, npm/pnpm/bun
 homes and caches all live under each scenario's own directory.
 """
 import json, os, shutil, signal, socket, subprocess, sys, time
@@ -175,9 +175,9 @@ def engine_env(home, data, port, path, harness, extra_env, root):
     pins = {var: os.path.join(root, "not-installed", h) for h, var in PINS.items() if h != harness}
     return {
         "HOME": home, "PATH": path, "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
-        "ZERON_DATA_DIR": data, "ZERON_IPC_PORT": str(port), "ZERON_NO_LOGIN_SHELL": "1",
-        "ZERON_WORKOS_CLIENT_ID": "", "ZERON_EDGE_URL": "http://127.0.0.1:1",
-        "ZERON_DISABLE_NOTIFICATIONS": "1", "ZERON_AUTO_UPDATE": "0",
+        "ZEND_DATA_DIR": data, "ZEND_IPC_PORT": str(port), "ZEND_NO_LOGIN_SHELL": "1",
+        "ZEND_WORKOS_CLIENT_ID": "", "ZEND_EDGE_URL": "http://127.0.0.1:1",
+        "ZEND_DISABLE_NOTIFICATIONS": "1", "ZEND_AUTO_UPDATE": "0",
         "XDG_CONFIG_HOME": f"{home}/.config", "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache", "RUST_LOG": "warn",
         **pins, **extra_env,

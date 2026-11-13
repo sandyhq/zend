@@ -5,10 +5,10 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use zeron_harness::{
+use zend_harness::{
     CatalogFailure, CatalogFailureCode, Harness, HarnessError, ModelCatalog, ModelContext,
 };
-use zeron_proto::Model;
+use zend_proto::Model;
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -105,6 +105,17 @@ async fn list_inner(
     force: bool,
     lease: Option<Arc<tokio::sync::OwnedRwLockReadGuard<()>>>,
 ) -> Result<Vec<Model>, HarnessError> {
+    // Applied to what is served, never to what is saved: the disk copy stays
+    // the CLI's own answer, so a later list (or none) re-applies cleanly.
+    let hosted = crate::hosted_models::HostedModels::shared(root);
+    let overlay = |catalog: ModelCatalog, cli: Option<&str>| {
+        let source = if catalog.source == "static" {
+            crate::hosted_models::Source::BuiltIn
+        } else {
+            crate::hosted_models::Source::Cli
+        };
+        hosted.apply(harness.id(), catalog.models, cli, source)
+    };
     let Some(context) = harness.model_context().map_err(|error| {
         let failure = CatalogFailure::from(error);
         tracing::warn!(code = %failure.code, error = %failure, "Model discovery context unavailable");
@@ -113,7 +124,7 @@ async fn list_inner(
         return harness
             .model_catalog(force)
             .await
-            .map(|catalog| catalog.models);
+            .map(|catalog| overlay(catalog, None));
     };
     let path = location(root, harness.as_ref(), &context);
     let disk = read(&path, &context);
@@ -169,7 +180,7 @@ async fn list_inner(
         Some(Ok(Ok(catalog))) if !catalog.models.is_empty() => catalog,
         Some(Ok(Err(error))) if !CatalogFailure::classify(&error).allows_stale() => {
             // Claude intentionally offers its manifest even while logged out.
-            if harness.id() == zeron_proto::HarnessId::ClaudeCode
+            if harness.id() == zend_proto::HarnessId::ClaudeCode
                 && CatalogFailure::classify(&error) == CatalogFailureCode::AuthRequired
             {
                 ModelCatalog {
@@ -203,7 +214,7 @@ async fn list_inner(
         }
     };
     tracing::info!(harness = ?harness.id(), source = catalog.source, binary_path = %context.binary_path.display(), binary_version = ?context.binary_version, model_count = catalog.models.len(), "Model discovery");
-    Ok(catalog.models)
+    Ok(overlay(catalog, context.binary_version.as_deref()))
 }
 
 #[cfg(test)]
@@ -218,6 +229,7 @@ mod tests {
     }
     fn models() -> Vec<Model> {
         vec![Model {
+            default: false,
             id: "live".into(),
             label: "Live".into(),
             description: None,
@@ -232,7 +244,7 @@ mod tests {
         forced: std::sync::atomic::AtomicBool,
         cached: std::sync::atomic::AtomicBool,
         failure: std::sync::Mutex<String>,
-        harness: zeron_proto::HarnessId,
+        harness: zend_proto::HarnessId,
     }
     impl Probe {
         fn new() -> Arc<Self> {
@@ -243,14 +255,14 @@ mod tests {
                 forced: false.into(),
                 cached: false.into(),
                 failure: std::sync::Mutex::new("offline".into()),
-                harness: zeron_proto::HarnessId::Codex,
+                harness: zend_proto::HarnessId::Codex,
             })
         }
     }
     use std::sync::atomic::Ordering::SeqCst;
     #[async_trait::async_trait]
     impl Harness for Probe {
-        fn id(&self) -> zeron_proto::HarnessId {
+        fn id(&self) -> zend_proto::HarnessId {
             self.harness
         }
         fn display_name(&self) -> &str {
@@ -259,10 +271,10 @@ mod tests {
         fn supports_steering(&self) -> bool {
             false
         }
-        fn steering_mode(&self) -> zeron_proto::SteeringMode {
-            zeron_proto::SteeringMode::TurnBoundary
+        fn steering_mode(&self) -> zend_proto::SteeringMode {
+            zend_proto::SteeringMode::TurnBoundary
         }
-        fn reasoning_levels(&self) -> &[zeron_proto::ReasoningLevel] {
+        fn reasoning_levels(&self) -> &[zend_proto::ReasoningLevel] {
             &[]
         }
         fn model_context(&self) -> Result<Option<ModelContext>, HarnessError> {
@@ -295,10 +307,10 @@ mod tests {
         }
         async fn run(
             &self,
-            _: zeron_proto::RunRequest,
-            _: zeron_harness::RunControls,
+            _: zend_proto::RunRequest,
+            _: zend_harness::RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<zeron_proto::AgentEvent, HarnessError>>,
+            futures::stream::BoxStream<'static, Result<zend_proto::AgentEvent, HarnessError>>,
             HarnessError,
         > {
             unreachable!()
@@ -372,7 +384,7 @@ mod tests {
     async fn logged_out_claude_uses_curated_rows_instead_of_disk() {
         let dir = tempfile::tempdir().unwrap();
         let mut probe = Probe::new();
-        Arc::get_mut(&mut probe).unwrap().harness = zeron_proto::HarnessId::ClaudeCode;
+        Arc::get_mut(&mut probe).unwrap().harness = zend_proto::HarnessId::ClaudeCode;
         list(dir.path(), probe.clone(), false).await.unwrap();
         probe.fail.store(true, SeqCst);
         *probe.failure.lock().unwrap() = "authentication required".into();

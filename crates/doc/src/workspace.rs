@@ -1,4 +1,4 @@
-//! Workspace doc schema over `loro` — the per-org entity index that replaces zeron's
+//! Workspace doc schema over `loro` — the per-org entity index that replaces zend's
 //! residual entity sync (ARCHITECTURE.md §2.2). Lives in its own DO room (same
 //! SessionRoom class, doc id `ws/{orgId}`).
 //!
@@ -17,18 +17,18 @@
 //!
 //! Writer discipline (ARCHITECTURE §2.2): each device writes its own device row, its
 //! own session rows, and rows for chats it hosts; title/archived renames are LWW map
-//! sets from any device — matching zeron's Mutate surface. Presence rides the room's
+//! sets from any device — matching zend's Mutate surface. Presence rides the room's
 //! `EphemeralStore` under keys `presence/{deviceId}` (an online timestamp), replacing
-//! zeron's 15s heartbeat writes so liveness never grows the oplog.
+//! zend's 15s heartbeat writes so liveness never grows the oplog.
 //!
 //! Timestamps are stored as epoch millis (the session-doc convention) and surface as
-//! `chrono::DateTime<Utc>` through the `zeron_proto` entity types.
+//! `chrono::DateTime<Utc>` through the `zend_proto` entity types.
 
 use chrono::{DateTime, Utc};
 use loro::{ExportMode, LoroDoc, LoroMap, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
+use zend_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
 
 use crate::schema::DocError;
 
@@ -297,7 +297,7 @@ impl WorkspaceDoc {
         set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
         set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
-        set_opt_str(&row, "childKind", chat.child_kind.map(zeron_proto::ChildKind::as_str))?;
+        set_opt_str(&row, "childKind", chat.child_kind.map(zend_proto::ChildKind::as_str))?;
         self.doc.commit();
         Ok(())
     }
@@ -383,7 +383,7 @@ impl WorkspaceDoc {
     pub fn set_chat_source_context(
         &self,
         chat_id: &str,
-        context: &zeron_proto::ConversationSourceContext,
+        context: &zend_proto::ConversationSourceContext,
     ) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("chats", chat_id) else {
             return Ok(false);
@@ -433,7 +433,7 @@ impl WorkspaceDoc {
     }
 
     /// Host-side resume continuity: the harness-native session id of the chat's
-    /// latest run and the cwd it was created under (zeron stored the same pair
+    /// latest run and the cwd it was created under (zend stored the same pair
     /// on the chats table). An empty
     /// `session_id` is the explicit "do not resume" tombstone written after a
     /// harness rejects a resume. `false` when no such row.
@@ -697,7 +697,7 @@ impl From<RawSpace> for Space {
     fn from(raw: RawSpace) -> Self {
         let icon = raw
             .icon
-            .and_then(|v| serde_json::from_value::<zeron_proto::SpaceIcon>(v).ok())
+            .and_then(|v| serde_json::from_value::<zend_proto::SpaceIcon>(v).ok())
             .and_then(|icon| icon.normalized().ok().flatten());
         Space {
             icon,
@@ -731,7 +731,7 @@ pub(crate) struct RawChat {
     #[serde(default)]
     checkout_id: Option<String>,
     #[serde(default)]
-    source_context: Option<zeron_proto::ConversationSourceContext>,
+    source_context: Option<zend_proto::ConversationSourceContext>,
     /// LENIENT: a config this build can't decode (a harness/reasoning/sandbox
     /// id from a NEWER peer — field incident: pre-v0.2.10 laptops dropped
     /// every `"opencode"` chat row wholesale, so new sessions silently never
@@ -761,8 +761,8 @@ pub(crate) struct RawChat {
     #[serde(default)]
     parent_chat_id: Option<String>,
     /// LENIENT, as `config`: a kind from a newer peer reads as none.
-    #[serde(default, deserialize_with = "zeron_proto::lenient_child_kind")]
-    child_kind: Option<zeron_proto::ChildKind>,
+    #[serde(default, deserialize_with = "zend_proto::lenient_child_kind")]
+    child_kind: Option<zend_proto::ChildKind>,
     /// Its sleep, a field apiece so each is its own last write
     /// ([`crate::RegistryDoc::set_chat_sleep`]): until (ms; none, awake),
     /// when it was put to sleep, and when it woke early.
@@ -815,7 +815,7 @@ impl From<RawChat> for Chat {
             room_gen: raw.room_gen,
             parent_chat_id: raw.parent_chat_id,
             child_kind: raw.child_kind,
-            sleep: raw.sleep_until.map(|until| zeron_proto::ChatSleep {
+            sleep: raw.sleep_until.map(|until| zend_proto::ChatSleep {
                 until: dt(until),
                 at: dt(raw.slept_at.unwrap_or(until)),
                 woke_at: raw.sleep_woke_at.map(dt),
@@ -828,9 +828,9 @@ impl From<RawChat> for Chat {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawSession {
     #[serde(default)]
-    last_turn_outcome: Option<zeron_proto::NativeTurnOutcome>,
+    last_turn_outcome: Option<zend_proto::NativeTurnOutcome>,
     #[serde(default)]
-    terminal_activity: Option<zeron_proto::TerminalActivity>,
+    terminal_activity: Option<zend_proto::TerminalActivity>,
     #[serde(default)]
     last_completed_turn: Option<String>,
     chat_id: String,
@@ -843,14 +843,14 @@ pub(crate) struct RawSession {
     #[serde(default)]
     running_subagents: u32,
     #[serde(default)]
-    background_tasks: Vec<zeron_proto::BackgroundTask>,
+    background_tasks: Vec<zend_proto::BackgroundTask>,
     /// LENIENT, as a chat's `config`: a wait this build can't read (a newer
     /// peer's) costs the wait, not the row.
     #[serde(default, deserialize_with = "lenient_waiting")]
-    waiting: Option<zeron_proto::SessionWaiting>,
+    waiting: Option<zend_proto::SessionWaiting>,
 }
 
-fn lenient_waiting<'de, D>(deserializer: D) -> Result<Option<zeron_proto::SessionWaiting>, D::Error>
+fn lenient_waiting<'de, D>(deserializer: D) -> Result<Option<zend_proto::SessionWaiting>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -879,7 +879,7 @@ impl From<RawSession> for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{HarnessId, SandboxLevel};
+    use zend_proto::{HarnessId, SandboxLevel};
 
     fn ts(ms: i64) -> DateTime<Utc> {
         dt(ms)
@@ -1019,7 +1019,7 @@ mod tests {
         let config = ChatConfig {
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
-            reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
+            reasoning: Some(zend_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
             access: Default::default(),
@@ -1037,7 +1037,7 @@ mod tests {
     fn conversation_source_context_round_trips_with_legacy_fields() {
         let ws = WorkspaceDoc::new();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
-        let context = zeron_proto::ConversationSourceContext {
+        let context = zend_proto::ConversationSourceContext {
             checkout_id: "checkout-a".into(),
             repo_root: "/repo".into(),
             cwd: "/repo/worktree".into(),
@@ -1073,7 +1073,7 @@ mod tests {
     fn a_child_kind_round_trips() {
         let ws = WorkspaceDoc::new();
         let mut sub = chat("chat-1", "dev-a");
-        sub.child_kind = Some(zeron_proto::ChildKind::Subagent);
+        sub.child_kind = Some(zend_proto::ChildKind::Subagent);
         ws.upsert_chat(&sub).unwrap();
         assert_eq!(ws.chat("chat-1").unwrap(), Some(sub.clone()));
         // Cleared by a full-row upsert without one.
@@ -1086,7 +1086,7 @@ mod tests {
     fn rows_round_trip() {
         let ws = WorkspaceDoc::new();
         let mut device = device("dev-a", "laptop");
-        device.capabilities = vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.into()];
+        device.capabilities = vec![zend_proto::capabilities::MESSAGE_QUEUE_V1.into()];
         ws.upsert_device(&device).unwrap();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
         ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))

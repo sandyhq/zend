@@ -44,36 +44,36 @@ export type Props = {
 	top: number?,
 }
 
--- What the sidebar and its rail share: the view options (Zeron's Organize,
+-- What the sidebar and its rail share: the view options (Zend's Organize,
 -- Sort and Show), its width, where sessions are put, and the session open.
 -- Kept across launches, but the session open (the route's) and the places
 -- (the engine's).
 local shared = {
 	compact = ui.persist("shell_sidebar_compact", true),
-	-- (One list, "Sessions", as Zeron's; by project is a view option.)
 	-- How it groups, as levels in order (`{ "project", "device" }`: by
-	-- project, then device; none, one list). Kept as one choice before
-	-- ("project"): read and kept as its levels from now (below).
-	organize = ui.persist("shell_sidebar_organize", {} :: any),
+	-- project, then device; none, one list). By project, then device, until
+	-- changed. Kept as one choice before ("project"): read and kept as its
+	-- levels from now (below).
+	organize = ui.persist("shell_sidebar_organize", { "project", "device" } :: any),
 	-- Both levels as the view menu's rows stand (dragged by their handles):
 	-- Organize is those on, in this order.
 	organize_order = ui.persist("shell_sidebar_organize_order", { "project", "device" }),
 	sort = ui.persist("shell_sidebar_sort", "updated"),
-	width = ui.persist("shell_sidebar_width", 256),
+	width = ui.persist("shell_sidebar_width", fit.SIDEBAR_DEFAULT),
 	details = {
 		branch = ui.persist("shell_sidebar_show_branch", true),
 		pr = ui.persist("shell_sidebar_show_pr", true),
 		harness = ui.persist("shell_sidebar_show_harness", true),
 		project_icon = ui.persist("shell_sidebar_show_project_icon", true),
 		location = ui.persist("shell_sidebar_show_location", true),
-		-- (Zeron's "Show archived": off until asked for.)
+		-- (Zend's "Show archived": off until asked for.)
 		archived = ui.persist("shell_sidebar_show_archived", false),
-		-- (Zeron's project filter over the list: off until asked for.)
+		-- (Zend's project filter over the list: off until asked for.)
 		project_filter = ui.persist("shell_sidebar_show_project_filter", false),
 		-- The projects with none but archived sessions, folded into one row
 		-- at the projects' end: listed there (closed until it's opened), or
-		-- not at all.
-		empty_projects = ui.persist("shell_sidebar_show_empty_projects", true),
+		-- not at all (until asked for).
+		empty_projects = ui.persist("shell_sidebar_show_empty_projects", false),
 		-- A collapsed group still lists its sessions working, asking or done
 		-- unseen: on, so folding a group away never hides what needs you.
 		keep_active = ui.persist("shell_sidebar_keep_active", true),
@@ -159,7 +159,7 @@ local sent: sessions.Places? = nil
 local sent_at = 0
 local ANSWER_MS = 5000
 ui.effect(function()
-	local theirs = plain(sessions.now:get().places)
+	local theirs = plain(sessions.places:get())
 	-- (Their places as they were: nothing to take.)
 	if heard and same(theirs, heard) then
 		return
@@ -198,7 +198,7 @@ end)
 -- Your sections' folds are the engine's, on every device: what it says
 -- folds them here, and folding one here tells it.
 ui.effect(function()
-	local sections = sessions.now:get().places.sections
+	local sections = sessions.places:get().sections
 	local mine = shared.folded:peek()
 	local next: { [string]: boolean }? = nil
 	for _, s in sections do
@@ -247,12 +247,12 @@ end)
 
 -- Device names, by id; this Mac's.
 local function devices(): ({ [string]: string }, string?)
-	local now = sessions.now:get()
 	local names: { [string]: string } = {}
 	local here: string? = nil
-	for _, d in now.devices do
+	local here_id = sessions.here:get()
+	for _, d in sessions.devices:get() do
 		names[d.id] = d.name
-		if d.here or d.id == now.here then
+		if d.here or d.id == here_id then
 			here = d.name
 		end
 	end
@@ -309,11 +309,14 @@ local ASKED: { [string]: string } = { approval = "approval", question = "input" 
 
 -- Which sessions show, as a plugin allowed to change how the sidebar shows
 -- asks (`sidebar.filter`, the plugin system's to grant): nil, all of them;
--- or `{ statuses = { "working", … }, by = "Focus" }`, those in these
--- states ("idle", in none). Written by a plugin, so read with care: what
--- isn't that shape is nil, and a word it doesn't know counts for nothing.
+-- or `{ statuses = { "working", … } }`, those in these states ("idle", in
+-- none). Written by a plugin, so read with care: what isn't that shape is
+-- nil, and a word it doesn't know counts for nothing. Who's narrowing it is
+-- the host's word (`sidebar.filter_by`: the name of the plugin allowed to,
+-- src/plugins), never the plugin's own `by`, which could claim to be Zend.
 local KNOWN = { working = true, waiting = true, input = true, approval = true, failed = true, done = true, woke = true, idle = true }
 local filter = ui.shared("sidebar.filter", nil :: any)
+local filter_by = ui.shared("sidebar.filter_by", nil :: any)
 type Narrow = { statuses: { [string]: boolean }, words: { string }, by: string }
 local narrow = ui.computed(function(): Narrow?
 	local f = filter:get()
@@ -331,7 +334,8 @@ local narrow = ui.computed(function(): Narrow?
 	if #words == 0 then
 		return nil
 	end
-	local by = if type(f.by) == "string" and f.by ~= "" then string.sub(f.by, 1, 40) else locale.s("shell.sidebar.filter.a_plugin")
+	local named = filter_by:get()
+	local by = if type(named) == "string" and named ~= "" then string.sub(named, 1, 40) else locale.s("shell.sidebar.filter.a_plugin")
 	return { statuses = statuses, words = words, by = by }
 end)
 -- How the notice names each state (shell.sidebar.filter.state.<word>).
@@ -342,10 +346,9 @@ end
 -- The Archived shelf's sessions (the most recently moved first), as the
 -- list's rows read them.
 local shelf = ui.computed(function(): { any }
-	local now = sessions.now:get()
 	local names = devices()
 	local out = {}
-	for _, c in now.archived or {} do
+	for _, c in sessions.archived:get() do
 		table.insert(out, {
 			id = c.id,
 			title = c.title,
@@ -371,14 +374,14 @@ local function only_project(): string?
 	if not id then
 		return nil
 	end
-	for _, p in sessions.now:get().projects do
+	for _, p in sessions.projects:get() do
 		if p.id == id then
 			return id
 		end
 	end
 	return nil
 end
--- (The filter put away: it shows everything again, as Zeron's clears it.)
+-- (The filter put away: it shows everything again, as Zend's clears it.)
 ui.effect(function()
 	if not shared.details.project_filter:get() and shared.project:peek() ~= nil then
 		shared.project:set(nil)
@@ -452,6 +455,20 @@ local function checkout_here(id: string?): string?
 	end
 	return id
 end
+
+-- peeked, not tracked: read from a shortcut or a click, never a computed
+route.narrowed_project(function(): string?
+	if not shared.details.project_filter:peek() then
+		return nil
+	end
+	local id = shared.project:peek()
+	for _, p in sessions.now:peek().projects do
+		if p.id == id then
+			return checkout_here(id)
+		end
+	end
+	return nil
+end)
 
 local projects = ui.computed(function(): { ds.SidebarProject }
 	local now = sessions.now:get()
@@ -556,7 +573,7 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 	return out
 end)
 
--- The project filter (Zeron's, its view options' "Project filter"): all
+-- The project filter (Zend's, its view options' "Project filter"): all
 -- projects, or one, searched for, the list narrowed to it.
 local ALL = "::all"
 local function project_filter(): Node
@@ -588,7 +605,7 @@ local function project_filter(): Node
 				search = function(): string
 					return locale.s("shell.sidebar.project_filter.search")
 				end,
-				-- (Zeron's, pinned under the projects.)
+				-- (Zend's, pinned under the projects.)
 				actions = {
 					{
 						label = ui.t("shell.sidebar.project_filter.new_project") :: any,
@@ -604,14 +621,14 @@ local function project_filter(): Node
 				items = function(): { any }
 					local out: { any } = { { value = ALL, label = locale.s("shell.sidebar.project_filter.all_projects"), icon = "folder-with-files" } }
 					-- (A repository once, as the list has it.)
-					local all = sessions.now:get().projects
+					local all = sessions.projects:get()
 					local seen: { [string]: boolean } = {}
 					for _, p in all do
 						local first = oldest_checkout(p, all)
 						if not seen[first.id] then
 							seen[first.id] = true
 							local l = route.look(first.id) or { hue = route.hue(first.id) }
-							table.insert(out, { value = first.id, label = first.name, hue = l.hue, src = l.src, emoji = l.emoji })
+							table.insert(out, { value = first.id, label = first.name, hue = l.hue, src = l.src, emoji = l.emoji, project = first.id })
 						end
 					end
 					return out
@@ -668,7 +685,8 @@ local function filter_notice(): Node
 end
 
 -- You, at the foot: your name, else your email; signed out, the
--- workspace's ("Local", as Zeron's: kept on this device).
+-- workspace's ("Local", as Zend's: kept on this device); nothing until the
+-- engine has said which.
 type User = { id: string?, name: string }
 local function user(): User
 	local u = auth.user:get()
@@ -680,6 +698,9 @@ local function user(): User
 		local settings_store: any = boundary.load("@app/screens/settings/store")
 		local avatar = if settings_store then settings_store.photo_file(settings_store.photo()) else ""
 		return { id = u.id, name = if name and name ~= "" then name else fallback, avatar = if avatar ~= "" then avatar else nil }
+	end
+	if auth.state:get() == "restoring" then
+		return { name = "" }
 	end
 	return { name = locale.s("shell.sidebar.local") }
 end
@@ -700,7 +721,7 @@ local CONNECTION: { [string]: string } = {
 	reconnecting = "shell.sidebar.connection.reconnecting",
 }
 local function connection(): string?
-	local c = (sessions.now:get() :: any).connection
+	local c: any = sessions.connection:get()
 	return if type(c) == "string" and CONNECTION[c] then c else nil
 end
 local function connection_line(): Node
@@ -712,26 +733,33 @@ local function connection_line(): Node
 			id = "connection-line",
 			w_full = true,
 			shrink = 0,
-			px = "$space.3",
+			-- (Its dot on the foot's left edge: Star on GitHub's glyph's, the
+			-- filter's and the empty list's words'. Its words on Star on
+			-- GitHub's: the dot or the ring in a slot as wide as the star,
+			-- as far from them.)
+			px = "$space.2",
 			pb = "$space.2",
-			gap = "$space.2",
+			gap = "$zend.space.tight",
 			items = "center",
-			ui.presence(function(): string
-				return if connection() == "reconnecting" then "ring" else "dot"
-			end, function(glyph: string): Node
-				if glyph == "ring" then
-					return ui.div { shrink = 0, status.StatusIcon { kind = "connecting", size = 10 } }
-				end
-				return ui.div { shrink = 0, w = 5, h = 5, rounded = "$radius.full", bg = "$warning" }
-			end),
-			ui.text {
+			ui.row {
+				shrink = 0,
+				w = 12,
+				items = "center",
+				ui.presence(function(): string
+					return if connection() == "reconnecting" then "ring" else "dot"
+				end, function(glyph: string): Node
+					if glyph == "ring" then
+						return ui.div { shrink = 0, status.StatusIcon { kind = "connecting", size = 10 } }
+					end
+					return ui.div { shrink = 0, w = 5, h = 5, rounded = "$radius.full", bg = "$warning" }
+				end),
+			},
+			ds.FadeText {
 				function(): string
 					local key = CONNECTION[connection() or ""]
-				return if key then locale.s(key) else ""
+					return if key then locale.s(key) else ""
 				end,
 				grow = 1,
-				min_w = 0,
-				truncate = true,
 				text_size = "$font.size.xs",
 				color = "$text.tertiary",
 			},
@@ -759,7 +787,7 @@ local function foot_notes(): Node
 		ui.div {
 			w_full = true,
 			mt = function(): any
-				return if notice_h:get() > 0 then "$zeron.list.gap" else 0
+				return if notice_h:get() > 0 then "$zend.list.gap" else 0
 			end,
 			star(),
 		},
@@ -767,9 +795,9 @@ local function foot_notes(): Node
 end
 
 -- "Star on GitHub", over you at the foot, until it's put away (its × or
--- following it), and then never again on this Mac: Zeron's, to where its
+-- following it), and then never again on this Mac: Zend's, to where its
 -- landing page links.
-local REPO = "https://github.com/zeronsh/comet"
+local REPO = "https://github.com/sandyhq/comet"
 local starred = ui.persist("shell_star_banner_dismissed", false)
 function star(): Node
 	local function away()
@@ -792,12 +820,12 @@ function star(): Node
 			pl = "$space.2",
 			-- (Its × as far in from the end as from the top: (30 − 22) / 2.)
 			pr = "$space.1",
-			gap = "$zeron.space.tight",
+			gap = "$zend.space.tight",
 			items = "center",
 			rounded = "$radius.lg",
-			bg = "$zeron.tone.accent.wash",
-			hover = { bg = "$zeron.tone.accent.edge" },
-			color = "$zeron.tone.accent.ink",
+			bg = "$zend.tone.accent.wash",
+			hover = { bg = "$zend.tone.accent.edge" },
+			color = "$zend.tone.accent.ink",
 			cursor = "pointer",
 			on_click = function()
 				ui.invoke("open_url", REPO)
@@ -813,7 +841,7 @@ function star(): Node
 			ui.div { shrink = 0, y = 0.5, ds.Icon { name = "star-bold", size = 12 } },
 			ui.text { ui.t("shell.sidebar.star"), grow = 1, min_w = 0, text_size = "$font.size.xs", weight = "$font.weight.medium" },
 			ui.div {
-				theme = { zeron = { icon_button = { radius = control.nest("$radius.lg", "$space.1") } } },
+				theme = { zend = { icon_button = { radius = control.nest("$radius.lg", "$space.1") } } },
 				ds.IconButton { icon = "close", label = ui.t("common.dismiss"), tooltip = locale.s("common.dismiss"), size = "sm", tone = "quiet", on_click = away },
 			},
 		}
@@ -823,11 +851,15 @@ end
 -- Renaming a session: which, and the name being typed.
 local renaming = ui.state("shell_renaming", nil :: string?)
 local rename_open = ui.state("shell_rename_open", false)
--- The session renamed in its row (Zeron's inline rename), while it is.
+-- The session renamed in its row (Zend's inline rename), while it is.
 local renaming_row = ui.state("shell_renaming_row", nil :: string?)
 -- The session asked about deleting, and its dialog.
 local deleting = ui.state("shell_deleting", nil :: string?)
 local delete_open = ui.state("shell_delete_open", false)
+-- What the delete takes with it (its subagents and side chats, theirs in
+-- turn), as the host counted them when it was asked.
+local delete_subagents = ui.state("shell_delete_subagents", 0)
+local delete_sides = ui.state("shell_delete_sides", 0)
 -- Sleep → Custom…: the chat, the moment chosen, and whether it's asking.
 local sleep_custom = ui.state("shell_sleep_custom", nil :: string?)
 local sleep_custom_at = ui.state("shell_sleep_custom_at", nil :: number?)
@@ -953,8 +985,8 @@ end)
 -- The sessions the list shows, in its order (those folded away, and those
 -- past a group's "Show N more", left out): ⌘1–9 go to its first nine.
 M.order = ui.state("shell_sidebar_order", {} :: { string })
--- ⌘ held alone: those nine wear their keys (Zeron's jump hints): shown at
--- once, as Zeron's are, kept through the ⌘1–9 they offer, and only while
+-- ⌘ held alone: those nine wear their keys (Zend's jump hints): shown at
+-- once, as Zend's are, kept through the ⌘1–9 they offer, and only while
 -- this window is the one typed in and no palette has the keys. Any other
 -- key pressed meanwhile is a shortcut (⌘C), not a look at them: they go
 -- until the modifiers held change again (`M.key_pressed`, from the shell's
@@ -1014,12 +1046,12 @@ function M.archive(id: string)
 	sessions.archive(id)
 end
 
--- A session's menu, as the gallery's (Zeron's sidebar chat menu): rename,
+-- A session's menu, as the gallery's (Zend's sidebar chat menu): rename,
 -- pin, copy, move into one of your sections, archive (kept: Settings →
 -- Archived lists it), delete (for good, asked once more); then plugins'
 -- items, under their names (screens/plugins/menus: the app's registry of
 -- them, read as the menu opens).
--- (Copied, said so, as Zeron's: "Path copied".)
+-- (Copied, said so, as Zend's: "Path copied".)
 local function copy(text: string?, what: string)
 	if text then
 		ui.clipboard.write(text)
@@ -1085,11 +1117,11 @@ local function menu(id: string): { any }?
 		},
 	}
 	table.insert(copies, {
-		label = locale.s("shell.sidebar.menu.zeron_link"),
+		label = locale.s("shell.sidebar.menu.zend_link"),
 		icon = "arrow-up-right",
 		on_select = function()
 			sessions.link(id):after(function(link: any)
-				copy(if type(link) == "string" then link else nil, locale.s("shell.sidebar.menu.zeron_link"))
+				copy(if type(link) == "string" then link else nil, locale.s("shell.sidebar.menu.zend_link"))
 			end, function()
 				ds.toast.show { title = locale.s("shell.sidebar.menu.link_not_ready"), tone = "danger" }
 			end)
@@ -1219,10 +1251,20 @@ local function menu(id: string): { any }?
 			label = locale.s("shell.sidebar.menu.delete"),
 			icon = "trash-bin-minimalistic",
 			danger = true,
-			-- (Asked once more, as Zeron's: "Delete session?")
+			-- (Asked once more, as Zend's: "Delete session?")
+			-- (Once it knows what goes with it, to say so.)
 			on_select = function()
-				deleting:set(id)
-				delete_open:set(true)
+				local function ask(subagents: number, sides: number)
+					delete_subagents:set(subagents)
+					delete_sides:set(sides)
+					deleting:set(id)
+					delete_open:set(true)
+				end
+				sessions.deleted_with(id):after(function(with: any)
+					ask(tonumber(with and with.subagents) or 0, tonumber(with and with.sides) or 0)
+				end, function()
+					ask(0, 0)
+				end)
 			end,
 		},
 	}
@@ -1257,7 +1299,7 @@ local project_remove_open = ui.state("shell_project_remove_open", false)
 -- Of a repository on several devices, the checkouts to remove, by id.
 local project_remove_chosen = ui.state("shell_project_remove_chosen", {} :: { [string]: boolean })
 local function project_of(id: string?): sessions.Project?
-	for _, p in sessions.now:get().projects do
+	for _, p in sessions.projects:get() do
 		if p.id == id then
 			return p
 		end
@@ -1274,8 +1316,7 @@ local function project_menu(id: string): { any }?
 			label = locale.s("shell.sidebar.menu.edit_project"),
 			icon = "pen",
 			on_select = function()
-				project_editor().open(id)
-				project_editor_used:set(true)
+				M.edit_project(id)
 			end,
 		},
 		{
@@ -1302,7 +1343,7 @@ local function project_dialogs(): Node
 	-- The checkouts of the project being removed (one, for most).
 	local function acting_checkouts(): { any }
 		local p = project_of(project_acting:get())
-		return if p then checkouts_of(p, sessions.now:get().projects) else {}
+		return if p then checkouts_of(p, sessions.projects:get()) else {}
 	end
 	local function device_of(q: any): string
 		for _, d in sessions.now:peek().devices do
@@ -1321,7 +1362,7 @@ local function project_dialogs(): Node
 		end
 		return n
 	end
-	-- (Its sessions as Zeron counts them: those in it, not archived.)
+	-- (Its sessions as Zend counts them: those in it, not archived.)
 	local function removing(): string
 		local id = project_acting:get()
 		local p = project_of(id)
@@ -1333,7 +1374,7 @@ local function project_dialogs(): Node
 			end
 		end
 		local device = locale.s("shell.sidebar.project.its_device")
-		for _, d in sessions.now:get().devices do
+		for _, d in sessions.devices:get() do
 			if p and d.id == p.device then
 				device = d.name
 			end
@@ -1427,14 +1468,24 @@ local function project_dialogs(): Node
 	}
 end
 
--- Deleting a session, asked once more (Zeron's "Delete session?"): for
+-- Deleting a session, asked once more (Zend's "Delete session?"): for
 -- good, so its red Delete waits on Cancel.
 local function delete_dialog(): Node
 	local function says(): string
 		local id = deleting:get()
 		local c = if id then chat(id) else nil
 		local t = if c and c.title ~= "" then (string.gsub(c.title, "%s+", " ")) else locale.s("shell.sidebar.session.new_session")
-		return locale.s("shell.sidebar.session.will_delete", { title = t })
+		local will = locale.s("shell.sidebar.session.will_delete", { title = t })
+		local subagents, sides = delete_subagents:get(), delete_sides:get()
+		local also = if subagents > 0 and sides > 0
+			then locale.s("shell.sidebar.session.also_deletes_both", { subagents = subagents, sides = sides })
+			elseif subagents > 0 then locale.s("shell.sidebar.session.also_deletes_subagents", { n = subagents })
+			elseif sides > 0 then locale.s("shell.sidebar.session.also_deletes_side", { n = sides })
+			else nil
+		if not also then
+			return will
+		end
+		return locale.s("shell.sidebar.session.will_delete_with", { will = will, also = also })
 	end
 	return ds.Dialog {
 		open = delete_open,
@@ -1449,10 +1500,19 @@ local function delete_dialog(): Node
 				if not id then
 					return
 				end
+				-- (Its title now: refused, the window has already left it.)
+				local c = chat(id)
+				local title = if c and c.title ~= "" then (string.gsub(c.title, "%s+", " ")) else locale.s("shell.sidebar.session.new_session")
 				if route.current:peek().session == id then
 					route.new_chat()
 				end
-				sessions.delete(id):after(function() end, function() end)
+				sessions.delete(id):after(function() end, function(err: any)
+					ds.toast.show {
+						title = locale.s("shell.sidebar.session.couldnt_delete", { title = title }),
+						body = if type(err) == "string" and err ~= "" then err else nil,
+						tone = "warning",
+					}
+				end)
 			end,
 		},
 		-- (As its own body line, but following the session.)
@@ -1540,9 +1600,20 @@ M.Sidebar = ui.component(function(props: Props): Node
 		details = shared.details,
 		places = shared.places :: any,
 		width = shared.width,
+		default_width = fit.SIDEBAR_DEFAULT,
+		shown = if props.island then nil else view.sidebar_shown,
+		before = if props.island then nil else 5,
+		-- (Its edge double-clicked: the chat and the panel split again, as
+		-- Zend's `reset_panel_widths`.)
+		on_reset = function()
+			view.seam_reset:set(view.seam_reset:peek() + 1)
+		end,
 		collapsed = props.collapsed,
 		limit = props.limit,
 		direct = props.direct,
+		loading = function(): boolean
+			return sessions.state:get() ~= "ready"
+		end,
 		island = props.island,
 		selected = shared.selected,
 		projects = projects,
@@ -1584,7 +1655,7 @@ M.Sidebar = ui.component(function(props: Props): Node
 		end,
 		notice = if props.island
 			then nil
-			else ui.column { w_full = true, gap = "$zeron.list.gap", project_filter(), filter_notice() },
+			else ui.column { w_full = true, gap = "$zend.list.gap", project_filter(), filter_notice() },
 		tip = if props.island then nil else foot_notes(),
 		-- (The rail has no list to scroll, and its own folds.)
 		offset = if props.island then nil else shared.offset,
@@ -1615,10 +1686,14 @@ M.Sidebar = ui.component(function(props: Props): Node
 		h_full = true,
 		shrink = 0,
 		relative = true,
-		-- (The window's gap before its card, closing with it.)
-		pl = motion.tween(ui.computed(function(): number
-			return if fit.current:get().sidebar then 5 else 0
-		end), motion.sidebar),
+		-- (The window's gap before its card: there as long as the card is,
+		-- going only with its last 5 points, so the card's left edge stands
+		-- still as it folds and comes back. It once closed on the sidebar's
+		-- clock, the whole card sliding 5 points.)
+		pl = function(): number
+			local shown = view.sidebar_shown:get()
+			return ui.raw(math.min(5, shown), "the window's gap before its card")
+		end,
 		-- (That gap's top moves the window, as the bar beside it does.)
 		ui.div { absolute = true, left = 0, top = 0, w = ui.raw(5, "the window's gap"), h = ui.raw(42, "the top bar"), window_drag = true },
 		bar,
@@ -1629,10 +1704,18 @@ M.Sidebar = ui.component(function(props: Props): Node
 	}
 end)
 
+-- A project's name and icon edited (Edit project…), from its header's menu
+-- or Settings → Projects: the window's one editor, `start` and `also` as its
+-- `open`'s.
+function M.edit_project(id: string, start: { [string]: any }?, also: { string }?)
+	project_editor().open(id, start, also)
+	project_editor_used:set(true)
+end
+
 -- `Sidebar { … }` builds it; `sidebar.pin(id)`, `sidebar.archive(id)` and
 -- `sidebar.rename(id)` act on a session as its menu does.
 function M.rename(id: string)
-	-- In its row, where the list shows it (as Zeron's); else (folded away,
+	-- In its row, where the list shows it (as Zend's); else (folded away,
 	-- filtered out) the dialog.
 	if table.find(M.order:peek(), id) then
 		renaming_row:set(id)

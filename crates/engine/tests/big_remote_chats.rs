@@ -23,15 +23,15 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 };
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
-use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_mcp::{Origin, Tools, Zeron};
-use zeron_proto::{
+use zend_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+use zend_engine::{EngineCore, HarnessRegistry};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_mcp::{Origin, Tools, Zend};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, Session, SessionStatus,
     SteeringMode,
 };
-use zeron_rpc::{
+use zend_rpc::{
     DeviceFrameHeader, LinkCache, LinkCacheConfig, StaticToken, decode_device_frame,
     encode_device_frame,
 };
@@ -207,7 +207,7 @@ const MESSAGE_BYTES: usize = 2 * 1024;
 
 /// A chat with its harness set, like any chat that has run: sending to it
 /// needs nothing from its host.
-fn config() -> zeron_proto::ChatConfig {
+fn config() -> zend_proto::ChatConfig {
     serde_json::from_value(
         json!({"harness": "mock", "model": null, "reasoning": null, "sandbox": "workspace-write"}),
     )
@@ -267,11 +267,11 @@ async fn agents_reach_a_huge_chat_on_another_device() {
     links.probe_timeout = Duration::from_secs(20);
     reader.set_links(LinkCache::new(links));
 
-    let zeron = Arc::new(Zeron::with_client(
-        zeron_rpc::memory_client(reader.rpc_service()),
+    let zend = Arc::new(Zend::with_client(
+        zend_rpc::memory_client(reader.rpc_service()),
         Origin::default(),
     ));
-    let tools = Tools::new(zeron.clone());
+    let tools = Tools::new(zend.clone());
 
     // read_chat limit 1 asks for one message, however long the chat. The
     // first read opens the doc and builds the host's mirror; the second is
@@ -386,7 +386,7 @@ async fn agents_reach_a_huge_chat_on_another_device() {
     let hosts_before = counters.host_sockets.load(Ordering::SeqCst);
     let clients_before = counters.client_sockets.load(Ordering::SeqCst);
     let started = Instant::now();
-    let everything = zeron
+    let everything = zend
         .transcript_on(CHAT, Some("device-b"))
         .await
         .expect("a full read");

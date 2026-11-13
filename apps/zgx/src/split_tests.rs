@@ -1,11 +1,11 @@
-//! Zeron v3's split chats (ui/screens/shell/split.luau, page.luau), and
-//! Zeron v2, the single-page layout, as the window runs them: mounted
+//! Zend v3's split chats (ui/screens/shell/split.luau, page.luau), and
+//! Zend v2, the single-page layout, as the window runs them: mounted
 //! headless on the shell's fixture (ui/shell_fixture.luau).
 //!
 //! A chat dragged from the sidebar onto a chat's edge sits beside it; a
 //! click focuses a pane; ⌘W takes it out; the split is kept across a
 //! reload and a launch; and resizing the window moves the panes without
-//! running any more script than one chat does. Zeron v2 (installed as
+//! running any more script than one chat does. Zend v2 (installed as
 //! `live` installs it, composed into `.live` as a switch composes it) has
 //! none of that: one page, no cards; and switching back gives v3 again.
 //!
@@ -144,6 +144,55 @@ fn a_chat_dragged_to_a_chat_s_edge_sits_beside_it_and_is_focused() {
     assert!(near(page.width, (alone.width - gap) / 2.), "{page:?} in {alone:?}");
     assert!(near(page.x + page.width, alone.x + alone.width), "{page:?} in {alone:?}");
     assert!(near(page.height, alone.height));
+}
+
+/// A chat dropped beside another opens out of the gap at the page's right:
+/// what's in its pane stands where it lands in its pane as the gap opens
+/// (never drifting in) and only fades in a little, from the floor (0.3), a
+/// step at a time (ds/motion `content`); the pane it splits from never
+/// fades.
+#[test]
+fn a_pane_just_added_only_fades_in_a_little_where_it_lands() {
+    let mut app = mount(&scratch("arrive"));
+    open(&mut app, "Fix the build");
+    let page = app.bounds("shell-page");
+    let (sx, sy) = row_at(&mut app, "Tidy the tests");
+    let (x, y) = (page.x + page.width * 0.92, page.y + page.height / 2.);
+    let button = PointerButton::Primary;
+    pointer(&mut app, InputEvent::PointerMove { x: sx, y: sy });
+    pointer(&mut app, InputEvent::PointerDown { x: sx, y: sy, button });
+    for step in 1..=8 {
+        let part = step as f32 / 8.;
+        pointer(&mut app, InputEvent::PointerMove { x: sx + (x - sx) * part, y: sy + (y - sy) * part });
+    }
+    app.frames(4);
+    pointer(&mut app, InputEvent::PointerUp { x, y, button });
+    app.ui.input.forget_clicks();
+    // (Where it's painted in its pane, across.)
+    let off = |app: &mut TestApp| -> f32 {
+        let lane = app.find("#split-lane-a3").expect("its lane");
+        app.ui.prepare_frame();
+        let scene = app.ui.scene.borrow();
+        let pane = scene.parent(lane).expect("its pane");
+        scene.transformed_bounds(lane).x - scene.transformed_bounds(pane).x
+    };
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    let seen: Vec<(f32, f32)> = (0..24)
+        .map(|_| {
+            app.frames(1);
+            let at = off(&mut app);
+            (lo, hi) = (lo.min(at), hi.max(at));
+            (app.opacity("split-lane-a3"), app.opacity("split-lane-a1"))
+        })
+        .collect();
+    assert!(hi - lo <= 0.011, "it stands where it lands: {lo} to {hi} in its pane");
+    let between = seen.iter().filter(|s| s.0 > 0.02 && s.0 < 0.98).count();
+    assert!(between >= 3, "fades in: {seen:?}");
+    assert!(seen.iter().all(|s| s.0 >= 0.29), "a little, from the floor: {seen:?}");
+    assert!(seen.windows(2).all(|w| w[1].0 >= w[0].0 - 1e-3), "only in: {seen:?}");
+    assert!(seen.iter().all(|s| (s.1 - 1.).abs() < 1e-3), "the pane beside it stays: {seen:?}");
+    let last = seen.last().unwrap();
+    assert!((last.0 - 1.).abs() < 1e-3, "ends shown: {seen:?}");
 }
 
 #[test]
@@ -350,7 +399,7 @@ fn a_pane_s_grown_composer_takes_a_drop_as_a_mention() {
     assert!(near(app.bounds("shell-page").x, app.bounds("#split-pane-a3").x), "the pane stayed where it was");
 }
 
-// ── Zeron v2 ────────────────────────────────────────────────────────────────
+// ── Zend v2 ────────────────────────────────────────────────────────────────
 
 /// The window going to the back closes the composer's menu, as every popover; it
 /// isn't dismissed, so back at the front it opens again. Escape does dismiss it.
@@ -369,15 +418,19 @@ fn the_composers_menu_comes_back_with_the_window_and_stays_shut_after_escape() {
     app.click(field);
     app.type_text(field, "@");
     app.frames(20);
+    // (The popover round @'s launcher, and round the other triggers' list:
+    // ds/composer_mentions.)
     let open_now = |app: &mut TestApp| {
-        app.tree().lines().any(|l| l.contains("#mention-panel") && !l.contains(" hidden"))
+        app.tree().lines().any(|l| l.contains("#mention-popover") && !l.contains(" hidden"))
     };
     assert!(open_now(&mut app), "typed: its menu\n{}", app.tree());
-    // Either order of the two, as the platform has them.
+    // Either order of the two, as the platform has them: the popups closed
+    // and then the window at the back in one event (zgx-desktop's
+    // `Focused(false)`, no frame between: ds/composer_mentions tells the
+    // two apart as that event ends), or the window first.
     for popups_first in [true, false] {
         if popups_first {
             app.ui.dismiss_popups();
-            app.frames(2);
             app.ui.set_window_active(false);
         } else {
             app.ui.set_window_active(false);
@@ -449,19 +502,19 @@ fn compose(t: &Path, id: &str) -> PathBuf {
 }
 
 #[test]
-fn zeron_v2_is_installed_as_zeron_s_and_runs_one_page() {
+fn zend_v2_is_installed_as_zend_s_and_runs_one_page() {
     let root = scratch("v2");
     let t = root.join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
+    live::sync_zend(&ui(), &t).unwrap();
     // Installed beside the default, listed second, built in, trusted.
     let listed = live::installed(&t);
     let ids: Vec<&str> = listed.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(&ids[..2], [live::BUILTIN, "zeron-v2"]);
-    assert_eq!((listed[0].name.as_str(), listed[1].name.as_str()), ("Zeron v3", "Zeron v2"));
-    assert_eq!(listed[1].description, "The single-page layout from before Zeron v3.");
+    assert_eq!(&ids[..2], [live::BUILTIN, "zend-v2"]);
+    assert_eq!((listed[0].name.as_str(), listed[1].name.as_str()), ("Zend v3", "Zend v2"));
+    assert_eq!(listed[1].description, "The single-page layout from before Zend v3.");
     assert!(listed[1].official.is_some() && !listed[1].out_of_date);
-    assert!(preview::trusted_at(&t, "zeron-v2", &root.join("approvals.json")), "no consent asked of Zeron's own");
-    assert!(official::verified(&t.join("zeron-v2")).is_some());
+    assert!(preview::trusted_at(&t, "zend-v2", &root.join("approvals.json")), "no consent asked of Zend's own");
+    assert!(official::verified(&t.join("zend-v2")).is_some());
 
     // v3, the default: the page a card under the top bar.
     let live_dir = compose(&t, live::BUILTIN);
@@ -474,7 +527,7 @@ fn zeron_v2_is_installed_as_zeron_s_and_runs_one_page() {
     // Switched to v2, as a switch does: `.live` composed again, the window
     // reloaded in place. One page, to the window's edges: no card, and a
     // chat dragged to its edge doesn't split it.
-    compose(&t, "zeron-v2");
+    compose(&t, "zend-v2");
     app.host.reload().expect("v2 didn't load");
     app.frames(30);
     let v2 = app.bounds("shell-page");
@@ -859,11 +912,11 @@ fn a_pane_out_of_focus_is_live_and_gaining_focus_changes_nothing() {
     assert!(places.iter().any(|n| n.ends_with("_a1")) && places.iter().any(|n| n.ends_with("_a3")), "{places:?}");
 }
 
-/// In a split, the side opened wins: the panel opened when the panes would go
-/// under their least closes the sidebar, the sidebar opened closes the panel,
-/// and neither is back until it's asked for. Under their least with one side
-/// open, the panes just narrow. (ui/tests/pane_floor.test.luau has the rest,
-/// which CI doesn't run.)
+/// In a split, the side opened wins (three columns at most, Wing's cap): the
+/// panel opened when the panes would go under their least hides the sidebar,
+/// the sidebar opened hides the panel. Hidden by the fit, not closed: each is
+/// back by itself once the other closes. Under their least with one side
+/// open, the panes just narrow. (ui/tests/pane_floor.test.luau has the rest.)
 #[test]
 fn the_side_opened_wins_in_a_split() {
     use zgx_script::Value;
@@ -883,28 +936,32 @@ fn the_side_opened_wins_in_a_split() {
         app.frames(40);
         let when = format!("{} panes at 1100", ids.len());
         let shown = |app: &mut TestApp, what: &str| app.bounds(what).width > 1.;
+        // (Three panes at 1100 have no room for the sidebar even alone: the
+        // fit hides it already.)
+        let had_sidebar = shown(&mut app, "shell-sidebar");
         app.click(PANEL);
         app.frames(60);
         assert_eq!(app.bounds("shell-files").width, 360., "{when}: the panel, at its least");
-        assert!(!shown(&mut app, "shell-sidebar"), "{when}: the sidebar closed for it");
+        assert!(!shown(&mut app, "shell-sidebar"), "{when}: the sidebar gave way for it");
         for id in ids {
             let w = app.bounds(&format!("#split-pane-{id}")).width;
             assert!(w >= least, "{when}: {id} is {w} wide, beside the panel");
         }
-        // The panel closed: the sidebar isn't back on its own.
+        // The panel closed: the sidebar is back by itself, as it was.
         app.click(PANEL);
         app.frames(60);
-        assert!(!shown(&mut app, "shell-sidebar"), "{when}: the sidebar stays closed");
-        // Open both ways: the sidebar closes the panel, for good too.
+        assert_eq!(shown(&mut app, "shell-sidebar"), had_sidebar, "{when}: the sidebar as it was");
+        // Open both ways: the sidebar hides the panel, back as it folds.
         app.click(PANEL);
         app.frames(60);
         app.click(SIDEBAR);
         app.frames(60);
-        assert!(shown(&mut app, "shell-sidebar"), "{when}: the sidebar opened");
-        assert!(!shown(&mut app, "shell-files"), "{when}: the panel closed for it");
+        assert!(shown(&mut app, "shell-sidebar"), "{when}: the sidebar asked for");
+        assert!(!shown(&mut app, "shell-files"), "{when}: the panel gave way for it");
         app.click(SIDEBAR);
         app.frames(60);
-        assert!(!shown(&mut app, "shell-files"), "{when}: the panel stays closed");
+        assert!(!shown(&mut app, "shell-sidebar"), "{when}: the sidebar folded");
+        assert!(shown(&mut app, "shell-files"), "{when}: the panel is back");
     }
 }
 
@@ -1189,12 +1246,12 @@ fn toggle_cost(app: &mut TestApp) -> (u64, f64, f64) {
 }
 
 #[test]
-#[ignore = "a measurement: cargo test --bin zeron-zgx panel_toggle_over_visuals -- --ignored --nocapture"]
+#[ignore = "a measurement: cargo test --bin zend-zgx panel_toggle_over_visuals -- --ignored --nocapture"]
 fn panel_toggle_over_visuals_measured() {
     let root = scratch("toggle-v2");
     let t = root.join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let v2 = compose(&t, "zeron-v2").join("shell_fixture.luau");
+    live::sync_zend(&ui(), &t).unwrap();
+    let v2 = compose(&t, "zend-v2").join("shell_fixture.luau");
     for (label, fixture) in [("v3", ui().join("shell_fixture.luau")), ("v2", v2)] {
         for (chat, visuals) in [("a1", false), ("a1", true)] {
             for w in [1100., 1500.] {
@@ -1379,7 +1436,7 @@ fn costs(fixture: &Path, count: usize) -> String {
 }
 
 #[test]
-#[ignore = "a measurement: cargo test --release --bin zeron-zgx costs_of_v2_inset_and_v3 -- --ignored --nocapture"]
+#[ignore = "a measurement: cargo test --release --bin zend-zgx costs_of_v2_inset_and_v3 -- --ignored --nocapture"]
 fn costs_of_v2_inset_and_v3_measured() {
     let root = scratch("costs");
     let t = root.join("templates");
@@ -1387,7 +1444,7 @@ fn costs_of_v2_inset_and_v3_measured() {
     // one variant.)
     let from = std::env::var("COSTS_UI").map(PathBuf::from).unwrap_or_else(|_| ui());
     let only = std::env::var("COSTS_ONLY").ok();
-    live::sync_zeron(&from, &t).unwrap();
+    live::sync_zend(&from, &t).unwrap();
     // Inset as uploaded, laid over today's default as the app lays it (its
     // shell/init.luau fails there on its missing scroll_probe and falls
     // back to the default's: left out).
@@ -1397,9 +1454,9 @@ fn costs_of_v2_inset_and_v3_measured() {
         std::fs::create_dir_all(to.parent().unwrap()).unwrap();
         std::fs::copy(path, to).unwrap();
     }
-    std::fs::write(t.join("inset/zeron-template.json"), r#"{"id":"inset","name":"Inset"}"#).unwrap();
+    std::fs::write(t.join("inset/zend-template.json"), r#"{"id":"inset","name":"Inset"}"#).unwrap();
     let mut rows = Vec::new();
-    for (label, id, panes) in [("v2", "zeron-v2", vec![1]), ("Inset", "inset", vec![1, 2, 4, 6]), ("v3", live::BUILTIN, vec![1, 2, 4, 6])] {
+    for (label, id, panes) in [("v2", "zend-v2", vec![1]), ("Inset", "inset", vec![1, 2, 4, 6]), ("v3", live::BUILTIN, vec![1, 2, 4, 6])] {
         if only.as_deref().is_some_and(|o| o != label) {
             continue;
         }
@@ -1598,8 +1655,8 @@ fn a_dragged_sidebar_edge_builds_no_list() {
 #[test]
 fn v2_s_dragged_sidebar_edge_builds_no_list() {
     let t = scratch("v2-drag").join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let calls = drag_script_of(&compose(&t, "zeron-v2").join("shell_fixture.luau"), 1);
+    live::sync_zend(&ui(), &t).unwrap();
+    let calls = drag_script_of(&compose(&t, "zend-v2").join("shell_fixture.luau"), 1);
     assert!(calls <= 170, "{calls} script calls a frame");
 }
 
@@ -1618,6 +1675,64 @@ fn a_window_resized_reflows_the_page_live() {
         widths.insert(app.bounds("#chat-session >> #transcript").width.round() as i64);
     }
     assert_eq!(widths.len(), 20, "the transcript took {widths:?}");
+}
+
+/// The divider between two panes: dragged past a pane's least, it bounces
+/// (the pane gives a few points more, at most 5, and comes back) and its
+/// light dims while it's held there; double-clicked, the panes take equal
+/// shares again, easing there, as a pane coming or going does.
+#[test]
+fn a_divider_bounces_at_a_pane_s_least_and_double_clicked_evens_the_panes() {
+    let mut app = mount(&scratch("divider"));
+    split_of(&mut app, &["a1", "a3"]);
+    open(&mut app, "Fix the build");
+    app.frames(30);
+    assert_eq!(panes(&mut app), 2);
+    let divider = "#split-divider-row:/1";
+    let width = |app: &mut TestApp, id: &str| app.bounds(&format!("#split-pane-{id}")).width;
+    let light = |app: &mut TestApp| {
+        let id = app.find(divider).expect("the divider");
+        app.ui.prepare_frame();
+        let scene = app.ui.scene.borrow();
+        scene.effects(*scene.children(id).first().expect("its light")).opacity
+    };
+    let (button, m) = (PointerButton::Primary, Modifiers::default());
+    let (x, y) = middle(app.bounds(divider));
+    // Dragged past the right pane's least, and held there.
+    app.ui.input.forget_clicks();
+    app.ui.dispatch_with_modifiers(InputEvent::PointerMove { x, y }, m);
+    app.ui.dispatch_with_modifiers(InputEvent::PointerDown { x, y, button }, m);
+    let mut seen = Vec::new();
+    for step in 1..=4 {
+        app.ui.dispatch_with_modifiers(InputEvent::PointerMove { x: x + 900. * step as f32 / 4., y }, m);
+        app.frame();
+        seen.push(width(&mut app, "a3"));
+    }
+    for _ in 0..20 {
+        app.frame();
+        seen.push(width(&mut app, "a3"));
+    }
+    let rest = *seen.last().unwrap();
+    let least = seen.iter().copied().fold(f32::MAX, f32::min);
+    assert!(least < rest - 2. && least >= rest - 5.5, "the pane gave a few points past its least and came back: {seen:?}");
+    assert!(light(&mut app) < 0.02, "its light dims, held at the least");
+    app.ui.dispatch_with_modifiers(InputEvent::PointerUp { x: x + 900., y, button }, m);
+    app.ui.input.forget_clicks();
+    app.frames(20);
+    assert!(width(&mut app, "a1") > width(&mut app, "a3") + 200., "dragged apart");
+    // Double-clicked: equal again, easing there.
+    let (x, y) = middle(app.bounds(divider));
+    let before = width(&mut app, "a3");
+    for _ in 0..2 {
+        pointer(&mut app, InputEvent::PointerDown { x, y, button });
+        app.ui.dispatch_with_modifiers(InputEvent::PointerUp { x, y, button }, m);
+    }
+    app.ui.input.forget_clicks();
+    let mid = width(&mut app, "a3");
+    app.frames(40);
+    let (a, b) = (width(&mut app, "a1"), width(&mut app, "a3"));
+    assert!(near(a, b), "equal shares again: {a} and {b}");
+    assert!(mid > before + 0.5 && mid < b - 0.5, "it eases there: {before} → {mid} → {b}");
 }
 
 /// A row in the sidebar follows the column's width: its edge dragged wider,
@@ -1654,11 +1769,31 @@ fn depth_of(app: &mut TestApp, id: &str) -> usize {
 #[test]
 fn the_page_stands_about_as_deep_as_v2_s() {
     let t = scratch("depth").join("templates");
-    live::sync_zeron(&ui(), &t).unwrap();
-    let mut v2 = mount_at(&compose(&t, "zeron-v2").join("shell_fixture.luau"), &scratch("depth-v2"));
+    live::sync_zend(&ui(), &t).unwrap();
+    let mut v2 = mount_at(&compose(&t, "zend-v2").join("shell_fixture.luau"), &scratch("depth-v2"));
     let mut v3 = mount(&scratch("depth-v3"));
     let (two, three) = (depth_of(&mut v2, "#shell-page"), depth_of(&mut v3, "#shell-page"));
     assert!(three <= two + 1, "#shell-page under {three} boxes, v2's under {two}");
+}
+
+/// v2's window buttons and title-bar controls stand on glass over a new
+/// chat's wallpaper once its sidebar is closed (v3's top bar took the glass
+/// away from the shared title bar for both); v3's never do.
+#[test]
+fn v2_s_title_bar_island_shows_over_art_with_the_sidebar_closed() {
+    let t = scratch("island").join("templates");
+    live::sync_zend(&ui(), &t).unwrap();
+    let mut v2 = mount_at(&compose(&t, "zend-v2").join("shell_fixture.luau"), &scratch("island-v2"));
+    let mut v3 = mount(&scratch("island-v3"));
+    for app in [&mut v2, &mut v3] {
+        assert!(app.host.run_command("fixture.wallpaper"));
+        app.frames(30);
+        assert!(app.opacity("#titlebar-island") < 0.01, "the sidebar open: no island");
+        assert!(app.host.run_command("shell.toggle_sidebar"));
+        app.frames(60);
+    }
+    assert!(v2.opacity("#titlebar-island") > 0.99, "v2, closed over a new chat's art: its island");
+    assert!(v3.opacity("#titlebar-island") < 0.01, "v3 has its top bar: no island");
 }
 
 /// Frames' work as a column moves, and where it went: p50/p95 (ms), the
@@ -1728,15 +1863,15 @@ fn split_of(app: &mut TestApp, ids: &[&str]) {
 /// over a long chat, and the sidebar's edge dragged with 1–6 long chats.
 /// (`COSTS_UI`: another ui/ to compose; `REFLOW_ONLY`: v2 or v3.)
 #[test]
-#[ignore = "a measurement: ZGX_PROFILE=1 cargo test --release --bin zeron-zgx live_reflow_measured -- --ignored --nocapture"]
+#[ignore = "a measurement: ZGX_PROFILE=1 cargo test --release --bin zend-zgx live_reflow_measured -- --ignored --nocapture"]
 fn live_reflow_measured() {
     const IDS: [&str; 6] = ["a1", "a2", "a3", "b1", "b2", "m1"];
     let root = scratch("reflow");
     let t = root.join("templates");
     let from = std::env::var("COSTS_UI").map(PathBuf::from).unwrap_or_else(|_| ui());
     let only = std::env::var("REFLOW_ONLY").ok();
-    live::sync_zeron(&from, &t).unwrap();
-    for (label, id) in [("v2", "zeron-v2"), ("v3", live::BUILTIN)] {
+    live::sync_zend(&from, &t).unwrap();
+    for (label, id) in [("v2", "zend-v2"), ("v3", live::BUILTIN)] {
         if only.as_deref().is_some_and(|o| o != label) {
             continue;
         }
@@ -1787,7 +1922,7 @@ fn live_reflow_measured() {
 ///   REFLOW_CASE=panes6 cargo test --release --features layout_probe \
 ///     --config 'patch."https://github.com/zeronsh/zgx".zgx.path="<copy>/crates/zgx"' \
 ///     --config 'patch."https://github.com/zeronsh/zgx".zgx-script.path="<copy>/crates/zgx-script"' \
-///     --bin zeron-zgx live_reflow_traced -- --ignored --nocapture
+///     --bin zend-zgx live_reflow_traced -- --ignored --nocapture
 #[cfg(feature = "layout_probe")]
 #[test]
 #[ignore = "a diagnosis: needs the probed zgx above"]
@@ -1798,8 +1933,8 @@ fn live_reflow_traced() {
     let case = std::env::var("REFLOW_CASE").unwrap_or_else(|_| "panes6".into());
     let fixture = if std::env::var_os("REFLOW_V2").is_some() {
         let t = scratch("trace-v2").join("templates");
-        live::sync_zeron(&ui(), &t).unwrap();
-        compose(&t, "zeron-v2").join("shell_fixture.luau")
+        live::sync_zend(&ui(), &t).unwrap();
+        compose(&t, "zend-v2").join("shell_fixture.luau")
     } else {
         ui().join("shell_fixture.luau")
     };
@@ -1927,7 +2062,7 @@ fn live_reflow_traced() {
 /// changes, against the nodes there are, for a few shapes of the same 40
 /// wrapped paragraphs. (A repro for zgx.)
 #[test]
-#[ignore = "a diagnosis: cargo test --release --bin zeron-zgx measures_per_width_change -- --ignored --nocapture"]
+#[ignore = "a diagnosis: cargo test --release --bin zend-zgx measures_per_width_change -- --ignored --nocapture"]
 fn measures_per_width_change() {
     let dir = scratch("measures");
     let para = "A paragraph long enough to wrap over a few lines at any of these widths, so its text lays out as a real reply's does, with more after it.";

@@ -3,7 +3,7 @@
 //! A Cloud device is an ordinary headless engine whose identity is not a
 //! WorkOS session but an Ed25519 key it enrolled with the edge once:
 //!
-//! - **Detection** at boot: `ZERON_RUNNER_ENROLL={orgId}.{userId}.{deviceId}.{code}`
+//! - **Detection** at boot: `ZEND_RUNNER_ENROLL={orgId}.{userId}.{deviceId}.{code}`
 //!   naming the device `{data_dir}/runner.json` already holds (or no env) →
 //!   runner as persisted; the env naming a DIFFERENT device (or no
 //!   runner.json) → enroll as that device. A sandbox forked or restored from
@@ -17,20 +17,21 @@
 //!   (0600) and `{data_dir}/device-id` = the edge-minted device id. Network
 //!   failures retry with backoff; a 4xx is fatal (the one-time code is spent).
 //! - **Tokens**: `POST {edge}/runner/token` signed over
-//!   `zeron-runner-token\n{orgId}\n{userId}\n{deviceId}\n{ts}` — driven by
+//!   `zend-runner-token\n{orgId}\n{userId}\n{deviceId}\n{ts}` — driven by
 //!   [`crate::Auth`]'s runner mode, so every room/relay/RPC bearer consumer
 //!   works unchanged.
-//! - **Heartbeat**: `POST {edge}/runner/heartbeat {activeRuns, clients}` every
-//!   60 s, feeding the CloudAccount DO's per-session idle sleep.
+//! - **Heartbeat**: `POST {edge}/runner/heartbeat {activeRuns, clients, …}`
+//!   every 60 s, feeding the CloudAccount DO's per-session idle sleep and disk
+//!   levels ([`crate::cloud_disk`]).
 //! - **Session**: every Cloud session runs in its own sandbox, provisioned with
-//!   `ZERON_CLOUD_{ACCOUNT,CHAT,REPO,PATH,BRANCH}` (persisted to
+//!   `ZEND_CLOUD_{ACCOUNT,CHAT,REPO,PATH,BRANCH}` (persisted to
 //!   `cloud-session.json` for restarts). At boot it clones the project's
 //!   repository and checks out the session's branch ([`prepare_checkout`]);
 //!   runs wait for that, showing its steps live ([`setup_snapshot`]); its
 //!   device row carries the `cloud-session`
 //!   capability so device lists show the account's one Cloud device instead.
 //!
-//! The device's platform string comes from `ZERON_DEVICE_PLATFORM` (`cloud`
+//! The device's platform string comes from `ZEND_DEVICE_PLATFORM` (`cloud`
 //! on a Cloud device); a `cloud` platform restricts the harness catalog to
 //! Codex + Claude Code (see [`crate::registry`]).
 
@@ -55,9 +56,9 @@ pub const SESSION_FILE: &str = "cloud-session.json";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudSession {
-    /// The account's logical Cloud device (`ZERON_CLOUD_ACCOUNT`).
+    /// The account's logical Cloud device (`ZEND_CLOUD_ACCOUNT`).
     pub account: String,
-    /// The session's top-level chat (`ZERON_CLOUD_CHAT`).
+    /// The session's top-level chat (`ZEND_CLOUD_CHAT`).
     pub chat_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
@@ -75,11 +76,11 @@ impl CloudSession {
                 .filter(|v| !v.is_empty())
         };
         Some(Self {
-            account: get("ZERON_CLOUD_ACCOUNT")?,
-            chat_id: get("ZERON_CLOUD_CHAT")?,
-            repo: get("ZERON_CLOUD_REPO"),
-            path: get("ZERON_CLOUD_PATH"),
-            branch: get("ZERON_CLOUD_BRANCH"),
+            account: get("ZEND_CLOUD_ACCOUNT")?,
+            chat_id: get("ZEND_CLOUD_CHAT")?,
+            repo: get("ZEND_CLOUD_REPO"),
+            path: get("ZEND_CLOUD_PATH"),
+            branch: get("ZEND_CLOUD_BRANCH"),
         })
     }
 
@@ -119,7 +120,7 @@ impl CloudSession {
             .filter(char::is_ascii_alphanumeric)
             .take(12)
             .collect();
-        format!("zeron/cloud-{short}")
+        format!("zend/cloud-{short}")
     }
 
     /// The session repository as GitHub's `owner/name` (what a `github`
@@ -194,6 +195,9 @@ async fn prepare_checkout_with(
     if path.join(".git").exists() {
         // The disk survived a stop: this boot is a wake.
         record_setup("wake", "Woke the machine".into());
+        if let Some(version) = crate::wake_trace::updated_to() {
+            record_setup("update", format!("Updated Zend to {version}"));
+        }
         return Ok(());
     }
     record_setup("start", "Started a machine".into());
@@ -271,15 +275,22 @@ async fn prepare_checkout_with(
         true,
     );
     let branch = session.session_branch();
+    // A fresh machine for a chat that already ran (its old disk expired): what
+    // the session pushed comes back. A first boot has no such branch.
+    let pushed = pushed_session_branch(path, &branch).await;
     let branch_step = begin_step(
         "branch",
         format!("Checking out {branch}"),
-        Some(format!("git checkout -B {branch}")),
+        Some(match &pushed {
+            Some(pushed) => format!("git checkout -B {branch} {pushed}"),
+            None => format!("git checkout -B {branch}"),
+        }),
     );
     let checkout = tokio::process::Command::new("git")
         .arg("-C")
         .arg(path)
         .args(["checkout", "-B", &branch])
+        .args(pushed.as_deref())
         .kill_on_drop(true)
         .output()
         .await;
@@ -304,6 +315,22 @@ async fn prepare_checkout_with(
     }
     tracing::info!(repo, path = %path.display(), branch, "runner: session checkout ready");
     Ok(())
+}
+
+/// `origin/{branch}`, when the session pushed that branch before this clone.
+async fn pushed_session_branch(path: &Path, branch: &str) -> Option<String> {
+    let remote = format!("origin/{branch}");
+    let found = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/remotes/{remote}"))
+        .kill_on_drop(true)
+        .output()
+        .await;
+    found
+        .is_ok_and(|out| out.status.success())
+        .then_some(remote)
 }
 
 /// One setup step of this boot (live: `running` until it finishes).
@@ -417,7 +444,7 @@ pub fn mark_setup_shown() {
 pub fn setup_snapshot(
     scope: &str,
     waited: Option<Duration>,
-) -> (Vec<zeron_doc::MessagePart>, bool) {
+) -> (Vec<zend_doc::MessagePart>, bool) {
     let setup = SETUP.lock().unwrap_or_else(PoisonError::into_inner);
     (setup_parts(scope, &setup.steps, waited), setup.done)
 }
@@ -426,11 +453,11 @@ fn setup_parts(
     scope: &str,
     steps: &[SetupStep],
     waited: Option<Duration>,
-) -> Vec<zeron_doc::MessagePart> {
+) -> Vec<zend_doc::MessagePart> {
     steps
         .iter()
         .map(|step| {
-            let mut input = serde_json::json!({ zeron_proto::CLOUD_SETUP_KEY: step.step });
+            let mut input = serde_json::json!({ zend_proto::CLOUD_SETUP_KEY: step.step });
             if let Some(command) = &step.command {
                 input["command"] = serde_json::Value::String(command.clone());
             }
@@ -445,9 +472,9 @@ fn setup_parts(
                 "start" | "wake" => "machine",
                 other => other,
             };
-            zeron_doc::MessagePart::Tool {
-                id: zeron_proto::cloud_setup_part_id(scope, slot),
-                call: zeron_proto::ToolCall::Unknown {
+            zend_doc::MessagePart::Tool {
+                id: zend_proto::cloud_setup_part_id(scope, slot),
+                call: zend_proto::ToolCall::Unknown {
                     name: step.name.clone(),
                     input: Some(input),
                 },
@@ -485,19 +512,30 @@ pub const RUNNER_FILE: &str = "runner.json";
 /// `{data_dir}/runner-key` — the Ed25519 private key, PKCS#8 DER, 0600.
 pub const RUNNER_KEY_FILE: &str = "runner-key";
 /// One-time enrollment directive set by the provisioning workflow.
-pub const ENROLL_ENV: &str = "ZERON_RUNNER_ENROLL";
+pub const ENROLL_ENV: &str = "ZEND_RUNNER_ENROLL";
 /// Generic `Device::platform` override (`cloud` on a Cloud device).
-pub const PLATFORM_ENV: &str = "ZERON_DEVICE_PLATFORM";
+pub const PLATFORM_ENV: &str = "ZEND_DEVICE_PLATFORM";
 /// How often a runner reports activity to its CloudDevice DO.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// How long after boot a Cloud machine keeps its agent CLIs' update checks out of
+/// the way of the message that woke it: a check can start an install, which holds
+/// the run back until it ends.
+pub const CLOUD_BOOT_SETTLE: Duration = Duration::from_secs(120);
+/// How often while a turn runs. The edge counts a machine as gone three of these
+/// (at least 45 s) after its last beat, so a machine stopped mid-turn is brought
+/// back to resume it within about a minute rather than three.
+pub const HEARTBEAT_BUSY_INTERVAL: Duration = Duration::from_secs(15);
+/// How often the heartbeat looks at whether a turn started or ended: a change is
+/// reported at once, so the edge's idea of the cadence is never a beat behind.
+const HEARTBEAT_LOOK: Duration = Duration::from_secs(2);
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const ENROLL_RETRY_BASE: Duration = Duration::from_secs(1);
 const ENROLL_RETRY_CAP: Duration = Duration::from_secs(60);
-const TOKEN_DOMAIN: &str = "zeron-runner-token";
-const GRANT_DOMAIN: &str = "zeron-vault-grant";
+const TOKEN_DOMAIN: &str = "zend-runner-token";
+const GRANT_DOMAIN: &str = "zend-vault-grant";
 
-/// This engine's `Device::platform`: `ZERON_DEVICE_PLATFORM` when set, else
+/// This engine's `Device::platform`: `ZEND_DEVICE_PLATFORM` when set, else
 /// the OS (`macos` / `linux` / `windows`).
 pub fn device_platform() -> String {
     platform_from(std::env::var(PLATFORM_ENV).ok())
@@ -510,9 +548,9 @@ fn platform_from(value: Option<String>) -> String {
         .unwrap_or_else(|| std::env::consts::OS.to_string())
 }
 
-/// Whether this engine is a Cloud device (`ZERON_DEVICE_PLATFORM=cloud`).
+/// Whether this engine is a Cloud device (`ZEND_DEVICE_PLATFORM=cloud`).
 pub fn is_cloud_platform() -> bool {
-    device_platform() == zeron_proto::CLOUD_PLATFORM
+    device_platform() == zend_proto::CLOUD_PLATFORM
 }
 
 /// The persisted runner identity (`runner.json`).
@@ -525,7 +563,7 @@ pub struct RunnerConfig {
     pub edge_url: String,
 }
 
-/// A parsed `ZERON_RUNNER_ENROLL` value. `Debug` never prints the code.
+/// A parsed `ZEND_RUNNER_ENROLL` value. `Debug` never prints the code.
 #[derive(Clone, PartialEq, Eq)]
 pub struct EnrollCode {
     pub org_id: String,
@@ -722,13 +760,13 @@ impl RunnerIdentity {
 pub(crate) fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
-        .user_agent(concat!("zeron/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("zend/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Boot-time runner detection (see the module docs). Reads
-/// `ZERON_RUNNER_ENROLL` from the environment.
+/// `ZEND_RUNNER_ENROLL` from the environment.
 pub async fn bootstrap(
     data_dir: &Path,
     edge_url: &str,
@@ -972,10 +1010,78 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), Engi
 struct HeartbeatBody {
     active_runs: usize,
     clients: usize,
+    background_runs: usize,
+    waiting_runs: usize,
+    /// Older edges ignore these. The edge judges `used` against what the
+    /// machine's size holds, not `total`, which also counts the OS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disk_used_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disk_total_bytes: Option<u64>,
+    /// How often it beats from here on, in seconds. Older edges ignore it.
+    every_secs: u64,
+    /// When this run found its chat store damaged and rebuilt it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store_recovered_at: Option<i64>,
 }
 
-/// Counts sessions with a turn in flight (the heartbeat's `activeRuns`).
-pub type ActiveRuns = Arc<dyn Fn() -> usize + Send + Sync>;
+/// Unix ms this process rebuilt a damaged chat store at its start (0: it didn't).
+static STORE_RECOVERED_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// The store's open found it damaged and rebuilt it: every heartbeat says so,
+/// for the edge to record and show.
+pub fn note_store_recovered(at_ms: i64) {
+    STORE_RECOVERED_AT.store(at_ms, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn store_recovered_at() -> Option<i64> {
+    Some(STORE_RECOVERED_AT.load(std::sync::atomic::Ordering::SeqCst)).filter(|at| *at > 0)
+}
+
+/// The edge's answer: what this machine's size holds, when it says.
+#[derive(Debug, Default, Deserialize)]
+struct HeartbeatReply {
+    #[serde(default, rename = "diskCapacityGiB")]
+    disk_capacity_gib: Option<f64>,
+}
+
+/// Reads the disk for the heartbeat; `None` on a platform or path it can't.
+pub type DiskReader = Arc<dyn Fn() -> Option<crate::cloud_disk::DiskUsage> + Send + Sync>;
+
+/// What this machine's runs are doing, as the heartbeat reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunCounts {
+    /// Chats with a turn in flight: working, or parked on a question.
+    pub active: usize,
+    /// Of `active`, those parked on a question: they hold the machine, but a
+    /// parent chat waiting on them has something to hear.
+    pub waiting: usize,
+    /// Chats whose turn ended with background work still running (a parked
+    /// chat's subagents, background shells).
+    pub background: usize,
+}
+
+impl RunCounts {
+    /// A turn working (not parked on a question) or background work running:
+    /// what the edge waits on, and watches for going quiet.
+    pub fn working(&self) -> bool {
+        self.active > self.waiting || self.background > 0
+    }
+}
+
+/// Whether to beat now: the first time, when work started or stopped since the
+/// last beat, or once the cadence for what's running has passed.
+fn beat_due(last: Option<(Duration, bool)>, working: bool, idle: Duration, busy: Duration) -> bool {
+    match last {
+        None => true,
+        Some((since, was_working)) => {
+            was_working != working || since >= if working { busy } else { idle }
+        }
+    }
+}
+
+/// Reads [`RunCounts`] for the heartbeat.
+pub type ActiveRuns = Arc<dyn Fn() -> RunCounts + Send + Sync>;
 
 /// Relay requests served to remote devices since the last heartbeat — the
 /// heartbeat's `clients`. Filled by [`RelayActivity::wrap`] around the RPC
@@ -988,11 +1094,11 @@ pub struct RelayActivity {
 impl RelayActivity {
     /// Wrap the relay-served RPC service so every request a remote device
     /// makes counts — except the relay's own liveness traffic
-    /// ([`zeron_rpc::is_liveness_probe`]) and requests that only look
+    /// ([`zend_rpc::is_liveness_probe`]) and requests that only look
     /// ([`passive`]): an app merely open on a Cloud chat lists, reads and
     /// watches, and must not keep the machine awake (and billed). Echo
     /// keepalives are relay-control frames that never reach the service.
-    pub fn wrap(&self, inner: Arc<dyn zeron_rpc::RpcService>) -> Arc<dyn zeron_rpc::RpcService> {
+    pub fn wrap(&self, inner: Arc<dyn zend_rpc::RpcService>) -> Arc<dyn zend_rpc::RpcService> {
         Arc::new(CountingService {
             inner,
             activity: self.clone(),
@@ -1016,18 +1122,18 @@ impl RelayActivity {
 }
 
 struct CountingService {
-    inner: Arc<dyn zeron_rpc::RpcService>,
+    inner: Arc<dyn zend_rpc::RpcService>,
     activity: RelayActivity,
 }
 
 #[async_trait::async_trait]
-impl zeron_rpc::RpcService for CountingService {
+impl zend_rpc::RpcService for CountingService {
     async fn handle(
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<zeron_rpc::RpcReply, zeron_rpc::RpcError> {
-        if !zeron_rpc::is_liveness_probe(method, &params) && !passive(method) {
+    ) -> Result<zend_rpc::RpcReply, zend_rpc::RpcError> {
+        if !zend_rpc::is_liveness_probe(method, &params) && !passive(method) {
             self.activity.note();
         }
         self.inner.handle(method, params).await
@@ -1061,13 +1167,19 @@ pub fn passive(method: &str) -> bool {
         "UpdateStatus",
     ];
     LOOKS.iter().any(|prefix| method.starts_with(prefix))
-        || method == zeron_rpc::methods::SET_VIEWPORT_FOCUS
+        || method == zend_rpc::methods::SET_VIEWPORT_FOCUS
 }
 
-/// Post `{activeRuns, clients}` to `{edge}/runner/heartbeat` every `every`
-/// (first beat immediately).
+/// Post `{activeRuns, clients, backgroundRuns, waitingRuns, diskUsedBytes,
+/// diskTotalBytes, everySecs}` to `{edge}/runner/heartbeat` every `every`, or
+/// every `busy_every` while work runs (first beat immediately, and again as soon
+/// as work starts or stops). `everySecs` says which cadence follows.
 ///
-/// - `activeRuns`: chats with a turn in flight right now.
+/// - `activeRuns`: chats with a turn in flight right now; `waitingRuns`, the
+///   ones among them parked on a question.
+/// - `backgroundRuns`: chats whose turn ended with background work still
+///   running. They keep the machine awake as a turn would: sleeping stops the
+///   engine, and the work with it.
 /// - `clients`: relay RPC REQUESTS served to remote devices since the
 ///   previous delivered heartbeat (see [`RelayActivity`]) — not open links or
 ///   sockets. A laptop that merely keeps a link or a watch stream open must
@@ -1076,18 +1188,29 @@ pub fn passive(method: &str) -> bool {
 ///   fails to deliver carries its count over to the next one.
 pub fn spawn_heartbeat(
     edge_url: &str,
-    tokens: Arc<dyn zeron_rpc::TokenSource>,
+    tokens: Arc<dyn zend_rpc::TokenSource>,
     active_runs: ActiveRuns,
+    disk: DiskReader,
     activity: RelayActivity,
     every: Duration,
+    busy_every: Duration,
 ) -> tokio::task::JoinHandle<()> {
     let url = format!("{}/runner/heartbeat", edge_url.trim_end_matches('/'));
+    let look = HEARTBEAT_LOOK.min(busy_every).min(every);
     tokio::spawn(async move {
         let http = http_client();
-        let mut ticker = tokio::time::interval(every);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last: Option<(tokio::time::Instant, bool)> = None;
         loop {
-            ticker.tick().await;
+            let runs = active_runs();
+            let working = runs.working();
+            let since = last.map(|(at, was)| (at.elapsed(), was));
+            if !beat_due(since, working, every, busy_every) {
+                tokio::time::sleep(look).await;
+                continue;
+            }
+            // Counted as a beat whether or not it lands: a failed one is tried
+            // again at the cadence, not every look.
+            last = Some((tokio::time::Instant::now(), working));
             let token = match tokens.token().await {
                 Ok(token) => token,
                 Err(err) => {
@@ -1095,15 +1218,30 @@ pub fn spawn_heartbeat(
                     continue;
                 }
             };
+            let cadence = if working { busy_every } else { every };
+            let usage = disk();
             let body = HeartbeatBody {
-                active_runs: active_runs(),
+                disk_used_bytes: usage.map(|usage| usage.used_bytes),
+                disk_total_bytes: usage.map(|usage| usage.total_bytes),
+                active_runs: runs.active,
                 clients: activity.take(),
+                background_runs: runs.background,
+                waiting_runs: runs.waiting,
+                every_secs: cadence.as_secs().max(1),
+                store_recovered_at: store_recovered_at(),
             };
             match http.post(&url).bearer_auth(token).json(&body).send().await {
                 Ok(res) if res.status().is_success() => {
+                    if let Ok(reply) = res.json::<HeartbeatReply>().await
+                        && let Some(capacity) = reply.disk_capacity_gib
+                    {
+                        crate::cloud_disk::set_capacity_gib(capacity);
+                    }
                     tracing::debug!(
                         active_runs = body.active_runs,
                         clients = body.clients,
+                        background_runs = body.background_runs,
+                        waiting_runs = body.waiting_runs,
                         "runner: heartbeat"
                     );
                 }
@@ -1165,13 +1303,40 @@ impl Drop for CloudRunner {
 mod tests {
     use super::*;
 
+    #[test]
+    fn beats_fast_while_work_runs_and_at_once_when_it_starts_or_stops() {
+        let (idle, busy) = (Duration::from_secs(60), Duration::from_secs(15));
+        let after = |secs, was| Some((Duration::from_secs(secs), was));
+        assert!(beat_due(None, false, idle, busy), "the first beat");
+        assert!(!beat_due(after(14, true), true, idle, busy));
+        assert!(beat_due(after(15, true), true, idle, busy), "busy cadence");
+        assert!(!beat_due(after(59, false), false, idle, busy));
+        assert!(beat_due(after(60, false), false, idle, busy), "idle cadence");
+        assert!(beat_due(after(1, false), true, idle, busy), "a turn started");
+        assert!(beat_due(after(1, true), false, idle, busy), "it ended");
+    }
+
+    #[test]
+    fn a_turn_parked_on_a_question_isnt_work_but_background_work_is() {
+        let counts = |active, waiting, background| RunCounts {
+            active,
+            waiting,
+            background,
+        };
+        assert!(!counts(0, 0, 0).working());
+        assert!(counts(1, 0, 0).working());
+        assert!(!counts(1, 1, 0).working());
+        assert!(counts(2, 1, 0).working());
+        assert!(counts(0, 0, 1).working());
+    }
+
     fn session_vars(name: &str) -> Option<String> {
         match name {
-            "ZERON_CLOUD_ACCOUNT" => Some("cloud-acct".into()),
-            "ZERON_CLOUD_CHAT" => Some("0123456789abcdef".into()),
-            "ZERON_CLOUD_REPO" => Some("https://github.com/acme/app.git".into()),
-            "ZERON_CLOUD_PATH" => Some("/home/user/app".into()),
-            "ZERON_CLOUD_BRANCH" => Some("main".into()),
+            "ZEND_CLOUD_ACCOUNT" => Some("cloud-acct".into()),
+            "ZEND_CLOUD_CHAT" => Some("0123456789abcdef".into()),
+            "ZEND_CLOUD_REPO" => Some("https://github.com/acme/app.git".into()),
+            "ZEND_CLOUD_PATH" => Some("/home/user/app".into()),
+            "ZEND_CLOUD_BRANCH" => Some("main".into()),
             _ => None,
         }
     }
@@ -1181,7 +1346,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session = CloudSession::resolve_with(dir.path(), session_vars).unwrap();
         assert_eq!(session.chat_id, "0123456789abcdef");
-        assert_eq!(session.session_branch(), "zeron/cloud-0123456789ab");
+        assert_eq!(session.session_branch(), "zend/cloud-0123456789ab");
         // Next boot: the systemd env is gone, the file remains.
         assert_eq!(
             CloudSession::resolve_with(dir.path(), |_| None),
@@ -1192,7 +1357,7 @@ mod tests {
         assert_eq!(CloudSession::resolve_with(laptop.path(), |_| None), None);
         // Account + chat are required.
         assert_eq!(
-            CloudSession::resolve_with(laptop.path(), |name| (name == "ZERON_CLOUD_CHAT")
+            CloudSession::resolve_with(laptop.path(), |name| (name == "ZEND_CLOUD_CHAT")
                 .then(|| "c".into())),
             None
         );
@@ -1222,15 +1387,15 @@ mod tests {
             ),
             step(
                 "branch",
-                "Couldn't check out zeron/cloud-x",
-                Some("git checkout -B zeron/cloud-x"),
+                "Couldn't check out zend/cloud-x",
+                Some("git checkout -B zend/cloud-x"),
                 Some("fatal: nope"),
                 false,
                 false,
             ),
             step(
                 "branch",
-                "Checking out zeron/cloud-y",
+                "Checking out zend/cloud-y",
                 None,
                 None,
                 true,
@@ -1241,7 +1406,7 @@ mod tests {
         let summary: Vec<(String, String, Option<String>, bool, bool, Option<String>)> = parts
             .iter()
             .map(|part| match part {
-                zeron_doc::MessagePart::Tool {
+                zend_doc::MessagePart::Tool {
                     id,
                     call,
                     output,
@@ -1249,13 +1414,13 @@ mod tests {
                     resolved,
                     ..
                 } => {
-                    let zeron_proto::ToolCall::Unknown { name, .. } = call else {
+                    let zend_proto::ToolCall::Unknown { name, .. } = call else {
                         panic!("{call:?}")
                     };
                     (
                         id.clone(),
                         name.clone(),
-                        zeron_proto::cloud_setup_step(call).map(str::to_string),
+                        zend_proto::cloud_setup_step(call).map(str::to_string),
                         *is_error,
                         *resolved,
                         output.clone(),
@@ -1296,7 +1461,7 @@ mod tests {
                 ),
                 row(
                     "m1.cloud-branch",
-                    "Couldn't check out zeron/cloud-x",
+                    "Couldn't check out zend/cloud-x",
                     "branch",
                     true,
                     true,
@@ -1304,7 +1469,7 @@ mod tests {
                 ),
                 row(
                     "m1.cloud-branch",
-                    "Checking out zeron/cloud-y",
+                    "Checking out zend/cloud-y",
                     "branch",
                     false,
                     false,
@@ -1394,7 +1559,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&head.stdout).trim(),
-            "zeron/cloud-abcdef0123"
+            "zend/cloud-abcdef0123"
         );
         // A wake or restart keeps the working tree (uncommitted work included).
         std::fs::write(path.join("notes.txt"), "work in progress").unwrap();
@@ -1402,6 +1567,17 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path.join("notes.txt")).unwrap(),
             "work in progress"
+        );
+        // A fresh machine picks up what the session pushed; a first boot has
+        // nothing to pick up.
+        assert_eq!(pushed_session_branch(&path, "zend/cloud-abcdef0123").await, None);
+        git(&origin, &["branch", "zend/cloud-abcdef0123"]);
+        git(&path, &["fetch", "-q", "origin"]);
+        assert_eq!(
+            pushed_session_branch(&path, "zend/cloud-abcdef0123")
+                .await
+                .as_deref(),
+            Some("origin/zend/cloud-abcdef0123")
         );
         // An unreachable repository fails clearly and leaves nothing behind.
         let broken = CloudSession {
@@ -1423,8 +1599,8 @@ mod tests {
         let steps: Vec<(String, bool, bool)> = parts
             .iter()
             .map(|part| match part {
-                zeron_doc::MessagePart::Tool {
-                    call: zeron_proto::ToolCall::Unknown { name, .. },
+                zend_doc::MessagePart::Tool {
+                    call: zend_proto::ToolCall::Unknown { name, .. },
                     is_error,
                     resolved,
                     ..
@@ -1439,7 +1615,7 @@ mod tests {
             [
                 step("Started a machine", false),
                 step(&format!("Cloned {origin_name}"), false),
-                step("Checked out zeron/cloud-abcdef0123", false),
+                step("Checked out zend/cloud-abcdef0123", false),
                 step("Woke the machine", false),
                 step("Started a machine", false),
                 step(
@@ -1504,17 +1680,17 @@ mod tests {
         let key = UnparsedPublicKey::new(&ED25519, public);
 
         let token = id.token_request();
-        let message = format!("zeron-runner-token\norg_1\nuser_1\ncloud-1\n{}", token.ts);
+        let message = format!("zend-runner-token\norg_1\nuser_1\ncloud-1\n{}", token.ts);
         key.verify(message.as_bytes(), &B64URL.decode(&token.sig).unwrap())
             .expect("token signature verifies");
 
         let grant = id.grant_request("codex", None);
         assert!(grant.ts > token.ts);
-        let message = format!("zeron-vault-grant\nuser_1\ncloud-1\ncodex\n{}", grant.ts);
+        let message = format!("zend-vault-grant\nuser_1\ncloud-1\ncodex\n{}", grant.ts);
         key.verify(message.as_bytes(), &B64URL.decode(&grant.sig).unwrap())
             .expect("grant signature verifies");
         // A different domain never verifies (no cross-protocol replay).
-        let forged = format!("zeron-runner-token\nuser_1\ncloud-1\ncodex\n{}", grant.ts);
+        let forged = format!("zend-runner-token\nuser_1\ncloud-1\ncodex\n{}", grant.ts);
         assert!(
             key.verify(forged.as_bytes(), &B64URL.decode(&grant.sig).unwrap())
                 .is_err()
@@ -1523,7 +1699,7 @@ mod tests {
 
     #[test]
     fn only_doing_something_keeps_a_cloud_machine_awake() {
-        use zeron_rpc::methods;
+        use zend_rpc::methods;
         for method in [
             methods::LIST_REFS,
             methods::WATCH_DOC_MESSAGES,

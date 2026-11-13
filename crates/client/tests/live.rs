@@ -1,5 +1,5 @@
 //! Live mode against an in-process edge (tests/support/mock_edge.rs): the
-//! registry through zeron-sync's mock server (the production merge fn) and a
+//! registry through zend-sync's mock server (the production merge fn) and a
 //! chat2 room speaking the real frame protocol. The test plays the host
 //! engine: it seeds registry rows through its own `RegistryClient` and
 //! answers commands by injecting Loro updates into the room.
@@ -12,17 +12,17 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use loro::{ExportMode, LoroDoc};
 use support::mock_edge::MockEdge;
-use zeron_client::events::NullListener;
-use zeron_client::{
+use zend_client::events::NullListener;
+use zend_client::{
     ChatIndicator, Client, ClientConfig, ConnectivityState, Credentials, MessageRole, SendOutcome,
     SendRequest,
 };
-use zeron_doc::{
+use zend_doc::{
     MessagePart, RegistryDoc, SessionCommandPayload, SessionCommandStatus, SessionDoc,
     SessionMessageEntry,
 };
-use zeron_proto::{Chat, ChatConfig, Device, HarnessId, SandboxLevel, Space};
-use zeron_sync::RegistryClient;
+use zend_proto::{Chat, ChatConfig, Device, HarnessId, SandboxLevel, Space};
+use zend_sync::RegistryClient;
 
 const HOST: &str = "dev-mac";
 const CHAT: &str = "chat-live";
@@ -45,7 +45,7 @@ fn host_rows(now: chrono::DateTime<Utc>) -> (Device, Space, Chat) {
         created_at: Some(now),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         cursor_sdk_version: None,
-        capabilities: zeron_client::rpc::capability::ALL_QUEUE
+        capabilities: zend_client::rpc::capability::ALL_QUEUE
             .iter()
             .map(|c| (*c).to_owned())
             .collect(),
@@ -71,7 +71,7 @@ fn host_rows(now: chrono::DateTime<Utc>) -> (Device, Space, Chat) {
         cwd: Some("/Users/dev/live".into()),
         branch: Some("main".into()),
         checkout_id: None,
-        source_context: Some(zeron_proto::ConversationSourceContext {
+        source_context: Some(zend_proto::ConversationSourceContext {
             checkout_id: "co-live".into(),
             repo_root: "/Users/dev/live".into(),
             cwd: "/Users/dev/live".into(),
@@ -124,12 +124,12 @@ impl HostRegistry {
             .await
             .unwrap();
         client.nudge();
-        client.set_presence(zeron_client_now());
+        client.set_presence(zend_client_now());
         Self { doc, client }
     }
 }
 
-fn zeron_client_now() -> i64 {
+fn zend_client_now() -> i64 {
     Utc::now().timestamp_millis()
 }
 
@@ -267,7 +267,7 @@ fn host_answers(edge: &MockEdge, host_doc: &LoroDoc) -> Option<String> {
     session
         .set_command_status(&command_id, SessionCommandStatus::Applied, None)
         .unwrap();
-    let now = zeron_client_now();
+    let now = zend_client_now();
     let entry = |id: &str, role, device: &str, text: &str| SessionMessageEntry {
         id: id.into(),
         role,
@@ -277,7 +277,7 @@ fn host_answers(edge: &MockEdge, host_doc: &LoroDoc) -> Option<String> {
         }],
         created_at: now,
         device_id: device.into(),
-        status: Some(zeron_doc::MessageStatus::Complete),
+        status: Some(zend_doc::MessageStatus::Complete),
         continuation_of: None,
         duration_ms: None,
     };
@@ -340,7 +340,7 @@ async fn session_send_round_trips_through_the_chat_room() {
     );
     assert_eq!(
         session.composer().send_state,
-        Some(zeron_client::SendState::Sending)
+        Some(zend_client::SendState::Sending)
     );
     assert_ne!(
         client.workspace().session(CHAT).unwrap().indicator,
@@ -432,7 +432,7 @@ async fn sends_survive_a_room_outage_and_deliver_on_rejoin() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(edge.rows(CHAT).is_empty(), "room refused");
     assert_eq!(session.snapshot().pending.len(), 1, "durable echo stays");
-    let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
+    let store = zend_sync::DocsStore::open(dir.path()).unwrap();
     assert!(
         store
             .sync_job_version(CHAT, "viewer-delivery")
@@ -547,21 +547,21 @@ struct HostService {
     spaces: Mutex<Vec<String>>,
 }
 
-const HOST_IMAGE: &str = "/Users/dev/.zeron/uploads/host.png";
+const HOST_IMAGE: &str = "/Users/dev/.zend/uploads/host.png";
 
 fn host_image() -> Vec<u8> {
     (0..100_000u32).map(|i| (i * 7 % 251) as u8).collect()
 }
 
 #[async_trait::async_trait]
-impl zeron_rpc::RpcService for HostService {
+impl zend_rpc::RpcService for HostService {
     async fn handle(
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<zeron_rpc::RpcReply, zeron_rpc::RpcError> {
+    ) -> Result<zend_rpc::RpcReply, zend_rpc::RpcError> {
         use serde_json::json;
-        use zeron_rpc::{RpcReply, methods as m};
+        use zend_rpc::{RpcReply, methods as m};
         let value = match method {
             m::LIST_HARNESSES => json!([
                 {"id": "claude-code", "name": "Claude Code", "supportsSteering": true,
@@ -602,7 +602,7 @@ impl zeron_rpc::RpcService for HostService {
                     .lock()
                     .unwrap()
                     .push((id.clone(), name.clone(), unb64(&data)));
-                json!({ "path": format!("/Users/dev/.zeron/uploads/{}-{name}", &id[..8]) })
+                json!({ "path": format!("/Users/dev/.zend/uploads/{}-{name}", &id[..8]) })
             }
             m::READ_ATTACHMENT_CHUNK => {
                 let offset = params["offset"].as_u64().unwrap_or(0) as usize;
@@ -632,7 +632,7 @@ impl zeron_rpc::RpcService for HostService {
                 );
                 return Ok(RpcReply::Stream(Box::pin(stream)));
             }
-            other => return Err(zeron_rpc::RpcError::UnknownMethod(other.to_owned())),
+            other => return Err(zend_rpc::RpcError::UnknownMethod(other.to_owned())),
         };
         Ok(RpcReply::Value(value))
     }
@@ -643,11 +643,11 @@ async fn host_rpcs_ride_the_device_relay() {
     let edge = MockEdge::start().await;
     let _host = HostRegistry::start(&edge).await;
     let service = Arc::new(HostService::default());
-    let _relay = zeron_rpc::HostRelay::spawn(
-        zeron_rpc::HostRelayConfig::new(
+    let _relay = zend_rpc::HostRelay::spawn(
+        zend_rpc::HostRelayConfig::new(
             edge.edge_url(),
             HOST,
-            Arc::new(zeron_rpc::StaticToken("t".into())),
+            Arc::new(zend_rpc::StaticToken("t".into())),
         ),
         service.clone(),
         Arc::new(|_| true),
@@ -665,7 +665,7 @@ async fn host_rpcs_ride_the_device_relay() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let harnesses = zeron_client::runtime::run({
+    let harnesses = zend_client::runtime::run({
         let client = client.clone();
         async move { Ok(client.list_harnesses(HOST).await) }
     })
@@ -679,7 +679,7 @@ async fn host_rpcs_ride_the_device_relay() {
 
     let c = client.clone();
     let models =
-        zeron_client::runtime::run(async move { Ok(c.list_models(HOST, "claude-code").await) })
+        zend_client::runtime::run(async move { Ok(c.list_models(HOST, "claude-code").await) })
             .await
             .unwrap();
     assert_eq!(models.len(), 1, "[1m] variant folded: {models:?}");
@@ -687,13 +687,13 @@ async fn host_rpcs_ride_the_device_relay() {
 
     let c = client.clone();
     let refs =
-        zeron_client::runtime::run(async move { c.list_refs(HOST, "/Users/dev/live").await })
+        zend_client::runtime::run(async move { c.list_refs(HOST, "/Users/dev/live").await })
             .await
             .unwrap();
     assert_eq!(refs[1].worktree_path.as_deref(), Some("/wt/live"));
 
     let c = client.clone();
-    let folders = zeron_client::runtime::run(async move { c.list_folders(HOST, None).await })
+    let folders = zend_client::runtime::run(async move { c.list_folders(HOST, None).await })
         .await
         .unwrap();
     assert!(folders.entries[0].is_repo);
@@ -704,7 +704,7 @@ async fn host_rpcs_ride_the_device_relay() {
     let seen = progress.clone();
     let c = client.clone();
     let upload = data.clone();
-    let path = zeron_client::runtime::run(async move {
+    let path = zend_client::runtime::run(async move {
         c.upload_attachment(
             HOST,
             "photo 1.png",
@@ -724,7 +724,7 @@ async fn host_rpcs_ride_the_device_relay() {
     // Chunked attachment read.
     let c = client.clone();
     let image =
-        zeron_client::runtime::run(async move { c.read_attachment(HOST, HOST_IMAGE).await })
+        zend_client::runtime::run(async move { c.read_attachment(HOST, HOST_IMAGE).await })
             .await
             .unwrap();
     assert_eq!(*image, host_image());
@@ -759,7 +759,7 @@ async fn host_rpcs_ride_the_device_relay() {
     session
         .send(SendRequest {
             text: "look at this".into(),
-            attachments: vec![zeron_client::OutgoingAttachment {
+            attachments: vec![zend_client::OutgoingAttachment {
                 name: "shot.png".into(),
                 mime_type: "image/png".into(),
                 data: vec![1, 2, 3, 4, 5],
@@ -771,7 +771,7 @@ async fn host_rpcs_ride_the_device_relay() {
     let pending = session.snapshot().pending[0].clone();
     assert_eq!(pending.visible_text, "look at this");
     let reference = pending.images[0].clone();
-    let (upload_id, name) = zeron_client::attachments::parse_pending_ref(&reference).unwrap();
+    let (upload_id, name) = zend_client::attachments::parse_pending_ref(&reference).unwrap();
     let (upload_id, name) = (upload_id.to_owned(), name.to_owned());
     let start = Instant::now();
     loop {
@@ -794,12 +794,151 @@ async fn host_rpcs_ride_the_device_relay() {
     // New project: asked of the owning host (Mutate createSpace).
     let c = client.clone();
     let space_id =
-        zeron_client::runtime::run(
+        zend_client::runtime::run(
             async move { c.create_project(HOST, "/Users/dev/new", true).await },
         )
         .await
         .unwrap();
     assert!(service.spaces.lock().unwrap().contains(&space_id));
+    client.shutdown();
+}
+
+/// A chat on a branch keeps a PR-status watch on its host. With the host offline that
+/// watch used to dial its device room every few seconds for as long as the app was in
+/// front, and a phone with several such chats never stopped. It waits on presence now:
+/// no dial while the host is away, a dial the moment it beats, and the PR it last
+/// showed stays on screen after the host goes again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pr_watch_waits_for_its_hosts_presence_instead_of_dialing() {
+    async fn until(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+        let start = Instant::now();
+        while !f() {
+            assert!(start.elapsed() < Duration::from_secs(secs), "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    let pr = |client: &Client| {
+        client
+            .workspace()
+            .session(CHAT)
+            .and_then(|r| r.pull_request.clone())
+            .map(|pr| pr.number)
+    };
+
+    let edge = MockEdge::start().await;
+    // The host's rows are in the registry, but it never beats and has no engine up.
+    let doc = Arc::new(Mutex::new(RegistryDoc::new(HOST)));
+    {
+        let (device, space, chat) = host_rows(Utc::now());
+        let mut doc = doc.lock().unwrap();
+        doc.upsert_device(&device).unwrap();
+        doc.upsert_space(&space).unwrap();
+        doc.upsert_chat(&chat).unwrap();
+    }
+    let host = RegistryClient::connect(&edge.registry.url(), doc.clone(), HOST)
+        .await
+        .unwrap();
+    host.nudge();
+    let dir = tempfile::tempdir().unwrap();
+    let client = phone(&edge, dir.path());
+    until("the chat to list", 10, || client.workspace().session(CHAT).is_some()).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(edge.relay_client_dials(HOST), 0, "dialed a host with no presence");
+
+    // The host comes up and beats: the watch dials straight away.
+    let relay = zend_rpc::HostRelay::spawn(
+        zend_rpc::HostRelayConfig::new(
+            edge.edge_url(),
+            HOST,
+            Arc::new(zend_rpc::StaticToken("t".into())),
+        ),
+        Arc::new(HostService::default()),
+        Arc::new(|_| true),
+    );
+    until("the host's relay", 10, || edge.relay_host_connected(HOST)).await;
+    let beat = Instant::now();
+    host.set_presence(zend_client_now());
+    until("the PR status", 10, || pr(&client) == Some(7)).await;
+    assert!(
+        beat.elapsed() < Duration::from_secs(3),
+        "the watch waited {:?} after the host's beat",
+        beat.elapsed()
+    );
+
+    // The host goes away: its engine stops, and its last beat ages past fresh.
+    drop(relay);
+    host.set_presence(zend_client_now() - 60_000);
+    until("the host to read offline", 10, || {
+        client.workspace().device(HOST).is_some_and(|d| !d.online)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let settled = edge.relay_client_dials(HOST);
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(
+        edge.relay_client_dials(HOST),
+        settled,
+        "kept dialing a host that went offline"
+    );
+    assert_eq!(pr(&client), Some(7), "the PR left the chat with its host");
+    client.shutdown();
+}
+
+/// Launched with no network, a phone used to dial its registry and its warm rooms before
+/// the OS's first path report parked them: 22 refused dials and pulls in 120 ms on a real
+/// iPhone in airplane mode. It waits for that first report now.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_with_no_network_dials_nothing_until_the_network_comes_back() {
+    let edge = MockEdge::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = phone(&edge, dir.path());
+    // The OS's first report lands a moment after launch: no network.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.set_network_online(false);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(edge.connections(), 0, "dialed with no network");
+
+    let back = Instant::now();
+    client.set_network_online(true);
+    while edge.connections() == 0 {
+        assert!(back.elapsed() < Duration::from_secs(2), "didn't dial once the network was back");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    client.shutdown();
+}
+
+/// The wait on the first path report mustn't slow an online launch: it dials as soon as
+/// the report says there's a network, and a platform that never reports loses at most
+/// the patience.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_online_launch_dials_as_soon_as_the_network_is_reported() {
+    let edge = MockEdge::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let start = Instant::now();
+    let client = phone(&edge, dir.path());
+    client.set_network_online(true);
+    while edge.connections() == 0 {
+        assert!(start.elapsed() < Duration::from_secs(2), "never dialed");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let reported = start.elapsed();
+    assert!(reported < Duration::from_millis(150), "an online launch waited {reported:?}");
+    client.shutdown();
+
+    let edge = MockEdge::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let start = Instant::now();
+    let client = phone(&edge, dir.path());
+    while edge.connections() == 0 {
+        assert!(start.elapsed() < Duration::from_secs(2), "never dialed without a report");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let unreported = start.elapsed();
+    assert!(
+        unreported < Duration::from_millis(1400),
+        "a platform that never reports waited {unreported:?}"
+    );
+    eprintln!("first dial: reported online {reported:?}, never reported {unreported:?}");
     client.shutdown();
 }
 
@@ -815,8 +954,8 @@ async fn phone_born_sessions_reach_the_host_before_their_first_command() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let chat_id = client
-        .create_session(zeron_client::NewSession {
-            target: zeron_client::SessionTarget::Project {
+        .create_session(zend_client::NewSession {
+            target: zend_client::SessionTarget::Project {
                 space_id: SPACE.into(),
             },
             config: None,
@@ -870,7 +1009,7 @@ async fn acked_command_recovers_failed_host_wake_without_opening_the_chat() {
     session
         .send(SendRequest::text("wake the cold host"))
         .unwrap();
-    let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
+    let store = zend_sync::DocsStore::open(dir.path()).unwrap();
     let start = Instant::now();
     while edge.rows(CHAT).is_empty() || store.has_pending_chat_updates(CHAT).unwrap() {
         assert!(start.elapsed() < Duration::from_secs(10));
@@ -927,7 +1066,7 @@ async fn a_refused_host_wake_settles_instead_of_retrying_forever() {
     session
         .send(SendRequest::text("to a foreign host"))
         .unwrap();
-    let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
+    let store = zend_sync::DocsStore::open(dir.path()).unwrap();
     let start = Instant::now();
     while edge.rows(CHAT).is_empty()
         || store.has_pending_chat_updates(CHAT).unwrap()
@@ -975,8 +1114,8 @@ async fn immediate_exit_after_first_send_recovers_new_chat_on_each_host_platform
         let client = phone(&edge, dir.path());
         await_chat(&client, CHAT).await;
         let chat = client
-            .create_session(zeron_client::NewSession {
-                target: zeron_client::SessionTarget::Project {
+            .create_session(zend_client::NewSession {
+                target: zend_client::SessionTarget::Project {
                     space_id: SPACE.into(),
                 },
                 config: Some(ChatConfig {
@@ -1001,9 +1140,9 @@ async fn immediate_exit_after_first_send_recovers_new_chat_on_each_host_platform
             panic!()
         };
         // No background flush, debounce sleep, or incoming host acknowledgement.
-        let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
+        let store = zend_sync::DocsStore::open(dir.path()).unwrap();
         let bytes = store
-            .load_snapshot(zeron_doc::REGISTRY_DOC_ID)
+            .load_snapshot(zend_doc::REGISTRY_DOC_ID)
             .unwrap()
             .unwrap();
         let saved = RegistryDoc::from_bytes(&bytes, "ios-live").unwrap();
@@ -1022,7 +1161,7 @@ async fn immediate_exit_after_first_send_recovers_new_chat_on_each_host_platform
             restarted.workspace().session(&chat).is_some(),
             "{platform}: new registry row was not durable"
         );
-        let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
+        let store = zend_sync::DocsStore::open(dir.path()).unwrap();
         let start = Instant::now();
         while edge.rows(&chat).is_empty()
             || edge.nudges(&chat) == 0
@@ -1094,7 +1233,7 @@ async fn stalled_wakes_yield_delivery_capacity_to_later_chats() {
         .unwrap()
         .send(SendRequest::text("healthy destination"))
         .unwrap();
-    let store = zeron_sync::DocsStore::open(dir.path()).unwrap();
+    let store = zend_sync::DocsStore::open(dir.path()).unwrap();
     let start = Instant::now();
     while edge.nudges("z-healthy") == 0
         || store

@@ -3,8 +3,8 @@
 use std::{collections::HashMap, time::Duration};
 
 use gpui::{App, Context, Entity, Global, Task, WeakEntity, prelude::*};
-use zeron_proto::{CheckoutGitStatus, GitFileState, GitFileStatus, WatchWorkspaceFilesRequest};
-use zeron_rpc::{RpcError, methods};
+use zend_proto::{CheckoutGitStatus, GitFileState, GitFileStatus, WatchWorkspaceFilesRequest};
+use zend_rpc::{RpcError, methods};
 
 use super::{
     FilesSurface,
@@ -204,7 +204,7 @@ impl GitStatusSource {
                                     .spawn(async move {
                                         let snapshot =
                                             serde_json::from_value::<
-                                                zeron_proto::WorkspaceGitStatusFrame,
+                                                zend_proto::WorkspaceGitStatusFrame,
                                             >(value)
                                             .ok()
                                             .and_then(|frame| frame.status);
@@ -317,7 +317,7 @@ impl FilesSurface {
         };
         let device = chat.device_id.clone();
         // A shared source must survive the first consuming chat disappearing.
-        context.target = zeron_proto::WorkspaceTarget {
+        context.target = zend_proto::WorkspaceTarget {
             chat_id: None,
             space_id: Some(space.clone()),
             checkout_path: Some(context.cwd.clone()),
@@ -362,7 +362,7 @@ fn accepts(context: &FilesRequestContext, device: &str, snapshot: &CheckoutGitSt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::GitFileState::*;
+    use zend_proto::GitFileState::*;
 
     fn file(path: &str, index: GitFileState, worktree: GitFileState) -> GitFileStatus {
         GitFileStatus {
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn remote_identity_and_checkout_must_both_match() {
         let context = FilesRequestContext {
-            target: zeron_proto::WorkspaceTarget {
+            target: zend_proto::WorkspaceTarget {
                 chat_id: Some("chat".into()),
                 space_id: None,
                 checkout_path: None,

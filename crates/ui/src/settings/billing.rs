@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
-use zeron_proto::{BillingLink, BillingPlan, BillingStatus};
-use zeron_rpc::methods;
+use zend_proto::{BillingLink, BillingPlan, BillingStatus};
+use zend_rpc::methods;
 
 use crate::popover::{self, Loadable};
 use crate::settings::search::{SearchAnchor, SettingId};
@@ -304,10 +304,10 @@ fn short_date(ms: i64) -> String {
         .unwrap_or_default()
 }
 
-/// "about 750 hours" of the default machine.
+/// "about 750 small-machine hours": a credit is a minute of a small machine.
 fn hours(credits: f64) -> String {
     format!(
-        "about {} hours",
+        "about {} small-machine hours",
         crate::cloud::group_number((credits / 60.0).round())
     )
 }
@@ -940,7 +940,7 @@ impl Render for BillingPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeron_proto::{BillingCredits, BillingPack, BillingSubscription};
+    use zend_proto::{BillingCredits, BillingPack, BillingSubscription};
 
     fn status(plan: Option<&str>, extra: f64, cancel: bool) -> BillingStatus {
         let plans = vec![
@@ -991,7 +991,7 @@ mod tests {
     fn prices_and_changes_read_naturally() {
         assert_eq!(format_price(2000), "$20");
         assert_eq!(format_price(1250), "$12.50");
-        assert_eq!(hours(45000.0), "about 750 hours");
+        assert_eq!(hours(45000.0), "about 750 small-machine hours");
         let before = status(None, 0.0, false);
         let bought = status(None, 24000.0, false);
         assert_eq!(

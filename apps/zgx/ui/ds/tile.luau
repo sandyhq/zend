@@ -2,16 +2,21 @@
 -- 50). One tile wherever a project shows: the sidebar, a dropdown, the
 -- composer's project.
 --
--- `Tile { label = "Zeron", hue = "violet", size = 18 }`; `inside` puts a
+-- `Tile { label = "Zend", hue = "violet", size = 18 }`; `inside` puts a
 -- glyph where the initial goes (pinned's pin), and `hue` may be nil for a
 -- neutral tile (a quiet wash, the glyph in secondary ink). `src` is the
 -- project's own artwork (an image its people chose, else its favicon, as
--- Zeron finds it in the checkout): shown whole in the tile's place, clipped
+-- Zend finds it in the checkout): shown whole in the tile's place, clipped
 -- to its corner. `emoji` is a picture its people chose: the emoji in the
 -- middle, an even inset all round, on a soft wash of its hue (none: the
 -- neutral wash). Artwork wins over an emoji, an emoji over the initial.
 -- `label`, `hue`, `src` and `emoji` may be functions (the tile of a choice
 -- that changes): the tile follows them in place.
+--
+-- `project`: the project's id (or a function giving it), where the tile is a
+-- project's: then it's `.project-icon`, a stable element plugins may replace
+-- (`ui.change`), its box giving `project` (the id) to what replaces it. Its
+-- look is the same either way.
 
 export type Props = {
 	label: (string | Message | () -> string?)?,
@@ -20,6 +25,7 @@ export type Props = {
 	inside: Node?,
 	src: (string | () -> string?)?,
 	emoji: (string | () -> string?)?,
+	project: (string | () -> string?)?,
 }
 
 -- Its corner grows a step with it: a sidebar's 18 takes the small radius,
@@ -47,7 +53,7 @@ local function read(v: (string | () -> string?)?): string?
 	return v :: string?
 end
 
-return function(props: Props): Node
+local function tile(props: Props): Node
 	local size = props.size or 18
 	local radius = corner(size)
 	local function artwork(): Node
@@ -80,7 +86,7 @@ return function(props: Props): Node
 			relative = true,
 			items = "center",
 			justify = "center",
-			bg = "$zeron.secondary.bg",
+			bg = "$zend.secondary.bg",
 			-- (The hue's own wash over the neutral one, so either theme's
 			-- page shows through the same.)
 			ui.div {
@@ -128,10 +134,10 @@ return function(props: Props): Node
 			bg = if type(hue) == "function"
 				then function(): string
 					local h = hue()
-					return if h then `$palette.{h}.500` else "$zeron.secondary.bg"
+					return if h then `$palette.{h}.500` else "$zend.secondary.bg"
 				end
 				elseif hue then `$palette.{hue}.500`
-				else "$zeron.secondary.bg",
+				else "$zend.secondary.bg",
 			color = if type(hue) == "function"
 				then function(): string
 					local h = hue()
@@ -171,4 +177,35 @@ return function(props: Props): Node
 		return emoji()
 	end
 	return hued()
+end
+
+return function(props: Props): Node
+	local project = props.project
+	if project == nil then
+		return tile(props)
+	end
+	-- A project's: `.project-icon`, in a box of its size giving its project
+	-- (on the box, not on it: a plugin's replacement reads what's given
+	-- above what it replaces). Both boxes are the tile's size: nothing moves.
+	local size = props.size or 18
+	return ui.div {
+		w = size,
+		h = size,
+		shrink = 0,
+		-- (A tile whose project changes: given as a state, followed.)
+		provide = {
+			project = if type(project) == "function"
+				then ui.computed(function(): string?
+					return (project :: () -> string?)()
+				end)
+				else project,
+		},
+		ui.div {
+			class = "project-icon",
+			w = size,
+			h = size,
+			shrink = 0,
+			tile(props),
+		},
+	}
 end

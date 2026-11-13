@@ -12,7 +12,7 @@
 -- given, so a card with only those is complete.
 --
 -- It is the same in either theme (a printed object): its colours, type and
--- shadow are `zeron.card.*` tokens.
+-- shadow are `zend.card.*` tokens.
 
 -- A badge: what a member has done or been, as a pill in the card's own
 -- language (mono, as its number and date), led by one of the intro's
@@ -69,7 +69,7 @@ export type Props = {
 	-- adds up; and the system's Reduce motion asks for it on every card.
 	-- The card itself still tilts toward the pointer.
 	still: boolean?,
-	-- Its shadow, in place of the card's own (`zeron.card.shadow`): a wall of
+	-- Its shadow, in place of the card's own (`zend.card.shadow`): a wall of
 	-- cards on a dark window gives each none, where the shadows of many
 	-- pooled into a dark halo round every column.
 	shadow: string?,
@@ -232,7 +232,7 @@ end
 local function mono(text: string, size: string, color: string, spacing: number?, weight: string?): Node
 	return ui.text {
 		text,
-		font = "$zeron.card.mono",
+		font = "$zend.card.mono",
 		text_size = size,
 		weight = weight,
 		letter_spacing = spacing,
@@ -243,16 +243,16 @@ end
 -- A badge pill.
 local function badge(b: Badge): Node
 	local style = b.style or "ink"
-	local ink = if style == "ink" then "$zeron.card.light" else "$zeron.card.ink"
+	local ink = if style == "ink" then "$zend.card.light" else "$zend.card.ink"
 	return ui.row {
 		h = 20,
 		px = "$space.2",
 		gap = "$space.1",
 		items = "center",
 		rounded = "$radius.full",
-		bg = if style == "ink" then "$zeron.card.pill" else nil,
+		bg = if style == "ink" then "$zend.card.pill" else nil,
 		border = if style == "outline" then 1 else nil,
-		border_color = if style == "outline" then "$zeron.card.rule" else nil,
+		border_color = if style == "outline" then "$zend.card.rule" else nil,
 		gradient = if style == "foil"
 			then { angle = 120, stops = { "#c9d6ffcc", "#efd0f2cc", "#ffe0c6cc", "#cdf1e6cc" } }
 			else nil,
@@ -266,8 +266,8 @@ local function badge(b: Badge): Node
 				justify = "center",
 				ui.text {
 					b.glyph,
-					font = "$zeron.card.mono",
-					text_size = "$zeron.card.size.badge",
+					font = "$zend.card.mono",
+					text_size = "$zend.card.size.badge",
 					line_height = 12,
 					weight = "$font.weight.medium",
 					color = ink,
@@ -276,8 +276,8 @@ local function badge(b: Badge): Node
 			else nil,
 		ui.text {
 			string.upper(b.label),
-			font = "$zeron.card.mono",
-			text_size = "$zeron.card.size.badge",
+			font = "$zend.card.mono",
+			text_size = "$zend.card.size.badge",
 			line_height = 12,
 			weight = "$font.weight.medium",
 			letter_spacing = 1,
@@ -498,13 +498,13 @@ return ui.component(function(props: Props): Node
 	local card = ui.overlay {
 		w = W,
 		h = H,
-		rounded = "$zeron.card.radius",
+		rounded = "$zend.card.radius",
 		overflow = "hidden",
 		-- No fill of its own: the sky covers it and the paper rises over the
 		-- sky, so each corner is drawn once (a paper fill under the sky, on the
 		-- same curve, showed through its edge as a pale fringe).
 		border = 1,
-		border_color = "$zeron.card.edge",
+		border_color = "$zend.card.edge",
 		ref = card_el,
 		-- Its tilt toward the pointer: springs on the pointer's place, each
 		-- way up to TILT degrees at the card's edge; at rest exactly none,
@@ -566,20 +566,20 @@ return ui.component(function(props: Props): Node
 			ui.row {
 				items = "center",
 				ui.text {
-					"zeron",
+					"zend",
 					font = "$font.sans",
 					weight = "$font.weight.bold",
-					text_size = "$zeron.card.size.mark",
-					color = "$zeron.card.light",
+					text_size = "$zend.card.size.mark",
+					color = "$zend.card.light",
 					grow = 1,
 				},
 				ui.div {
 					h = 22,
 					px = "$space.2",
 					rounded = "$radius.full",
-					bg = "$zeron.card.pill",
+					bg = "$zend.card.pill",
 					justify = "center",
-					mono(numbered(props.number), "$zeron.card.size.number", "$zeron.card.light", 1),
+					mono(numbered(props.number), "$zend.card.size.number", "$zend.card.light", 1),
 				},
 			},
 			ui.div { grow = 1 },
@@ -589,12 +589,12 @@ return ui.component(function(props: Props): Node
 				props.name,
 				font = "$font.sans",
 				weight = "$font.weight.semibold",
-				text_size = "$zeron.card.size.name",
+				text_size = "$zend.card.size.name",
 				letter_spacing = -1,
-				color = "$zeron.card.ink",
+				color = "$zend.card.ink",
 			},
 			if props.tagline
-				then ui.div { mt = "$space.1", mono(string.upper(props.tagline), "$zeron.card.size.tagline", "$zeron.card.muted", 3) }
+				then ui.div { mt = "$space.1", mono(string.upper(props.tagline), "$zend.card.size.tagline", "$zend.card.muted", 3) }
 				else nil,
 			-- The day they joined, in a pill as the number is.
 			ui.div {
@@ -603,9 +603,9 @@ return ui.component(function(props: Props): Node
 				h = 22,
 				px = "$space.2",
 				rounded = "$radius.full",
-				bg = "$zeron.card.pill",
+				bg = "$zend.card.pill",
 				justify = "center",
-				mono(props.since, "$zeron.card.size.number", "$zeron.card.light", 1),
+				mono(props.since, "$zend.card.size.number", "$zend.card.light", 1),
 			},
 		},
 		-- The foil, over everything, while the pointer is on the card: lit
@@ -655,8 +655,8 @@ return ui.component(function(props: Props): Node
 		ui.div {
 			w = W,
 			h = H,
-			shadow = props.shadow or "$zeron.card.shadow",
-			rounded = "$zeron.card.radius",
+			shadow = props.shadow or "$zend.card.shadow",
+			rounded = "$zend.card.radius",
 			relative = true,
 			opacity = function(): number
 				return if arrived:get() then 1 else 0
@@ -710,8 +710,8 @@ return ui.component(function(props: Props): Node
 		if props.art_number and props.art_title and props.finish
 			then mono(
 				`{string.format("%02d", props.art_number :: number)} — {props.art_title} · {props.finish}`,
-				"$zeron.card.size.caption",
-				"$zeron.card.caption",
+				"$zend.card.size.caption",
+				"$zend.card.caption",
 				3
 			)
 			else nil,

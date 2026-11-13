@@ -8,7 +8,7 @@
 -- Every session's pull request is followed (as watch.luau hears it move),
 -- not only the rows showing.
 --
--- What each was is kept (`zeron.store`), and a pull request first seen (at
+-- What each was is kept (`zend.store`), and a pull request first seen (at
 -- launch, a new session, a reload) is only noted: nothing old rings.
 
 type Seen = { number: number, state: string, review: string?, asked: boolean?, ci: string? }
@@ -39,8 +39,8 @@ local function news(was: Seen, now: Seen): string?
 	return nil
 end
 
-return function(zeron: any, watch: any)
-	local seen = zeron.store("pr_seen", {} :: { [string]: Seen })
+return function(zend: any, watch: any)
+	local seen = zend.store("pr_seen", {} :: { [string]: Seen })
 
 	-- Sessions `ids`' pull requests as they stand, each compared with what
 	-- it was: said if worth saying, kept either way.
@@ -65,9 +65,9 @@ return function(zeron: any, watch: any)
 					-- (First seen, or another pull request: noted, never said.)
 					local said = if was and was.number == now.number then news(was, now) else nil
 					if said then
-						local session = zeron.context_of("session", id) or {}
-						zeron.notify({
-							title = zeron.s("notices.title", { number = now.number, said = zeron.s(`notices.{said}`) }),
+						local session = zend.context_of("session", id) or {}
+						zend.notify({
+							title = zend.s("notices.title", { number = now.number, said = zend.s(`notices.{said}`) }),
 							body = session.title or pr.title or "",
 							session = id,
 						})
@@ -88,7 +88,7 @@ return function(zeron: any, watch: any)
 	-- And what the engine tells of those it watches, as it moves (one
 	-- effect, here at the top).
 	ui.effect(function()
-		local ok, all = pcall(zeron.github.heard)
+		local ok, all = pcall(zend.github.heard)
 		local ids: { string } = {}
 		for id, pr in (if ok and type(all) == "table" then all else {}) do
 			if type(pr) == "table" then

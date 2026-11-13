@@ -1,9 +1,9 @@
--- What a person sent, as Zeron's transcript shows it (transcript.rs,
+-- What a person sent, as Zend's transcript shows it (transcript.rs,
 -- `render_user_body`): a bubble of the soft wash at the right, no wider than
 -- four fifths of the column, its text the reply's size.
 --
 -- A long message folds to five lines. Its foot fades out over the last line
--- and a half rather than cutting a line in two (Zeron's #1089), and "Show
+-- and a half rather than cutting a line in two (Zend's #1089), and "Show
 -- more" under it opens it: the bubble's height eases to the whole text,
 -- which is laid out all along behind the clip, so nothing rewraps as it
 -- opens. Whether it folds is measured, not guessed from its length: a
@@ -18,6 +18,7 @@
 -- `UserMessage { id = "…", text = "…" }`.
 
 local Icon = require("@self/icon")
+local Mark = require("@self/mark")
 local Lightbox = require("@self/lightbox")
 local ReplyPicture = require("@self/reply_picture")
 local Markdown = require("@self/markdown")
@@ -28,7 +29,9 @@ local locale = require("@self/locale")
 -- its name and what it is).
 -- (`appshot`: a picture that is an Appshot, the app it shows and its
 -- window's title: the card says so under it.)
-export type Attachment = { kind: "image" | "file", name: string, src: string?, meta: string?, icon: string?, appshot: { app: string, title: string?, bundle: string? }? }
+-- (`chat`: another chat attached, its id and its agent's mark: a card that
+-- opens it, as the composer showed it, not a mention in the words.)
+export type Attachment = { kind: "image" | "file" | "chat", name: string, src: string?, meta: string?, icon: string?, chat: string?, mark: string?, appshot: { app: string, title: string?, bundle: string? }? }
 -- (`open`: what opens a link in it that isn't the web's, as a file mention.)
 -- (`pictures`: where its pictures' paths show from: a chat on another
 -- device reads them from there, screens/chat/reply_images'
@@ -53,10 +56,33 @@ export type Props = {
 	find: any?,
 }
 
+-- What a prompt carries, by the name its words give each (an `@`
+-- reference: "(attachment: <name>)", ds/markdown `attached`): each chip's
+-- name, and each review comment's place (its chip names how many, its
+-- places in `meta`).
+local function attached_by_name(list: { Attachment }?): { [string]: { kind: string, icon: string? } }?
+	if not list or #list == 0 then
+		return nil
+	end
+	local out: { [string]: { kind: string, icon: string? } } = {}
+	for _, a in list do
+		out[a.name] = { kind = a.kind, icon = a.icon }
+		if a.icon == "chat-round-line" and a.meta then
+			for place in string.gmatch(a.meta, "[^,]+") do
+				local p = string.match(place, "^%s*(.-)%s*$")
+				if p and p ~= "" then
+					out[p] = { kind = "comment", icon = a.icon }
+				end
+			end
+		end
+	end
+	return out
+end
+
 -- The messages opened, by id: every bubble's, outside any of them.
 local OPENED = ui.state("user_message_opened", {} :: { [string]: boolean })
 
--- An image, as a thumbnail cropped to Zeron's size, in a hairline frame
+-- An image, as a thumbnail cropped to Zend's size, in a hairline frame
 -- (a light image on a light window would otherwise lose its edge). The box
 -- clips it to its corners, not the image: zgx's image drops its own rounded
 -- clip when `cover` crops it top and bottom (a portrait image). A click (or
@@ -90,17 +116,17 @@ local function thumb(a: Attachment, source: () -> (string, boolean), group: stri
 		group = group,
 		index = index,
 		items = images,
-		radius = ui.theme.get("zeron.prose.thumb.radius") :: number,
+		radius = ui.theme.get("zend.prose.thumb.radius") :: number,
 		label = locale.t("ds.user_message.open_named", { name = a.name }),
 		tooltip = a.name,
-		w = "$zeron.prose.thumb.w",
-		h = "$zeron.prose.thumb.h",
+		w = "$zend.prose.thumb.w",
+		h = "$zend.prose.thumb.h",
 		shrink = 0,
-		rounded = "$zeron.prose.thumb.radius",
+		rounded = "$zend.prose.thumb.radius",
 		ui.overlay {
 			w_full = true,
 			h_full = true,
-			rounded = "$zeron.prose.thumb.radius",
+			rounded = "$zend.prose.thumb.radius",
 			overflow = "hidden",
 			border = 1,
 			border_color = "$border",
@@ -141,17 +167,30 @@ end
 -- Bubbles without an id: lightbox groups of their own.
 local unnamed = 0
 
--- A file: its glyph on a small tile, its name over what it is.
-local function chip(a: Attachment): Node
+-- A file: its glyph on a small tile, its name over what it is. A chat
+-- attached: its agent's mark on the tile (the side chat's glyph if it has
+-- none), its title, and a press opens it (`open`, as its link would).
+local function chip(a: Attachment, open: ((target: string) -> ())?): Node
+	local chat = a.kind == "chat" and a.chat or nil
+	local glyph = if a.kind == "chat"
+		then (if a.mark then Mark { name = a.mark, size = 18, bare = true } else Icon { name = "side-chat", size = 18 })
+		else Icon { name = (a.icon or "document") :: any, size = 18 }
 	return ui.row {
+		role = if chat and open then "button" else nil,
+		cursor = if chat and open then "pointer" else nil,
+		on_press = if chat and open
+			then function()
+				(open :: (string) -> ())(`zend-chat:{chat}`)
+			end
+			else nil,
 		h = 56,
 		max_w = 260,
 		pl = "$space.3",
 		pr = "$space.4",
 		gap = "$space.3",
 		items = "center",
-		rounded = "$zeron.prose.thumb.radius",
-		bg = "$zeron.prose.bubble.bg",
+		rounded = "$zend.prose.thumb.radius",
+		bg = "$zend.prose.bubble.bg",
 		label = a.name,
 		ui.row {
 			w = 36,
@@ -162,12 +201,12 @@ local function chip(a: Attachment): Node
 			rounded = "$radius.lg",
 			bg = "$hover",
 			color = "$text.secondary",
-			Icon { name = (a.icon or "document") :: any, size = 18 },
+			glyph,
 		},
 		ui.column {
 			min_w = 0,
 			grow = 1,
-			gap = "$zeron.space.hair",
+			gap = "$zend.space.hair",
 			FadeText { a.name, literal = true, text_size = "$font.size.md", color = "$text.primary", weight = "$font.weight.medium" },
 			if a.meta
 				then ui.text { a.meta, literal = true, text_size = "$font.size.xs", color = "$text.tertiary" }
@@ -197,7 +236,7 @@ return ui.component(function(props: Props): Node
 		end
 	end
 	local body = ui.ref()
-	local line = ui.theme.get("zeron.prose.line") :: number
+	local line = ui.theme.get("zend.prose.line") :: number
 	local folded_h = LINES * line
 	-- Folds when the whole text is taller than five lines (half a point
 	-- over for rounding); `long` once measured so.
@@ -245,7 +284,9 @@ return ui.component(function(props: Props): Node
 				local at, own = source(n, a)
 				local p = if pictures and not own then pictures.resolve(at) else nil
 				local src = if p and p.state == "ready" and p.src then p.src else at
-				table.insert(out, { src = src, name = a.name, path = if string.sub(src, 1, 1) == "/" then src else nil })
+				-- (A file here by its whole path: a Mac's `/…` or Windows' `C:\…`.)
+				local whole = string.sub(src, 1, 1) == "/" or string.match(src, "^%a:[\\/]") ~= nil
+				table.insert(out, { src = src, name = a.name, path = if whole then src else nil })
 			end
 		end
 		return out
@@ -267,8 +308,8 @@ return ui.component(function(props: Props): Node
 				-- An Appshot: its picture over "{App} · Appshot" and the
 				-- window's title (the shipping app's card).
 				table.insert(attachments, ui.column {
-					w = "$zeron.prose.thumb.w",
-					gap = "$zeron.space.hair",
+					w = "$zend.prose.thumb.w",
+					gap = "$zend.space.hair",
 					shrink = 0,
 					label = locale.t("ds.user_message.appshot_label", { app = shot.app, title = shot.title or shot.app }),
 					thumb(a, from, group, images, shown, pictures),
@@ -279,7 +320,7 @@ return ui.component(function(props: Props): Node
 				table.insert(attachments, thumb(a, from, group, images, shown, pictures))
 			end
 		else
-			table.insert(attachments, chip(a))
+			table.insert(attachments, chip(a, props.open))
 		end
 	end
 	return ui.column {
@@ -288,7 +329,7 @@ return ui.component(function(props: Props): Node
 		gap = "$space.2",
 		role = "article",
 		label = locale.t("ds.user_message.you"),
-		-- What came with it rides above the words, at the right, as Zeron's do
+		-- What came with it rides above the words, at the right, as Zend's do
 		-- (not part of a selection of the words: it isn't what was said).
 		if #attachments > 0
 			then ui.row { selectable = false, max_w = "80%", flex_wrap = true, justify = "end", gap = "$space.2", attachments }
@@ -297,9 +338,9 @@ return ui.component(function(props: Props): Node
 			min_w = 0,
 			max_w = "80%",
 			px = "$space.4",
-			py = "$zeron.space.snug",
-			rounded = "$zeron.prose.bubble.radius",
-			bg = "$zeron.prose.bubble.bg",
+			py = "$zend.space.snug",
+			rounded = "$zend.prose.bubble.radius",
+			bg = "$zend.prose.bubble.bg",
 			-- The clip over the whole text: five lines while folded, fading at
 			-- its foot; open, as tall as the text, the space easing between.
 			ui.column {
@@ -319,7 +360,7 @@ return ui.component(function(props: Props): Node
 					ref = body,
 					w_full = true,
 					shrink = 0,
-					Markdown { text = props.text, breaks = true, open = props.open, link_menu = props.link_menu, find = props.find },
+					Markdown { text = props.text, breaks = true, open = props.open, link_menu = props.link_menu, find = props.find, attached = attached_by_name(props.attachments) },
 				},
 			},
 			-- The way to open it: a plain link under the text, at its left

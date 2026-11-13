@@ -33,7 +33,7 @@ local function while_on(key: string, props: any): Node
 		ui.div {
 			w_full = true,
 			opacity = function()
-				return if activity.on:get() then 1 else "$zeron.disabled"
+				return if activity.on:get() then 1 else "$zend.disabled"
 			end,
 			disabled = function()
 				return not activity.on:get()

@@ -9,7 +9,9 @@
 -- (28). `tone`: `normal` (the secondary ink) or `quiet` (the tertiary,
 -- for controls that sit among content and shouldn't draw the eye) or
 -- `danger` (quiet, turning to the danger's wash and ink under the pointer:
--- a delete among other actions).
+-- a delete among other actions) or `bar` (the secondary ink, held under the
+-- pointer and pressed, the wash alone coming: a title bar's controls, as
+-- Zend's, whose glyphs never brighten).
 -- `lit` (a boolean, state or function) holds it lit while what it opens
 -- is open. `tooltip_side` moves the tooltip off whatever it would cover
 -- (`"bottom"` in a bar at the top of something). Children, if given, take
@@ -26,7 +28,7 @@ local recipe = ui.variants {
 		items = "center",
 		justify = "center",
 		p = 0,
-		rounded = "$zeron.icon_button.radius",
+		rounded = "$zend.icon_button.radius",
 		bg = "#00000000",
 		cursor = "pointer",
 		hover = { bg = "$hover", color = "$text.primary" },
@@ -35,9 +37,9 @@ local recipe = ui.variants {
 	},
 	variants = {
 		size = {
-			sm = { w = "$zeron.icon_button.sm", h = "$zeron.icon_button.sm" },
-			md = { w = "$zeron.icon_button.md", h = "$zeron.icon_button.md" },
-			lg = { w = "$zeron.icon_button.lg", h = "$zeron.icon_button.lg" },
+			sm = { w = "$zend.icon_button.sm", h = "$zend.icon_button.sm" },
+			md = { w = "$zend.icon_button.md", h = "$zend.icon_button.md" },
+			lg = { w = "$zend.icon_button.lg", h = "$zend.icon_button.lg" },
 		},
 		tone = {
 			normal = { color = "$text.secondary" },
@@ -46,24 +48,30 @@ local recipe = ui.variants {
 			-- the danger's wash and ink (a menu's destructive row's).
 			danger = {
 				color = "$text.tertiary",
-				hover = { bg = "$zeron.menu.danger", color = "$danger" },
-				active = { bg = "$zeron.menu.danger", color = "$danger" },
+				hover = { bg = "$zend.menu.danger", color = "$danger" },
+				active = { bg = "$zend.menu.danger", color = "$danger" },
+			},
+			bar = {
+				color = "$zend.bar.ink",
+				hover = { bg = "$zend.bar.hover", color = "$zend.bar.ink" },
+				active = { bg = "$zend.bar.pressed", color = "$zend.bar.ink" },
 			},
 		},
 		-- Lit: what it opens is open (the hover wash, held, the ink full;
-		-- below, over either tone).
+		-- below, over either tone; a bar's keeps its ink).
 		lit = { [true] = {}, [false] = {} },
 	},
 	compound = {
 		{ lit = true, bg = "$hover", color = "$text.primary" },
+		{ lit = true, tone = "bar", bg = "$zend.bar.hover", color = "$zend.bar.ink" },
 	},
 	defaults = { size = "md", tone = "normal", lit = false },
 }
 
-local GLYPH = { sm = "$zeron.icon_button.glyph.sm", md = "$zeron.icon_button.glyph.md", lg = "$zeron.icon_button.glyph.lg" }
+local GLYPH = { sm = "$zend.icon_button.glyph.sm", md = "$zend.icon_button.glyph.md", lg = "$zend.icon_button.glyph.lg" }
 
 export type Size = "sm" | "md" | "lg"
-export type Tone = "normal" | "quiet" | "danger"
+export type Tone = "normal" | "quiet" | "danger" | "bar"
 export type Side = "top" | "bottom" | "left" | "right"
 export type Props = Merge<ContainerProps, {
 	icon: (Icon.Name | () -> Icon.Name)?,

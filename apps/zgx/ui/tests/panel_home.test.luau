@@ -131,9 +131,9 @@ test("the home says where the session runs: its device, project and branch, by n
 	local app = home()
 	expect(app:has('#panel-home-device >> \"work-laptop\"')).to_be(true)
 	expect(app:has('#panel-home-project >> \"comet-native\"')).to_be(true)
-	expect(app:has('#panel-home-branch >> \"zeron/panel-home\"')).to_be(true)
+	expect(app:has('#panel-home-branch >> \"zend/panel-home\"')).to_be(true)
 	-- What the branch adds is a plugin's to say (Git's, in the row's
-	-- `zeron.panel.branch` slot: src/plugins/examples_tests.rs); with none,
+	-- `zend.panel.branch` slot: src/plugins/examples_tests.rs); with none,
 	-- the name alone, and nothing of git asked by core.
 	app:frames(10)
 	expect(app:has('#panel-home-branch >> "+324962"')).to_be(false)
@@ -262,7 +262,7 @@ test("Add action asks for a name and a command, then adds it; an import comes fi
 	expect(eventually(app, function(): boolean
 		return closed(app, "Add action")
 	end)).to_be(true)
-	-- An import from zeron.json: the editor, filled in from it.
+	-- An import from zend.json: the editor, filled in from it.
 	app:click('role:button "Import Tests"')
 	expect(app:wait('role:dialog >> "Add action"', { timeout_ms = 15000 })).to_be(true)
 	app:frames(30)
@@ -326,7 +326,7 @@ test("actions that couldn't load say why, and Retry loads them", function()
 	app:set_state("panel_home_actions", {})
 	app:set_state("test_home_generation", 2)
 	app:frames(20)
-	expect(app:wait('"The engine couldn\'t read zeron.json"', { timeout_ms = 15000 })).to_be(true)
+	expect(app:wait('"The engine couldn\'t read zend.json"', { timeout_ms = 15000 })).to_be(true)
 	app:command("actions_ok")
 	app:click("#panel-home-actions-retry")
 	expect(app:wait('role:button "Run Dev server"', { timeout_ms = 15000 })).to_be(true)
@@ -559,30 +559,41 @@ test("a part folded stays folded for its session, across sessions and a reload; 
 	expect(app:has('role:button "Open side chat Why does the sync test flake?"')).to_be(true)
 end)
 
--- Where a node's top is in the window.
-local function top_of(app: any, target: string): number?
-	for line in app:tree(target):gmatch("[^\n]+") do
-		local y = line:match(" %-?%d+,(%-?%d+) %d+x%d+")
-		if y then
-			return tonumber(y)
-		end
-	end
-	return nil
+-- A box from the test tree's first line under `target`: y, h.
+local function span_of(app: any, target: string): (number, number)
+	local line = string.match(app:tree(target), "[^\n]+") or ""
+	local y, h = line:match(" %-?%d+,(%-?%d+) %d+x(%d+)")
+	return tonumber(y) or 0, tonumber(h) or 0
 end
 
-test("the home stands near the panel's top and stays put as its parts open, close and grow", function()
+-- Whether the home's block stands a little over the page's middle, by
+-- the new chat's composer's lift (`lift`: the room under it less the room
+-- over it), never more than the room left; or, taller than the page, at
+-- its top.
+local function centred(app: any, lift: number): boolean
+	local py, ph = span_of(app, "#panel-empty")
+	local by, bh = span_of(app, "#panel-home-block")
+	if bh >= ph then
+		return by == py
+	end
+	local over, under = by - py, py + ph - by - bh
+	return math.abs((under - over) - math.min(lift, ph - bh)) <= 1
+end
+
+test("the home stands a little over the panel's middle as its parts open, close and grow", function()
 	local app = home()
-	local y0 = top_of(app, "#panel-home-device") :: number
-	-- Near the panel's top, just under the strip (a small share of the
-	-- panel's height, 16–48): the home holds a lot now.
-	expect(y0 > 40 and y0 < 160).to_be(true)
+	-- (The lift: the composer's, here with no strip over the page.)
+	local py, ph = span_of(app, "#panel-empty")
+	local by, bh = span_of(app, "#panel-home-block")
+	local lift = (py + ph - by - bh) - (by - py)
+	expect(lift > 40).to_be(true)
 	app:click("#panel-home-subagents-head")
 	app:frames(30)
-	expect(top_of(app, "#panel-home-device")).to_be(y0)
+	expect(centred(app, lift)).to_be(true)
 	app:click("#panel-home-subagents-head")
 	app:command("many")
 	app:frames(30)
-	expect(top_of(app, "#panel-home-device")).to_be(y0)
+	expect(centred(app, lift)).to_be(true)
 end)
 
 -- Where a node's left edge is in the window.

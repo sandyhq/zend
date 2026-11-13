@@ -8,7 +8,7 @@
 --   prefs.escape_stops:get()        Escape stops the running agent (no dialog or menu open)
 --   prefs.close_panel_with_last_tab:get()  closing the panel's last tab closes it too
 --   prefs.compact_transcript:get()  thinking and tool calls folded in a transcript
---   prefs.open_links:get()          "zeron" | "external": a web link in a chat opens in
+--   prefs.open_links:get()          "zend" | "external": a web link in a chat opens in
 --                                   the panel's browser tab, or the default browser
 --   prefs.hide_emails:get()        email addresses drawn blurred (ds.PrivateText,
 --                                   which reads the same state)
@@ -31,13 +31,23 @@ local PrivateText = require("@ds/private_text")
 local M = {}
 
 M.send_with = ui.persist("settings_send_with", "enter")
+-- Settings → Voice: dictation on (the shipping app's `dictation_enabled`, off
+-- by default), and the microphone it hears ("system" for the system's).
+M.dictation = ui.persist("settings_dictation", false)
+M.dictation_input = ui.persist("settings_dictation_input", "system")
 M.escape_stops = ui.persist("settings_escape_stops", false)
 -- Whether closing a panel's last tab closes the panel too (off: it stays
--- open on its home). Off by default.
-M.close_panel_with_last_tab = ui.persist("settings_close_panel_with_last_tab", false)
+-- open on its home). On by default: an empty panel is one nobody's using.
+M.close_panel_with_last_tab = ui.persist("settings_close_panel_with_last_tab", true)
 M.compact_transcript = ui.persist("settings_compact_transcript", false)
--- (The shipping app's `open_web_links_in_zeron`, on by default.)
-M.open_links = ui.persist("settings_open_links", "zeron")
+-- (Told to the host, which lays a reply being written out compact only while
+-- the transcript shows it so: src/chat.rs `compact_shown`.)
+local compact_shown = ui.shared("chat.compact", false)
+ui.effect(function()
+	compact_shown:set(M.compact_transcript:get())
+end)
+-- (The shipping app's `open_web_links_in_zend`, on by default.)
+M.open_links = ui.persist("settings_open_links", "zend")
 -- (The design system's own, so every PrivateText follows it.)
 M.hide_emails = PrivateText.hidden
 
@@ -72,7 +82,7 @@ M.CODE_FONT_SIZES = { 11, 12, 13, 14, 15, 16 }
 
 -- How wide a conversation and its composer go (crates/ui settings.rs
 -- TRANSCRIPT_WIDTH_*: 560 to 1200; the default is the gallery's measure,
--- `zeron.prose.measure`).
+-- `zend.prose.measure`).
 M.CONVERSATION_WIDTH = { min = 560, max = 1200, step = 20 }
 M.conversation_width = ui.persist("settings_conversation_width", 660)
 
@@ -94,7 +104,7 @@ function M.chimes(kind: string): boolean
 	return M.sounds:peek() and one ~= nil and one:peek()
 end
 
--- Each agent's completion in the composer (Zeron's Settings → Providers,
+-- Each agent's completion in the composer (Zend's Settings → Providers,
 -- settings/completion.rs): "Use $ for skills" (`$` opens the skills; off,
 -- it's ordinary text) and "Separate / commands" (skills kept out of the `/`
 -- menu; off, `/` lists them with the commands). Both on unless turned off,
@@ -136,7 +146,7 @@ function M.SEND_WITH(): { { value: string, label: string } }
 end
 function M.OPEN_LINKS(): { { value: string, label: string } }
 	return {
-		{ value = "zeron", label = "Zeron" },
+		{ value = "zend", label = "Zend" },
 		{ value = "external", label = ui.t("settings.prefs.default_browser"):get() },
 	}
 end

@@ -46,6 +46,24 @@ test("the button wears three marks at most and says how many", function()
 	expect(app:has("#updates-mark-4")).to_be(false)
 end)
 
+-- A node's box, from the tree's first line: `@n … x,y WxH`.
+local function box(app: any, target: string): { x: number, w: number }
+	local x, w = app:tree(target):match("^%s*@%d+[^\n]- ([%-%d.]+),[%-%d.]+ ([%d.]+)x[%d.]+")
+	return { x = tonumber(x) :: number, w = tonumber(w) :: number }
+end
+
+test("each mark sits in the middle of its own circle", function()
+	local app = open({
+		row("here", "Claude Code", "claude-code", "update"),
+		row("here", "Codex", "codex", "update"),
+		row("metal", "Grok", "grok", "update"),
+	})
+	for at = 1, 3 do
+		local circle, glyph = box(app, `#updates-mark-{at}`), box(app, `#updates-mark-{at}-glyph`)
+		expect(math.abs(glyph.x + glyph.w / 2 - (circle.x + circle.w / 2)) <= 0.5).to_be(true)
+	end
+end)
+
 test("the same thing on two devices is one mark", function()
 	local app = open({
 		row("here", "Claude Code", "claude-code", "update"),
@@ -70,27 +88,27 @@ test("the list goes by device, and offers what each row can do", function()
 	expect(app:has('"Offline"')).to_be(true)
 end)
 
-test("another device's Zeron says when it updates there, and what stopping costs", function()
+test("another device's Zend says when it updates there, and what stopping costs", function()
 	local app = open({
 		{
-			id = "mac:zeron",
+			id = "mac:zend",
 			device = "mac",
 			device_name = "mac",
 			here = false,
 			connected = true,
-			kind = "zeron",
+			kind = "zend",
 			phase = "available",
 			installed = "1.0",
 			latest = "1.1",
 			active = false,
 		},
 		{
-			id = "metal:zeron",
+			id = "metal:zend",
 			device = "metal",
 			device_name = "metal",
 			here = false,
 			connected = true,
-			kind = "zeron",
+			kind = "zend",
 			phase = "available",
 			installed = "1.0",
 			latest = "1.1",
@@ -101,7 +119,7 @@ test("another device's Zeron says when it updates there, and what stopping costs
 	app:click("#updates-button")
 	app:frames(10)
 	expect(app:has('"1.0 → 1.1 · update from that device"')).to_be(true)
-	expect(app:has('role:button "Update · Zeron"')).to_be(true)
+	expect(app:has('role:button "Update · Zend"')).to_be(true)
 end)
 
 test("Update all says what it will do first, and what it can't reach", function()
@@ -133,17 +151,17 @@ end)
 test("a device that says it can't update from here says why, and offers what to run", function()
 	local app = open({
 		{
-			id = "box:zeron",
+			id = "box:zend",
 			device = "box",
 			device_name = "box",
 			here = false,
 			connected = true,
-			kind = "zeron",
+			kind = "zend",
 			phase = "available",
 			installed = "1.0",
 			latest = "1.1",
 			why_not = "It was started by hand",
-			manual_command = "zeron update",
+			manual_command = "zend update",
 			action = "copy",
 			active = false,
 		},
@@ -151,7 +169,7 @@ test("a device that says it can't update from here says why, and offers what to 
 	app:click("#updates-button")
 	app:frames(10)
 	expect(app:has('"It was started by hand"')).to_be(true)
-	expect(app:has('role:button "Copy command · Zeron"')).to_be(true)
+	expect(app:has('role:button "Copy command · Zend"')).to_be(true)
 end)
 
 test("an update waiting says why in the engine's words, or its own", function()
@@ -176,7 +194,7 @@ test("a Mac another device updated offers to reopen on the new version", functio
 	app:frames(10)
 	app:click("#updates-button")
 	app:frames(20)
-	expect(app:has('role:button "Restart · Zeron"')).to_be(true)
+	expect(app:has('role:button "Restart · Zend"')).to_be(true)
 end)
 
 test("the list scrolls under the head, which stays and takes its own presses", function()

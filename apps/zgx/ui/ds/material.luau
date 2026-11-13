@@ -1,4 +1,4 @@
--- How Zeron's surfaces stand: frosted (the window's glass; menus over the
+-- How Zend's surfaces stand: frosted (the window's glass; menus over the
 -- platform's frosted material) or opaque (solid colours throughout). One
 -- setting for the whole app, kept across launches.
 --
@@ -36,18 +36,18 @@ function M.glass_theme(): { [string]: any }?
 end
 
 -- What a theme wears where nothing shows through, for one whose glass tones
--- would all but vanish on its solid window (`zeron.solid`): the page's card
+-- would all but vanish on its solid window (`zend.solid`): the page's card
 -- and its edge, and muted text. Nil over glass, and for a theme that doesn't
 -- name its own.
 function M.solid_theme(): { [string]: any }?
-	if M.see_through() or ui.theme.get("zeron.solid.card") == nil then
+	if M.see_through() or ui.theme.get("zend.solid.card") == nil then
 		return nil
 	end
 	return {
-		["zeron.inset.bg"] = "$zeron.solid.card",
-		["zeron.inset.edge"] = "$zeron.solid.edge",
-		["text.secondary"] = "$zeron.solid.secondary",
-		["text.tertiary"] = "$zeron.solid.tertiary",
+		["zend.inset.bg"] = "$zend.solid.card",
+		["zend.inset.edge"] = "$zend.solid.edge",
+		["text.secondary"] = "$zend.solid.secondary",
+		["text.tertiary"] = "$zend.solid.tertiary",
 	}
 end
 
@@ -75,6 +75,14 @@ end
 -- shows through sharp).
 function M.menus_see_through(): boolean
 	return M.see_through() and not (menus_blur ~= nil and menus_blur:get() == false)
+end
+
+-- A fill that follows `see_through()`: `tint` frosted, `solid` opaque (`bg =
+-- material.pick("$zend.settings.tint", "$zend.settings.card")`).
+function M.pick(tint: string, solid: string): () -> string
+	return function(): string
+		return if M.see_through() then tint else solid
+	end
 end
 
 return M

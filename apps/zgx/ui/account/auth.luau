@@ -6,7 +6,8 @@
 -- what needs one
 -- (account/api).
 --
---   auth.state:get()        "restoring" (a launch, reading the Keychain),
+--   auth.state:get()        "restoring" (a launch, until the engine answers:
+--                           with a session kept, for as long as that takes),
 --                           "signed_out", "waiting" (on the browser) or
 --                           "signed_in"
 --   auth.user:get()         { id, email, first_name? }, signed in
@@ -45,7 +46,7 @@ end)
 M.signed_in = ui.computed(function(): boolean
 	return M.state:get() == "signed_in"
 end)
--- Which Zeron it signs into: "staging", "production" or "custom".
+-- Which Zend it signs into: "staging", "production" or "custom".
 M.env = ui.computed(function(): string
 	return (M.account:get() :: Account).env
 end)

@@ -8,7 +8,7 @@
 --   column, row, grid   our layout, the script's gaps and alignment; a row
 --                       the reader can click or scan washes under the
 --                       pointer, the wash hanging past its text
---   text                the transcript's type scale (`zeron.visual.text.*`)
+--   text                the transcript's type scale (`zend.visual.text.*`)
 --   stat                ds/stat: a headline figure over its label
 --   table               ds/data_table: frameless, hairlines, a row wash
 --   chart               ds/chart: bars, lines, areas, scatter
@@ -31,6 +31,8 @@
 --
 --   Visual { id = "v:…", path = "/…/v_…-visual.luau", title = "Latency", device = nil }
 --   (`source` in place of `path`: a fixture's script, run as is.)
+--   (`api`: whose calls draw it, `"visuals"` by default; a plugin's own
+--   are `"plugin.<id>.visuals"`, its SDK's `zend.visual`. zend.)
 
 local Button = require("@self/button")
 local Switch = require("@self/switch")
@@ -54,10 +56,20 @@ export type Props = {
 	title: string?,
 	device: string?,
 	source: string?,
+	api: string?,
 }
 
 -- What the host says of every visual: `{ [id] = { rev, gen } }`.
-local REVS = ui.shared("visuals", {} :: { [string]: { rev: number, gen: number } })
+-- (Each api's, read as a visual first asks: a plugin reaches only its own.)
+local REVS_BY: { [string]: any } = {}
+local function revs(api: string): any
+	local shared = REVS_BY[api]
+	if not shared then
+		shared = ui.shared(api, {} :: { [string]: { rev: number, gen: number } })
+		REVS_BY[api] = shared
+	end
+	return shared
+end
 
 -- A canvas or scene that animates draws at most this often (ms).
 local FRAME = 33
@@ -148,6 +160,8 @@ end
 
 type Ctx = {
 	id: string,
+	-- Whose calls (`visuals`, or a plugin's own).
+	api: string,
 	title: () -> string,
 	-- A node by path, tracked (`at`) or not (`peek`).
 	at: (path: string) -> () -> any,
@@ -280,8 +294,8 @@ local Toggle = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			cursor = "pointer",
 			-- (The switch is named by it: one control, not two.)
 			aria_hidden = true,
-			text_size = "$zeron.visual.text.body.size",
-			line_height = "$zeron.visual.text.body.line",
+			text_size = "$zend.visual.text.body.size",
+			line_height = "$zend.visual.text.body.line",
 			color = "$text.primary",
 			on_click = function()
 				value:toggle()
@@ -313,8 +327,8 @@ local VisualSlider = ui.component(function(props: { n: any, ctx: Ctx }): Node
 				label,
 				literal = true,
 				truncate = true,
-				text_size = "$zeron.visual.text.sm.size",
-				line_height = "$zeron.visual.text.sm.line",
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
 				color = "$text.secondary",
 			}
 		),
@@ -508,7 +522,7 @@ local Canvas = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			if p then
 				arg.px, arg.py, arg.down = p.x, p.y, p.down
 			end
-			local ok, drawn = pcall(ui.call_sync, "visuals.draw", arg)
+			local ok, drawn = pcall(ui.call_sync, ctx.api .. ".draw", arg)
 			if not ok or type(drawn) ~= "table" then
 				return
 			end
@@ -607,7 +621,7 @@ local Surface = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			pitch = pitch:peek(),
 			mouse = mouse:peek(),
 		}
-		local ok, promise = pcall(ui.call, "visuals.frame", arg)
+		local ok, promise = pcall(ui.call, ctx.api .. ".frame", arg)
 		if not ok or not promise then
 			busy = false
 			failed:set(if ok then "" else tostring(promise))
@@ -647,7 +661,7 @@ local Surface = ui.component(function(props: { n: any, ctx: Ctx }): Node
 		request()
 	end)
 	ui.on_cleanup(function()
-		pcall(ui.invoke, "visuals.release", { id = ctx.id, p = n.p })
+		pcall(ui.invoke, ctx.api .. ".release", { id = ctx.id, p = n.p })
 	end)
 	local function hint_at(x: number, y: number): string
 		for _, h in hints do
@@ -949,8 +963,8 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 			literal = true,
 			role = "link",
 			cursor = "pointer",
-			text_size = "$zeron.visual.text.body.size",
-			line_height = "$zeron.visual.text.body.line",
+			text_size = "$zend.visual.text.body.size",
+			line_height = "$zend.visual.text.body.line",
 			color = "$accent",
 			hover = { color = "$accent.hover" },
 			on_click = function()
@@ -976,10 +990,12 @@ end
 
 return ui.component(function(props: Props): Node
 	local id = props.id
+	local api = props.api or "visuals"
+	local REVS = revs(api)
 	-- Read and started once (the host keeps it: a reload, the chat opened
 	-- again, another window, none starts it twice).
 	pcall(function()
-		local promise = ui.call("visuals.open", {
+		local promise = ui.call(api .. ".open", {
 			id = id,
 			path = props.path,
 			title = props.title,
@@ -1000,7 +1016,7 @@ return ui.component(function(props: Props): Node
 	end)
 	local snap = ui.computed(function(): any
 		rev:get()
-		local ok, s = pcall(ui.call_sync, "visuals.get", id)
+		local ok, s = pcall(ui.call_sync, api .. ".get", id)
 		return if ok and type(s) == "table" then s else { state = "loading" }
 	end)
 	local nodes = ui.computed(function(): { [string]: any }
@@ -1027,6 +1043,7 @@ return ui.component(function(props: Props): Node
 	end
 	local ctx: Ctx = {
 		id = id,
+		api = api,
 		title = title,
 		at = function(path: string): () -> any
 			return function(): any
@@ -1041,7 +1058,7 @@ return ui.component(function(props: Props): Node
 		end,
 		event = function(handler: number?, arg: any?)
 			if type(handler) == "number" then
-				pcall(ui.invoke, "visuals.event", { id = id, h = handler, arg = arg })
+				pcall(ui.invoke, api .. ".event", { id = id, h = handler, arg = arg })
 			end
 		end,
 		drew = function(error: string?)
@@ -1075,15 +1092,15 @@ return ui.component(function(props: Props): Node
 					class = "visual-loading",
 					items = "center",
 					gap = "$space.2",
-					h = "$zeron.visual.text.sm.line",
+					h = "$zend.visual.text.sm.line",
 					status.Spinner { size = 12, ink = "$text.tertiary" },
 					ui.text {
 						function(): string
 							return locale.s("ds.visual.loading", { title = title() })
 						end,
 						literal = true,
-						text_size = "$zeron.visual.text.sm.size",
-						line_height = "$zeron.visual.text.sm.line",
+						text_size = "$zend.visual.text.sm.size",
+						line_height = "$zend.visual.text.sm.line",
 						color = "$text.tertiary",
 					},
 				}

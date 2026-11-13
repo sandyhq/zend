@@ -1,9 +1,9 @@
 //! What a plugin may do in zgx, from what it was allowed: a manifest's
-//! permissions mapped onto zgx's capabilities, and what Zeron shows plugins
+//! permissions mapped onto zgx's capabilities, and what Zend shows plugins
 //! of itself, named once.
 //!
 //! Plugins place their nodes by selector, anywhere (`elements` names what's
-//! there); what they read of Zeron comes as records the host keeps for each
+//! there); what they read of Zend comes as records the host keeps for each
 //! plugin, holding only what it was allowed (`records`). Every plugin is also
 //! granted `plugin:<id>`, which opens its own calls, messages, records and
 //! actions (`plugin.<id>.*`) to it alone: zgx's host actions don't know which
@@ -13,11 +13,11 @@ use zgx_script::Capability;
 
 /// The capability adding anywhere takes ("ui.add"): every contribution
 /// before or after an element asks it.
-pub const UI_ADD: &str = "zeron.ui.add";
+pub const UI_ADD: &str = "zend.ui.add";
 
 /// Adding into a slot whose place gives what only "files.read" reads:
 /// a plugin allowed both "ui.add" and "files.read".
-pub const UI_ADD_FILES: &str = "zeron.ui.add.files";
+pub const UI_ADD_FILES: &str = "zend.ui.add.files";
 
 /// Those slots: Git's, whose places give a checkout's folder, its remote
 /// and its commits' authors (`git_branch`, `git_commit`).
@@ -27,19 +27,19 @@ pub const FILES_SLOTS: &[&str] = &["git.branch", "git.commit", "git.commit.face"
 /// needs (none: every plugin). The app writes them (screens/plugins);
 /// plugins can't.
 pub const SHARED_READ: &[(&str, Option<&str>)] = &[
-    ("zeron.route", None),
-    ("zeron.appearance", None),
+    ("zend.route", None),
+    ("zend.appearance", None),
     // The locale the app shows (Settings → General → Language): a plugin's
-    // own words follow it (the SDK's `zeron.t`).
-    ("zeron.locale", None),
+    // own words follow it (the SDK's `zend.t`).
+    ("zend.locale", None),
     // The session page's session, as an id (what a record is found by).
-    ("zeron.page_session", None),
-    ("zeron.profile_id", Some("zeron.profile")),
-    ("zeron.session", Some("zeron.sessions")),
-    ("zeron.project", Some("zeron.sessions")),
-    ("zeron.device", Some("zeron.devices")),
-    ("zeron.devices", Some("zeron.devices")),
-    // Whether the window shows and is in front (the SDK's `zeron.window`):
+    ("zend.page_session", None),
+    ("zend.profile_id", Some("zend.profile")),
+    ("zend.session", Some("zend.sessions")),
+    ("zend.project", Some("zend.sessions")),
+    ("zend.device", Some("zend.devices")),
+    ("zend.devices", Some("zend.devices")),
+    // Whether the window shows and is in front (the SDK's `zend.window`):
     // work no one would see waits for it.
     ("zgx.window.shown", None),
     ("zgx.window.active", None),
@@ -60,7 +60,7 @@ pub const SHARED_READ: &[(&str, Option<&str>)] = &[
 /// each needs: the sidebar's filter (`{ statuses, by }`, the shell's), for
 /// a plugin allowed "ui.change" on the sidebar or its rows (it's one virtual
 /// list, so the shell filters its sessions by this instead).
-pub const SHARED_WRITE: &[(&str, &str)] = &[("sidebar.filter", "zeron.sidebar.filter")];
+pub const SHARED_WRITE: &[(&str, &str)] = &[("sidebar.filter", "zend.sidebar.filter")];
 
 /// The selectors a "ui.change" plugin names to be allowed the sidebar's
 /// filter.
@@ -68,8 +68,8 @@ const SIDEBAR: &[&str] = &["#sidebar", "#shell-sidebar", ".session-row", "hook:s
 
 /// The app's actions plugins may call, by the capability each needs.
 pub const ACTIONS: &[(&str, &str)] = &[
-    ("zeron.open", "zeron.navigate"),
-    ("zeron.compose.insert", "zeron.compose"),
+    ("zend.open", "zend.navigate"),
+    ("zend.compose.insert", "zend.compose"),
 ];
 
 /// Screens no plugin may replace, whatever it was allowed: allowing
@@ -77,7 +77,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
 pub const NEVER_REPLACED: &[&str] = &["@app/screens/plugins", "@app/screens/shell/settings"];
 
 /// Each plugin's own actions (`plugin.<id>.<name>`).
-pub const OWN_ACTIONS: &[&str] = &["result", "ack", "send", "menus", "toast", "problem", "open_tab", "add_page", "github_watch", "github_call", "store_set", "setting_status", "open_url", "notify", "cost", "run", "db", "service_call", "menu_run", "compose_comment", "file", "block"];
+pub const OWN_ACTIONS: &[&str] = &["result", "ack", "send", "menus", "toast", "problem", "open_tab", "add_page", "github_watch", "github_call", "store_set", "setting_status", "open_url", "notify", "cost", "run", "db", "service_call", "agents", "menu_run", "compose_comment", "file", "block"];
 /// Each plugin's own shared state, to read (`plugin.<id>.<name>`).
 pub const OWN_SHARED: &[&str] = &["calls", "inbox", "records", "github", "store", "settings", "locales", "menu_items", "composed"];
 
@@ -108,7 +108,7 @@ pub fn replaceable(module: &str) -> bool {
 /// May a plugin allowed "ui.change" be given `target`? Only an element's
 /// selector, as zgx reads one: a target naming a module or everything (`*`)
 /// is never given (zgx's `OverrideElement` doesn't reach modules anyway); nor
-/// Zeron's plugin placeholders (`.plugin-…`: a plugin's tabs, pages and the
+/// Zend's plugin placeholders (`.plugin-…`: a plugin's tabs, pages and the
 /// Unverified badge, each plugin's own through "panel.tabs" and
 /// "pages.add" alone). The engine refuses such a manifest too
 /// (`change_target_problem`); this holds whatever it lists.
@@ -218,7 +218,7 @@ pub fn capabilities(id: &str, permissions: &[String], change: &[String], replace
                         .map(|t| Capability::OverrideElement(t.clone())),
                 );
                 if change.iter().any(|t| SIDEBAR.contains(&t.as_str())) {
-                    out.push(named("zeron.sidebar.filter"));
+                    out.push(named("zend.sidebar.filter"));
                 }
             }
             "ui.replace" => out.extend(
@@ -228,34 +228,37 @@ pub fn capabilities(id: &str, permissions: &[String], change: &[String], replace
                     .map(|m| Capability::OverrideModule(m.clone())),
             ),
             // Read through records (`records`), but these two follow what
-            // Zeron keeps window-wide too.
-            "profile.read" => out.push(named("zeron.profile")),
-            "sessions.read" => out.push(named("zeron.sessions")),
+            // Zend keeps window-wide too.
+            "profile.read" => out.push(named("zend.profile")),
+            "sessions.read" => out.push(named("zend.sessions")),
             // Records only: what's read is the host's to give.
             "messages.read" | "account.email" | "files.read" => {}
-            // Zeron's GitHub, lent by proxy: the host checks it on each ask
+            // Zend's GitHub, lent by proxy: the host checks it on each ask
             // (`github`), and no token reaches the plugin.
             "github" | "github.write" => {}
-            // Links go where Zeron opens links; the host checks each.
+            // Links go where Zend opens links; the host checks each.
             "links.open" => {}
             // The programs its manifest names: the host checks each run
             // (`commands`).
             "commands" => {}
-            // Banners go through Zeron's own, under its Settings.
+            // Banners go through Zend's own, under its Settings.
             "notifications" => {}
-            // Its own tabs and pages: Zeron draws a placeholder of each,
+            // The agents' usage, accounts and models: the engine checks each
+            // ask against what this device allowed (`plugin.<id>.agents`).
+            "usage.read" | "accounts.read" | "accounts.switch" | "accounts.pin" | "models.read" | "models.set" | "messages.send" => {}
+            // Its own tabs and pages: Zend draws a placeholder of each,
             // which only this plugin may fill (replace).
             "panel.tabs" => out.push(Capability::OverrideElement(tab_selector(id))),
             "pages.add" => out.push(Capability::OverrideElement(page_selector(id))),
-            "navigate" => out.push(named("zeron.navigate")),
-            "compose" => out.push(named("zeron.compose")),
-            "devices" => out.push(named("zeron.devices")),
+            "navigate" => out.push(named("zend.navigate")),
+            "compose" => out.push(named("zend.compose")),
+            "devices" => out.push(named("zend.devices")),
             "network" => out.push(Capability::Fetch),
             "clipboard" => out.push(Capability::Clipboard),
             "files" => out.push(Capability::Files),
             "web" => out.push(Capability::Web),
             "windows" => out.push(Capability::Windows),
-            // The engine's: tools reach agents through Zeron's MCP server,
+            // The engine's: tools reach agents through Zend's MCP server,
             // a native server runs beside agents.
             "tools" | "native" => {}
             _ => {}
@@ -289,10 +292,10 @@ mod tests {
             got,
             vec![
                 own("focus"),
-                Capability::Named("zeron.ui.add".into()),
+                Capability::Named("zend.ui.add".into()),
                 Capability::OverrideElement(".session-row".into()),
-                Capability::Named("zeron.sidebar.filter".into()),
-                Capability::Named("zeron.sessions".into()),
+                Capability::Named("zend.sidebar.filter".into()),
+                Capability::Named("zend.sessions".into()),
                 Capability::Fetch,
             ]
         );
@@ -367,7 +370,7 @@ mod tests {
                 Capability::OverrideElement("#composer-toolbar".into()),
                 Capability::OverrideElement("hook:sidebar.sessions".into()),
                 Capability::OverrideElement("\"Send @ once\"".into()),
-                Capability::Named("zeron.sidebar.filter".into()),
+                Capability::Named("zend.sidebar.filter".into()),
             ]
         );
     }

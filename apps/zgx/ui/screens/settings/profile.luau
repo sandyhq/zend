@@ -275,7 +275,7 @@ local function cropper(): Node
 			relative = true,
 			rounded = "$radius.full",
 			overflow = "hidden",
-			bg = "$zeron.secondary.bg",
+			bg = "$zend.secondary.bg",
 			cursor = "grab",
 			role = "img",
 			label = ui.t("settings.profile.photo.preview"),
@@ -521,7 +521,7 @@ local function claim_dialog(): Node
 				end,
 			},
 			ds.AddressLine {
-				prefix = "zeron.sh/c/",
+				prefix = "zend.invalid/c/",
 				value = function()
 					return api.normalise(wanted:get())
 				end,
@@ -554,11 +554,11 @@ local function missing(): Node
 			h = H * ZOOM,
 			shrink = 0,
 			p = "$space.3",
-			rounded = "$zeron.card.radius",
+			rounded = "$zend.card.radius",
 			border = 1,
 			border_dash = { 4, 4 },
 			border_color = "$border.strong",
-			ui.text { "zeron", font = "$font.sans", weight = "$font.weight.bold", text_size = "$font.size.xs", color = "$text.disabled" },
+			ui.text { "zend", font = "$font.sans", weight = "$font.weight.bold", text_size = "$font.size.xs", color = "$text.disabled" },
 		},
 		ui.text { ui.t("settings.profile.card.none"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
 		ds.Button {
@@ -592,7 +592,7 @@ local function aside(): Node
 			elseif k == "none" then
 				return missing()
 			end
-			return ui.div { w = CARD_W, h = H * ZOOM, rounded = "$zeron.card.radius", bg = "$zeron.secondary.bg" }
+			return ui.div { w = CARD_W, h = H * ZOOM, rounded = "$zend.card.radius", bg = "$zend.secondary.bg" }
 		end, { enter = { opacity = { 0, 1 }, duration = 160 }, exit = { opacity = 0, duration = 80 }, mode = "wait" }) },
 		true
 	)
@@ -606,7 +606,7 @@ end
 -- yours will be, made out to you, where your card stands once you're in;
 -- what an account gives, as the rows the page will hold; and the one way
 -- in, where Save changes stands (setup, as signing out leaves you).
-local PREVIEW_SEED = "zeron-account-preview"
+local PREVIEW_SEED = "zend-account-preview"
 local function today(): string
 	local d = os.date("*t") :: any
 	return api.since(string.format("%04d-%02d-%02d", d.year, d.month, d.day))
@@ -691,7 +691,7 @@ function M.view(): Node
 	end
 	-- Where you're signed in: your devices, not Cloud sessions' machines.
 	local devices = ui.computed(function(): { sessions.Device }
-		return sessions.computers(sessions.now:get().devices)
+		return sessions.computers(sessions.devices:get())
 	end)
 	return ui.column {
 		ref = room,
@@ -702,7 +702,7 @@ function M.view(): Node
 		-- once, so a field being typed in keeps its focus.)
 		-- Signed out: nothing to fill in, only the way in.
 		ui.show(function(): boolean
-			return not auth.signed_in:get()
+			return auth.state:get() == "signed_out" or auth.state:get() == "waiting"
 		end, signed_out(narrow)),
 		ui.show(auth.signed_in, ds.Settings.Page {
 				title = ui.t("settings.profile.title"),
@@ -854,7 +854,7 @@ function M.view(): Node
 								end,
 								description = function()
 									local p = d:get().platform
-									return if p == "macos" then "macOS" elseif p == "linux" then "Linux" elseif p == "ios" then "iOS" else p
+									return if p == "macos" then "macOS" elseif p == "linux" then "Linux" elseif p == "windows" then "Windows" elseif p == "ios" then "iOS" elseif p == "android" then "Android" else p
 								end,
 								icon = device_icon(d:peek().platform),
 								badge = if d:peek().here then ds.Badge { ui.t("settings.profile.devices.this") } else nil,

@@ -5,7 +5,7 @@
 -- (away, when it can't be reached), its project and its branch, with what
 -- the branch adds over its base (`+N −M`, opening the branch's changes in
 -- the Git tab); then the project's run actions (shell/actions_ui.rs: a row
--- runs one in a terminal tab of its own, its gear edits it, a zeron.json
+-- runs one in a terminal tab of its own, its gear edits it, a zend.json
 -- action not yet added imports, Add action adds one). Then what can open
 -- here, each with the one key that opens it: Browser B, File viewer F,
 -- Terminal T, Side chat S, Fork chat K (plugins' rows after them,
@@ -35,6 +35,7 @@ local sessions = require("@account/sessions")
 local route = require("@app/screens/shell/route")
 local boundary = require("@app/screens/shell/boundary")
 local store = require("@app/screens/chat/store")
+local Dock = require("@app/screens/chat/dock")
 local api = require("@app/screens/panel/home_api")
 local Previews = require("@app/screens/panel/previews")
 -- Which finished lanes you've seen (their tabs in front).
@@ -117,7 +118,7 @@ local function chat_of(id: string?): sessions.Chat?
 	return nil
 end
 local function device_of(id: string?): sessions.Device?
-	for _, d in sessions.now:get().devices do
+	for _, d in sessions.devices:get() do
 		if d.id == id then
 			return d
 		end
@@ -128,7 +129,7 @@ local function project_of(id: string?): sessions.Project?
 	if not id then
 		return nil
 	end
-	for _, p in sessions.now:get().projects do
+	for _, p in sessions.projects:get() do
 		if p.id == id then
 			return p
 		end
@@ -172,6 +173,10 @@ export type Props = {
 	-- A web address in a browser tab of the session's panel (a port's).
 	open_url: ((session: string, url: string) -> ())?,
 	showing: () -> boolean,
+	-- How far its top stands under the panel's (its tab strip): its block
+	-- lines up with a new chat's composer beside it, which stands by the
+	-- panel's whole height.
+	above: number?,
 }
 
 -- ---------------------------------------------------------------------------
@@ -218,7 +223,7 @@ local function info(sid: string): Node
 	return ui.column {
 		id = "panel-home-info",
 		w_full = true,
-		gap = "$zeron.list.gap",
+		gap = "$zend.list.gap",
 		PanelHome.Row {
 			id = "panel-home-device",
 			lead = ui.presence(function(): string
@@ -267,6 +272,7 @@ local function info(sid: string): Node
 						return if l then l.emoji else nil
 					end,
 					size = 16,
+					project = id,
 				},
 				label = function(): string
 					local now = project_of(id)
@@ -288,14 +294,14 @@ local function info(sid: string): Node
 				label = branch,
 				tooltip = branch,
 				-- Plugins' part of the row (the Git plugin's +N −M), after its
-				-- name: a slot no plugin can offer, under Zeron's own name, given
+				-- name: a slot no plugin can offer, under Zend's own name, given
 				-- the branch.
 				trail = ui.row {
 					id = "panel-home-branch-slot",
 					shrink = 0,
 					items = "center",
 					provide = { panel_branch = branch_info },
-					ui.slot("zeron.panel.branch", { direction = "row", items = "center" }),
+					ui.slot("zend.panel.branch", { direction = "row", items = "center" }),
 				},
 			},
 			-- Plugins' rows of their own under the branch (GitHub's pull
@@ -305,7 +311,7 @@ local function info(sid: string): Node
 				id = "panel-home-details",
 				w_full = true,
 				provide = { panel_details = branch_info },
-				ui.slot("zeron.panel.details", { w_full = true }),
+				ui.slot("zend.panel.details", { w_full = true }),
 			},
 		}),
 	}
@@ -632,7 +638,7 @@ local function actions(props: Props, sid: string): Node
 			rounded = "$radius.lg",
 			cursor = "pointer",
 			bg = function(): string
-				return if on() then "$zeron.selected.flat.bg" else "#00000000"
+				return if on() then "$zend.selected.flat.bg" else "#00000000"
 			end,
 			color = function(): string
 				return if on() then "$text.primary" else "$text.secondary"
@@ -715,7 +721,7 @@ local function actions(props: Props, sid: string): Node
 	end, ui.column {
 		id = "panel-home-actions",
 		w_full = true,
-		gap = "$zeron.list.gap",
+		gap = "$zend.list.gap",
 		PanelHome.Heading { label = locale.t("panel.home.actions") },
 		ui.show(function(): boolean
 			local s = now()
@@ -728,7 +734,7 @@ local function actions(props: Props, sid: string): Node
 			return s ~= nil and s.state == "failed"
 		end, ui.column {
 			w_full = true,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 			note(function(): string
 				local s = now()
 				return if s and s.message then s.message else ""
@@ -751,14 +757,14 @@ local function actions(props: Props, sid: string): Node
 				return a.id
 			end,
 			w_full = true,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 		}),
 		ui.each(imports, import_row, {
 			key = function(d: any): string
 				return d.name
 			end,
 			w_full = true,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 		}),
 		ui.show(function(): boolean
 			local s = now()
@@ -1107,7 +1113,7 @@ local function lanes(props: Props, sid: string): Node
 		gap = "$space.3",
 		ui.column {
 			w_full = true,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 			part("panel-home-ports", "panel-home-port-list", "panel.home.ports", "ports", function(): { any }
 				return ports:get()
 			end, function(l: any): string
@@ -1141,7 +1147,7 @@ local function lanes(props: Props, sid: string): Node
 					min_w = 0,
 					truncate = true,
 					text_size = "$font.size.sm",
-					color = "$zeron.tone.warning.ink",
+					color = "$zend.tone.warning.ink",
 				},
 			}),
 		},
@@ -1199,7 +1205,7 @@ end
 
 -- A subagent row's menu, on a secondary click: open it.
 function M.subagent_menu(open: () -> ()): { any }
-	return { { label = locale.s("common.open"), icon = "bot", on_select = open } }
+	return { { label = locale.s("common.open"), icon = "side-chat", on_select = open } }
 end
 
 -- ---------------------------------------------------------------------------
@@ -1265,12 +1271,12 @@ M.Page = ui.component(function(props: Props): Node
 		ui.column {
 			id = "panel-home-open",
 			w_full = true,
-			gap = "$zeron.list.gap",
+			gap = "$zend.list.gap",
 			PanelHome.Heading { label = locale.t("panel.home.open") },
 			ui.column {
 				hook = "panel.empty",
 				w_full = true,
-				gap = "$zeron.list.gap",
+				gap = "$zend.list.gap",
 				table.unpack(rows),
 			},
 		}
@@ -1279,10 +1285,25 @@ M.Page = ui.component(function(props: Props): Node
 		table.insert(parts, lanes(props, sid))
 	end
 
-	-- Where it stands: at its top, level with the transcript's first
-	-- message beside it, so a part opening or closing grows it downward and
-	-- nothing above moves. Taller than the panel, it scrolls.
+	-- Where it stands: in the panel's middle, its rows no wider than a
+	-- list of rows is in ds (`zend.form.list`: a row's icon, its words and
+	-- the key at its end), each row's whole width still its target; and level with a
+	-- new chat's composer, by the composer's own rule (screens/chat/dock:
+	-- a little over the middle of the room under the title bar, read over
+	-- the panel's whole height). What it's in is at least as tall as the
+	-- scroll's window (measured) and centres it, the lift as room under it,
+	-- never more than the room left: taller than the panel, it starts at the
+	-- top and scrolls, nothing pushed out of reach.
 	local view = ui.ref()
+	local block = ui.ref()
+	local room = ui.use_state(0)
+	-- (Its middle that far over the scroll's: the composer's offset from the
+	-- page's middle, less half the strip over it.)
+	local lift = (props.above or 0) / 2 - Dock.hero_offset()
+	local function under(): number
+		local spare = room:get() - (block.height or 0)
+		return ui.raw(math.clamp(2 * lift, 0, math.max(spare, 0)), "the composer's lift, as room under the block")
+	end
 	return ui.scroll {
 		ref = view,
 		id = "panel-empty",
@@ -1291,7 +1312,6 @@ M.Page = ui.component(function(props: Props): Node
 		w_full = true,
 		grow = 1,
 		min_h = 0,
-		items = "center",
 		overscroll = "contain",
 		-- (Its edges fade where there's more to scroll to, as the sidebar's
 		-- and Settings' lists do.)
@@ -1300,13 +1320,29 @@ M.Page = ui.component(function(props: Props): Node
 		-- (What plugins' rows on it read: the session, and the letters it
 		-- passes on.)
 		provide = { session = sid, panel_key = passed },
+		on_resize = function(size: { w: number, h: number })
+			if room:peek() ~= size.h then
+				room:set(size.h)
+			end
+		end,
 		ui.column {
 			w_full = true,
-			max_w = 380,
-			px = "$space.4",
-			pb = "$space.6",
-			gap = "$space.5",
-			table.unpack(parts),
+			min_h = function(): number
+				return room:get()
+			end,
+			justify = "center",
+			items = "center",
+			pb = under,
+			ui.column {
+				id = "panel-home-block",
+				ref = block,
+				w_full = true,
+				max_w = ui.theme.get("zend.form.list") :: number?,
+				px = "$space.4",
+				py = "$space.6",
+				gap = "$space.5",
+				table.unpack(parts),
+			},
 		},
 	}
 end)

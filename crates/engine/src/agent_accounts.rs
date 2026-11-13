@@ -1,5 +1,5 @@
 //! AgentAccounts — the logins of every agent CLI on this device that has one
-//! (feature-inventory §3.7 "Agent accounts"; port of zeron's
+//! (feature-inventory §3.7 "Agent accounts"; port of zend's
 //! `agent-accounts.ts`).
 //!
 //! Grok, Devin, OpenCode, Pi and Hermes live in [`stores`] (credential
@@ -16,7 +16,7 @@
 //! | Hermes   | yes    | no¹    | `hermes auth add` (device code) | yes  |
 //!
 //! ¹ Hermes keeps every account in its own credential pool and rotates
-//! through it itself; zeron lists the pool and adds to it through Hermes'
+//! through it itself; zend lists the pool and adds to it through Hermes'
 //! own CLI, but never rewrites it.
 //!
 //! The original four providers each store exactly one live login:
@@ -30,7 +30,7 @@
 //! - **Cursor** — `~/.cursor/sdk/auth.json`: the Cursor SDK's credential store
 //!   (`StoredSdkCredentials`) holding the named, expiring user API key its
 //!   browser login mints. Deliberately SEPARATE from `cursor-agent login`'s
-//!   whole-account session tokens, which zeron never reads.
+//!   whole-account session tokens, which zend never reads.
 //! - **Antigravity** — its ACP server keeps one Google login per
 //!   `GEMINI_HOME`: a token blob in the macOS Keychain (service `gemini`) or
 //!   `antigravity-acp/acp_token.json`, plus the method in `settings.json`.
@@ -58,7 +58,7 @@
 //!    Codex spawns `codex login` against a throwaway `CODEX_HOME` and polls
 //!    until its loopback callback lands; Antigravity runs its server's
 //!    `authenticate`. A login run for ANOTHER device (`requester`) publishes
-//!    its callback port to [`zeron_preview::login`], so the requester can
+//!    its callback port to [`zend_preview::login`], so the requester can
 //!    forward its own loopback to it over the P2P link.
 //!
 //! Usage probes: all three providers expose the rate-limit view their own CLIs render
@@ -86,7 +86,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use zeron_proto::{
+use zend_proto::{
     AgentAccount, AgentAccountWarning, AgentAccountsSnapshot, AgentAuthKind, AgentLoginMode,
     AgentLoginPoll, AgentLoginStart, AgentLoginStatus, AgentUsageWindow, CodexResetCredit,
     CodexResetCredits, CodexResetOutcome, HarnessId,
@@ -106,11 +106,13 @@ pub struct RelayedCallback {
 }
 
 mod muse;
+mod pins;
 mod oauth;
 mod registry_login;
 #[cfg(test)]
 mod provider_tests;
 pub use muse::MuseRunEnvironment;
+pub use pins::{ChatPin, PinHook, PinRunEnvironment};
 mod stores;
 mod usage;
 
@@ -218,7 +220,7 @@ pub struct AgentAccountsConfig {
     /// Hermes' `HERMES_HOME` (default `~/.hermes`) — holds `auth.json`.
     pub hermes_home: PathBuf,
     /// The user's real config root (`$XDG_CONFIG_HOME` or `~/.config`): what
-    /// each zeron-kept Muse account's root mirrors (see [`muse`]).
+    /// each zend-kept Muse account's root mirrors (see [`muse`]).
     pub muse_config_root: PathBuf,
 }
 
@@ -247,7 +249,7 @@ impl AgentAccountsConfig {
             claude_config_file,
             codex_home: env_dir("CODEX_HOME").unwrap_or_else(|| home_dir().join(".codex")),
             cursor_sdk_auth_file: home_dir().join(".cursor").join("sdk").join("auth.json"),
-            antigravity_home: zeron_harness::acp::antigravity_home().ok(),
+            antigravity_home: zend_harness::acp::antigravity_home().ok(),
             antigravity_keychain: keychain
                 && std::env::var_os("AGY_ACP_FORCE_FILE_STORAGE")
                     .is_none_or(|v| !matches!(v.to_str(), Some("1" | "true"))),
@@ -365,7 +367,7 @@ struct SlotProfile {
     auth_kind: AgentAuthKind,
 }
 
-/// One saved login (`{slotId}.json`), same field surface as zeron's slot files.
+/// One saved login (`{slotId}.json`), same field surface as zend's slot files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Slot {
@@ -457,7 +459,7 @@ enum LoginFlow {
     Spawned {
         harness: HarnessId,
         /// The login child; monitored (try_wait) + killable from cancel.
-        child: Arc<Mutex<Option<zeron_harness::process::Child>>>,
+        child: Arc<Mutex<Option<zend_harness::process::Child>>>,
         /// Throwaway dir, reclaimed on cancel/completion.
         home: PathBuf,
         /// What finishing looks like.
@@ -575,7 +577,7 @@ enum NoCredentials {
     Missing,
     /// Cursor's minted key is past its expiry.
     KeyExpired,
-    /// The provider behind this login has no usage view zeron can read
+    /// The provider behind this login has no usage view zend can read
     /// (a Hermes API key for some other vendor, Pi's Copilot session).
     Unsupported,
 }
@@ -787,7 +789,7 @@ struct Inner {
     inflight_refreshes: Mutex<std::collections::HashSet<String>>,
     claude_credentials: Mutex<Option<CachedClaudeCredentials>>,
     /// Callback ports of logins run for another device (see module docs).
-    callback_routes: zeron_preview::login::CallbackRoutes,
+    callback_routes: zend_preview::login::CallbackRoutes,
     /// Who an opaque live token belongs to (Pi's Claude login, a Copilot
     /// token), by token fingerprint — one profile call per token, not per
     /// list; a failed lookup waits [`IDENTITY_RETRY`] before the next. See
@@ -795,6 +797,15 @@ struct Inner {
     identities: Mutex<HashMap<String, IdentityLookup>>,
     /// Test seam: fixed CLI binaries per agent instead of PATH resolution.
     cli_overrides: Mutex<HashMap<HarnessId, PathBuf>>,
+    /// The last snapshot a list, switch or removal made, for whoever follows
+    /// them (plugins' usage and account events). Never holds a credential.
+    snapshots: tokio::sync::watch::Sender<Option<AgentAccountsSnapshot>>,
+    /// Chats pinned to an account of their own; mirrored to disk (see
+    /// [`pins`]).
+    pins: Mutex<pins::PinState>,
+    /// Asked for a chat's account at its first run (a plugin's
+    /// `run.preparing`).
+    pin_hook: Mutex<Option<PinHook>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -833,7 +844,7 @@ impl AgentAccounts {
     /// (the engine's P2P service, which serves them to the requester).
     pub fn with_callback_routes(
         config: AgentAccountsConfig,
-        routes: zeron_preview::login::CallbackRoutes,
+        routes: zend_preview::login::CallbackRoutes,
     ) -> Self {
         Self::with_endpoints(config, ProbeEndpoints::default(), routes)
     }
@@ -841,7 +852,7 @@ impl AgentAccounts {
     fn with_endpoints(
         config: AgentAccountsConfig,
         endpoints: ProbeEndpoints,
-        callback_routes: zeron_preview::login::CallbackRoutes,
+        callback_routes: zend_preview::login::CallbackRoutes,
     ) -> Self {
         // Startup sweep: a previous process that crashed mid-login leaves
         // `.login-<uuid>` throwaway CODEX_HOME dirs — each may hold live OAuth
@@ -861,6 +872,7 @@ impl AgentAccounts {
                 }
             }
         }
+        let pins = pins::PinState::load(&config.root_dir().join(pins::PINS_FILE));
         let http = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
             .build()
@@ -886,8 +898,42 @@ impl AgentAccounts {
                 callback_routes,
                 identities: Mutex::new(HashMap::new()),
                 cli_overrides: Mutex::new(HashMap::new()),
+                snapshots: tokio::sync::watch::channel(None).0,
+                pins: Mutex::new(pins),
+                pin_hook: Mutex::new(None),
             }),
         }
+    }
+
+    /// Each snapshot as lists, switches and removals make them (from
+    /// Settings, the composer's usage ring, a plugin): the current one at
+    /// once, then every change.
+    pub fn watch_snapshots(&self) -> tokio::sync::watch::Receiver<Option<AgentAccountsSnapshot>> {
+        self.inner.snapshots.subscribe()
+    }
+
+    fn published(
+        &self,
+        result: Result<AgentAccountsSnapshot, EngineError>,
+    ) -> Result<AgentAccountsSnapshot, EngineError> {
+        // (A live login is saved again at each list: when isn't a change.)
+        fn unstamped(s: &AgentAccountsSnapshot) -> AgentAccountsSnapshot {
+            let mut s = s.clone();
+            for a in &mut s.accounts {
+                a.saved_at = None;
+            }
+            s
+        }
+        if let Ok(snapshot) = &result {
+            self.inner.snapshots.send_if_modified(|last| {
+                let changed = last.as_ref().map(unstamped) != Some(unstamped(snapshot));
+                if changed {
+                    *last = Some(snapshot.clone());
+                }
+                changed
+            });
+        }
+        result
     }
 
     /// Test seam: run `harness`'s sign-in with the CLI at `path` instead of
@@ -898,12 +944,12 @@ impl AgentAccounts {
     }
 
     /// The ACP harness for `harness`'s CLI, honouring [`Self::override_cli`].
-    fn acp_harness(&self, harness: HarnessId) -> Option<zeron_harness::AcpHarness> {
+    fn acp_harness(&self, harness: HarnessId) -> Option<zend_harness::AcpHarness> {
         let acp = match harness {
-            HarnessId::Grok => zeron_harness::AcpHarness::grok(),
-            HarnessId::Devin => zeron_harness::AcpHarness::devin(),
-            HarnessId::Hermes => zeron_harness::AcpHarness::hermes(),
-            HarnessId::Antigravity => zeron_harness::AcpHarness::antigravity(),
+            HarnessId::Grok => zend_harness::AcpHarness::grok(),
+            HarnessId::Devin => zend_harness::AcpHarness::devin(),
+            HarnessId::Hermes => zend_harness::AcpHarness::hermes(),
+            HarnessId::Antigravity => zend_harness::AcpHarness::antigravity(),
             _ => return None,
         };
         Some(match lock(&self.inner.cli_overrides).get(&harness) {
@@ -923,7 +969,8 @@ impl AgentAccounts {
     /// backoff window or probed in the last [`FORCED_MIN_INTERVAL`].
     pub async fn list(&self, force_usage: bool) -> Result<AgentAccountsSnapshot, EngineError> {
         let _ops = self.inner.ops.lock().await;
-        self.list_locked(force_usage).await
+        let listed = self.list_locked(force_usage).await;
+        self.published(listed)
     }
 
     /// Caller holds [`Inner::ops`].
@@ -1015,7 +1062,7 @@ impl AgentAccounts {
         .into_iter()
         .map(|harness| (harness, self.read_slots(harness)))
         .collect();
-        // Muse: the zeron-kept account runs use (none: Muse's own login).
+        // Muse: the zend-kept account runs use (none: Muse's own login).
         if let Some(slot) = self.muse_active() {
             active_keys
                 .entry(HarnessId::Muse)
@@ -1119,7 +1166,7 @@ impl AgentAccounts {
                 });
             }
         }
-        // Antigravity keeps exactly one login whose token zeron never reads:
+        // Antigravity keeps exactly one login whose token zend never reads:
         // one active, unswitchable row, and no usage (it has no quota view).
         if let Some(login) = antigravity {
             accounts.push(login.account());
@@ -1135,16 +1182,25 @@ impl AgentAccounts {
     ///
     /// Refused for Hermes (and by [`Self::forget`]): Hermes owns its
     /// credential pool and rotates through it itself — a running Hermes
-    /// would write its own order back over any change — so zeron keeps it
+    /// would write its own order back over any change — so zend keeps it
     /// read-only (see [`stores`]).
     pub async fn activate(
         &self,
         harness: HarnessId,
         account_id: &str,
     ) -> Result<AgentAccountsSnapshot, EngineError> {
+        let activated = self.activate_unpublished(harness, account_id).await;
+        self.published(activated)
+    }
+
+    async fn activate_unpublished(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<AgentAccountsSnapshot, EngineError> {
         if harness == HarnessId::Hermes {
             return Err(EngineError::Other(
-                "Hermes picks from its own credential pool — zeron doesn't reorder it. Use \
+                "Hermes picks from its own credential pool — zend doesn't reorder it. Use \
                  `hermes auth` to manage it."
                     .into(),
             ));
@@ -1200,12 +1256,12 @@ impl AgentAccounts {
     }
 
     /// Claude Code's own refresh lock (see
-    /// [`zeron_harness::claude::refresh_lock`]), held while the live Claude
+    /// [`zend_harness::claude::refresh_lock`]), held while the live Claude
     /// login is read and replaced.
     async fn claude_refresh_lock(
         &self,
-    ) -> Result<zeron_harness::claude::refresh_lock::RefreshLock, EngineError> {
-        zeron_harness::claude::refresh_lock::RefreshLock::acquire(
+    ) -> Result<zend_harness::claude::refresh_lock::RefreshLock, EngineError> {
+        zend_harness::claude::refresh_lock::RefreshLock::acquire(
             &self.inner.config.claude_config_dir,
             CLAUDE_REFRESH_LOCK_WAIT,
         )
@@ -1219,7 +1275,7 @@ impl AgentAccounts {
     }
 
     /// A saved Claude login about to become live, checked first. Its access
-    /// token expired (or never said when): refresh it here — zeron is the
+    /// token expired (or never said when): refresh it here — zend is the
     /// only holder of a slot that isn't live — so a spent refresh token is
     /// refused with a way out instead of installed, where the CLI's
     /// `invalid_grant` would wipe it: the user signed out of everything.
@@ -1346,7 +1402,7 @@ impl AgentAccounts {
     }
 
     /// Whether a per-provider agent has a live entry under `store_key` at
-    /// all, identified or not — a live login zeron can't identify is still
+    /// all, identified or not — a live login zend can't identify is still
     /// never replaced unasked.
     fn has_live_entry(&self, harness: HarnessId, store_key: Option<&str>) -> bool {
         match harness {
@@ -1474,6 +1530,15 @@ impl AgentAccounts {
         harness: HarnessId,
         account_id: &str,
     ) -> Result<AgentAccountsSnapshot, EngineError> {
+        let forgotten = self.forget_unpublished(harness, account_id).await;
+        self.published(forgotten)
+    }
+
+    async fn forget_unpublished(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<AgentAccountsSnapshot, EngineError> {
         // Reject anything that isn't a slot id (16 lowercase hex) BEFORE touching
         // the filesystem: `account_id` is a raw RPC string that becomes a path,
         // so a crafted id (`../../…`) must never reach `remove_file`.
@@ -1485,7 +1550,7 @@ impl AgentAccounts {
             return Err(EngineError::Other("Unknown account.".into()));
         }
         if harness == HarnessId::Hermes {
-            // Hermes' rows are its own pool, not zeron slots.
+            // Hermes' rows are its own pool, not zend slots.
             return Err(EngineError::Other(
                 "Hermes keeps this login in its own credential pool — remove it with \
                  `hermes auth remove`."
@@ -1738,8 +1803,8 @@ impl AgentAccounts {
                 &[("Content-Type", "text/html; charset=utf-8")],
                 &format!(
                     "<!doctype html><title>Sign-in failed</title><p>{}</p>\
-                     <p>Return to Zeron to try again.</p>",
-                    html_escape(&zeron_harness::redact::redact_output(&error.to_string()))
+                     <p>Return to Zend to try again.</p>",
+                    html_escape(&zend_harness::redact::redact_output(&error.to_string()))
                 ),
             ),
         };
@@ -1833,16 +1898,16 @@ impl AgentAccounts {
         &self,
         login_id: String,
         harness: HarnessId,
-        mut command: zeron_harness::process::Command,
+        mut command: zend_harness::process::Command,
         home: PathBuf,
         completion: SpawnedCompletion,
         scan_url: fn(&str) -> Option<String>,
         requester: Option<&str>,
     ) -> Result<AgentLoginStart, EngineError> {
         command
-            .stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::piped())
-            .stderr(zeron_harness::process::Stdio::piped());
+            .stdin(zend_harness::process::Stdio::null())
+            .stdout(zend_harness::process::Stdio::piped())
+            .stderr(zend_harness::process::Stdio::piped());
         let child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -1896,12 +1961,12 @@ impl AgentAccounts {
         // login-shell snapshot, install dirs — the Windows npm payload
         // included) and compose the same child PATH a chat run gets, so
         // account login never diverges from what the harness can launch.
-        let mut command = match zeron_harness::codex::login_command(&home) {
+        let mut command = match zend_harness::codex::login_command(&home) {
             Ok(command) => command,
             Err(err) => {
                 let _ = std::fs::remove_dir_all(&home);
                 return Err(EngineError::Other(match err {
-                    zeron_harness::HarnessError::NotInstalled(hint) => {
+                    zend_harness::HarnessError::NotInstalled(hint) => {
                         format!(
                             "The `codex` CLI was not found on this device — install it first. ({hint})"
                         )
@@ -1911,9 +1976,9 @@ impl AgentAccounts {
             }
         };
         command
-            .stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::piped())
-            .stderr(zeron_harness::process::Stdio::piped());
+            .stdin(zend_harness::process::Stdio::null())
+            .stdout(zend_harness::process::Stdio::piped())
+            .stderr(zend_harness::process::Stdio::piped());
         // The CLI opens the authorization tab itself (via the `webbrowser`
         // crate) AND the app opens the page when this start reply lands —
         // users got TWO identical auth.openai.com tabs. `webbrowser` prefers
@@ -1996,13 +2061,13 @@ impl AgentAccounts {
             .cloned();
         let mut command = match cli {
             Some(cli) => {
-                let mut command = zeron_harness::process::Command::new(cli);
+                let mut command = zend_harness::process::Command::new(cli);
                 command.arg("login").env("CODEX_HOME", &home);
                 command
             }
-            None => zeron_harness::codex::login_command(&home).map_err(|err| {
+            None => zend_harness::codex::login_command(&home).map_err(|err| {
                 EngineError::Other(match err {
-                    zeron_harness::HarnessError::NotInstalled(hint) => format!(
+                    zend_harness::HarnessError::NotInstalled(hint) => format!(
                         "The `codex` CLI was not found on this device — install it first. ({hint})"
                     ),
                     other => format!("Could not resolve the codex CLI for login: {other}"),
@@ -2010,9 +2075,9 @@ impl AgentAccounts {
             })?,
         };
         command
-            .stdin(zeron_harness::process::Stdio::null())
-            .stdout(zeron_harness::process::Stdio::piped())
-            .stderr(zeron_harness::process::Stdio::piped());
+            .stdin(zend_harness::process::Stdio::null())
+            .stdout(zend_harness::process::Stdio::piped())
+            .stderr(zend_harness::process::Stdio::piped());
         // The app opens the one authorization tab (see `start_codex_login`).
         #[cfg(unix)]
         if let Some(noop_browser) = ensure_noop_browser(&self.inner.config.root_dir()) {
@@ -2114,9 +2179,9 @@ impl AgentAccounts {
         let task_state = state.clone();
         let handle = tokio::spawn(async move {
             let progress_state = task_state.clone();
-            let mut outcome = zeron_harness::AcpHarness::antigravity()
+            let mut outcome = zend_harness::AcpHarness::antigravity()
                 .sign_in(browser, move |progress| {
-                    if let zeron_harness::acp::SignInProgress::OpenBrowser(url) = progress {
+                    if let zend_harness::acp::SignInProgress::OpenBrowser(url) = progress {
                         lock(&progress_state).url = Some(url);
                     }
                 })
@@ -2154,7 +2219,7 @@ impl AgentAccounts {
         }
     }
 
-    /// Cursor: the SDK's own PKCE browser flow, driven through the zeron shim
+    /// Cursor: the SDK's own PKCE browser flow, driven through the zend shim
     /// in login mode. The minted key lands in a throwaway store file (never
     /// the live `~/.cursor/sdk/auth.json`), then snapshots into a slot on
     /// poll — mirroring codex's throwaway `CODEX_HOME`.
@@ -2162,7 +2227,7 @@ impl AgentAccounts {
         self.reap_spawned_flows(HarnessId::Cursor);
         let login_id = new_id();
         let home = self.login_home(&login_id)?;
-        let cmd = zeron_harness::cursor::login_command(&home.join("auth.json"))
+        let cmd = zend_harness::cursor::login_command(&home.join("auth.json"))
             .await
             .map_err(|e| {
                 let _ = std::fs::remove_dir_all(&home);
@@ -2499,7 +2564,7 @@ impl AgentAccounts {
             return Ok(AgentLoginPoll {
                 code: None,
                 status: AgentLoginStatus::Error,
-                message: Some(zeron_harness::redact::redact_output(&message)),
+                message: Some(zend_harness::redact::redact_output(&message)),
                 url: None,
                 callback_port: None,
             });
@@ -2571,7 +2636,7 @@ impl AgentAccounts {
                 Some(Err(message)) => AgentLoginPoll {
                 code: None,
                     status: AgentLoginStatus::Error,
-                    message: Some(zeron_harness::redact::redact_output(message)),
+                    message: Some(zend_harness::redact::redact_output(message)),
                     url: None,
                     callback_port: None,
                 },
@@ -2693,7 +2758,7 @@ impl AgentAccounts {
         }
     }
 
-    /// Lazy TTL sweep (zeron uses a background fiber; native reaps on the next
+    /// Lazy TTL sweep (zend uses a background fiber; native reaps on the next
     /// accounts call — same bound, no standing task).
     fn sweep_flows(&self) {
         let stale: Vec<String> = lock(&self.inner.flows)
@@ -3415,7 +3480,7 @@ impl AgentAccounts {
         })
     }
 
-    /// Whether `slot` is provably NOT the grant Claude Code runs on, so zeron
+    /// Whether `slot` is provably NOT the grant Claude Code runs on, so zend
     /// may rotate its refresh token. `is_active` alone isn't proof: it is
     /// false whenever the live identity couldn't be read (`~/.claude.json`
     /// mid-rewrite), and rotating the CLI's own refresh token logs it out.
@@ -3714,7 +3779,7 @@ mod keychain {
 
 // ── Antigravity ─────────────────────────────────────────────────────────────
 
-/// Antigravity's live login, as far as zeron can see it without its secret.
+/// Antigravity's live login, as far as zend can see it without its secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AntigravityLogin {
     /// The canonical auth method (`oauth-personal`, `oauth-business`, …).
@@ -3769,7 +3834,7 @@ impl AntigravityLogin {
 /// so the saved method is all there is. A first run saves no method; its
 /// default is the personal Google sign-in.
 async fn detect_antigravity_login(home: &Path, keychain: bool) -> Option<AntigravityLogin> {
-    let method = zeron_harness::acp::antigravity_saved_auth_method(home)
+    let method = zend_harness::acp::antigravity_saved_auth_method(home)
         .unwrap_or_else(|| "oauth-personal".into());
     let token = match method.as_str() {
         "oauth-personal" => Some(("acp_token.json", "antigravity-acp")),
@@ -3890,7 +3955,7 @@ fn claude_plan(org_type: Option<&str>, tier: Option<&str>) -> Option<String> {
 }
 
 fn codex_plan(plan: Option<&str>) -> Option<String> {
-    zeron_proto::plan_usage::codex_plan(plan)
+    zend_proto::plan_usage::codex_plan(plan)
 }
 
 /// Meter label for a Codex rate-limit window from its `limit_window_seconds`:
@@ -3899,7 +3964,7 @@ fn codex_plan(plan: Option<&str>) -> Option<String> {
 /// week" rule mislabeled the monthly window "Week"; thresholds in seconds
 /// leave the middle gaps to the nearest label rather than guessing a plan.
 fn codex_window_label(span_seconds: i64) -> &'static str {
-    zeron_proto::plan_usage::codex_window_label(span_seconds)
+    zend_proto::plan_usage::codex_window_label(span_seconds)
 }
 
 /// Compose a target Claude login with the machine's current shared fields.
@@ -4160,7 +4225,7 @@ fn cursor_key_usable(auth: &serde_json::Value) -> bool {
 }
 
 fn parse_when(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
-    zeron_proto::plan_usage::parse_when(value)
+    zend_proto::plan_usage::parse_when(value)
 }
 
 fn usage_key(harness: HarnessId, account_key: &str) -> String {
@@ -4328,7 +4393,7 @@ fn usage_error_message(
         ProbeError::Http { status, .. } => format!("Usage check failed ({status})"),
         ProbeError::Network { timeout: true } => format!("{provider} didn't respond{retry}"),
         ProbeError::Network { .. } => format!("Couldn't reach {provider}{retry}"),
-        ProbeError::Schema => "Usage format changed — update zeron".to_string(),
+        ProbeError::Schema => "Usage format changed — update zend".to_string(),
         ProbeError::NoCredentials {
             why: NoCredentials::ApiKey,
         } => "API keys have no plan usage".to_string(),
@@ -4342,7 +4407,7 @@ fn usage_error_message(
             why: NoCredentials::Unsupported,
         } => "No usage view for this login".to_string(),
         ProbeError::UntrustedEndpoint => {
-            "Usage skipped — this login names a server zeron doesn't recognize".to_string()
+            "Usage skipped — this login names a server zend doesn't recognize".to_string()
         }
     })
 }
@@ -4376,7 +4441,7 @@ pub(crate) fn usage_windows_from_reply(
 
 /// Codex `/wham/usage`: primary/secondary windows + the live plan.
 fn codex_usage_snapshot(body: &serde_json::Value) -> Option<UsageSnapshot> {
-    zeron_proto::plan_usage::codex(body).map(|(windows, plan_label)| UsageSnapshot {
+    zend_proto::plan_usage::codex(body).map(|(windows, plan_label)| UsageSnapshot {
         windows,
         plan_label,
         codex_reset_credits: None,
@@ -4386,7 +4451,7 @@ fn codex_usage_snapshot(body: &serde_json::Value) -> Option<UsageSnapshot> {
 /// Windows from Claude's `/api/oauth/usage`: the 5-hour session and weekly
 /// buckets, each a 0-100 `utilization` with an RFC3339 `resets_at`.
 fn claude_usage_windows(body: &serde_json::Value) -> Option<UsageSnapshot> {
-    zeron_proto::plan_usage::claude(body).map(|windows| UsageSnapshot {
+    zend_proto::plan_usage::claude(body).map(|windows| UsageSnapshot {
         windows,
         plan_label: None,
         codex_reset_credits: None,
@@ -4404,8 +4469,8 @@ fn cursor_bucket_windows(body: &serde_json::Value) -> Vec<AgentUsageWindow> {
     };
     let resets_at = json_ms(body.get("billingCycleEnd"));
     [
-        (zeron_proto::CURSOR_USAGE_CURSOR, "autoPercentUsed"),
-        (zeron_proto::CURSOR_USAGE_OTHER, "apiPercentUsed"),
+        (zend_proto::CURSOR_USAGE_CURSOR, "autoPercentUsed"),
+        (zend_proto::CURSOR_USAGE_OTHER, "apiPercentUsed"),
     ]
     .into_iter()
     .filter_map(|(label, field)| {
@@ -4425,7 +4490,7 @@ fn cursor_bucket_windows(body: &serde_json::Value) -> Vec<AgentUsageWindow> {
 fn cursor_grok_window(body: &serde_json::Value) -> Option<AgentUsageWindow> {
     let percent = body.get("usagePercent").and_then(|v| v.as_f64())?;
     Some(AgentUsageWindow {
-        label: zeron_proto::CURSOR_USAGE_GROK.to_string(),
+        label: zend_proto::CURSOR_USAGE_GROK.to_string(),
         used_fraction: (percent / 100.0).clamp(0.0, 1.0) as f32,
         resets_at: body
             .get("nextResetTimestampUtc")
@@ -4589,15 +4654,15 @@ fn ensure_noop_browser(root: &Path) -> Option<PathBuf> {
 }
 
 /// A "browser" that records the url it was asked to open into
-/// `$ZERON_LOGIN_URL_FILE` instead of opening it — so the app opens the
+/// `$ZEND_LOGIN_URL_FILE` instead of opening it — so the app opens the
 /// one tab (on the requesting device, for a remote login) even when the CLI
 /// never prints its sign-in url. Unix only, like [`ensure_noop_browser`].
 #[cfg(unix)]
 fn ensure_recording_browser(root: &Path) -> Option<PathBuf> {
     // `umask 077`: should the file not exist yet, it's still owner-only
     // (the sign-in pre-creates it 0600).
-    const SCRIPT: &str = "#!/bin/sh\numask 077\n[ -n \"$ZERON_LOGIN_URL_FILE\" ] && \
-                          printf '%s\\n' \"$1\" >> \"$ZERON_LOGIN_URL_FILE\"\nexit 0\n";
+    const SCRIPT: &str = "#!/bin/sh\numask 077\n[ -n \"$ZEND_LOGIN_URL_FILE\" ] && \
+                          printf '%s\\n' \"$1\" >> \"$ZEND_LOGIN_URL_FILE\"\nexit 0\n";
     let path = root.join(".record-browser");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(SCRIPT) {
         std::fs::write(&path, SCRIPT).ok()?;
@@ -4630,7 +4695,7 @@ fn scan_shim_fatal(output: &str) -> Option<String> {
 }
 
 type LoginChildHandles = (
-    Arc<Mutex<Option<zeron_harness::process::Child>>>,
+    Arc<Mutex<Option<zend_harness::process::Child>>>,
     Arc<Mutex<String>>,
     Arc<Mutex<Option<Option<i32>>>>,
 );
@@ -4639,7 +4704,7 @@ type LoginChildHandles = (
 /// (the URL can land on either stream), and a monitor polls `try_wait` so the
 /// child is reaped without owning it — the cancel path needs concurrent kill
 /// access.
-fn wire_login_child(mut child: zeron_harness::process::Child) -> LoginChildHandles {
+fn wire_login_child(mut child: zend_harness::process::Child) -> LoginChildHandles {
     let output = Arc::new(Mutex::new(String::new()));
     for pipe in [
         child
@@ -4711,7 +4776,7 @@ fn login_child_failure(code: Option<i32>, output: &Mutex<String>) -> String {
         .last()
         .unwrap_or("sign-in failed")
         .to_string();
-    zeron_harness::redact::redact_output(&last)
+    zend_harness::redact::redact_output(&last)
 }
 
 /// Wait for a captured `codex login` to write a ChatGPT token set into its
@@ -4765,7 +4830,7 @@ async fn await_codex_capture(
 
 /// Kills a captured sign-in's CLI when its task ends or is aborted (cancel,
 /// a superseding sign-in, engine shutdown).
-struct KillOnDrop(Arc<Mutex<Option<zeron_harness::process::Child>>>);
+struct KillOnDrop(Arc<Mutex<Option<zend_harness::process::Child>>>);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
@@ -6209,7 +6274,7 @@ mod login_tests {
         assert_eq!(cfg["oauthAccount"]["accountUuid"], "acct-a");
         // Claude Code's refresh locks are released.
         for lock in
-            zeron_harness::claude::refresh_lock::lock_paths(&config(tmp.path()).claude_config_dir)
+            zend_harness::claude::refresh_lock::lock_paths(&config(tmp.path()).claude_config_dir)
         {
             assert!(!lock.exists(), "{}", lock.display());
         }
@@ -6224,7 +6289,7 @@ mod login_tests {
         accounts.write_slot(&other).unwrap();
         // A Claude Code process is saving a refreshed pair.
         let claude_dir = config(tmp.path()).claude_config_dir;
-        let [held, _] = zeron_harness::claude::refresh_lock::lock_paths(&claude_dir);
+        let [held, _] = zend_harness::claude::refresh_lock::lock_paths(&claude_dir);
         std::fs::create_dir_all(&held).unwrap();
 
         let switch = tokio::spawn({
@@ -6431,7 +6496,7 @@ mod login_tests {
     async fn a_relayed_callback_reaches_only_the_requesters_login_port() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let tmp = tempfile::tempdir().unwrap();
-        let routes = zeron_preview::login::CallbackRoutes::default();
+        let routes = zend_preview::login::CallbackRoutes::default();
         let accounts = AgentAccounts::with_callback_routes(config(tmp.path()), routes.clone());
         // The CLI's loopback listener, waiting for the browser.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -6476,7 +6541,7 @@ mod login_tests {
     #[tokio::test]
     async fn a_login_for_another_device_publishes_its_callback_until_it_ends() {
         let tmp = tempfile::tempdir().unwrap();
-        let routes = zeron_preview::login::CallbackRoutes::default();
+        let routes = zend_preview::login::CallbackRoutes::default();
         let accounts = AgentAccounts::with_callback_routes(config(tmp.path()), routes.clone());
         // A local login publishes nothing.
         let local = accounts.start_login(HarnessId::ClaudeCode).await.unwrap();
@@ -6721,5 +6786,41 @@ mod login_tests {
                 .await
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_watch_tests {
+    use super::*;
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// Lists publish what they found (for plugins' events), once per change.
+    #[tokio::test]
+    async fn a_list_publishes_its_snapshot_once_per_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AgentAccountsConfig::isolated(dir.path());
+        write(
+            &config.claude_config_file,
+            &serde_json::json!({ "oauthAccount": { "accountUuid": "u-1", "emailAddress": "one@example.com" } }).to_string(),
+        );
+        write(
+            &config.claude_creds_file(),
+            &serde_json::json!({ "claudeAiOauth": { "accessToken": "at", "refreshToken": "rt", "expiresAt": 1 } }).to_string(),
+        );
+        let accounts = AgentAccounts::new(config);
+        let mut watch = accounts.watch_snapshots();
+        assert!(watch.borrow_and_update().is_none(), "nothing listed yet");
+        let listed = accounts.list(false).await.unwrap();
+        assert!(watch.has_changed().unwrap());
+        assert_eq!(watch.borrow_and_update().as_ref(), Some(&listed));
+        let text = serde_json::to_string(&listed).unwrap();
+        assert!(!text.contains("\"at\"") && !text.contains("\"rt\""), "no credential in a snapshot: {text}");
+        // (A live login is saved again at each list: not a change.)
+        accounts.list(false).await.unwrap();
+        assert!(!watch.has_changed().unwrap(), "the same snapshot again isn't a change");
     }
 }

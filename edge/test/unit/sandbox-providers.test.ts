@@ -30,13 +30,39 @@ const settle = async (provider: SandboxProvider, id: string, want: SandboxState)
   return state;
 };
 
+describe("resuming onto another size", () => {
+  it("records the size on the fake, and refuses one its disk doesn't fit", async () => {
+    const fake = new FakeProvider();
+    const { sandboxId } = await fake.create({ idempotencyKey: "k", env: {}, machine: "default", ttlSeconds: null });
+    await fake.get(sandboxId);
+    await fake.stop(sandboxId);
+    await fake.get(sandboxId);
+    fake.setNeededGiB(sandboxId, 100);
+    await expect(fake.resume(sandboxId, { ttlSeconds: null })).rejects.toMatchObject({ failure: { kind: "disk_too_small", neededGiB: 100 } });
+    await expect(fake.resume(sandboxId, { ttlSeconds: null, machine: "small" })).rejects.toMatchObject({ failure: { kind: "disk_too_small" } });
+    await fake.resume(sandboxId, { ttlSeconds: null, machine: "large" });
+    expect((await fake.usage(sandboxId, { since: 0, until: Date.now() })).machine).toBe("large");
+  });
+
+  it("types an expired disk, on read and on resume", async () => {
+    const fake = new FakeProvider();
+    const { sandboxId } = await fake.create({ idempotencyKey: "k2", env: {}, machine: "default", ttlSeconds: null });
+    await fake.get(sandboxId);
+    await fake.stop(sandboxId);
+    await fake.get(sandboxId);
+    fake.expireData(sandboxId);
+    expect((await fake.get(sandboxId)).failure).toEqual({ kind: "data_expired" });
+    await expect(fake.resume(sandboxId, { ttlSeconds: null })).rejects.toMatchObject({ failure: { kind: "data_expired" } });
+  });
+});
+
 describe.each(providers)("%s provider contract", (_name, make) => {
   it("creates idempotently, runs, stops, resumes, meters and deletes", async () => {
     const provider = make();
-    const request = { idempotencyKey: "dev-g1", env: { ZERON_X: "1" }, machine: "default" as const, ttlSeconds: 7200 };
+    const request = { idempotencyKey: "dev-g1", env: { ZEND_X: "1" }, machine: "default" as const, ttlSeconds: 7200 };
     const { sandboxId } = await provider.create(request);
     expect((await provider.create(request)).sandboxId).toBe(sandboxId);
-    await expect(provider.create({ ...request, env: { ZERON_X: "2" } })).rejects.toMatchObject({ kind: "conflict" });
+    await expect(provider.create({ ...request, env: { ZEND_X: "2" } })).rejects.toMatchObject({ kind: "conflict" });
 
     expect(await settle(provider, sandboxId, "ready")).toBe("ready");
     expect((await provider.exec(sandboxId, { command: "true", timeoutSeconds: 10 })).exitCode).toBe(0);

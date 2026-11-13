@@ -1,4 +1,4 @@
-//! Where plugins can go: Zeron's named elements, each with what it is, where
+//! Where plugins can go: Zend's named elements, each with what it is, where
 //! a person would say it is, and what it gives to what's built in it (its
 //! `provide`). A plugin places its nodes by selector (`#id`, `.class`, a
 //! role and a name), so this is the map agents write selectors from
@@ -23,7 +23,7 @@ const fn e(selector: &'static str, place: &'static str, about: &'static str, pro
     Element { selector, place, about, provides }
 }
 
-/// Zeron's named elements. Everything in the window also has `appearance`
+/// Zend's named elements. Everything in the window also has `appearance`
 /// and `route` (`#shell`'s). What a place gives is an id or a plain value,
 /// never a record: a session's, a message's or a project's id, a file's or
 /// a block's token (`tokens`), each found in the plugin's records as far
@@ -34,6 +34,9 @@ pub const ELEMENTS: &[Element] = &[
     e(".session-row", "a sidebar row", "A session's row in the sidebar.", &["session"]),
     e(".session-title", "a sidebar row", "A session row's title.", &[]),
     e(".section-header", "the sidebar", "A project's, device's or section's header in the sidebar.", &["project"]),
+    // A project's tile wherever it's drawn (ui/ds/tile.luau's `project`): its
+    // box gives `project`, so a replacement draws each project's own.
+    e(".project-icon", "a project's icon", "A project's icon, wherever one shows: the sidebar's groups and rows, tabs, the composer's and pickers' project, the panel, the palette. Replace it (`ui.change`) to draw your own; `project` is its project (`{ id }`, and with \"sessions.read\" its name, device and `icon`).", &["project"]),
     e("#sidebar-actions", "the sidebar", "New chat and Search, at the sidebar's top.", &[]),
     e("#titlebar", "the title bar", "The title bar.", &[]),
     e("#titlebar-actions", "the title bar", "The title bar's actions, at its end.", &[]),
@@ -41,8 +44,8 @@ pub const ELEMENTS: &[Element] = &[
     // (Not Settings: sealed, no plugin's to change or add to.)
     e("#chat-home", "a new chat", "A new chat, before it's sent: no session here.", &[]),
     // What a new chat opens on, when Settings → Appearance's Wallpaper names
-    // the plugin replacing it (`ui.change`): Zeron's effect is drawn over it.
-    e("#new-chat-background", "a new chat's background", "Behind a new chat, under Zeron's effect: replace it to draw the background. `pointer` is { x, y }, 0 to 1 (0.5 at rest).", &["pointer"]),
+    // the plugin replacing it (`ui.change`): Zend's effect is drawn over it.
+    e("#new-chat-background", "a new chat's background", "Behind a new chat, under Zend's effect: replace it to draw the background. `pointer` is { x, y }, 0 to 1 (0.5 at rest).", &["pointer"]),
     e("#chat-session", "a chat", "A session's page: everything in it has its session.", &["session"]),
     e("#session-header", "a chat's header", "A session page's header.", &[]),
     e("#transcript", "a chat", "A session's transcript.", &[]),
@@ -70,12 +73,13 @@ pub const ELEMENTS: &[Element] = &[
     e(".md-heading", "a reply's heading", "A heading in a reply.", &[]),
 ];
 
-/// The names Zeron and every template promise to keep: a plugin placed by
-/// one of these keeps working across Zeron's updates and templates. The rest
+/// The names Zend and every template promise to keep: a plugin placed by
+/// one of these keeps working across Zend's updates and templates. The rest
 /// may move.
 pub const STABLE: &[&str] = &[
     "#sidebar",
     ".session-row",
+    ".project-icon",
     "#session-header",
     ".message",
     "#chat-composer",
@@ -122,14 +126,14 @@ pub fn parts(selector: &str) -> (Option<String>, Vec<String>) {
     (id, classes)
 }
 
-/// Where `selector` is in words: its element's place, or "part of Zeron".
+/// Where `selector` is in words: its element's place, or "part of Zend".
 pub fn place(selector: &str) -> &'static str {
     let last = selector.rsplit(">>").next().unwrap_or(selector).trim();
     ELEMENTS
         .iter()
         .find(|e| e.selector == last || last.starts_with(e.selector))
         .map(|e| e.place)
-        .unwrap_or("part of Zeron")
+        .unwrap_or("part of Zend")
 }
 
 /// The ids and classes zgx's report of the window names (mounted now, or
@@ -208,10 +212,10 @@ pub fn describe(ids: &BTreeSet<String>, classes: &BTreeSet<String>, tree: serde_
         "elements": elements,
         "everywhere": ["appearance", "route"],
         "window": tree,
-        "stable": "Elements marked stable keep their names across Zeron's updates, and every template keeps them: place by these where you can. Others may move.",
-        "how": "Place a node by selector: zeron.place { at = \".session-row\", after = function() return ui.text { … } end }. \
+        "stable": "Elements marked stable keep their names across Zend's updates, and every template keeps them: place by these where you can. Others may move.",
+        "how": "Place a node by selector: zend.place { at = \".session-row\", after = function() return ui.text { … } end }. \
                 Selectors: #id, .class, `#a >> .b` (inside), role:button \"Send\". What's built at a place reads what it gives \
-                with zeron.context(name) (nil where absent) or zeron.need(name) (draws nothing there, and Settings says why). \
+                with zend.context(name) (nil where absent) or zend.need(name) (draws nothing there, and Settings says why). \
                 Records carry only what the plugin was allowed: sessions.read, messages.read, profile.read, account.email, files.read.",
     })
 }
@@ -237,7 +241,7 @@ mod tests {
     fn places_are_told_in_words() {
         assert_eq!(place("#titlebar-actions"), "the title bar");
         assert_eq!(place("#sidebar >> .session-row"), "a sidebar row");
-        assert_eq!(place("#nowhere"), "part of Zeron");
+        assert_eq!(place("#nowhere"), "part of Zend");
         assert_eq!(place("#transcript >> .md-code.lang-mermaid"), "a reply's code block");
     }
 
@@ -258,6 +262,8 @@ mod tests {
         assert_eq!(row["present"], false);
         assert_eq!(row["provides"], serde_json::json!(["session"]));
         assert_eq!((row["stable"].as_bool(), bar["stable"].as_bool()), (Some(true), Some(false)));
+        let icon = els.iter().find(|e| e["selector"] == ".project-icon").unwrap();
+        assert_eq!((icon["stable"].as_bool(), &icon["provides"]), (Some(true), &serde_json::json!(["project"])));
         for s in STABLE {
             assert!(ELEMENTS.iter().any(|e| e.selector == *s), "{s} is stable but not an element");
         }

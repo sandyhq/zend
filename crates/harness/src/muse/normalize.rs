@@ -4,12 +4,12 @@
 //! `item/updated` and `item/completed` with a rising `revision`, plus
 //! `item/delta` appends to one field (`text`, `summary.<n>`, `output`).
 //! Text is emitted as the suffix past what was already sent, so a full
-//! re-send after deltas never duplicates. Items Zeron does not show:
+//! re-send after deltas never duplicates. Items Zend does not show:
 //! `userMessage` (the prompt itself), `reminderChild` (Muse's per-step
 //! housekeeping agents) and `compaction`.
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use zeron_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall, ToolDiff};
+use zend_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall, ToolDiff};
 
 /// Tools whose own item carries the work (subagents, the todo list, a
 /// question): their tool row would only duplicate it.
@@ -338,9 +338,9 @@ fn tool_call(tool: &str, args: &Value) -> ToolCall {
                 })
                 .collect(),
         },
-        name if name.starts_with("zeron_") => ToolCall::Mcp {
-            server: "zeron".into(),
-            tool: name[6..].into(),
+        name if name.starts_with("zend_") => ToolCall::Mcp {
+            server: "zend".into(),
+            tool: name["zend_".len()..].into(),
             input: Some(args.clone()),
         },
         name => match name.split_once("__") {
@@ -623,5 +623,13 @@ mod tests {
             ToolCall::Mcp { server, tool, .. } if server == "github" && tool == "create_pr"));
         assert!(matches!(tool_call("web_search", &json!({"query":"q"})),
             ToolCall::WebSearch { query } if query == "q"));
+    }
+
+    #[test]
+    fn zend_tools_keep_their_whole_name() {
+        assert!(matches!(tool_call("zend_whoami", &json!({})),
+            ToolCall::Mcp { server, tool, .. } if server == "zend" && tool == "whoami"));
+        assert!(matches!(tool_call("zend_list_harnesses", &json!({})),
+            ToolCall::Mcp { server, tool, .. } if server == "zend" && tool == "list_harnesses"));
     }
 }

@@ -5,7 +5,7 @@ use std::{
     future::Future,
     time::{Duration, Instant},
 };
-use zeron_proto::Model;
+use zend_proto::Model;
 
 #[derive(Default)]
 pub(crate) struct Catalog {
@@ -200,6 +200,7 @@ mod tests {
     };
     fn models(id: &str) -> Vec<Model> {
         vec![Model {
+            default: false,
             id: id.into(),
             label: id.into(),
             description: None,

@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use zeron_plugin_guard::net;
+use zend_plugin_guard::net;
 
 pub use vm::{Described, Failure, Kind, Limits};
 use vm::{Done, Ops, Spec, Vm};
@@ -116,13 +116,13 @@ impl Plan {
 
 /// What the host lends services (plugins/mod.rs implements it).
 pub trait Hooks: Send + Sync + 'static {
-    /// `zeron.emit`: to the plugin's windows here and those watching.
+    /// `zend.emit`: to the plugin's windows here and those watching.
     fn emit(&self, plugin: &str, event: &str, data: Json);
-    /// `zeron.notify`, as `PostNotification` posts (an outcome word).
+    /// `zend.notify`, as `PostNotification` posts (an outcome word).
     fn notify(&self, plugin: &str, title: &str, body: &str, session: Option<&str>) -> String;
     /// This device's `{ id, name }`.
     fn device(&self) -> Json;
-    /// `zeron.folders`: this device's chats' and projects' folders.
+    /// `zend.folders`: this device's chats' and projects' folders.
     fn folders(&self) -> Vec<String> {
         Vec::new()
     }
@@ -131,6 +131,15 @@ pub trait Hooks: Send + Sync + 'static {
     fn verify(&self, _plan: &Plan) -> Result<(), String> {
         Ok(())
     }
+    /// `zend.usage`, `zend.switch_account`, `zend.set_model`, …: asked
+    /// of the engine for `plugin`, which checks what this device allowed it
+    /// (plugins/agents). `done` with the answer, or why not.
+    fn agents(&self, _plugin: &str, _args: Json, done: Done) {
+        done(Err("Usage, accounts and models aren't available here".into()));
+    }
+    /// The `zend.on` listeners `plugin`'s service registered, as it loaded:
+    /// the engine tells each its events (`Kind::Event`).
+    fn listeners(&self, _plugin: &str, _listeners: &[(String, String, Json)]) {}
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +167,7 @@ impl Default for Config {
 /// A call's timeout unless it asks another, and the most it may ask.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(300);
-/// What `zeron.emit` sends at once, at most (its JSON).
+/// What `zend.emit` sends at once, at most (its JSON).
 pub const MAX_EMIT_BYTES: usize = 64 * 1024;
 /// A service's log lines kept for `PluginStatus`.
 const LOG_LINES: usize = 50;
@@ -232,7 +241,7 @@ impl Slot {
 }
 
 impl Services {
-    /// Services whose `zeron.store` files live in `store_dir`.
+    /// Services whose `zend.store` files live in `store_dir`.
     pub fn new(store_dir: &Path, config: Config) -> Self {
         Self {
             inner: Arc::new(Shared {
@@ -253,7 +262,7 @@ impl Services {
         self.inner.hooks.get().cloned()
     }
 
-    /// `zeron.store`'s file for `plugin`.
+    /// `zend.store`'s file for `plugin`.
     pub fn store_path(store_dir: &Path, plugin: &str) -> PathBuf {
         store_dir.join(format!("{plugin}.service.json"))
     }
@@ -474,6 +483,7 @@ impl Services {
             st.running.replace(running.clone())
         };
         slot.note(format!("started ({} {})", plan.name, plan.version));
+        hooks.listeners(&plan.plugin, &described.listeners);
         // The old version finishes its calls in flight, then stops.
         if let Some(old) = old {
             old.vm.stop();
@@ -493,7 +503,7 @@ impl Services {
         timeout: Duration,
     ) -> Result<Json, Refusal> {
         if self.inner.closed.load(Ordering::SeqCst) {
-            return Err(Refusal::new(reason::OFF, "Zeron is stopping"));
+            return Err(Refusal::new(reason::OFF, "Zend is stopping"));
         }
         let slot = self.slot(&plan.plugin);
         {
@@ -512,7 +522,8 @@ impl Services {
             let safe = match kind {
                 Kind::Method => *running.described.methods.get(name).ok_or_else(unknown)?,
                 Kind::Tool if !running.described.tools.iter().any(|t| t == name) => return Err(unknown()),
-                Kind::Tool | Kind::Timer => false,
+                Kind::Event if !running.described.listeners.iter().any(|l| l.0 == name) => return Err(unknown()),
+                Kind::Tool | Kind::Timer | Kind::Event => false,
             };
             let reply = running.vm.call(kind, name, args.clone(), call.clone());
             match tokio::time::timeout(timeout, reply).await {
@@ -600,6 +611,15 @@ impl Services {
                     .map(|(key, seconds)| json!({ "key": key, "seconds": seconds }))
                     .collect::<Vec<_>>()
             );
+            if !described.listeners.is_empty() {
+                out["listeners"] = json!(
+                    described
+                        .listeners
+                        .iter()
+                        .map(|(key, event, opts)| json!({ "key": key, "event": event, "opts": opts }))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
         if let Some((_, why)) = &st.failed {
             out["error"] = json!(why);
@@ -607,12 +627,12 @@ impl Services {
         out
     }
 
-    /// Stop every service (Zeron quitting).
+    /// Stop every service (Zend quitting).
     pub fn shutdown(&self) {
         self.inner.closed.store(true, Ordering::SeqCst);
         let slots: Vec<Arc<Slot>> = lock(&self.inner.slots).drain().map(|(_, s)| s).collect();
         for slot in slots {
-            retire(&slot, "Zeron is stopping");
+            retire(&slot, "Zend is stopping");
         }
     }
 }
@@ -742,7 +762,13 @@ impl Ops for PluginOps {
                     done(Ok(json!(hooks.notify(&plugin, &title, body, session))))
                 });
             }
-            other => done(Err(format!("zeron.{other} isn't something a service can do"))),
+            "agents" => {
+                // (Each op's permission is the engine's to check: agents.rs.)
+                let (hooks, plugin) = (self.hooks.clone(), self.plan.plugin.clone());
+                let _runtime = self.runtime.enter();
+                hooks.agents(&plugin, args, done);
+            }
+            other => done(Err(format!("zend.{other} isn't something a service can do"))),
         }
     }
 
@@ -754,10 +780,10 @@ impl Ops for PluginOps {
         let mut handles = Vec::new();
         for (place, folder) in folders.into_iter().enumerate() {
             if !folder.is_absolute() {
-                return Err(format!("zeron.watch: \"{}\" isn't a whole path", folder.display()));
+                return Err(format!("zend.watch: \"{}\" isn't a whole path", folder.display()));
             }
             if !folder.is_dir() {
-                return Err(format!("zeron.watch: there's no folder at \"{}\"", folder.display()));
+                return Err(format!("zend.watch: there's no folder at \"{}\"", folder.display()));
             }
             // (Events name the folder as the system knows it: /private/tmp
             // for /tmp.)
@@ -792,7 +818,7 @@ impl Ops for PluginOps {
     fn emit(&self, event: &str, data: Json) {
         let size = serde_json::to_vec(&data).map(|b| b.len()).unwrap_or(usize::MAX);
         if event.is_empty() || size > MAX_EMIT_BYTES {
-            self.log(&format!("zeron.emit(\"{event}\") dropped: an event's name, and 64 KB of data at most"));
+            self.log(&format!("zend.emit(\"{event}\") dropped: an event's name, and 64 KB of data at most"));
             return;
         }
         // (On the VM's thread: the host sends to other devices on the runtime.)
@@ -819,10 +845,10 @@ impl PluginOps {
 /// host its manifest allows, an address literal that's public or named.
 fn check_url(policy: &net::Policy, url: &reqwest::Url) -> Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
-        return Err("zeron.fetch reaches http and https addresses only".into());
+        return Err("zend.fetch reaches http and https addresses only".into());
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err("zeron.fetch doesn't take credentials in an address".into());
+        return Err("zend.fetch doesn't take credentials in an address".into());
     }
     let port = url.port_or_known_default().unwrap_or(0);
     // (As the URL parser wrote it: `0x7f.1` is `127.0.0.1` by now.)
@@ -890,7 +916,7 @@ fn guarded_client(hosts: &[String]) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("The network isn't available: {e}"))
 }
 
-/// `zeron.fetch`: `{ url, method?, headers?, body?, timeout? }` → `{ status,
+/// `zend.fetch`: `{ url, method?, headers?, body?, timeout? }` → `{ status,
 /// headers, body }` (http and https only; the body as text, 16 MB at most).
 /// Where it may go is plugin-guard's `net` (R15): public addresses, or the
 /// hosts the manifest names; checked again on every redirect and at every

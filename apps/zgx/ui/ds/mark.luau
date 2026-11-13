@@ -1,4 +1,4 @@
--- A harness's mark on its tile, as the intro and zeron.sh show them:
+-- A harness's mark on its tile, as the intro and zend.invalid show them:
 -- `Mark { name = "claude", size = 48 }`. Each is the vendor's own, bundled
 -- (assets/icons): in its brand colour where the brand has one (Claude's
 -- coral, Antigravity's gradient), one ink otherwise (OpenAI, Cursor: black
@@ -94,9 +94,9 @@ return function(props: Props): Node
 		rounded = ui.raw(size * 0.25, "a mark tile's radius scales with it"),
 		items = "center",
 		justify = "center",
-		bg = "$zeron.mark.bg",
+		bg = "$zend.mark.bg",
 		border = 1,
-		border_color = "$zeron.mark.border",
+		border_color = "$zend.mark.border",
 		shadow = "$shadow.sm",
 		picture(name :: Name, size * 0.56, nil),
 	}

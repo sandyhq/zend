@@ -35,6 +35,11 @@
 //! changes to the tree's shape (a visual builds again only then), `generation`
 //! every render (its canvases draw again). Nothing else is copied into the
 //! scripts until they ask, so a visual's change touches no other's.
+//!
+//! What a visual shows is its tree, plain data held here; its VM is only needed
+//! to run it again. So at rest the VM of one with nothing to lose goes
+//! ([`Entry::sleep`]) and it starts again from its script when it's next needed
+//! ([`Entry::wake`]): the same source and seed make the same tree.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,7 +47,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use serde_json::json;
-use zeron_visual as zv;
+use zend_visual as zv;
 use zgx_script::{ScriptHost, Shared, Value};
 
 /// Time spent drawing canvases (this thread) and rendering scene and shader
@@ -98,6 +103,9 @@ const MAX_READ: usize = zv::assets::MAX_TOTAL_ASSET_BYTES + zv::MAX_SCRIPT_BYTES
 /// A scene's or shader's frame at most this many device pixels a point
 /// (the shipping app's mobile cap): sharp at 2x, never a 3x readback.
 const MAX_GPU_SCALE: f32 = 2.0;
+/// A visual that started within this can start again in a frame unnoticed.
+/// One that took longer (it precomputes at its top level) keeps its VM.
+const UNFELT_START: std::time::Duration = std::time::Duration::from_millis(8);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Load {
@@ -111,6 +119,13 @@ struct Entry {
     title: String,
     load: Load,
     runtime: Option<zv::Visual>,
+    /// What it starts from, again after a sleep.
+    source: String,
+    assets: zv::Assets,
+    seed: u64,
+    /// Its script's state may be more than its source gives: a control or
+    /// the pointer reached it. Or it took too long to start again unfelt.
+    keep_awake: bool,
     tree: Option<zv::Node>,
     /// The tree as the scripts get it, made once per shape.
     value: Value,
@@ -130,6 +145,10 @@ impl Entry {
             title,
             load: Load::Loading,
             runtime: None,
+            source: String::new(),
+            assets: zv::Assets::default(),
+            seed: 0,
+            keep_awake: false,
             tree: None,
             value: Value::Nil,
             error: None,
@@ -141,15 +160,19 @@ impl Entry {
     }
 
     /// Run `source`'s setup and first render, seeded from `id`.
-    fn start(&mut self, id: &str, source: &str, assets: zv::Assets) {
-        match zv::Visual::load(source, zv::seed_for(id)) {
+    fn start(&mut self, id: &str, source: String, assets: zv::Assets) {
+        let started = std::time::Instant::now();
+        let seed = zv::seed_for(id);
+        match zv::Visual::load(&source, seed) {
             Ok(runtime) => {
-                self.runtime = Some(runtime.with_assets(assets));
+                self.runtime = Some(runtime.with_assets(assets.clone()));
+                (self.source, self.assets, self.seed) = (source, assets, seed);
                 self.load = Load::Ready;
                 self.render();
+                self.keep_awake = started.elapsed() > UNFELT_START;
             }
             Err(error) => {
-                eprintln!("zeron-zgx: visual {id} failed to load: {error}");
+                eprintln!("zend-zgx: visual {id} failed to load: {error}");
                 self.load = Load::Failed(error.message);
                 self.rev += 1;
             }
@@ -184,9 +207,44 @@ impl Entry {
         }
     }
 
+    /// At rest, its VM goes if starting again gives back the same thing: its
+    /// script holds nothing but what its source makes, and nothing it's
+    /// drawing depends on the last draw. (A shader never runs the script.)
+    fn sleep(&mut self) {
+        let same_again = self.load == Load::Ready && self.error.is_none() && !self.keep_awake;
+        if same_again && self.tree.as_ref().is_some_and(|tree| !draws_over_time(tree)) {
+            self.runtime = None;
+        }
+    }
+
+    /// Its VM, started again if it slept: from the same source and seed, so
+    /// the same tree and the same handlers. Nothing it shows changes, and
+    /// neither does its generation, so nothing draws again for this.
+    fn wake(&mut self) -> Result<&mut zv::Visual, String> {
+        if self.runtime.is_none() {
+            if self.load != Load::Ready {
+                return Err("not running".into());
+            }
+            let loaded = zv::Visual::load(&self.source, self.seed).map_err(|e| e.message)?;
+            let mut runtime = loaded.with_assets(self.assets.clone());
+            let tree = runtime.render().map_err(|e| e.message)?;
+            if self.tree.as_ref() != Some(&tree) {
+                self.value = node_value(&tree, "0");
+                self.tree = Some(tree);
+                self.rev += 1;
+            }
+            self.runtime = Some(runtime);
+        }
+        self.runtime.as_mut().ok_or_else(|| "not running".into())
+    }
+
     /// A control's handler, then the view again.
     fn event(&mut self, handler: u32, arg: zv::HandlerArg) {
-        let Some(runtime) = self.runtime.as_mut() else { return };
+        self.keep_awake = true;
+        let runtime = match self.wake() {
+            Ok(runtime) => runtime,
+            Err(why) => return self.fail(zv::VisualError::script(why)),
+        };
         match runtime.call(zv::HandlerId(handler), arg) {
             Ok(()) => self.render(),
             Err(error) => self.fail(error),
@@ -215,9 +273,6 @@ impl Entry {
 
     /// A canvas's drawing.
     fn draw(&mut self, arg: &Value) -> Value {
-        let Some(runtime) = self.runtime.as_mut() else {
-            return Value::record([("error", Value::from("not running"))]);
-        };
         let n = |k: &str| arg.field(k).and_then(Value::as_f64);
         let (w, h) = (n("w").unwrap_or(0.) as f32, n("ht").unwrap_or(0.) as f32);
         let pointer = match (n("px"), n("py")) {
@@ -227,6 +282,11 @@ impl Entry {
                 down: arg.field("down").is_some_and(Value::truthy),
             }),
             _ => None,
+        };
+        self.keep_awake |= pointer.is_some();
+        let runtime = match self.wake() {
+            Ok(runtime) => runtime,
+            Err(why) => return Value::record([("error", Value::from(why.as_str()))]),
         };
         let handler = zv::HandlerId(n("h").unwrap_or(-1.) as u32);
         match runtime.draw_canvas_traced(handler, w, h, n("t").unwrap_or(0.), pointer) {
@@ -248,11 +308,26 @@ impl Entry {
     }
 }
 
+/// Whether a canvas or scene in `node` draws as time passes: its script may
+/// carry something from one draw to the next.
+fn draws_over_time(node: &zv::Node) -> bool {
+    let here = match &node.kind {
+        zv::NodeKind::Canvas(canvas) => canvas.animate,
+        zv::NodeKind::Scene(scene) => scene.animate,
+        _ => false,
+    };
+    here || zv::children(node).any(draws_over_time)
+}
+
 /// Every visual this app shows, and each window's shared `visuals`.
 #[derive(Default)]
 struct Visuals {
     entries: RefCell<HashMap<String, Entry>>,
-    shared: RefCell<Vec<Shared>>,
+    /// Each shared `visuals`, with the id prefix it shows (a plugin's own:
+    /// its ids without it), or none (the app's: every visual).
+    shared: RefCell<Vec<(Option<String>, Shared)>>,
+    /// What lets VMs go as each window goes idle.
+    rests: RefCell<Vec<zgx::idle::IdleTrim>>,
 }
 
 thread_local! {
@@ -260,26 +335,41 @@ thread_local! {
 }
 
 impl Visuals {
-    fn revs(&self) -> Value {
+    fn revs(&self, scope: Option<&str>) -> Value {
         let entries = self.entries.borrow();
-        Value::record(entries.iter().map(|(id, e)| {
+        let shown = entries.iter().filter_map(|(id, e)| match scope {
+            None => Some((id.as_str(), e)),
+            Some(prefix) => id.strip_prefix(prefix).map(|local| (local, e)),
+        });
+        Value::record(shown.map(|(id, e)| {
             (
-                id.as_str(),
+                id,
                 Value::record([("rev", Value::Num(e.rev as f64)), ("gen", Value::Num(e.generation as f64))]),
             )
         }))
     }
 
     fn publish(&self) {
-        let value = self.revs();
-        for shared in self.shared.borrow().iter() {
-            shared.set(value.clone());
+        let all = self.revs(None);
+        for (scope, shared) in self.shared.borrow().iter() {
+            match scope {
+                None => {
+                    shared.set(all.clone());
+                }
+                Some(prefix) => {
+                    shared.set(self.revs(Some(prefix)));
+                }
+            }
         }
     }
 
     fn with<R>(&self, id: &str, f: impl FnOnce(&mut Entry) -> R) -> Option<R> {
         let mut entries = self.entries.borrow_mut();
         entries.get_mut(id).map(f)
+    }
+
+    fn sleep(&self) {
+        self.entries.borrow_mut().values_mut().for_each(Entry::sleep);
     }
 }
 
@@ -290,25 +380,78 @@ pub fn install(cx: &mut zgx_desktop::WindowContext, host: &ScriptHost) {
     // hidden, minimized or covered.
     host.window_state(&cx.ui);
     register(host);
+    let visuals = VISUALS.with(Rc::clone);
+    let resting = visuals.clone();
+    let rest = zgx::idle::on_idle(&cx.ui.runtime, move || resting.sleep());
+    visuals.rests.borrow_mut().push(rest);
 }
 
 /// The calls on `host` (a test's, with no window, too).
 pub fn register(host: &ScriptHost) {
     let visuals = VISUALS.with(Rc::clone);
-    visuals.shared.borrow_mut().push(host.shared("visuals", visuals.revs()));
+    visuals.shared.borrow_mut().push((None, host.shared("visuals", visuals.revs(None))));
+    calls(host, "visuals", &visuals, None);
+}
 
-    let v = visuals.clone();
-    host.async_action("visuals.open", move |arg| {
+/// Plugin `plugin`'s own visuals (zend): the same calls as
+/// `plugin.<plugin>.visuals.open` and the rest, and its shared
+/// `plugin.<plugin>.visuals`. Its ids are its own: each is kept here as
+/// `plugin:<plugin>:<id>`, so it reaches no chat's visual and no other
+/// plugin's. It runs scripts it gives (`source`) and reads no file
+/// (`path`, `device` are refused).
+pub fn register_plugin(host: &ScriptHost, plugin: &str) {
+    let visuals = VISUALS.with(Rc::clone);
+    let scope = format!("plugin:{plugin}:");
+    let key = format!("plugin.{plugin}.visuals");
+    visuals.shared.borrow_mut().push((Some(scope.clone()), host.shared(&key, visuals.revs(Some(&scope)))));
+    calls(host, &key, &visuals, Some(scope));
+}
+
+/// The names a plugin's own visuals are called by (for exposing them).
+pub const PLUGIN_CALLS: &[&str] = &["open", "get", "event", "draw", "frame", "release"];
+
+/// `arg` with its `id` in `scope` (a record's field, or `arg` itself as text).
+fn scoped(arg: Value, scope: &Option<String>) -> Value {
+    let Some(scope) = scope else { return arg };
+    match &arg {
+        Value::Map(fields) => Value::record(fields.iter().map(|(k, v)| {
+            if &**k == "id" {
+                (k.clone(), Value::from(format!("{scope}{}", text(Some(v))).as_str()))
+            } else {
+                (k.clone(), v.clone())
+            }
+        })),
+        _ => Value::from(format!("{scope}{}", crate::auth::text(&arg)).as_str()),
+    }
+}
+
+fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<String>) {
+    let name = |call: &str| format!("{prefix}.{call}");
+
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.async_action(name("open"), move |arg| {
         let v = v.clone();
-        async move { open(v, arg).await }
+        let sc = sc.clone();
+        async move {
+            if sc.is_some() {
+                if arg.field("source").is_none() {
+                    return Err("a plugin's visual is drawn from its source".into());
+                }
+                if arg.field("path").is_some() || arg.field("device").is_some() {
+                    return Err("a plugin's visual reads no file".into());
+                }
+            }
+            open(v, scoped(arg, &sc)).await
+        }
     });
-    let v = visuals.clone();
-    host.function("visuals.get", move |arg| {
-        let id = crate::auth::text(&arg);
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.function(name("get"), move |arg| {
+        let id = crate::auth::text(&scoped(arg, &sc));
         v.with(&id, |e| e.snapshot()).unwrap_or(Value::Nil)
     });
-    let v = visuals.clone();
-    host.action("visuals.event", move |arg| {
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.action(name("event"), move |arg| {
+        let arg = scoped(arg, &sc);
         let id = text(arg.field("id"));
         let handler = arg.field("h").and_then(Value::as_f64).unwrap_or(-1.);
         if handler < 0. {
@@ -325,22 +468,25 @@ pub fn register(host: &ScriptHost) {
             v.publish();
         }
     });
-    let v = visuals.clone();
-    host.function("visuals.draw", move |arg| {
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.function(name("draw"), move |arg| {
+        let arg = scoped(arg, &sc);
         let id = text(arg.field("id"));
         let start = std::time::Instant::now();
         let drawn = v.with(&id, |e| e.draw(&arg)).unwrap_or(Value::Nil);
         DRAW_NS.fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         drawn
     });
-    let v = visuals.clone();
+    let (v, sc) = (visuals.clone(), scope.clone());
     let frames_host = host.clone();
-    host.async_action("visuals.frame", move |arg| {
+    host.async_action(name("frame"), move |arg| {
         let (v, host) = (v.clone(), frames_host.clone());
+        let arg = scoped(arg, &sc);
         async move { frame(v, host, arg).await }
     });
-    let v = visuals.clone();
-    host.action("visuals.release", move |arg| {
+    let (v, sc) = (visuals.clone(), scope);
+    host.action(name("release"), move |arg| {
+        let arg = scoped(arg, &sc);
         let (id, path) = (text(arg.field("id")), text(arg.field("p")));
         v.with(&id, |e| {
             e.scenes.remove(&path);
@@ -371,10 +517,46 @@ pub fn surfaces(id: &str) -> (Vec<(String, u32)>, Vec<String>) {
 pub fn preload(id: &str, title: &str, source: &str) {
     VISUALS.with(|v| {
         let mut e = Entry::new(title.into());
-        e.start(id, source, zv::Assets::default());
+        e.start(id, source.into(), zv::Assets::default());
         v.entries.borrow_mut().insert(id.into(), e);
         v.publish();
     });
+}
+
+/// (For tests: what a window going idle does here.)
+#[cfg(test)]
+pub fn rest() {
+    VISUALS.with(|v| v.sleep());
+}
+
+/// (For tests: whether visual `id` has its VM.)
+#[cfg(test)]
+pub fn awake(id: &str) -> bool {
+    VISUALS.with(|v| v.with(id, |e| e.runtime.is_some()).unwrap_or(false))
+}
+
+/// (For tests: visual `id` as the scripts get it.)
+#[cfg(test)]
+pub fn snapshot(id: &str) -> Value {
+    VISUALS.with(|v| v.with(id, |e| e.snapshot()).unwrap_or(Value::Nil))
+}
+
+/// (For tests: its rev and generation, which say what the scripts rebuild.)
+#[cfg(test)]
+pub fn versions(id: &str) -> (u64, u64) {
+    VISUALS.with(|v| v.with(id, |e| (e.rev, e.generation)).unwrap_or_default())
+}
+
+/// (For tests: a control's handler, as `visuals.event` runs it.)
+#[cfg(test)]
+pub fn event(id: &str, handler: u32) {
+    VISUALS.with(|v| v.with(id, |e| e.event(handler, zv::HandlerArg::None)));
+}
+
+/// (For tests: a canvas's drawing, as `visuals.draw` makes it.)
+#[cfg(test)]
+pub fn draw(id: &str, arg: Value) -> Value {
+    VISUALS.with(|v| v.with(id, |e| e.draw(&arg)).unwrap_or(Value::Nil))
 }
 
 fn text(value: Option<&Value>) -> String {
@@ -405,9 +587,9 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
         None => read_visual(&text(arg.field("path")), arg.field("device").map(crate::auth::text)).await,
     };
     v.with(&id, |e| match loaded {
-        Ok((source, assets)) => e.start(&id, &source, assets),
+        Ok((source, assets)) => e.start(&id, source, assets),
         Err(why) => {
-            eprintln!("zeron-zgx: visual {id} unavailable: {why}");
+            eprintln!("zend-zgx: visual {id} unavailable: {why}");
             e.load = Load::Failed(why);
             e.rev += 1;
         }
@@ -908,14 +1090,14 @@ fn points_value(points: &[[f32; 2]]) -> Value {
 /// to build or rasterize: a circle (`c`), a rectangle (`r`), a line (`l`).
 fn command_value(cmd: &zv::DrawCmd) -> Value {
     match cmd {
-        zv::DrawCmd::Fill { points, color } if let Some((x, y, r)) = zeron_zgx_pixels::circle_of(points) => Value::record([
+        zv::DrawCmd::Fill { points, color } if let Some((x, y, r)) = zend_zgx_pixels::circle_of(points) => Value::record([
             ("k", Value::from("c")),
             ("x", num(x)),
             ("y", num(y)),
             ("r", num(r)),
             ("c", color_value(*color)),
         ]),
-        zv::DrawCmd::Fill { points, color } if let Some((x, y, w, h)) = zeron_zgx_pixels::rect_of(points) => Value::record([
+        zv::DrawCmd::Fill { points, color } if let Some((x, y, w, h)) = zend_zgx_pixels::rect_of(points) => Value::record([
             ("k", Value::from("r")),
             ("x", num(x)),
             ("y", num(y)),
@@ -942,7 +1124,7 @@ fn command_value(cmd: &zv::DrawCmd) -> Value {
             if *closed {
                 all.push(points[0]);
             }
-            let runs = zeron_zgx_pixels::monotone_runs(&all);
+            let runs = zend_zgx_pixels::monotone_runs(&all);
             Value::record([
                 ("k", Value::from("m")),
                 ("runs", list(runs.iter().map(|&(a, b)| points_value(&all[a..=b])).collect())),
@@ -1096,7 +1278,7 @@ fn gpu_send(job: Job) {
     static SENDER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
     let sender = SENDER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<Job>();
-        let _ = std::thread::Builder::new().name("zeron-visual-gpu".into()).spawn(move || gpu_thread(rx));
+        let _ = std::thread::Builder::new().name("zend-visual-gpu".into()).spawn(move || gpu_thread(rx));
         Mutex::new(tx)
     });
     if let Ok(sender) = sender.lock() {
@@ -1105,8 +1287,8 @@ fn gpu_send(job: Job) {
 }
 
 fn gpu_thread(jobs: mpsc::Receiver<Job>) {
-    let mut scenes: HashMap<String, Option<zeron_visual_gpu::SceneState>> = HashMap::new();
-    let mut shaders: HashMap<String, Option<zeron_visual_gpu::ShaderState>> = HashMap::new();
+    let mut scenes: HashMap<String, Option<zend_visual_gpu::SceneState>> = HashMap::new();
+    let mut shaders: HashMap<String, Option<zend_visual_gpu::ShaderState>> = HashMap::new();
     while let Ok(job) = jobs.recv() {
         let start = std::time::Instant::now();
         let cpu = thread_cpu_ns();
@@ -1119,7 +1301,7 @@ fn gpu_thread(jobs: mpsc::Receiver<Job>) {
             Job::Scene { key, scene, camera, size, scale, palette, reply } => {
                 let rgba = move |c: zv::Color| palette.color(c);
                 let state = scenes.entry(key).or_default();
-                let frame = zeron_visual_gpu::render_scene(&scene, camera, size.0, size.1, scale, &rgba, state)
+                let frame = zend_visual_gpu::render_scene(&scene, camera, size.0, size.1, scale, &rgba, state)
                     .map(|f| (f.width, f.height, f.bgra))
                     .unwrap_or_else(|| {
                         // No GPU here: the software renderer.
@@ -1136,7 +1318,7 @@ fn gpu_thread(jobs: mpsc::Receiver<Job>) {
                     .iter()
                     .map(|name| zv::TextureData::Encoded(assets.get(name).unwrap_or_else(|| Arc::from([]))))
                     .collect();
-                let spec = zeron_visual_gpu::ShaderSpec {
+                let spec = zend_visual_gpu::ShaderSpec {
                     image: &node.code,
                     buffers: &node.buffers,
                     inputs: &names,
@@ -1145,7 +1327,7 @@ fn gpu_thread(jobs: mpsc::Receiver<Job>) {
                     textures: &textures,
                 };
                 let state = shaders.entry(key).or_default();
-                let out = zeron_visual_gpu::render_shader(&spec, &uniforms, size.0, size.1, state)
+                let out = zend_visual_gpu::render_shader(&spec, &uniforms, size.0, size.1, state)
                     .map(|f| rendered((f.width, f.height, f.bgra)));
                 reply.send(out);
             }
@@ -1166,7 +1348,7 @@ pub fn bench_swap(bgra: Vec<u8>) -> usize {
 
 /// BGRA to RGBA, in place.
 fn rendered((width, height, mut bgra): (u32, u32, Vec<u8>)) -> Rendered {
-    zeron_zgx_pixels::bgra_to_rgba(&mut bgra);
+    zend_zgx_pixels::bgra_to_rgba(&mut bgra);
     Rendered { width, height, rgba: bgra }
 }
 
@@ -1187,12 +1369,11 @@ async fn frame(v: Rc<Visuals>, host: ScriptHost, arg: Value) -> Result<Value, St
         .with(&id, |e| -> Result<Job, String> {
             let node = e.node_at(&path).cloned().ok_or("that part of the visual is gone")?;
             let generation = e.generation;
-            let runtime = e.runtime.as_mut().ok_or("not running")?;
             match node.kind {
                 zv::NodeKind::Scene(s) => {
                     let fresh = e.scenes.get(&path).is_some_and(|(at, _)| *at == generation && !s.animate);
                     if !fresh {
-                        let scene = runtime.draw_scene(s.draw, time).map_err(|e| e.message)?;
+                        let scene = e.wake()?.draw_scene(s.draw, time).map_err(|e| e.message)?;
                         e.scenes.insert(path.clone(), (generation, Arc::new(scene)));
                     }
                     let scene = e.scenes[&path].1.clone();
@@ -1270,7 +1451,7 @@ async fn frame(v: Rc<Visuals>, host: ScriptHost, arg: Value) -> Result<Value, St
                     Ok(Job::Shader {
                         key: key.clone(),
                         node: Box::new(s),
-                        assets: runtime.assets().clone(),
+                        assets: e.assets.clone(),
                         uniforms,
                         size: device,
                         reply,
@@ -1302,7 +1483,7 @@ mod tests {
 
     fn started(id: &str, source: &str) -> Entry {
         let mut e = Entry::new("Test".into());
-        e.start(id, source, zv::Assets::default());
+        e.start(id, source.into(), zv::Assets::default());
         e
     }
 

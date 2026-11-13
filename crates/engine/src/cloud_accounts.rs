@@ -17,11 +17,11 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use zeron_proto::{
+use zend_proto::{
     AgentAccount, AgentAccountsSnapshot, AgentAuthKind, AgentUsageWindow, CLOUD_ACCOUNTS_DEVICE,
     HarnessId, VaultAccount, VaultConnectionStatus, VaultProvider,
 };
-use zeron_rpc::{RpcError, RpcReply, methods, parse_params};
+use zend_rpc::{RpcError, RpcReply, methods, parse_params};
 
 use crate::agent_accounts::AgentAccounts;
 use crate::cloud_client::CloudClient;
@@ -403,7 +403,7 @@ pub(crate) async fn ready_harnesses(cloud: &CloudClient) -> Option<Vec<HarnessId
     Some(ready_from(&vault))
 }
 
-fn ready_from(vault: &zeron_proto::VaultStatus) -> Vec<HarnessId> {
+fn ready_from(vault: &zend_proto::VaultStatus) -> Vec<HarnessId> {
     let ready = |provider: VaultProvider| {
         vault.connections.iter().any(|c| {
             c.provider == provider
@@ -447,6 +447,7 @@ mod tests {
             display_name: None,
             organization: None,
             plan: Some("Max".into()),
+            avatar_url: None,
             authorized_devices: vec!["cloud-1".into()],
             created_at: 1,
             updated_at: 2,
@@ -455,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_harness_is_ready_with_an_active_working_login_or_key() {
-        let connection = |provider, status, has_active| zeron_proto::VaultConnection {
+        let connection = |provider, status, has_active| zend_proto::VaultConnection {
             provider,
             status,
             authorized_devices: vec![],
@@ -464,7 +465,7 @@ mod tests {
             accounts: 1,
             has_active,
         };
-        let vault = |connections| zeron_proto::VaultStatus {
+        let vault = |connections| zend_proto::VaultStatus {
             available: true,
             connections,
             ..Default::default()

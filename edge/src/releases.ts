@@ -3,7 +3,7 @@ import { json } from "./http";
 
 /**
  * GET/HEAD /releases/<key>: the release artifacts in the RELEASES bucket
- * (served at zeron.sh/releases/*) — what the installer and the website download.
+ * (served at zend.invalid/releases/*) — what the installer and the website download.
  */
 export async function releaseRoute(request: Request, env: Env, url: URL): Promise<Response | null> {
   const parts = url.pathname.split("/").filter(Boolean);

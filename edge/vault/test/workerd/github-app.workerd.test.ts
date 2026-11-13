@@ -56,7 +56,7 @@ const verifyAppJwt = async (jwt: string): Promise<Record<string, number | string
 const tokenRows = (userId: string) =>
   runInDurableObject(accountStub(env, userId, "github"), (_instance, state) =>
     state.storage.sql
-      .exec<{ key: string; installation_id: number; envelope: string; expires_at: number }>("SELECT * FROM repo_tokens")
+      .exec<{ key: string; login: string; installation_id: number; envelope: string; expires_at: number }>("SELECT * FROM github_tokens")
       .toArray()
   );
 
@@ -111,10 +111,12 @@ describe("github installation grants", () => {
     const rows = await tokenRows(userId);
     expect(rows.map((r) => r.key).sort()).toEqual(["21:octocat/one:write", "21:octocat/two:write"]);
     expect(rows.every((r) => r.installation_id === 21 && !r.envelope.includes("ghs_install_"))).toBe(true);
+    // Kept as the login's that asked: a disconnect revokes exactly these.
+    expect(rows.every((r) => r.login === "login:octocat")).toBe(true);
 
     // Ten minutes left is too little to hand out again.
     await runInDurableObject(accountStub(env, userId, "github"), (_instance, state) => {
-      state.storage.sql.exec("UPDATE repo_tokens SET expires_at = ?", Date.now() + 10 * 60_000);
+      state.storage.sql.exec("UPDATE github_tokens SET expires_at = ?", Date.now() + 10 * 60_000);
     });
     expect(value(await grant("octocat/one")).accessToken).toBe("ghs_install_3");
     expect(mints).toBe(3);
@@ -150,7 +152,7 @@ describe("github installation grants", () => {
       const result = await grant(repo);
       expect(result).toMatchObject({ ok: false, error: "not_found", status: 404 });
       expect(!result.ok && result.message).toContain("github_app_not_installed");
-      expect(!result.ok && result.message).toContain("https://github.com/apps/zeron-test/installations/new");
+      expect(!result.ok && result.message).toContain("https://github.com/apps/zend-test/installations/new");
     }
     expect(upstream.calls.some((call) => call.url.includes("/access_tokens"))).toBe(false);
   });
@@ -193,21 +195,30 @@ describe("github installation grants", () => {
     expect(status.connections.find((c) => c.provider === "github")?.status).toBe("connected");
   });
 
-  it("disconnecting GitHub drops the cached installation tokens", async () => {
-    const { userId, caller, grant } = await connected({
+  it("disconnecting GitHub revokes the installation tokens and the user token", async () => {
+    const { userId, caller, grant, upstream } = await connected({
       [INSTALLATIONS]: () => json({ installations: [installation(51, "octocat")] }),
-      [mintUrl(51)]: () => minted("ghs_install_51")
+      [mintUrl(51)]: () => minted("ghs_install_51"),
+      [`${API}/installation/token`]: () => new Response(null, { status: 204 }),
+      [`${API}/applications/Iv1.testclient/token`]: () => new Response(null, { status: 204 })
     });
     value(await grant("octocat/app"));
     expect(await tokenRows(userId)).toHaveLength(1);
     value(await vault().disconnect(caller, "github"));
     expect(await tokenRows(userId)).toHaveLength(0);
+    const installationRevoke = upstream.calls.find((call) => call.url === `${API}/installation/token`)!;
+    expect(installationRevoke.init?.method).toBe("DELETE");
+    expect(bearer(installationRevoke)).toBe("ghs_install_51");
+    const userRevoke = upstream.calls.find((call) => call.url === `${API}/applications/Iv1.testclient/token`)!;
+    expect(userRevoke.init?.method).toBe("DELETE");
+    expect(JSON.parse(userRevoke.body)).toEqual({ access_token: USER_TOKEN });
+    expect(new Headers(userRevoke.init?.headers).get("authorization")).toBe(`Basic ${btoa("Iv1.testclient:test-client-secret")}`);
   });
 
   it("status carries the App's install link", async () => {
     const { caller } = await setup();
     expect(value(await vault().status(caller)).githubInstallUrl).toBe(
-      "https://github.com/apps/zeron-test/installations/new"
+      "https://github.com/apps/zend-test/installations/new"
     );
   });
 });

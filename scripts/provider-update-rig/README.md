@@ -1,15 +1,15 @@
 # Provider update rig
 
-Proves that updating an agent CLI from Zeron updates it through whatever
+Proves that updating an agent CLI from Zend updates it through whatever
 installed it (npm, pnpm, bun, Homebrew, WinGet, Scoop, the CLI's own
 updater…), on a throwaway engine that can't touch anything real.
 
-Each run starts the real `zeron-engine` binary with:
+Each run starts the real `zend-engine` binary with:
 
-- its own port (`ZERON_IPC_PORT`, never 27654) and data dir (`ZERON_DATA_DIR`),
+- its own port (`ZEND_IPC_PORT`, never 27654) and data dir (`ZEND_DATA_DIR`),
 - a fake `HOME` and XDG dirs inside the run's folder,
 - a Finder-like `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin` plus the sandbox's
-  node), and `ZERON_NO_LOGIN_SHELL=1`, so it can't borrow the shell's PATH,
+  node), and `ZEND_NO_LOGIN_SHELL=1`, so it can't borrow the shell's PATH,
 - every provider disabled except the one under test, and pinned to a path
   that doesn't exist (discovery also searches `/usr/local/bin`, and the engine
   checks every provider as it starts, before the rig can disable any),
@@ -19,8 +19,8 @@ It then runs `CheckHarnessUpdates`, then `ApplyHarnessUpdate` while watching
 `WatchHarnessUpdates`, printing each phase with a timestamp, and finally
 asks the launcher itself for its version.
 
-**Never** point `RIG_DIR` at `~/.zeron` or at a real install. Don't use
-port 27654. Don't restart Zeron.app or any engine the rig didn't start.
+**Never** point `RIG_DIR` at `~/.zend` or at a real install. Don't use
+port 27654. Don't restart Zend.app or any engine the rig didn't start.
 
 ## Build
 
@@ -28,9 +28,9 @@ From the repository root, on the branch to test (`after`), and at the
 commit before it (`before`) in a separate worktree:
 
 ```sh
-git worktree add ../zeron-before ebd227f3          # the code before the fix
-ZGX_CHECK=0 cargo build -p zeron --bin zeron-engine
-(cd ../zeron-before && CARGO_TARGET_DIR=target-before ZGX_CHECK=0 cargo build -p zeron --bin zeron-engine)
+git worktree add ../zend-before ebd227f3          # the code before the fix
+ZGX_CHECK=0 cargo build -p zend --bin zend-engine
+(cd ../zend-before && CARGO_TARGET_DIR=target-before ZGX_CHECK=0 cargo build -p zend --bin zend-engine)
 cargo build --manifest-path scripts/provider-update-rig/rigclient/Cargo.toml
 ```
 
@@ -45,8 +45,8 @@ export RIG_DIR=$(mktemp -d)/rig
 export RIGCLIENT=$PWD/scripts/provider-update-rig/rigclient/target/debug/rigclient
 python3 scripts/provider-update-rig/rig.py setup
 for label in before after; do
-  engine=target/debug/zeron-engine
-  [ $label = before ] && engine=../zeron-before/target-before/debug/zeron-engine
+  engine=target/debug/zend-engine
+  [ $label = before ] && engine=../zend-before/target-before/debug/zend-engine
   python3 scripts/provider-update-rig/rig.py run $engine $label \
     npm_nvm pnpm_global bun_global hermes_channel grok_fails grok_prompt cursor_native
 done 2>&1 | tee rig-results.txt
@@ -69,8 +69,8 @@ minutes per engine. Results on macOS (Apple silicon, 2026-11-06):
 
 1. Unit tests, including the Linux-only one:
    ```sh
-   ZGX_CHECK=0 cargo test -p zeron-engine --lib harness_updates
-   ZGX_CHECK=0 cargo test -p zeron-harness --lib cmd_shim
+   ZGX_CHECK=0 cargo test -p zend-engine --lib harness_updates
+   ZGX_CHECK=0 cargo test -p zend-harness --lib cmd_shim
    ```
    Expect every test to pass, including
    `a_system_package_is_left_to_the_system_package_manager`.
@@ -82,7 +82,7 @@ minutes per engine. Results on macOS (Apple silicon, 2026-11-06):
    its `version` command answers the way Grok's does. Only a check runs;
    nothing gets applied.
    ```sh
-   python3 scripts/provider-update-rig/rig.py run target/debug/zeron-engine after system_git
+   python3 scripts/provider-update-rig/rig.py run target/debug/zend-engine after system_git
    ```
    Expect `canApply=False` and `manual=sudo apt install --only-upgrade git`
    (or `sudo dnf upgrade git` / `sudo pacman -S git`). The `before` engine
@@ -104,7 +104,7 @@ bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$R" "$R" \
 
 ### Results on Linux (personal-metal, Ubuntu, 2026-11-06)
 
-`before` is `zeron/zgx` 48a0dcbc, `after` this branch. Both ran in that read-only
+`before` is `zend/zgx` 48a0dcbc, `after` this branch. Both ran in that read-only
 root, and `after` is the build with the system-package fix. Times are to the
 APPLY RESULT.
 
@@ -126,8 +126,8 @@ Linuxbrew isn't installed there, so step 4 didn't run.
 
 The Python rig is POSIX-only. On Windows each row runs through
 `windows-row.ps1`, in Windows PowerShell 5.1, with everything under
-`$rig = "$env:TEMP\zeron-rig"`. Per run it gives the engine its own port and
-`ZERON_DATA_DIR`, and a `USERPROFILE`/`HOME`, `APPDATA`, `LOCALAPPDATA` and
+`$rig = "$env:TEMP\zend-rig"`. Per run it gives the engine its own port and
+`ZEND_DATA_DIR`, and a `USERPROFILE`/`HOME`, `APPDATA`, `LOCALAPPDATA` and
 `TEMP` inside `$rig\runs\<label>-<row>`. `PATH` is System32 plus what the row
 adds. Every provider is pinned: the one under test to its sandboxed install
 (`*_EXECUTABLE`), every other one to a path that doesn't exist. The script
@@ -136,7 +136,7 @@ launcher's version afterwards, and stops only the engine it started (killing
 it if `StopEngine` doesn't stop it within 20 s).
 
 ```powershell
-$rig = "$env:TEMP\zeron-rig"; $row = "scripts\provider-update-rig\windows-row.ps1"
+$rig = "$env:TEMP\zend-rig"; $row = "scripts\provider-update-rig\windows-row.ps1"
 & $row -Label after -Row w1 -Target codex -Launcher "$rig\npm-codex\codex.cmd" -ExtraPath "$rig\node"
 ```
 
@@ -156,9 +156,9 @@ Notes on running by hand, if you don't use the script:
 
 ```powershell
 $env:ZGX_CHECK = "0"
-cargo test -p zeron-engine --lib harness_updates
-cargo test -p zeron-harness --lib cmd_shim
-cargo clippy -p zeron-engine -p zeron-harness --all-targets
+cargo test -p zend-engine --lib harness_updates
+cargo test -p zend-harness --lib cmd_shim
+cargo clippy -p zend-engine -p zend-harness --all-targets
 ```
 
 Expect every test to pass, among them
@@ -167,7 +167,7 @@ Expect every test to pass, among them
 `a_scoop_receipt_is_read_under_either_name` and
 `scoop_is_asked_to_update_the_app_not_a_quoted_word`. The branch adds no
 clippy warnings in `harness_updates*`, `process.rs` or `cmd_shim.rs`. Five
-warnings there come from `zeron/zgx` (unused test-only items on Windows:
+warnings there come from `zend/zgx` (unused test-only items on Windows:
 `InstallFileLock::file`, `wait_for_phase`, imports in `harness_updates.rs`'s
 and `ownership.rs`'s tests).
 
@@ -198,7 +198,7 @@ Expect `after`: updated to 1.5.0 at that path. For `before`, list every
 
 ### W3. A prompting updater, and the process tree
 
-Zeron quotes every argument it passes to a batch file (`"version"`), so the
+Zend quotes every argument it passes to a batch file (`"version"`), so the
 fake compares `%~1`, not `%1`. Create `$rig\grok\grok.cmd`:
 
 ```bat
@@ -310,7 +310,7 @@ the error gone.
 
 ### Results on Windows (WING-PC, Windows 11 26200, 2026-11-06)
 
-`before` is `zeron/zgx` c6891da0, `after` this branch. W4 and W5 `after`
+`before` is `zend/zgx` c6891da0, `after` this branch. W4 and W5 `after`
 ran with the Scoop and WinGet fixes, W1–W3 and W6 before them (those paths
 didn't change).
 

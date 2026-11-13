@@ -15,15 +15,15 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use zeron_doc::{
+use zend_doc::{
     MessagePart, MessageRole, QueueDeliveryGate, SessionCommandPayload, SessionMessageEntry,
 };
-use zeron_engine::doc_host::{
+use zend_engine::doc_host::{
     BeginQueueEditOutcome, FinishQueueEditAction, FinishQueueEditOutcome,
 };
-use zeron_engine::{EngineCore, HarnessRegistry};
-use zeron_harness::{Harness, HarnessError, RunControls};
-use zeron_proto::{
+use zend_engine::{EngineCore, HarnessRegistry};
+use zend_harness::{Harness, HarnessError, RunControls};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
     UserInputQuestion,
 };
@@ -260,15 +260,20 @@ async fn setup_with(
 fn assemble_at(path: &std::path::Path, harness: Arc<HeldHarness>) -> EngineCore {
     let registry = HarnessRegistry::new();
     registry.register(harness);
-    EngineCore::assemble(path, Arc::new(registry), HarnessId::Mock, None)
-        .expect("engine core assembles")
+    let core = EngineCore::assemble(path, Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core assembles");
+    // As the engine's own boot says (deferred.rs): this one serves no IPC
+    // port. Left unsaid, a turn revived on boot waits out
+    // `ipc_port_ready`'s whole limit for a port never coming.
+    core.sessions.set_no_ipc_port();
+    core
 }
 
 async fn create_chat(core: &EngineCore) {
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            zend_rpc::methods::MUTATE,
             serde_json::json!({
                 "op": "createChat",
                 "chatId": CHAT,
@@ -617,7 +622,7 @@ async fn saturated_steering_mailbox_waits_without_restarting_or_losing_messages(
                     .steer(CHAT, &format!("burst {i}"), Some(format!("burst-{i}")))
                     .await
                     .unwrap(),
-                zeron_engine::SteerOutcome::Accepted
+                zend_engine::SteerOutcome::Accepted
             ));
         }
     });
@@ -680,7 +685,7 @@ async fn interrupt_bypasses_a_saturated_prompt_command_drain() {
                 .read_commands()
                 .unwrap()
                 .iter()
-                .any(|c| c.id == interrupt && c.status == zeron_doc::SessionCommandStatus::Applied)
+                .any(|c| c.id == interrupt && c.status == zend_doc::SessionCommandStatus::Applied)
         },
         "interrupt to bypass blocked prompts",
     )
@@ -707,7 +712,7 @@ async fn batched_remote_steers_preserve_every_message_in_order_exactly_once() {
     for (i, prompt) in expected.iter().enumerate() {
         handle
             .doc()
-            .queue_command(&zeron_doc::SessionCommandEntry {
+            .queue_command(&zend_doc::SessionCommandEntry {
                 id: format!("remote-command-{i}"),
                 payload: SessionCommandPayload::Steer {
                     prompt: prompt.clone(),
@@ -717,7 +722,7 @@ async fn batched_remote_steers_preserve_every_message_in_order_exactly_once() {
                 issued_at: now + i as i64,
                 based_on: None,
                 expires_at: None,
-                status: zeron_doc::SessionCommandStatus::Pending,
+                status: zend_doc::SessionCommandStatus::Pending,
                 resolution: None,
             })
             .unwrap();
@@ -740,7 +745,7 @@ async fn batched_remote_steers_preserve_every_message_in_order_exactly_once() {
             .read_commands()
             .unwrap()
             .iter()
-            .all(|c| c.status == zeron_doc::SessionCommandStatus::Applied)
+            .all(|c| c.status == zend_doc::SessionCommandStatus::Applied)
     );
     // Each turn end releases exactly the next one.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -813,7 +818,7 @@ async fn queued_text_waits_for_a_steerable_turn_even_with_legacy_policy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn held_policy_keeps_a_steerable_message_visible_until_steer_now() {
     let (core, harness, prompts) = setup(SteeringMode::StepBoundary).await;
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
 
     core.doc_host
         .queue_message(CHAT, "opening", Vec::new())
@@ -826,7 +831,7 @@ async fn held_policy_keeps_a_steerable_message_visible_until_steer_now() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::QUEUE_MESSAGE,
+            zend_rpc::methods::QUEUE_MESSAGE,
             serde_json::json!({
                 "chatId": CHAT,
                 "text": "hold this",
@@ -842,7 +847,7 @@ async fn held_policy_keeps_a_steerable_message_visible_until_steer_now() {
 
     let reply = client
         .call(
-            zeron_rpc::methods::STEER_QUEUED_MESSAGE_NOW,
+            zend_rpc::methods::STEER_QUEUED_MESSAGE_NOW,
             serde_json::json!({ "chatId": CHAT, "id": id }),
         )
         .await
@@ -925,10 +930,10 @@ async fn steer_now_starts_the_next_turn_when_the_previous_turn_is_already_idle()
     )
     .await;
 
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     let reply = client
         .call(
-            zeron_rpc::methods::QUEUE_MESSAGE,
+            zend_rpc::methods::QUEUE_MESSAGE,
             serde_json::json!({
                 "chatId": CHAT,
                 "text": "after cancel",
@@ -1164,7 +1169,7 @@ async fn acknowledged_removal_cannot_materialize_after_turn_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn queue_rpc_reorders_and_streams() {
     let (core, harness, prompts) = setup(SteeringMode::TurnBoundary).await;
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
 
     core.doc_host
         .queue_message(CHAT, "opening", Vec::new())
@@ -1177,7 +1182,7 @@ async fn queue_rpc_reorders_and_streams() {
 
     let mut rx = client
         .subscribe(
-            zeron_rpc::methods::WATCH_QUEUE,
+            zend_rpc::methods::WATCH_QUEUE,
             serde_json::json!({ "chatId": CHAT }),
         )
         .await
@@ -1195,7 +1200,7 @@ async fn queue_rpc_reorders_and_streams() {
     for text in ["a", "b", "c"] {
         client
             .call(
-                zeron_rpc::methods::QUEUE_MESSAGE,
+                zend_rpc::methods::QUEUE_MESSAGE,
                 serde_json::json!({ "chatId": CHAT, "text": text }),
             )
             .await
@@ -1216,7 +1221,7 @@ async fn queue_rpc_reorders_and_streams() {
         .clone();
     client
         .call(
-            zeron_rpc::methods::MOVE_QUEUED_MESSAGE,
+            zend_rpc::methods::MOVE_QUEUED_MESSAGE,
             serde_json::json!({ "chatId": CHAT, "id": last_id, "toIndex": 0 }),
         )
         .await
@@ -1225,7 +1230,7 @@ async fn queue_rpc_reorders_and_streams() {
 
     client
         .call(
-            zeron_rpc::methods::REMOVE_QUEUED_MESSAGE,
+            zend_rpc::methods::REMOVE_QUEUED_MESSAGE,
             serde_json::json!({ "chatId": CHAT, "id": last_id }),
         )
         .await
@@ -1340,7 +1345,7 @@ async fn a_message_holds_while_the_agent_waits_on_a_question() {
         || {
             core.sessions
                 .session_status(CHAT)
-                .is_some_and(|s| s.status == zeron_proto::SessionStatus::AwaitingInput)
+                .is_some_and(|s| s.status == zend_proto::SessionStatus::AwaitingInput)
         },
         "the agent to park on its question",
     )
@@ -1426,6 +1431,71 @@ async fn an_acquired_edit_blocks_turn_end_and_commit_sends_the_new_text() {
     )
     .await;
     assert!(!prompts.lock().unwrap().iter().any(|p| p == "old text"));
+
+    let _ = harness.finish.send(());
+    core.shutdown().await;
+}
+
+/// 2026-11-11, work-laptop: the person tapped Edit on a queued message on
+/// the Mac hosting the chat and was told it was "being edited on another
+/// device". The lease was their own: the same window asking again (its
+/// Acquired reply lost to a dropped app socket, or the chat reopened) must
+/// take its lease over. Any other editor, even on the same device, is still
+/// locked out until the lease ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_editor_asking_again_takes_its_own_lease_over() {
+    let (core, harness, prompts) = setup(SteeringMode::TurnBoundary).await;
+    core.doc_host
+        .queue_message(CHAT, "opening", Vec::new())
+        .expect("queue opening");
+    wait_for(
+        || prompts.lock().unwrap().iter().any(|p| p == "opening"),
+        "opening turn",
+    )
+    .await;
+    let id = core
+        .doc_host
+        .queue_message(CHAT, "mine", Vec::new())
+        .expect("queue row");
+
+    let BeginQueueEditOutcome::Acquired {
+        lease_id: first, ..
+    } = core
+        .doc_host
+        .begin_queued_message_edit(CHAT, &id, "laptop", "window-1")
+        .await
+        .expect("first begin")
+    else {
+        panic!("first edit must be acquired");
+    };
+    let again = core
+        .doc_host
+        .begin_queued_message_edit(CHAT, &id, "laptop", "window-1")
+        .await
+        .expect("second begin");
+    let BeginQueueEditOutcome::Acquired {
+        lease_id: second,
+        text,
+        ..
+    } = again
+    else {
+        panic!("the same editor must get its own lease back, got {again:?}");
+    };
+    assert_ne!(first, second, "a fresh lease generation");
+    assert_eq!(text, "mine");
+
+    // Another window on the same device, and another device, stay locked.
+    for (device, instance) in [("laptop", "window-2"), ("phone", "window-1")] {
+        let outcome = core
+            .doc_host
+            .begin_queued_message_edit(CHAT, &id, device, instance)
+            .await
+            .expect("other begin");
+        assert!(
+            matches!(&outcome, BeginQueueEditOutcome::Locked { owner_device_id, .. } if owner_device_id == "laptop"),
+            "{device}/{instance} must be locked out, got {outcome:?}"
+        );
+    }
 
     let _ = harness.finish.send(());
     core.shutdown().await;
@@ -1544,10 +1614,10 @@ async fn protected_edit_rpc_round_trips_its_camel_case_protocol() {
         .doc_host
         .queue_message(CHAT, "rpc edit", Vec::new())
         .expect("queue row");
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     let begin = client
         .call(
-            zeron_rpc::methods::BEGIN_QUEUED_MESSAGE_EDIT,
+            zend_rpc::methods::BEGIN_QUEUED_MESSAGE_EDIT,
             serde_json::json!({
                 "chatId": CHAT,
                 "id": id,
@@ -1562,7 +1632,7 @@ async fn protected_edit_rpc_round_trips_its_camel_case_protocol() {
 
     let finish = client
         .call(
-            zeron_rpc::methods::FINISH_QUEUED_MESSAGE_EDIT,
+            zend_rpc::methods::FINISH_QUEUED_MESSAGE_EDIT,
             serde_json::json!({
                 "chatId": CHAT,
                 "id": id,
@@ -1706,12 +1776,12 @@ async fn failed_queue_dispatch_stays_paused_until_explicit_retry() {
 async fn queued_turn_uses_current_config_at_turn_end_and_send_now() {
     for send_now in [false, true] {
         let (core, harness, prompts) = setup(SteeringMode::TurnBoundary).await;
-        let mut config = zeron_proto::ChatConfig {
+        let mut config = zend_proto::ChatConfig {
             harness: HarnessId::Mock,
             model: Some("old-model".into()),
             reasoning: Some(ReasoningLevel::Medium),
             model_options: Default::default(),
-            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
             access: Default::default(),
             plan: false,
         };
@@ -1812,10 +1882,10 @@ async fn pending_update_does_not_stall_another_chats_queue_flush() {
     )
     .expect("engine core assembles");
     create_chat(&core).await;
-    let client = zeron_rpc::memory_client(core.rpc_service());
+    let client = zend_rpc::memory_client(core.rpc_service());
     client
         .call(
-            zeron_rpc::methods::MUTATE,
+            zend_rpc::methods::MUTATE,
             serde_json::json!({
                 "op": "createChat",
                 "chatId": OTHER,
@@ -1964,6 +2034,77 @@ async fn a_send_during_a_turn_boundary_turn_waits_for_the_turn_end() {
     core.shutdown().await;
 }
 
+/// Two messages sent while the host was away (a Cloud machine asleep): by the
+/// time the second is read, the first has just started a turn. The sender never
+/// saw that turn, so the second waits for it and is a turn of its own, rather
+/// than a steer that cut the first off with an empty reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_send_issued_before_the_running_turn_started_is_the_next_turn_not_a_steer() {
+    let (core, harness, prompts) = setup(SteeringMode::StepBoundary).await;
+    core.doc_host
+        .queue_message(CHAT, "opening", Vec::new())
+        .expect("queue opening");
+    wait_for(|| prompts.lock().unwrap().len() == 1, "the opening turn").await;
+    let template = core.sessions.last_request(CHAT).expect("a request");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while core.sessions.turn_in_flight(CHAT) {
+        assert!(tokio::time::Instant::now() < deadline, "the opening turn never ended");
+        let _ = harness.finish.send(());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // Both sent a minute ago, two seconds apart, while the host was away.
+    let sent = |id: &str, prompt: &str, ago_ms: i64| {
+        let mut request = template.clone();
+        request.prompt = prompt.into();
+        let issued_at = chrono::Utc::now().timestamp_millis() - ago_ms;
+        zend_doc::SessionCommandEntry {
+            id: format!("cmd-{id}"),
+            payload: SessionCommandPayload::Run {
+                message_id: format!("m-{id}"),
+                request,
+            },
+            issued_by: "phone".into(),
+            issued_at,
+            based_on: None,
+            expires_at: Some(issued_at + 3_600_000),
+            status: zend_doc::SessionCommandStatus::Pending,
+            resolution: None,
+        }
+    };
+    let doc = core.doc_host.open(CHAT).unwrap();
+    doc.doc()
+        .queue_command(&sent("first", "first, sent while away", 60_000))
+        .unwrap();
+    doc.doc()
+        .queue_command(&sent("second", "second, sent while away", 58_000))
+        .unwrap();
+    core.doc_host.enqueue_wakeup(CHAT).expect("wake the host");
+    wait_for(
+        || queue_texts(&core) == vec!["second, sent while away"],
+        "the second to wait for the first turn",
+    )
+    .await;
+    assert_eq!(
+        *prompts.lock().unwrap(),
+        vec!["opening", "first, sent while away"],
+        "the second was steered into the first turn"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while prompts.lock().unwrap().len() < 3 {
+        assert!(tokio::time::Instant::now() < deadline, "the second never ran");
+        let _ = harness.finish.send(());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        *prompts.lock().unwrap(),
+        vec!["opening", "first, sent while away", "second, sent while away"]
+    );
+    let _ = harness.finish.send(());
+    core.shutdown().await;
+}
+
 /// An agent that reads input mid-turn still gets a plain send immediately.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_send_during_a_mid_turn_steerable_turn_steers_it_immediately() {
@@ -1982,6 +2123,53 @@ async fn a_send_during_a_mid_turn_steerable_turn_steers_it_immediately() {
     assert!(queue_texts(&core).is_empty());
     assert_eq!(user_messages(&core), vec!["opening", "steer me"]);
     assert_eq!(harness.requests.lock().unwrap().len(), 1);
+    let _ = harness.finish.send(());
+    core.shutdown().await;
+}
+
+/// A send reaches the agent while the open chat's transcript publish is
+/// still going: the publish runs beside the drains, never before them (a
+/// long chat's whole transcript read per change, before the drain, was V3
+/// Release's "sending…"). The publish is held where it hands the transcript
+/// to its watchers (a held read of the watch holds its `send_replace`), so
+/// the test needs no clock: with the publish before the drain, the send
+/// can't reach the agent until the hold ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_send_reaches_the_agent_while_the_open_chats_publish_is_held() {
+    let (core, harness, prompts) = setup(SteeringMode::TurnBoundary).await;
+    let handle = core.doc_host.open(CHAT).unwrap();
+    // Watched, as the app watches the open chat.
+    let watch = handle.watch_messages();
+    {
+        let held = watch.borrow();
+        // (Off this thread: anything on the send's own path that published
+        // would wait on `held` and must fail the wait below, not hang here.)
+        let doc_host = core.doc_host.clone();
+        let queued = tokio::task::spawn_blocking(move || {
+            doc_host.queue_message(CHAT, "sent while publishing", Vec::new())
+        });
+        wait_for(
+            || prompts.lock().unwrap().iter().any(|p| p == "sent while publishing"),
+            "the send to reach the agent while the publish is held",
+        )
+        .await;
+        drop(held);
+        queued.await.unwrap().expect("queue message");
+    }
+    // Released, publishing goes on: the watcher sees the send (in the
+    // publish after the held one, which read the chat before the drain).
+    wait_for(
+        || {
+            watch.borrow().entries.iter().any(|e| {
+                e.role == MessageRole::User
+                    && e.parts.iter().any(|part| {
+                        matches!(part, MessagePart::Text { text, .. } if text == "sent while publishing")
+                    })
+            })
+        },
+        "the publish to land once released",
+    )
+    .await;
     let _ = harness.finish.send(());
     core.shutdown().await;
 }

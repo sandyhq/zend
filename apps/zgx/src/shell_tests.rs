@@ -15,7 +15,7 @@ use zgx_script::{ScriptHost, testing::TestApp};
 
 const W: f32 = 1200.;
 const H: f32 = 800.;
-/// The middle of the title bar's strip (Zeron's: 38 tall, its controls
+/// The middle of the title bar's strip (Zend's: 38 tall, its controls
 /// centred 21 down).
 const STRIP_Y: f32 = 21.;
 
@@ -276,7 +276,7 @@ fn a_plugins_title_bar_controls_stand_on_glass_over_art() {
 fn the_panels_edge_follows_the_pointer_at_once_and_opening_eases() {
     let mut app = mount();
     // (Wide enough that the panel opens short of its widest: the window's
-    // fit caps it, as Zeron's does, and an edge dragged past that holds.)
+    // fit caps it, as Zend's does, and an edge dragged past that holds.)
     app.ui.scene.borrow_mut().resize(1600., 800.);
     app.frames(30);
     app.click("#shell-sidebar >> role:button \"Fix the build\"");
@@ -328,7 +328,7 @@ fn the_places_plugins_target_are_there() {
     }
 }
 
-/// A session's card (Zeron's hover card): the pointer resting on its row,
+/// A session's card (Zend's hover card): the pointer resting on its row,
 /// it shows after a beat, beside the row, 284 wide, with how long ago it
 /// moved, where it runs, its project and its branch: one surface over the
 /// window (no tooltip's frame around it); a press puts it away.
@@ -358,7 +358,7 @@ fn a_rested_on_session_shows_its_card() {
     assert!(!shown(&mut app, "1h ago"), "a press puts it away");
 }
 
-/// A session renamed in its row (Zeron's inline rename): a double click on
+/// A session renamed in its row (Zend's inline rename): a double click on
 /// it puts a field over its title, the title selected; ↩ keeps the name
 /// typed, Esc the old one; its menu's Rename does the same, in the row, not
 /// a dialog.
@@ -397,8 +397,7 @@ fn a_session_is_renamed_in_its_row() {
     assert!(app.find(field).is_none(), "Esc closes it");
     assert!(!calls(&app).contains("Nope"), "Esc keeps the old name");
     // Its menu's Rename: the same field, in the row.
-    app.click("#sidebar >> role:button \"Tidy the tests\"");
-    app.frames(10);
+    crate::focus_tests::keys_on_row(&mut app, "#sidebar >> role:button \"Tidy the tests\"");
     app.keys("shift+F10");
     assert!(app.wait_until(|app| app.find("role:menuitem \"Rename\"").is_some()));
     app.frames(30);
@@ -419,7 +418,7 @@ fn x_of(app: &mut TestApp, selector: &str) -> Option<(f32, f32)> {
     Some((b.x, b.width))
 }
 
-/// A session's menu's Copy, as Zeron's: its folder, its harness's link and
+/// A session's menu's Copy, as Zend's: its folder, its harness's link and
 /// id where it has them (a Codex thread's link, `codex://threads/…`), its
 /// own id; each copied, and said so.
 #[test]
@@ -428,8 +427,7 @@ fn a_sessions_copy_menu_copies_and_says_so() {
     let mut app = TestApp::with_desktop(|runtime| ScriptHost::new(runtime, path.clone()));
     app.ui.scene.borrow_mut().resize(W, H);
     app.frames(30);
-    app.click("#sidebar >> role:button \"Write the docs\"");
-    app.frames(10);
+    crate::focus_tests::keys_on_row(&mut app, "#sidebar >> role:button \"Write the docs\"");
     app.keys("shift+F10");
     assert!(app.wait_until(|app| app.find("role:menuitem \"Copy\"").is_some()));
     app.frames(20);
@@ -446,26 +444,25 @@ fn a_sessions_copy_menu_copies_and_says_so() {
     let mut app = TestApp::with_desktop(|runtime| ScriptHost::new(runtime, path.clone()));
     app.ui.scene.borrow_mut().resize(W, H);
     app.frames(30);
-    app.click("#sidebar >> role:button \"Tidy the tests\"");
-    app.frames(10);
+    crate::focus_tests::keys_on_row(&mut app, "#sidebar >> role:button \"Tidy the tests\"");
     app.keys("shift+F10");
     assert!(app.wait_until(|app| app.find("role:menuitem \"Copy\"").is_some()));
     app.frames(20);
     app.click("role:menuitem \"Copy\"");
     assert!(app.wait_until(|app| app.find("role:menuitem \"Session ID\"").is_some()));
     assert!(app.find("role:menuitem \"Harness session ID\"").is_none(), "no harness id, none offered");
-    // Its Zeron link (every session's), as the host makes it.
+    // Its Zend link (every session's), as the host makes it.
     app.frames(20);
-    app.click("role:menuitem \"Zeron conversation link\"");
+    app.click("role:menuitem \"Zend conversation link\"");
     assert!(
-        app.wait_until(|app| app.desktop.as_ref().unwrap().clipboard().starts_with("zeron://open/chat/a3?workspace=")),
-        "the Zeron link: {:?}",
+        app.wait_until(|app| app.desktop.as_ref().unwrap().clipboard().starts_with("zend://open/chat/a3?workspace=")),
+        "the Zend link: {:?}",
         app.desktop.as_ref().unwrap().clipboard()
     );
-    assert!(app.wait_until(|app| app.find("\"Zeron conversation link copied\"").is_some()), "said so");
+    assert!(app.wait_until(|app| app.find("\"Zend conversation link copied\"").is_some()), "said so");
 }
 
-/// Deleting a session is asked once more (Zeron's "Delete session?"): its
+/// Deleting a session is asked once more (Zend's "Delete session?"): its
 /// title in the question; Cancel keeps it, Delete deletes it.
 #[test]
 fn deleting_a_session_asks_first() {
@@ -477,8 +474,7 @@ fn deleting_a_session_asks_first() {
         })
     };
     let ask = |app: &mut TestApp| {
-        app.click("#sidebar >> role:button \"Tidy the tests\"");
-        app.frames(10);
+        crate::focus_tests::keys_on_row(app, "#sidebar >> role:button \"Tidy the tests\"");
         app.keys("shift+F10");
         assert!(app.wait_until(|app| app.find("role:menuitem \"Delete…\"").is_some()));
         app.frames(20);
@@ -533,7 +529,7 @@ fn the_panels_edge_resizes_from_the_keys() {
 }
 
 /// A session carried from the sidebar over the chat says "Drop to mention"
-/// (Zeron's overlay), and dropped there it's a chat chip on the composer.
+/// (Zend's overlay), and dropped there it's a chat chip on the composer.
 #[test]
 fn a_session_dropped_on_the_chat_is_mentioned() {
     use zgx::input::{InputEvent, PointerButton};
@@ -570,7 +566,7 @@ fn said(app: &TestApp) -> String {
     })
 }
 
-/// A project's header's right click, as Zeron's: `item` from its menu.
+/// A project's header's right click, as Zend's: `item` from its menu.
 fn project_menu(app: &mut TestApp, project: &str, item: &str) {
     let head = app.bounds(&format!("#sidebar >> \"{project}\""));
     zgx_script::driver::right_click_at(&mut app.ui, (head.x + head.width / 2., head.y + head.height / 2.));
@@ -601,7 +597,7 @@ fn a_projects_header_renames_it() {
 }
 
 /// Remove… on a project's header asks once more, saying what goes with it
-/// (Zeron's "Remove project?": its sessions on its device); Cancel keeps it,
+/// (Zend's "Remove project?": its sessions on its device); Cancel keeps it,
 /// Remove removes it.
 #[test]
 fn removing_a_project_asks_first() {
@@ -635,4 +631,69 @@ fn removing_a_project_asks_first() {
         }),
         "its sessions with it"
     );
+}
+
+/// A tab carried near an end of its strip scrolls the strip under it, as
+/// long as it's held there; let go, it lands among the others. (Five chats
+/// composed in tabs in a window 800 wide: the top bar's strip overflows,
+/// scrolled to its end, the last tab showing.)
+#[test]
+fn a_tab_carried_near_an_end_of_its_strip_scrolls_it() {
+    let mut app = mount();
+    app.ui.scene.borrow_mut().resize(800., H);
+    app.frames(30);
+    assert!(app.host.run_command("partner_chats"));
+    app.frames(10);
+    app.click("#shell-sidebar >> role:button \"Answer the review\"");
+    app.frames(30);
+    let rows: Vec<String> = ["a1", "a2", "a3", "b1", "b2"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!(r#"{{"kind":"row","key":"{id}","children":[{{"kind":"leaf","id":"{id}"}},{{"kind":"leaf","id":"p{}"}}]}}"#, i + 1))
+        .collect();
+    let tabs = zgx_script::Value::from_json(&format!("[{}]", rows.join(","))).unwrap();
+    app.host.set_state("screens/shell/split.luau::inset_split_trees", tabs).unwrap();
+    app.frames(60);
+    let room = app.bounds("#session-tabs-scroll");
+    let first = app.bounds("#session-tab-a1").x;
+    assert!(first < room.x - 1., "the strip overflows, scrolled past its start: a1 at {first}, the strip at {}", room.x);
+    // b2 carried to the strip's start and held there.
+    let from = app.bounds("#session-tab-b2");
+    let (x, y) = (from.x + from.width / 2., from.y + from.height / 2.);
+    let button = PointerButton::Primary;
+    app.ui.dispatch(InputEvent::PointerMove { x, y });
+    app.ui.dispatch(InputEvent::PointerDown { x, y, button });
+    app.frames(2);
+    let to = room.x + 8.;
+    for i in 1..=20 {
+        let px = x + (to - x) * i as f32 / 20.;
+        app.ui.dispatch(InputEvent::PointerMove { x: px, y });
+        app.frames(1);
+    }
+    let held = app.bounds("#session-tab-a1").x;
+    app.frames(60);
+    let after = app.bounds("#session-tab-a1").x;
+    assert!(after > held + 20., "held near the start, the strip scrolls toward it: a1 {held} then {after}");
+    app.ui.dispatch(InputEvent::PointerUp { x: to, y, button });
+    app.ui.input.forget_clicks();
+    app.frames(60);
+    // Carried off the strip, down over the page, and held there: the window
+    // keeps all its room (the tab stays its strip's, taking none of it).
+    let shell = app.bounds("#shell");
+    let from = app.bounds("#session-tab-a2");
+    let (x, y) = (from.x + from.width / 2., from.y + from.height / 2.);
+    app.ui.dispatch(InputEvent::PointerMove { x, y });
+    app.ui.dispatch(InputEvent::PointerDown { x, y, button });
+    app.frames(2);
+    for i in 1..=20 {
+        app.ui.dispatch(InputEvent::PointerMove { x: x + i as f32 * 5., y: y + i as f32 * 15. });
+        app.frames(1);
+    }
+    app.frames(20);
+    let held = app.bounds("#shell");
+    assert_eq!(held, shell, "held off the strip, the window's content keeps its room");
+    app.ui.dispatch(InputEvent::PointerUp { x: x + 100., y: y + 300., button });
+    app.ui.input.forget_clicks();
+    app.frames(60);
+    assert_eq!(app.error(), None);
 }

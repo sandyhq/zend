@@ -1,7 +1,7 @@
 //! SessionsEngine — per-chat agent runs: dispatch, steering, interrupts, input bridging,
 //! journal + broadcast fan-out, and 120ms coalesced doc streaming.
 //!
-//! Pragmatic port of zeron's `sessions.ts` (spec: feature-inventory §3.2):
+//! Pragmatic port of zend's `sessions.ts` (spec: feature-inventory §3.2):
 //! - every `AgentEvent` is (a) appended to the on-disk run journal, (b) broadcast to
 //!   in-process subscribers, (c) folded via `fold_event_into_parts` and diffed into the
 //!   chat's `SessionDoc` through `SegmentWriter` on a coalesced `STREAM_COMMIT_MS` timer;
@@ -10,7 +10,7 @@
 //! - a `Steered` event splits the assistant entry at the exact boundary;
 //! - recovery (interrupt or a stale journal at boot) stamps the streaming entry `aborted`.
 //!
-//! Scope notes: sessions are keyed by chat id (one live run per chat). Zeron's pulse
+//! Scope notes: sessions are keyed by chat id (one live run per chat). Zend's pulse
 //! loop is ported as the 15s liveness heartbeat in `drive_run`; its stall watchdog is
 //! deliberately NOT ported (rejected in review — agents may legitimately wait on
 //! something for far longer than any timeout, and a live child IS the working signal).
@@ -24,12 +24,12 @@ use chrono::Utc;
 use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use zeron_doc::{
+use zend_doc::{
     DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter, SessionDoc,
     SessionMessageEntry, fold_event_into_parts, sanitize_tool_call,
 };
-use zeron_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
-use zeron_proto::{
+use zend_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
+use zend_proto::{
     AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
     UserInputQuestion,
 };
@@ -64,7 +64,7 @@ type PendingInputs = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<UserInputAnsw
 
 /// A harness-native session id plus the cwd it was created under. Harness
 /// session stores are cwd-scoped (claude keys conversations by project
-/// directory — zeron sessions.ts:563 "harness session stores are keyed by
+/// directory — zend sessions.ts:563 "harness session stores are keyed by
 /// cwd"), so resume is only injected for runs launched from the same cwd.
 #[derive(Debug, Clone)]
 struct HarnessSessionRef {
@@ -149,7 +149,7 @@ impl Drop for VoiceCall {
 }
 
 struct RunHandle {
-    voice: Option<zeron_harness::codex::realtime::RealtimeHandle>,
+    voice: Option<zend_harness::codex::realtime::RealtimeHandle>,
     voice_active: Arc<VoiceActivity>,
     run_id: String,
     steerable: bool,
@@ -208,8 +208,8 @@ struct RunHandle {
     binary: Option<String>,
     /// Launched without the provider's own subagents (Settings → Providers):
     /// a parked session whose setting has since flipped is replaced before
-    /// its next turn. The run's intent: the restriction rides Zeron's MCP
-    /// server, so with no IPC port served ([`Inner::zeron_mcp`] returns
+    /// its next turn. The run's intent: the restriction rides Zend's MCP
+    /// server, so with no IPC port served ([`Inner::zend_mcp`] returns
     /// `None`) the provider keeps its subagents.
     side_chats_only: bool,
 }
@@ -266,6 +266,8 @@ struct Inner {
     /// Per chat: the recovery re-dispatch on its way (see
     /// [`SessionsEngine::recover_stale`]), claimed by its message's dispatch.
     revivals: Mutex<HashMap<String, Revival>>,
+    /// Chats whose revival hasn't returned from its dispatch yet.
+    revivals_starting: Mutex<std::collections::HashSet<String>>,
     /// Per chat: messages a Stop cancelled while they were still on their
     /// way (see [`SessionsEngine::cancel_sent_messages`]).
     cancelled_sends: Mutex<HashMap<String, std::collections::HashSet<String>>>,
@@ -276,10 +278,16 @@ struct Inner {
     /// nothing to stop, and still ends the turn.
     user_stops: Mutex<HashMap<String, u64>>,
     /// Loopback IPC port this engine serves, once known (0 = not serving):
-    /// what the injected `zeron mcp` server dials back into.
+    /// what the injected `zend mcp` server dials back into.
     ipc_port: std::sync::atomic::AtomicU16,
+    /// Rung as the port is recorded: what a run revived on boot, while the
+    /// engine is still being assembled, waits on ([`SessionsEngine::ipc_port_ready`]).
+    ipc_ready: tokio::sync::Notify,
+    /// Set when this engine will serve no port at all
+    /// ([`SessionsEngine::set_no_ipc_port`]): that wait ends at once.
+    ipc_none: std::sync::atomic::AtomicBool,
     /// Where this engine publishes its IPC bearer (`{data_dir}/ipc-token`),
-    /// handed to the injected `zeron mcp` as a PATH, never the token itself.
+    /// handed to the injected `zend mcp` as a PATH, never the token itself.
     ipc_token_file: Mutex<Option<std::path::PathBuf>>,
     journal: Arc<RunJournal>,
     registry: Arc<HarnessRegistry>,
@@ -302,7 +310,7 @@ struct Inner {
     last_requests: Mutex<HashMap<String, RunRequest>>,
     /// Harness-native session ids per chat (resume continuity across turns) —
     /// the live-process cache over the durable copy on the workspace chat row
-    /// (zeron kept the same pair on `chats.harness_session_id`). An empty
+    /// (zend kept the same pair on `chats.harness_session_id`). An empty
     /// session id is the "do not resume" tombstone after a rejected resume.
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
     /// Per chat: session ids the provider said it no longer has. Never
@@ -317,7 +325,7 @@ struct Inner {
     titles: OnceLock<crate::titles::TitleGenerator>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
     /// [`crate::Repos::scratch_root`]; bare tests fall back to
-    /// `~/.zeron/scratch`.
+    /// `~/.zend/scratch`.
     scratch_root: OnceLock<std::path::PathBuf>,
     /// Fired with `(chat_id, cwd)` when a user prompt starts a turn (fresh
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
@@ -353,9 +361,12 @@ impl SessionsEngine {
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
                 revive_after_shutdown: std::sync::atomic::AtomicBool::new(true),
                 revivals: Mutex::new(HashMap::new()),
+                revivals_starting: Mutex::new(std::collections::HashSet::new()),
                 cancelled_sends: Mutex::new(HashMap::new()),
                 user_stops: Mutex::new(HashMap::new()),
                 ipc_port: std::sync::atomic::AtomicU16::new(0),
+                ipc_ready: tokio::sync::Notify::new(),
+                ipc_none: std::sync::atomic::AtomicBool::new(false),
                 ipc_token_file: Mutex::new(None),
                 journal,
                 registry,
@@ -384,16 +395,57 @@ impl SessionsEngine {
     }
 
     /// Record the loopback IPC port this engine serves. Runs started after
-    /// this carry Zeron's MCP server (see [`Inner::zeron_mcp`]); until then —
-    /// or with 0 — agents get no Zeron tools rather than a dead server.
+    /// this carry Zend's MCP server (see [`Inner::zend_mcp`]); until then —
+    /// or with 0 — agents get no Zend tools rather than a dead server.
     pub fn set_ipc_port(&self, port: u16) {
         self.inner
             .ipc_port
-            .store(port, std::sync::atomic::Ordering::Relaxed);
+            .store(port, std::sync::atomic::Ordering::Release);
+        self.inner.ipc_ready.notify_waiters();
+    }
+
+    /// Record that this engine serves no IPC port (it lost the bind): a run
+    /// revived on boot goes on at once without Zend tools, rather than
+    /// waiting out [`Self::ipc_port_ready`]'s limit for a port never coming.
+    pub fn set_no_ipc_port(&self) {
+        self.inner
+            .ipc_none
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.inner.ipc_ready.notify_waiters();
+    }
+
+    /// Until the IPC port is recorded (or none is said to be coming), or
+    /// `limit` passes. Boot recovery revives cut-off turns while the engine is
+    /// still being assembled, before it serves its port: dispatched then, a
+    /// revived run went out with no Zend tools (its agent read them as gone,
+    /// and a parent woken by its children's reports couldn't answer them).
+    async fn ipc_port_ready(&self, limit: std::time::Duration) {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            // (Made before the check: `notify_waiters` reaches a `Notified`
+            // from its making, polled or not.)
+            let rung = self.inner.ipc_ready.notified();
+            // (Acquire: the bearer, recorded before the port, is seen too.)
+            let port = self
+                .inner
+                .ipc_port
+                .load(std::sync::atomic::Ordering::Acquire);
+            if port != 0
+                || self
+                    .inner
+                    .ipc_none
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, rung).await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Record where the served port's bearer lives (`{data_dir}/ipc-token`).
-    /// The injected MCP server gets `ZERON_IPC_TOKEN_FILE` and reads the file
+    /// The injected MCP server gets `ZEND_IPC_TOKEN_FILE` and reads the file
     /// at dial time, so it follows token rotation across engine restarts.
     pub fn set_ipc_token_file(&self, path: std::path::PathBuf) {
         *lock(&self.inner.ipc_token_file) = Some(path);
@@ -439,6 +491,47 @@ impl SessionsEngine {
     /// completed exchange the run task fires it for still-untitled chats.
     pub fn set_titles(&self, titles: crate::titles::TitleGenerator) {
         let _ = self.inner.titles.set(titles);
+    }
+
+    /// End the live run of every chat whose row leaves the workspace (called
+    /// once at engine assembly). Nobody can message a deleted chat, so a run
+    /// parked after its last turn only held its agent process tree — and that
+    /// tree's MCP servers — until the idle reaper, or longer while background
+    /// work held the reaper off. One follower covers every way a row goes:
+    /// Delete on this device or another, a Cloud parent's children, a deleted
+    /// project's chats, the orphan sweep in `spaces`, voice's empty segments.
+    /// It ends the run with [`Self::terminate`], the Stop's teardown, so held
+    /// questions and subagent bookkeeping settle as they do there.
+    ///
+    /// Only a row seen and then gone counts: a run may start before its row
+    /// syncs in, and that is not a deletion. Archiving keeps the row, so an
+    /// archived chat's run goes on (a send revives an archived chat).
+    pub fn follow_chat_deletions(&self, mut chats: watch::Receiver<Vec<zend_proto::Chat>>) {
+        let weak = Arc::downgrade(&self.inner);
+        let mut known: std::collections::HashSet<String> =
+            chats.borrow_and_update().iter().map(|c| c.id.clone()).collect();
+        tokio::spawn(async move {
+            while chats.changed().await.is_ok() {
+                let now: std::collections::HashSet<String> =
+                    chats.borrow_and_update().iter().map(|c| c.id.clone()).collect();
+                let Some(inner) = weak.upgrade() else { return };
+                let sessions = SessionsEngine { inner };
+                for gone in known.difference(&now) {
+                    if !sessions.has_run(gone) {
+                        continue;
+                    }
+                    tracing::info!(chat = %gone, "chat deleted; ending its run");
+                    let sessions = sessions.clone();
+                    let chat_id = gone.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = sessions.terminate(&chat_id).await {
+                            tracing::warn!(chat = %chat_id, error = %err, "ending a deleted chat's run failed");
+                        }
+                    });
+                }
+                known = now;
+            }
+        });
     }
 
     /// Wire the turn-start listener (called once at engine assembly).
@@ -490,6 +583,15 @@ impl SessionsEngine {
     /// question it is still owed an answer to (see [`is_active`]). A persistent
     /// session parked BETWEEN turns is not: it holds a warm child with nothing
     /// outstanding, and takes the next prompt straight through its mailbox.
+    /// When the turn now running started (epoch millis), while one is.
+    pub fn turn_started_ms(&self, chat_id: &str) -> Option<i64> {
+        lock(&self.inner.statuses)
+            .get(chat_id)
+            .filter(|session| is_active(session))
+            .and_then(|session| session.started_at)
+            .map(|started| started.timestamp_millis())
+    }
+
     pub fn turn_in_flight(&self, chat_id: &str) -> bool {
         lock(&self.inner.statuses)
             .get(chat_id)
@@ -512,13 +614,13 @@ impl SessionsEngine {
         chat_id: &str,
         task_ids: &[String],
         waiting: bool,
-    ) -> Result<zeron_harness::MarkOutcome, AwaitRefused> {
+    ) -> Result<zend_harness::MarkOutcome, AwaitRefused> {
         let turn = lock(&self.inner.runs)
             .get(chat_id)
             .map(|h| h.turn.clone())
             .ok_or(AwaitRefused::NoRun)?;
         turn.mark_awaited(task_ids, waiting).map_err(|refused| match refused {
-            zeron_harness::MarkRefused::NoWake => AwaitRefused::NoWake,
+            zend_harness::MarkRefused::NoWake => AwaitRefused::NoWake,
         })
     }
 
@@ -546,7 +648,7 @@ impl SessionsEngine {
         &self,
         chat_id: &str,
         task_id: &str,
-    ) -> Option<zeron_proto::BackgroundTaskOutput> {
+    ) -> Option<zend_proto::BackgroundTaskOutput> {
         let turn = lock(&self.inner.runs).get(chat_id)?.turn.clone();
         let task_id = task_id.to_owned();
         tokio::task::spawn_blocking(move || turn.background_output(&task_id))
@@ -562,7 +664,7 @@ impl SessionsEngine {
         doc_id: &str,
         tool_id: &str,
         offset: u64,
-    ) -> Result<zeron_proto::ToolOutputChunk, crate::tool_output::ToolOutputError> {
+    ) -> Result<zend_proto::ToolOutputChunk, crate::tool_output::ToolOutputError> {
         let journal = self.inner.journal.clone();
         let (doc_id, tool_id) = (doc_id.to_owned(), tool_id.to_owned());
         tokio::task::spawn_blocking(move || {
@@ -574,6 +676,43 @@ impl SessionsEngine {
                 std::io::Error::other(e.to_string()),
             ))
         })?
+    }
+
+    /// What this engine's runs are doing, for the Cloud runner heartbeat:
+    /// turns in flight, those parked on a question, and runs whose turn ended
+    /// with background work still live. A runaway subagent can't hold the
+    /// machine forever: the idle reaper ends a parked run whose subagents
+    /// fall silent.
+    pub fn run_counts(&self) -> crate::runner::RunCounts {
+        let (active, waiting) = {
+            let statuses = lock(&self.inner.statuses);
+            (
+                statuses.values().filter(|s| is_active(s)).count(),
+                statuses
+                    .values()
+                    .filter(|s| s.status == SessionStatus::AwaitingInput)
+                    .count(),
+            )
+        };
+        crate::runner::RunCounts {
+            active,
+            waiting,
+            background: self.background_count(),
+        }
+    }
+
+    /// Chats whose turn has ended but whose runtime still runs background
+    /// work (subagents, background shells).
+    pub fn background_count(&self) -> usize {
+        let parked: Vec<String> = lock(&self.inner.runs)
+            .iter()
+            .filter(|(_, run)| run.turn.background_live())
+            .map(|(chat, _)| chat.clone())
+            .collect();
+        parked
+            .iter()
+            .filter(|chat| !self.turn_in_flight(chat))
+            .count()
     }
 
     /// How many chats have a turn in flight (the Cloud runner heartbeat's
@@ -732,8 +871,8 @@ impl SessionsEngine {
         &self,
         chat_id: &str,
     ) -> Option<(
-        zeron_harness::codex::realtime::RealtimeHandle,
-        tokio::sync::broadcast::Receiver<zeron_proto::voice::VoiceEvent>,
+        zend_harness::codex::realtime::RealtimeHandle,
+        tokio::sync::broadcast::Receiver<zend_proto::voice::VoiceEvent>,
         Arc<VoiceActivity>,
     )> {
         let mut runs = lock(&self.inner.runs);
@@ -749,7 +888,7 @@ impl SessionsEngine {
     ///
     /// - The user message entry is written to the doc immediately (id = `message_id`).
     /// - A live steerable run receives the prompt as its next turn via the mailbox
-    ///   (zeron's persistent-session routing); otherwise any live run is interrupted
+    ///   (zend's persistent-session routing); otherwise any live run is interrupted
     ///   first — never two runtimes driving one chat.
     pub async fn dispatch(
         &self,
@@ -814,12 +953,12 @@ impl SessionsEngine {
             .scratch_root
             .get()
             .cloned()
-            .unwrap_or_else(|| crate::repos::home_dir().join(".zeron").join("scratch"));
+            .unwrap_or_else(|| crate::repos::home_dir().join(".zend").join("scratch"));
         request.cwd = crate::repos::resolve_chat_cwd(&request.cwd, &scratch_root)
             .map_err(EngineError::Other)?;
         // Native-only catalog entries have no portable file fallback. Reject
         // cross-harness delivery before recording or routing the user turn.
-        zeron_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
+        zend_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
         // A revival reaching a chat that has a run again (a message sent
         // since boot): that run owns the chat, and reviving the old turn into
@@ -903,7 +1042,7 @@ impl SessionsEngine {
                     prompt: if harness_id == HarnessId::Opencode {
                         delivered.to_owned()
                     } else {
-                        zeron_proto::invocation::harness_prompt(delivered, harness_id)
+                        zend_proto::invocation::harness_prompt(delivered, harness_id)
                     },
                     message_id: Some(user_id.clone()),
                     // Images ride the mailbox too: replacing the runtime just
@@ -1028,7 +1167,7 @@ impl SessionsEngine {
                 .note_provider_switch(chat_id, harness_id, &handle);
             handle.write_user_message(&user_id, &request.prompt, now_ms())?;
         }
-        let credential = self.inner.registry.run_credential(harness_id).await;
+        let credential = self.inner.registry.run_credential(harness_id, Some(chat_id)).await;
         let binary = {
             let harness = harness.clone();
             tokio::task::spawn_blocking(move || binary_identity(harness.as_ref()))
@@ -1038,7 +1177,7 @@ impl SessionsEngine {
         };
         let side_chats_only = self.inner.side_chats_only(chat_id, harness_id);
 
-        // Engine-owned resume (zeron sessions.ts:736 — every dispatch read the
+        // Engine-owned resume (zend sessions.ts:736 — every dispatch read the
         // chat's stored harness session): callers always send `resume: None`;
         // the engine threads the chat's prior harness session back in so a new
         // process (app restart) continues the same harness conversation. The
@@ -1111,7 +1250,7 @@ impl SessionsEngine {
         let turn = TurnControl::default();
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fork_history_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (voice_handle, realtime, _voice_events) = zeron_harness::codex::realtime::channel();
+        let (voice_handle, realtime, _voice_events) = zend_harness::codex::realtime::channel();
         let voice_active = Arc::new(VoiceActivity::default());
         let controls = RunControls {
             realtime: (harness_id == HarnessId::Codex).then_some(realtime),
@@ -1146,6 +1285,16 @@ impl SessionsEngine {
                 .inner
                 .shutting_down
                 .load(std::sync::atomic::Ordering::Acquire);
+        // A deleted chat takes no turn: a message queued behind the run its
+        // delete ended, or a send that crossed the delete. (Checked under the
+        // run lock: a delete after this finds the run below and ends it, see
+        // `follow_chat_deletions`.)
+        let deleted = self.inner.workspace().is_some_and(|ws| ws.chat_deleted(chat_id));
+        if deleted {
+            drop(runs);
+            tracing::info!(chat = %chat_id, "run not started: the chat was deleted");
+            return Ok(String::new());
+        }
         if moved_on || stopped || shutting_down {
             drop(runs);
             if moved_on {
@@ -1259,7 +1408,7 @@ impl SessionsEngine {
         if self.turn_in_flight(chat_id) || self.holds_background_work(chat_id) {
             return false;
         }
-        match self.inner.registry.run_credential(harness_id).await {
+        match self.inner.registry.run_credential(harness_id, Some(chat_id)).await {
             Some(now) if Some(now.as_str()) != started_with => {
                 tracing::info!(chat = %chat_id, harness = ?harness_id,
                     "credential changed; replacing the parked session");
@@ -1271,7 +1420,7 @@ impl SessionsEngine {
 
     /// Whether a session parked between turns runs a CLI binary other than
     /// the one a run would launch now (the CLI updated itself, or was updated
-    /// outside zeron, since it started). Same guards as
+    /// outside zend, since it started). Same guards as
     /// [`Self::credential_changed`]: never mid-turn, never with background
     /// work on it, never on an unknown binary.
     async fn binary_changed(
@@ -1401,7 +1550,7 @@ impl SessionsEngine {
         let Some((run_id, harness_id, steer_tx, ledger, history_sent, retiring)) = target else {
             return Ok(SteerOutcome::NotSteerable);
         };
-        zeron_proto::invocation::validate_harness_invocations(prompt, harness_id)
+        zend_proto::invocation::validate_harness_invocations(prompt, harness_id)
             .map_err(EngineError::Other)?;
         let user_id = message_id.unwrap_or_else(new_id);
         let bootstrap = self.warm_fork_history(chat_id, harness_id, prompt, &history_sent);
@@ -1417,7 +1566,7 @@ impl SessionsEngine {
             prompt: if harness_id == HarnessId::Opencode {
                 delivered.to_owned()
             } else {
-                zeron_proto::invocation::harness_prompt(delivered, harness_id)
+                zend_proto::invocation::harness_prompt(delivered, harness_id)
             },
             message_id: Some(user_id.clone()),
             attachments,
@@ -1506,6 +1655,11 @@ impl SessionsEngine {
     /// under their own ids. Otherwise, or when the stop doesn't settle, it
     /// is an ordinary steer ([`Self::steer_at`]), read at the next step
     /// boundary. Nothing here tears a runtime down.
+    ///
+    /// A message from another chat never stops the turn: Claude Code words
+    /// every interrupt as the person rejecting the tool call and telling the
+    /// agent to stop and wait, so the agent would take the other chat's
+    /// message as an order to stop. It waits for the step boundary instead.
     pub(crate) async fn steer_now(
         &self,
         chat_id: &str,
@@ -1514,7 +1668,11 @@ impl SessionsEngine {
         message_id: Option<String>,
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
-        if self.steer_stops_tool(chat_id) && self.stop_turn_keeping_runtime(chat_id).await {
+        let from_another_chat = zend_proto::agent_messages::agent_message_sender(prompt).is_some();
+        if !from_another_chat
+            && self.steer_stops_tool(chat_id)
+            && self.stop_turn_keeping_runtime(chat_id).await
+        {
             let earlier = lock(&self.inner.runs)
                 .get(chat_id)
                 .map(|h| std::mem::take(&mut *lock(&h.redeliver)))
@@ -1727,6 +1885,13 @@ impl SessionsEngine {
         lock(&self.inner.runs).contains_key(chat_id)
     }
 
+    /// Boot recovery means to bring this chat's killed turn back, and hasn't got
+    /// as far as a run holding the chat. (Not `revivals`: dispatch takes its entry
+    /// before the run is in place, and a row sent in that moment overtakes it.)
+    pub(crate) fn revival_pending(&self, chat_id: &str) -> bool {
+        lock(&self.inner.revivals_starting).contains(chat_id)
+    }
+
     /// Fold an engine-made event (a `show_visual` page, a `show_image` image)
     /// into the chat's live run, after whatever the harness streamed so far.
     /// Returns `false` when the chat has no run on this device.
@@ -1763,6 +1928,11 @@ impl SessionsEngine {
         Ok(true)
     }
 
+    /// Boot recovery has a revival of this chat on its way.
+    pub(crate) fn reviving(&self, chat_id: &str) -> bool {
+        lock(&self.inner.revivals).contains_key(chat_id)
+    }
+
     /// Boot recovery: pick back up every turn the engine itself cut off — a
     /// journal whose last event is not `Done` (the engine died mid-stream), or
     /// a chat its graceful shutdown marked (see [`Self::shutdown`]; that
@@ -1770,7 +1940,7 @@ impl SessionsEngine {
     /// entries are stamped `aborted` with a VISIBLE "Run interrupted by engine
     /// restart" error part and its journal closed with a synthetic
     /// `Done{interrupted}`. Then a fresh turn with revival budget left is
-    /// re-dispatched against the remembered harness session (zeron: "not just
+    /// re-dispatched against the remembered harness session (zend: "not just
     /// eulogized"; `MAX_AUTO_RESUME` = 3 consecutive revivals, fresh =
     /// interrupted < 12h ago), under its original user message id.
     ///
@@ -1783,6 +1953,11 @@ impl SessionsEngine {
     /// carry on), a turn parked on an unanswered question, a turn that had
     /// already finished, and one the user had stopped (its run had not
     /// settled yet when the engine died).
+    ///
+    /// Whatever happens to it, a turn cut off never ends in silence: a reply
+    /// that reached disk carries the note, and one that didn't (the kill came
+    /// before the doc's debounced save, so the transcript ends at the user's
+    /// message) gets an entry of its own, as does a revival that fails to start.
     pub fn recover_stale(&self) -> Result<usize, EngineError> {
         const MAX_AUTO_RESUME: u32 = 3;
         const RESUME_FRESH_MS: i64 = 12 * 60 * 60 * 1000;
@@ -1823,7 +1998,7 @@ impl SessionsEngine {
             // Harness continuity first: the crashed run's session id may only
             // exist in the journal (the debounced workspace-row write may
             // never have landed) — remember it so the revived run resumes the
-            // same harness conversation (zeron recoverDraft, sessions.ts:538).
+            // same harness conversation (zend recoverDraft, sessions.ts:538).
             if let Some((session_id, cwd, Some(owner))) =
                 self.inner.journal_harness_session(&chat_id)
             {
@@ -1921,6 +2096,13 @@ impl SessionsEngine {
             // A shutdown already finalized its entry (with its own note); a
             // streaming entry here means the snapshot outran that.
             let stamped = handle.mark_abandoned_streams(&note)?.len();
+            // Nothing to stamp, not going to run, and not the user's doing or
+            // a turn that had finished.
+            if stamped == 0 && pickup != Pickup::Resume && !stopped && !(crashed && tail.finished) {
+                if let Some(last) = entries.last().filter(|e| e.role == MessageRole::User) {
+                    handle.note_turn_failure(&last.id, &note)?;
+                }
+            }
             self.inner.set_status_with_completion(
                 &chat_id,
                 SessionStatus::Idle,
@@ -1962,19 +2144,29 @@ impl SessionsEngine {
                     continuation,
                 },
             );
+            lock(&self.inner.revivals_starting).insert(chat_id.clone());
             request.resume = None; // dispatch re-injects the remembered session
             request.attachments = Vec::new();
             let sessions = self.clone();
             tokio::spawn(async move {
                 let Some(host) = sessions.inner.doc_host() else {
+                    lock(&sessions.inner.revivals_starting).remove(&chat_id);
                     return;
                 };
+                // Its Zend tools need the port the engine is about to serve.
+                // (One serving none, its in-process transport alone, goes on
+                // without them after a moment, as any run of its does.)
+                sessions
+                    .ipc_port_ready(std::time::Duration::from_secs(10))
+                    .await;
                 // A message sent since boot owns the chat now: reviving the
                 // old turn into it would deliver the old request a second
                 // time (dispatch checks again as the run starts).
                 if sessions.has_run(&chat_id) {
                     sessions.inner.drop_revival(&chat_id, &user_id);
                     tracing::info!(chat = %chat_id, "auto-resume skipped: the chat moved on");
+                    lock(&sessions.inner.revivals_starting).remove(&chat_id);
+                    host.kick_drains();
                     return;
                 }
                 match host
@@ -1994,9 +2186,20 @@ impl SessionsEngine {
                     }
                     Err(err) => {
                         sessions.inner.drop_revival(&chat_id, &user_id);
-                        tracing::warn!(chat = %chat_id, error = %err, "auto-resume dispatch failed")
+                        tracing::warn!(chat = %chat_id, error = %err, "auto-resume dispatch failed");
+                        let note = format!(
+                            "Run interrupted by engine restart, and couldn't be resumed ({err}). \
+                             Send a message to continue."
+                        );
+                        if let Err(err) = handle.note_turn_failure(&user_id, &note) {
+                            tracing::warn!(chat = %chat_id, error = %err, "noting a failed resume failed");
+                        }
                     }
                 }
+                // Whatever waited behind this revival: a turn it started holds it
+                // again until it ends, and one that didn't start doesn't.
+                lock(&sessions.inner.revivals_starting).remove(&chat_id);
+                host.kick_drains();
             });
         }
         Ok(recovered)
@@ -2008,7 +2211,7 @@ impl SessionsEngine {
         let mut request = self
             .last_request(chat_id)
             .or_else(|| host.request_from_chat_row(chat_id, prompt))
-            // Last resort: the journal's own cwd (zeron's draft config)
+            // Last resort: the journal's own cwd (zend's draft config)
             // — a crash can predate the debounced workspace-row write.
             .or_else(|| {
                 let (_, cwd, _) = self.inner.journal_harness_session(chat_id)?;
@@ -2020,7 +2223,7 @@ impl SessionsEngine {
                     reasoning: None,
                     model_options: Default::default(),
                     cwd,
-                    sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                    sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
                     auto_approve: false,
                     access: Default::default(),
                     plan: false,
@@ -2208,6 +2411,20 @@ impl Inner {
         if matches!(event, AgentEvent::Done { .. }) {
             self.journal.clear_user_stop(chat_id);
         }
+        // A turn's error, for plugins' events: a usage limit hit, a login
+        // expired (`plugins::agents`; told only if it's one of those).
+        let problem = match event {
+            AgentEvent::Error { message } => Some(message.as_str()),
+            AgentEvent::Done { error: Some(error), .. } => Some(error.as_str()),
+            _ => None,
+        };
+        if let (Some(message), Some(plugins)) = (problem, self.plugins.get()) {
+            plugins.agents().observe_problem(chat_id, message);
+        }
+        // Its final reply, told with its `turn.finished` (`messages.read`).
+        if let (AgentEvent::Done { result: Some(reply), .. }, Some(plugins)) = (event, self.plugins.get()) {
+            plugins.agents().observe_reply(chat_id, reply);
+        }
         if let Some(hub) = lock(&self.hubs).get(chat_id) {
             let _ = hub.send(JournaledEvent {
                 seq,
@@ -2220,20 +2437,19 @@ impl Inner {
     /// Bump the session's freshness on stream activity WITHOUT a status
     /// transition. Long silent-LOOKING stretches (thinking heartbeats, a big
     /// tool input being generated) still carry events — the UI's 45s
-    /// staleness gate must not flip "Working" off mid-run. Throttled: a
-    /// workspace-doc mirror per delta would be far too chatty.
+    /// staleness gate must not flip "Working" off mid-run. Each touch is a
+    /// stored registry write, so it comes only as often as that gate needs
+    /// ([`zend_proto::view::SESSION_HEARTBEAT_MS`]), and never for a row
+    /// with nothing to expire: a session parked idle after its turn read the
+    /// same with or without one, and touched every 15 s for its 30 minutes.
     fn touch_session(&self, chat_id: &str) {
-        const TOUCH_THROTTLE_MS: i64 = 10_000;
         let now = Utc::now();
         let session = {
             let mut statuses = lock(&self.statuses);
             let Some(entry) = statuses.get_mut(chat_id) else {
                 return;
             };
-            let age = now
-                .signed_duration_since(entry.updated_at)
-                .num_milliseconds();
-            if age < TOUCH_THROTTLE_MS {
+            if !touch_due(entry, now) {
                 return;
             }
             entry.updated_at = now;
@@ -2286,7 +2502,7 @@ impl Inner {
     /// Publish the background processes `chat_id`'s runtime runs, mirrored
     /// like [`Self::set_running_subagents`]. The live heartbeat keeps the row
     /// fresh while they run; an engine that stops beating took them with it.
-    fn set_background_tasks(&self, chat_id: &str, tasks: Vec<zeron_proto::BackgroundTask>) {
+    fn set_background_tasks(&self, chat_id: &str, tasks: Vec<zend_proto::BackgroundTask>) {
         let session = {
             let mut statuses = lock(&self.statuses);
             let Some(entry) = statuses.get_mut(chat_id) else {
@@ -2366,12 +2582,12 @@ impl Inner {
             }
             entry.status = status;
             if let Some(outcome) = outcome {
-                entry.last_turn_outcome = Some(zeron_proto::NativeTurnOutcome {
+                entry.last_turn_outcome = Some(zend_proto::NativeTurnOutcome {
                     status: outcome,
                     finished_at: now,
                 });
             } else if status == SessionStatus::Errored {
-                entry.last_turn_outcome = Some(zeron_proto::NativeTurnOutcome {
+                entry.last_turn_outcome = Some(zend_proto::NativeTurnOutcome {
                     status: DoneStatus::Errored,
                     finished_at: now,
                 });
@@ -2420,7 +2636,7 @@ impl Inner {
     /// Publish what `chat_id`'s agent waits on after its turn ended (`None`:
     /// no wait), mirrored like [`Self::set_background_tasks`]; the live
     /// heartbeat keeps the row fresh while the wait holds.
-    fn set_waiting(&self, chat_id: &str, waiting: Option<zeron_proto::SessionWaiting>) {
+    fn set_waiting(&self, chat_id: &str, waiting: Option<zend_proto::SessionWaiting>) {
         let session = {
             let mut statuses = lock(&self.statuses);
             let Some(entry) = statuses.get_mut(chat_id) else {
@@ -2474,52 +2690,52 @@ impl Inner {
             })
     }
 
-    /// Zeron's own MCP server for a run of `chat_id`: this binary's `zeron
+    /// Zend's own MCP server for a run of `chat_id`: this binary's `zend
     /// mcp` subcommand, dialing the engine's IPC port and stamped with the
     /// originating chat + device so the agent's side chats link back here.
     /// None when the engine serves no port or its executable is unknown.
     ///
     /// The bearer is the agent-scoped one (`{data_dir}/ipc-token-agent`): it
     /// reaches what the MCP tools need and nothing that decides, signs,
-    /// updates or hands out credentials ([`zeron_rpc::agent_allowed`]).
+    /// updates or hands out credentials ([`zend_rpc::agent_allowed`]).
     ///
-    /// The IPC bearer travels as a file PATH (`ZERON_IPC_TOKEN_FILE`), not as
-    /// `ZERON_IPC_TOKEN`: some harnesses hand this env to their CLI on the
+    /// The IPC bearer travels as a file PATH (`ZEND_IPC_TOKEN_FILE`), not as
+    /// `ZEND_IPC_TOKEN`: some harnesses hand this env to their CLI on the
     /// command line (Claude's inline `--mcp-config`), where any local user can
     /// read it with `ps`. The file is owner-only and always current.
     ///
     /// `side_chats_only`: the run's provider launches without its own
     /// subagents, so all delegation goes through this server.
-    /// Zeron's own MCP server for a chat's run. `waits`: the runtime wakes
+    /// Zend's own MCP server for a chat's run. `waits`: the runtime wakes
     /// its agent as background work ends ([`Harness::wakes_on_background`]),
     /// so the agent is offered `wait_on_background`.
-    fn zeron_mcp(
+    fn zend_mcp(
         &self,
         chat_id: &str,
         side_chats_only: bool,
         waits: bool,
-    ) -> Option<zeron_proto::McpServer> {
+    ) -> Option<zend_proto::McpServer> {
         let port = self.ipc_port.load(std::sync::atomic::Ordering::Relaxed);
         if port == 0 {
             return None;
         }
-        let command = std::env::current_exe().ok()?.to_str()?.to_owned();
+        let command = crate::managed::mcp_executable()?.to_str()?.to_owned();
         let mut env: std::collections::BTreeMap<String, String> = [
-            ("ZERON_IPC_PORT".to_owned(), port.to_string()),
-            (zeron_proto::McpServer::CHAT_ID_ENV.to_owned(), chat_id.to_owned()),
-            ("ZERON_DEVICE_ID".to_owned(), self.device_id.clone()),
+            ("ZEND_IPC_PORT".to_owned(), port.to_string()),
+            (zend_proto::McpServer::CHAT_ID_ENV.to_owned(), chat_id.to_owned()),
+            ("ZEND_DEVICE_ID".to_owned(), self.device_id.clone()),
         ]
         .into_iter()
         .collect();
         if side_chats_only {
             env.insert(
-                zeron_proto::McpServer::SIDE_CHATS_ONLY_ENV.to_owned(),
+                zend_proto::McpServer::SIDE_CHATS_ONLY_ENV.to_owned(),
                 "1".to_owned(),
             );
         }
         if waits {
             env.insert(
-                zeron_proto::McpServer::WAITS_ON_BACKGROUND_ENV.to_owned(),
+                zend_proto::McpServer::WAITS_ON_BACKGROUND_ENV.to_owned(),
                 "1".to_owned(),
             );
         }
@@ -2528,12 +2744,12 @@ impl Inner {
             .and_then(|path| path.to_str())
         {
             env.insert(
-                zeron_rpc::ipc_auth::TOKEN_FILE_ENV.to_owned(),
+                zend_rpc::ipc_auth::TOKEN_FILE_ENV.to_owned(),
                 path.to_owned(),
             );
         }
-        Some(zeron_proto::McpServer {
-            name: "zeron".into(),
+        Some(zend_proto::McpServer {
+            name: "zend".into(),
             command,
             args: vec!["mcp".into()],
             env,
@@ -2556,7 +2772,7 @@ impl Inner {
 
     /// Record the chat's harness-native session id (and its cwd): live-process
     /// cache plus the durable workspace chat row — the row is what survives an
-    /// engine restart (zeron sessions.ts:1039).
+    /// engine restart (zend sessions.ts:1039).
     fn remember_harness_session(
         &self,
         chat_id: &str,
@@ -2590,7 +2806,7 @@ impl Inner {
     // when the provider itself says the session is gone (`resume_rejected`).
 
     /// The session id to resume for a run of `harness` in `chat_id` launching
-    /// from `cwd` (zeron sessions.ts:736, looked up on every dispatch):
+    /// from `cwd` (zend sessions.ts:736, looked up on every dispatch):
     /// live-process cache → workspace chat row → journal scan (the crash path
     /// where the debounced row write never landed — SessionStarted/Done events
     /// are journaled per event, flushed immediately). Cwd-gated throughout:
@@ -2720,7 +2936,7 @@ impl Inner {
             (Some(old), Some(new)) if position(&old) > position(&new) => Some(old),
             (old, new) => new.or(old),
         };
-        let mark = zeron_doc::ProviderSessionMark {
+        let mark = zend_doc::ProviderSessionMark {
             session_id: session_id.to_owned(),
             cwd: cwd.to_owned(),
             seen,
@@ -2999,7 +3215,7 @@ impl Inner {
             && !known.session_id.is_empty()
             && let Err(err) = doc.doc().set_provider_session(
                 previous.as_str(),
-                &zeron_doc::ProviderSessionMark {
+                &zend_doc::ProviderSessionMark {
                     session_id: known.session_id,
                     cwd: known.cwd,
                     // Not the message that triggers this switch (written
@@ -3007,7 +3223,7 @@ impl Inner {
                     // switch back must replay them.
                     seen: entries
                         .iter()
-                        .rposition(|entry| entry.role != zeron_doc::MessageRole::User)
+                        .rposition(|entry| entry.role != zend_doc::MessageRole::User)
                         .map(|ix| entries[ix].id.clone()),
                 },
             )
@@ -3097,8 +3313,8 @@ impl Inner {
                     entry.parts.iter().any(|part| {
                         matches!(
                             part,
-                            zeron_doc::MessagePart::Fork { .. }
-                                | zeron_doc::MessagePart::Switch { .. }
+                            zend_doc::MessagePart::Fork { .. }
+                                | zend_doc::MessagePart::Switch { .. }
                         )
                     })
                 })?
@@ -3111,8 +3327,8 @@ impl Inner {
                     .parts
                     .iter()
                     .filter_map(|part| match part {
-                        zeron_doc::MessagePart::Text { text, .. } => Some(text.clone()),
-                        zeron_doc::MessagePart::Tool { call, output, .. } => Some(format!(
+                        zend_doc::MessagePart::Text { text, .. } => Some(text.clone()),
+                        zend_doc::MessagePart::Tool { call, output, .. } => Some(format!(
                             "Tool: {}\n{}",
                             serde_json::to_string(call).unwrap_or_default(),
                             clip_chars(
@@ -3175,7 +3391,7 @@ impl Inner {
 /// it model input. A leading path ("/tmp/app/main.rs panics…") is not a
 /// command name: it is ordinary work.
 fn native_command(prompt: &str, harness: HarnessId) -> bool {
-    use zeron_proto::invocation::{self, Invocation};
+    use zend_proto::invocation::{self, Invocation};
     let selected = invocation::invocation_links(prompt)
         .into_iter()
         .next()
@@ -3295,7 +3511,7 @@ fn answered_in(entries: &[SessionMessageEntry], user_id: &str) -> bool {
 /// its resume fails — and without it that session would get only the nudge.
 fn revival_prompt(original: &str) -> String {
     format!(
-        "Your previous turn was cut off before it finished (Zeron restarted). Continue \
+        "Your previous turn was cut off before it finished (Zend restarted). Continue \
          where you left off. Anything you already completed, such as edits, commands or \
          commits, is done: check before repeating it. The request is below for \
          reference; if it is not in your history yet, handle it now.\n\n\
@@ -3326,9 +3542,9 @@ const SPAWN_RETRY_DELAYS: [std::time::Duration; 3] = [
 /// bit fails that way forever, so it counts only when the harness's CLI was
 /// rewritten moments ago (`cli_just_replaced`, see
 /// [`cli_replaced_recently`]).
-fn transient_start_failure(err: &zeron_harness::HarnessError, cli_just_replaced: bool) -> bool {
+fn transient_start_failure(err: &zend_harness::HarnessError, cli_just_replaced: bool) -> bool {
     use std::io::ErrorKind;
-    let zeron_harness::HarnessError::Io(err) = err else {
+    let zend_harness::HarnessError::Io(err) = err else {
         return false;
     };
     match err.kind() {
@@ -3385,6 +3601,21 @@ fn is_active(session: &Session) -> bool {
     )
 }
 
+/// How often a live run (and the activity projection) checks whether a
+/// session row is due its heartbeat. A check costs a lock and a compare;
+/// only a due one writes. Bounds a quiet row's restamps to
+/// `SESSION_HEARTBEAT_MS` plus this.
+const HEARTBEAT_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether a liveness touch should restamp (and so store) `session` at
+/// `now`: only a row readers would expire, once its last stamp is a
+/// heartbeat old.
+fn touch_due(session: &Session, now: chrono::DateTime<Utc>) -> bool {
+    zend_proto::view::session_expires(session)
+        && now.signed_duration_since(session.updated_at).num_milliseconds()
+            >= zend_proto::view::SESSION_HEARTBEAT_MS
+}
+
 // ── subagent docs ───────────────────────────────────────────────────────────
 
 /// The per-subagent doc id: `{chatId}--sub--{suffix}`. Constrained by the
@@ -3420,6 +3651,17 @@ fn is_chat_spawn(id: &str, folded: &[MessagePart], doc: &SessionDoc) -> bool {
         matches!(p, MessagePart::Tool { id: part, call, .. }
             if part == id && call.is_subagent_spawn())
     }) || doc.has_subagent_spawn(id)
+}
+
+/// When to commit what just changed: at once, unless a commit went out less than a
+/// window ago, then a window after it. The same at most one per window as waiting a
+/// window every time, without making the first change after a pause wait.
+fn next_commit(last: Option<tokio::time::Instant>) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    match last {
+        Some(at) => (at + std::time::Duration::from_millis(STREAM_COMMIT_MS)).max(now),
+        None => now,
+    }
 }
 
 /// Test-only instrumentation: how often `drive_run`'s coalesced commit branch
@@ -3552,7 +3794,7 @@ impl SubagentSink {
         if let Err(err) = finished {
             tracing::warn!(doc = %self.doc_id, error = %err, "subagent sink finish failed");
         }
-        let entries = zeron_doc::join_continuation_entries(self.doc.read_entries().ok()?);
+        let entries = zend_doc::join_continuation_entries(self.doc.read_entries().ok()?);
         serde_json::to_string(&entries).ok()
     }
 }
@@ -3703,7 +3945,7 @@ fn cursor_unstarted_history(
     // Convert each message before JSON encoding. Rewriting canonical chips in
     // the encoded envelope can introduce unescaped quotes or newlines and can
     // cause Cursor's current message to be converted twice.
-    let prompt = zeron_proto::invocation::harness_prompt(prompt, HarnessId::Cursor);
+    let prompt = zend_proto::invocation::harness_prompt(prompt, HarnessId::Cursor);
     let entries = doc.read_entries()?;
     let preceding: Vec<_> = entries
         .iter()
@@ -3745,7 +3987,7 @@ fn cursor_unstarted_history(
                 .join("\n")
         })
         .filter(|text| !text.is_empty())
-        .map(|text| zeron_proto::invocation::harness_prompt(&text, HarnessId::Cursor))
+        .map(|text| zend_proto::invocation::harness_prompt(&text, HarnessId::Cursor))
         .collect();
     if previous.is_empty() {
         return Ok(prompt);
@@ -3781,7 +4023,7 @@ pub enum AwaitRefused {
 /// - the run ends (stopped, crashed, reaped, replaced): it goes, its held
 ///   completion marked unless the person stopped it;
 /// - the engine dies: its row goes stale and every reader drops the wait
-///   ([`zeron_proto::view::waiting`]).
+///   ([`zend_proto::view::waiting`]).
 struct ParkedWait {
     since: chrono::DateTime<Utc>,
     completed_turn: Option<String>,
@@ -3793,9 +4035,9 @@ struct ParkedWait {
 /// How long a wait outlives the work it waited on before the turn's end
 /// stands. The runtime normally starts its wake turn at once (Claude Code:
 /// 0.1 s after the roster drains, live-verified 2.1.319), so this only ever
-/// runs out when no wake comes. `ZERON_WAKE_GRACE_MS` overrides it (tests).
+/// runs out when no wake comes. `ZEND_WAKE_GRACE_MS` overrides it (tests).
 fn wake_grace() -> std::time::Duration {
-    std::env::var("ZERON_WAKE_GRACE_MS")
+    std::env::var("ZEND_WAKE_GRACE_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_millis)
@@ -3836,7 +4078,7 @@ async fn drive_run(
     // The host stamps its own MCP server onto every run it drives, so the
     // agent can spawn and talk to side chats through the engine it runs in.
     if request.mcp.is_none() {
-        request.mcp = inner.zeron_mcp(&chat_id, side_chats_only, harness.wakes_on_background());
+        request.mcp = inner.zend_mcp(&chat_id, side_chats_only, harness.wakes_on_background());
     }
     // Plugins' native MCP servers come from this host's own allowed plugins,
     // run from their verified snapshots — never from what a sender put here.
@@ -3938,7 +4180,7 @@ async fn drive_run(
     // optimistic echo) is replaced in place.
     if crate::runner::setup_pending() {
         let user_id = resume_state.user_message_id.clone();
-        entry_id = zeron_proto::cloud_setup_entry_id(&user_id);
+        entry_id = zend_proto::cloud_setup_entry_id(&user_id);
         let sent_at = doc_ref.read_entries().ok().and_then(|entries| {
             entries
                 .iter()
@@ -3985,7 +4227,7 @@ async fn drive_run(
             request.resume.is_some(),
         )
         .map(|prompt| request.prompt = prompt)
-        .map_err(|e| zeron_harness::HarnessError::Protocol(e.to_string()))
+        .map_err(|e| zend_harness::HarnessError::Protocol(e.to_string()))
     } else {
         Ok(())
     };
@@ -4009,24 +4251,36 @@ async fn drive_run(
                 let mut wire_request = request;
                 if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
                     wire_request.prompt =
-                        zeron_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
+                        zend_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
                 }
                 // Everything the agent starts inherits its chat, which is how
                 // preview discovery tells its dev servers from the user's own.
                 wire_request.env.insert(
-                    zeron_proto::ORIGIN_ENV.into(),
-                    zeron_proto::chat_origin(&chat_id),
+                    zend_proto::ORIGIN_ENV.into(),
+                    zend_proto::chat_origin(&chat_id),
                 );
                 // Host-resolved spawn env (a Cloud device's credential broker);
                 // `RunRequest::env` is serde-skipped, never persisted.
-                match inner
+                let prepared = inner
                     .registry
-                    .prepare_run(harness_id, &mut wire_request)
-                    .await
-                {
+                    .prepare_run(harness_id, Some(&chat_id), &mut wire_request)
+                    .await;
+                if prepared.is_ok() {
+                    // Preparing can decide the chat's account (a plugin's
+                    // `run.preparing` pin): the session parks on what it
+                    // really started with, not on what dispatch read before.
+                    let now = inner.registry.run_credential(harness_id, Some(&chat_id)).await;
+                    if let Some(h) = lock(&inner.runs).get_mut(&chat_id).filter(|h| h.run_id == run_id) {
+                        h.credential = now;
+                    }
+                }
+                match prepared {
                     Ok(()) if resume_state.idle => harness.start_idle(wire_request, controls).await,
-                    Ok(()) => harness.run(wire_request, controls).await,
-                    Err(message) => Err(zeron_harness::HarnessError::NotSignedIn(message)),
+                    Ok(()) => {
+                        crate::wake_trace::mark(crate::wake_trace::Stage::AgentSpawn);
+                        harness.run(wire_request, controls).await
+                    }
+                    Err(message) => Err(zend_harness::HarnessError::NotSignedIn(message)),
                 }
             } else {
                 Ok(futures::stream::once(async {
@@ -4045,7 +4299,7 @@ async fn drive_run(
     // Only a refused permission needs to know (a filesystem read, kept off
     // the async threads like `binary_identity`).
     let cli_just_replaced = match &started {
-        Err(zeron_harness::HarnessError::Io(err))
+        Err(zend_harness::HarnessError::Io(err))
             if err.kind() == std::io::ErrorKind::PermissionDenied =>
         {
             let harness = harness.clone();
@@ -4226,6 +4480,9 @@ async fn drive_run(
 
     let mut dirty = false;
     let mut flush_at = tokio::time::Instant::now();
+    // Commits are at most one per window, but the first after a quiet spell goes at
+    // once: a turn's first token and a steer's echo don't wait out a window.
+    let mut last_flush: Option<tokio::time::Instant> = None;
     // Set when the engine interrupts the run: the harness gets this long to end its own
     // stream (its token was cancelled); past it, a terminal Done is synthesized.
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
@@ -4240,8 +4497,12 @@ async fn drive_run(
     // timeout here by design (a first port was rejected — agents may
     // legitimately be quiet for >10min): a live child means Working, dying
     // paths each carry their own error, and engine death stops these ticks
-    // so the gate still catches real crashes. touch_session throttles at 10s.
-    let mut live_heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+    // so the gate still catches real crashes. touch_session stores a touch
+    // only for a row that can expire, once its stamp is SESSION_HEARTBEAT_MS
+    // old; this tick only checks, so a quiet live row is restamped within
+    // one tick of that (≤ 30 s apart, inside the 45 s gate). A coarser tick
+    // let a stamp from the last streamed event age 40 s before the next.
+    let mut live_heartbeat = tokio::time::interval(HEARTBEAT_CHECK);
     live_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The runtime's background processes, published on the session row.
     let mut background_processes = turn.watch_background_processes();
@@ -4250,21 +4511,21 @@ async fn drive_run(
     let mut waiting_on = turn.watch_waiting();
     let mut wait: Option<ParkedWait> = None;
     let wake_grace = wake_grace();
-    // PERSISTENT SESSION (zeron runsBySession): a completed turn on a
+    // PERSISTENT SESSION (zend runsBySession): a completed turn on a
     // steerable harness parks here instead of ending the run — the child and
     // its steering mailbox stay warm, and the next user message (dispatch
     // routes into a live run) starts the next turn with zero respawn/resume
     // latency. `Some(when)` = idle since then; the 30-min reaper below ends
-    // a session nobody comes back to (zeron SESSION_IDLE_MS). A voice
+    // a session nobody comes back to (zend SESSION_IDLE_MS). A voice
     // orchestrator holds Codex and its MCP servers (~200 MB) for calls only,
     // so it goes after 5 minutes. A call holds the reaper off, and the window
-    // restarts at hang-up. `ZERON_SESSION_IDLE_MS` overrides both (tests).
-    let session_idle = std::env::var("ZERON_SESSION_IDLE_MS")
+    // restarts at hang-up. `ZEND_SESSION_IDLE_MS` overrides both (tests).
+    let session_idle = std::env::var("ZEND_SESSION_IDLE_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_millis)
         .unwrap_or(std::time::Duration::from_secs(
-            if zeron_proto::voice::is_orchestrator_chat(&chat_id) {
+            if zend_proto::voice::is_orchestrator_chat(&chat_id) {
                 5 * 60
             } else {
                 30 * 60
@@ -4301,7 +4562,7 @@ async fn drive_run(
     // segment finalized Complete, status Idle, child and mailbox warm. A
     // false trip (the agent was quietly waiting on something invisible)
     // costs a status dip: the parked-resume path below re-arms Working the
-    // moment output flows again, and nothing is lost. `ZERON_TURN_QUIESCE_MS`
+    // moment output flows again, and nothing is lost. `ZEND_TURN_QUIESCE_MS`
     // overrides the window; 0 disables.
     // RETIRED for native drivers: a harness whose every turn shape ends with
     // a deterministic wire Done (claude/codex/cursor native) needs no
@@ -4311,7 +4572,7 @@ async fn drive_run(
     // ACP retains the watchdog only for unowned self-continued activity.
     let deterministic_turn_end = harness.deterministic_turn_end();
     let authoritative_prompt_end = harness.authoritative_prompt_end();
-    let quiesce_after: Option<std::time::Duration> = match std::env::var("ZERON_TURN_QUIESCE_MS")
+    let quiesce_after: Option<std::time::Duration> = match std::env::var("ZEND_TURN_QUIESCE_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
@@ -4330,11 +4591,11 @@ async fn drive_run(
     // so the default 120s window read as 2min of stuck-Working after every
     // background notification (user report 2026-08-13). The in-flight
     // fold gate below still protects running tools; reasoning heartbeats
-    // push the window during real thinking. `ZERON_SELF_TURN_QUIESCE_MS`
+    // push the window during real thinking. `ZEND_SELF_TURN_QUIESCE_MS`
     // overrides; 0 falls back to the normal window. An explicit
-    // `ZERON_TURN_QUIESCE_MS=0` still disables the watchdog entirely.
+    // `ZEND_TURN_QUIESCE_MS=0` still disables the watchdog entirely.
     let self_quiesce_after: Option<std::time::Duration> =
-        match std::env::var("ZERON_SELF_TURN_QUIESCE_MS")
+        match std::env::var("ZEND_SELF_TURN_QUIESCE_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
         {
@@ -4405,7 +4666,7 @@ async fn drive_run(
                         };
                         inner.set_waiting(
                             &chat_id,
-                            Some(zeron_proto::SessionWaiting { since: parked.since, on }),
+                            Some(zend_proto::SessionWaiting { since: parked.since, on }),
                         );
                     }
                     continue;
@@ -4472,7 +4733,7 @@ async fn drive_run(
                     }
                     break SessionStatus::Idle;
                 }
-                // Idle reaper (zeron SESSION_IDLE_MS): a parked persistent session
+                // Idle reaper (zend SESSION_IDLE_MS): a parked persistent session
                 // nobody returned to within its window releases its child. The turn
                 // was finalized at Done, so this end is clean — no aborted stamp.
                 // A live background subagent is somebody still using the child:
@@ -4529,7 +4790,13 @@ async fn drive_run(
                     continue;
                 }
                 next = stream.next() => match next {
-                    Some(Ok(event)) => event,
+                    Some(Ok(event)) => {
+                        crate::wake_trace::note_agent_event(matches!(
+                            event,
+                            AgentEvent::SessionStarted { .. }
+                        ));
+                        event
+                    }
                     // A stream error while PARKED is a post-turn child death —
                     // the turn was already finalized, so the run ends clean
                     // instead of stamping a completed session Errored.
@@ -4566,6 +4833,7 @@ async fn drive_run(
                     FLUSH_TICKS.with(|t| t.set(t.get() + 1));
                     // Coalesced STREAM_COMMIT_MS tick: one doc commit per window
                     // (parent + any dirty subagent docs).
+                    last_flush = Some(tokio::time::Instant::now());
                     if dirty {
                         if let Err(err) = sync_segment(
                             doc_ref, &mut writer, &entry_id, &device_id, segment_started, &folded,
@@ -4601,7 +4869,7 @@ async fn drive_run(
                     && steerable
                     && !folded.iter().any(|p| match p {
                         MessagePart::Tool { id, resolved: false, .. } => {
-                            id != zeron_proto::LIVE_PLAN_TOOL_ID
+                            id != zend_proto::LIVE_PLAN_TOOL_ID
                         }
                         MessagePart::Input { resolved: false, .. } => true,
                         _ => false,
@@ -4734,11 +5002,10 @@ async fn drive_run(
                         }
                     }
                 }
-                zeron_doc::fold_event_into_parts(&mut folded, &event);
+                zend_doc::fold_event_into_parts(&mut folded, &event);
                 if !dirty {
                     dirty = true;
-                    flush_at = tokio::time::Instant::now()
-                        + std::time::Duration::from_millis(STREAM_COMMIT_MS);
+                    flush_at = next_commit(last_flush);
                 }
             }
             // Open the sink lazily; an open failure degrades to chip-only.
@@ -4798,7 +5065,7 @@ async fn drive_run(
                     continue;
                 }
                 let was_clean = !sink.dirty;
-                zeron_doc::fold_event_into_parts(&mut sink.folded, sub_event);
+                zend_doc::fold_event_into_parts(&mut sink.folded, sub_event);
                 sink.dirty = true;
                 // A sink waking on its own must arm the same commit window
                 // the parent's dirty flag does — `flush_at` is otherwise only
@@ -4806,8 +5073,7 @@ async fn drive_run(
                 // fire the commit branch on every event instead of once per
                 // STREAM_COMMIT_MS window.
                 if was_clean && !dirty && flush_at <= tokio::time::Instant::now() {
-                    flush_at = tokio::time::Instant::now()
-                        + std::time::Duration::from_millis(STREAM_COMMIT_MS);
+                    flush_at = next_commit(last_flush);
                 }
                 if done {
                     let status = match sub_event.as_ref() {
@@ -4834,7 +5100,7 @@ async fn drive_run(
                     {
                         host.upload_tool_sidecar(
                             &chat_id,
-                            zeron_doc::SidecarPayload {
+                            zend_doc::SidecarPayload {
                                 part_id: doc_id,
                                 output: Some(json),
                                 diff: None,
@@ -4934,7 +5200,7 @@ async fn drive_run(
                 ) || matches!(
                     &event,
                     AgentEvent::ToolCall { id, .. }
-                        if id == zeron_proto::LIVE_PLAN_TOOL_ID || !seen_tools.contains(id)
+                        if id == zend_proto::LIVE_PLAN_TOOL_ID || !seen_tools.contains(id)
                 ));
             if self_continued {
                 tracing::info!(
@@ -5021,8 +5287,8 @@ async fn drive_run(
             // treating its reappearance after a park/steer reset as a stale
             // echo dropped the todo list for the rest of the run — from the
             // first boundary on, plans never rendered again.
-            AgentEvent::ToolCall { id, .. } if id == zeron_proto::LIVE_PLAN_TOOL_ID => {}
-            AgentEvent::ToolResult { id, .. } if id == zeron_proto::LIVE_PLAN_TOOL_ID => {}
+            AgentEvent::ToolCall { id, .. } if id == zend_proto::LIVE_PLAN_TOOL_ID => {}
+            AgentEvent::ToolResult { id, .. } if id == zend_proto::LIVE_PLAN_TOOL_ID => {}
             AgentEvent::ToolCall { id, .. } => {
                 if !in_segment(&folded, id) && seen_tools.contains(id) {
                     continue;
@@ -5040,7 +5306,7 @@ async fn drive_run(
         }
         match &event {
             AgentEvent::ToolCall { id, .. }
-                if id != zeron_proto::LIVE_PLAN_TOOL_ID && !closed_tools.contains(id) =>
+                if id != zend_proto::LIVE_PLAN_TOOL_ID && !closed_tools.contains(id) =>
             {
                 if open_tools.insert(id.clone()) {
                     publish_open(&open_tools);
@@ -5264,7 +5530,7 @@ async fn drive_run(
 
         inner.publish(&chat_id, &event);
 
-        // Defensive rule from zeron: a mid-run SessionStarted re-emission (Claude SDK
+        // Defensive rule from zend: a mid-run SessionStarted re-emission (Claude SDK
         // background re-invocations) must not wipe the segment being written.
         let skip_fold = matches!(&event, AgentEvent::SessionStarted { .. }) && !folded.is_empty();
         if !skip_fold {
@@ -5272,7 +5538,7 @@ async fn drive_run(
             // R2 sidecar PARKED (2026-08-10, product call): the fold's
             // summary/stats ARE the doc's whole record — no refs stamped, no
             // uploads. Full outputs survive only in the host's local run
-            // journal. To reintroduce: `zeron_doc::sidecar_payload(&event)`
+            // journal. To reintroduce: `zend_doc::sidecar_payload(&event)`
             // → `apply_sidecar_refs` → `doc_host.upload_tool_sidecar`, all
             // still in place and tested.
         }
@@ -5417,7 +5683,7 @@ async fn drive_run(
                         grace: None,
                     });
                     inner.set_status_with_completion(&chat_id, SessionStatus::Idle, false, None, None);
-                    inner.set_waiting(&chat_id, Some(zeron_proto::SessionWaiting { since, on }));
+                    inner.set_waiting(&chat_id, Some(zend_proto::SessionWaiting { since, on }));
                     continue;
                 }
                 wait = None;
@@ -5447,8 +5713,7 @@ async fn drive_run(
 
         if !folded.is_empty() && !dirty {
             dirty = true;
-            flush_at =
-                tokio::time::Instant::now() + std::time::Duration::from_millis(STREAM_COMMIT_MS);
+            flush_at = next_commit(last_flush);
         }
     };
 
@@ -5462,7 +5727,7 @@ async fn drive_run(
         {
             host.upload_tool_sidecar(
                 &chat_id,
-                zeron_doc::SidecarPayload {
+                zend_doc::SidecarPayload {
                     part_id: doc_id,
                     output: Some(json),
                     diff: None,
@@ -5564,20 +5829,80 @@ async fn drive_run(
 mod tests {
     use super::*;
 
+    fn session_at(status: SessionStatus, updated_at: chrono::DateTime<Utc>) -> Session {
+        Session {
+            chat_id: "c".into(),
+            device_id: "d".into(),
+            status,
+            started_at: None,
+            updated_at,
+            running_subagents: 0,
+            background_tasks: Vec::new(),
+            last_completed_turn: None,
+            last_turn_outcome: None,
+            terminal_activity: None,
+            waiting: None,
+        }
+    }
+
+    /// A live row is restamped often enough for shipped readers' 45 s gate,
+    /// no oftener; a row parked idle with nothing running is never touched.
+    #[test]
+    fn liveness_touches_only_rows_that_expire_once_a_heartbeat_old() {
+        let now = Utc::now();
+        let ms = chrono::Duration::milliseconds;
+        let beat = zend_proto::view::SESSION_HEARTBEAT_MS;
+        for status in [SessionStatus::Working, SessionStatus::AwaitingInput] {
+            assert!(!touch_due(&session_at(status, now - ms(beat - 1)), now));
+            assert!(touch_due(&session_at(status, now - ms(beat)), now));
+        }
+        // A due row is stored by the next check: at most 30 s apart, which
+        // leaves shipped readers' 45 s gate 15 s for delivery and skew.
+        let check = HEARTBEAT_CHECK.as_millis() as i64;
+        assert!(beat + check <= 30_000);
+        assert!(beat + check + 15_000 <= zend_proto::view::SESSION_STALE_MS);
+
+        let long_ago = now - chrono::Duration::minutes(20);
+        assert!(!touch_due(&session_at(SessionStatus::Idle, long_ago), now));
+        assert!(!touch_due(&session_at(SessionStatus::Errored, long_ago), now));
+        let mut subagents = session_at(SessionStatus::Idle, long_ago);
+        subagents.running_subagents = 1;
+        assert!(touch_due(&subagents, now));
+        let mut waiting = session_at(SessionStatus::Idle, long_ago);
+        waiting.waiting = Some(zend_proto::SessionWaiting {
+            on: Vec::new(),
+            since: long_ago,
+        });
+        assert!(touch_due(&waiting, now));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_change_after_a_pause_commits_at_once_and_a_stream_stays_paced() {
+        let window = std::time::Duration::from_millis(STREAM_COMMIT_MS);
+        let start = tokio::time::Instant::now();
+        assert_eq!(next_commit(None), start, "a turn's first token");
+        assert_eq!(next_commit(Some(start)), start + window, "just committed: a window on");
+        tokio::time::advance(window * 3).await;
+        assert_eq!(next_commit(Some(start)), tokio::time::Instant::now(), "quiet since");
+        tokio::time::advance(window / 2).await;
+        let recent = tokio::time::Instant::now() - window / 4;
+        assert_eq!(next_commit(Some(recent)), recent + window);
+    }
+
     #[test]
     fn cursor_recovery_converts_rich_messages_before_json_encoding() {
-        let doc = zeron_doc::SessionDoc::init("cursor-rich-recovery").unwrap();
-        let skill = zeron_proto::invocation::Invocation::Skill {
+        let doc = zend_doc::SessionDoc::init("cursor-rich-recovery").unwrap();
+        let skill = zend_proto::invocation::Invocation::Skill {
             name: "review \"quoted\"".into(),
             path: "/repo/quoted \"path\"/SKILL.md".into(),
             command: None,
         }
         .link();
         let previous = format!("Previous {skill}\nSecond line with \\ and \"quotes\"");
-        doc.push_message(&zeron_doc::SessionMessageEntry {
+        doc.push_message(&zend_doc::SessionMessageEntry {
             id: "u1".into(),
-            role: zeron_doc::MessageRole::User,
-            parts: vec![zeron_doc::MessagePart::Text {
+            role: zend_doc::MessageRole::User,
+            parts: vec![zend_doc::MessagePart::Text {
                 id: "u1-text".into(),
                 text: previous.clone(),
             }],
@@ -5594,31 +5919,31 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(
             parsed["currentUserMessage"],
-            zeron_proto::invocation::harness_prompt(&current, zeron_proto::HarnessId::Cursor)
+            zend_proto::invocation::harness_prompt(&current, zend_proto::HarnessId::Cursor)
         );
         assert_eq!(
             parsed["previousUserMessages"][0],
-            zeron_proto::invocation::harness_prompt(&previous, zeron_proto::HarnessId::Cursor)
+            zend_proto::invocation::harness_prompt(&previous, zend_proto::HarnessId::Cursor)
         );
     }
 
     #[test]
     fn cursor_without_a_session_id_retains_only_preceding_user_messages() {
-        let doc = zeron_doc::SessionDoc::init("cursor-unstarted").unwrap();
+        let doc = zend_doc::SessionDoc::init("cursor-unstarted").unwrap();
         for (id, role, text) in [
             (
                 "u1",
-                zeron_doc::MessageRole::User,
+                zend_doc::MessageRole::User,
                 "first interrupted request",
             ),
-            ("a1", zeron_doc::MessageRole::Assistant, "partial output"),
-            ("u2", zeron_doc::MessageRole::User, "current request"),
-            ("u3", zeron_doc::MessageRole::User, "future pending request"),
+            ("a1", zend_doc::MessageRole::Assistant, "partial output"),
+            ("u2", zend_doc::MessageRole::User, "current request"),
+            ("u3", zend_doc::MessageRole::User, "future pending request"),
         ] {
-            doc.push_message(&zeron_doc::SessionMessageEntry {
+            doc.push_message(&zend_doc::SessionMessageEntry {
                 id: id.into(),
                 role,
-                parts: vec![zeron_doc::MessagePart::Text {
+                parts: vec![zend_doc::MessagePart::Text {
                     id: format!("{id}-text"),
                     text: text.into(),
                 }],
@@ -5655,7 +5980,7 @@ mod tests {
         assert_eq!(doc.read_entries().unwrap().len(), 4);
     }
 
-    use zeron_proto::{HarnessId, RunRequest, SandboxLevel};
+    use zend_proto::{HarnessId, RunRequest, SandboxLevel};
 
     #[tokio::test]
     async fn generated_image_failure_is_sanitized_even_inside_subagents() {
@@ -5686,7 +6011,7 @@ mod tests {
             &mut parts,
             &AgentEvent::ToolCall {
                 id: "i".into(),
-                call: zeron_proto::ToolCall::Unknown {
+                call: zend_proto::ToolCall::Unknown {
                     name: "Generate image".into(),
                     input: None,
                 },
@@ -5725,7 +6050,7 @@ mod tests {
     async fn journal_harness_session_matches_forward_scan() {
         fn started(id: &str, cwd: &str) -> AgentEvent {
             AgentEvent::SessionStarted {
-                harness: zeron_proto::HarnessId::ClaudeCode,
+                harness: zend_proto::HarnessId::ClaudeCode,
                 model: "m".into(),
                 tools: Vec::new(),
                 cwd: cwd.into(),
@@ -5861,7 +6186,7 @@ mod tests {
         std::io::Write::write_all(&mut f, b"{\"seq\":3,\"event\":{\"type\":\"done\"").unwrap();
         assert_eq!(
             sessions.inner.journal_harness_session("started-only"),
-            Some(("s1".into(), "/a".into(), Some(zeron_proto::HarnessId::ClaudeCode)))
+            Some(("s1".into(), "/a".into(), Some(zend_proto::HarnessId::ClaudeCode)))
         );
     }
 
@@ -5871,7 +6196,7 @@ mod tests {
             prompt: "first".into(),
             harness: None,
             model: Some("grok-4.6".into()),
-            reasoning: Some(zeron_proto::ReasoningLevel::High),
+            reasoning: Some(zend_proto::ReasoningLevel::High),
             model_options: serde_json::Map::new(),
             cwd: "/tmp".into(),
             sandbox: SandboxLevel::WorkspaceWrite,
@@ -5892,7 +6217,7 @@ mod tests {
         fail: bool,
     }
     #[async_trait::async_trait]
-    impl zeron_harness::Harness for IdleStartupFixture {
+    impl zend_harness::Harness for IdleStartupFixture {
         fn id(&self) -> HarnessId {
             HarnessId::Codex
         }
@@ -5902,22 +6227,22 @@ mod tests {
         fn supports_steering(&self) -> bool {
             false
         }
-        fn steering_mode(&self) -> zeron_proto::SteeringMode {
-            zeron_proto::SteeringMode::TurnBoundary
+        fn steering_mode(&self) -> zend_proto::SteeringMode {
+            zend_proto::SteeringMode::TurnBoundary
         }
-        fn reasoning_levels(&self) -> &[zeron_proto::ReasoningLevel] {
+        fn reasoning_levels(&self) -> &[zend_proto::ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<zeron_proto::Model>, zeron_harness::HarnessError> {
+        async fn models(&self) -> Result<Vec<zend_proto::Model>, zend_harness::HarnessError> {
             Ok(vec![])
         }
         async fn start_idle(
             &self,
             request: RunRequest,
-            _controls: zeron_harness::RunControls,
+            _controls: zend_harness::RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<AgentEvent, zeron_harness::HarnessError>>,
-            zeron_harness::HarnessError,
+            futures::stream::BoxStream<'static, Result<AgentEvent, zend_harness::HarnessError>>,
+            zend_harness::HarnessError,
         > {
             use futures::StreamExt;
             self.idle_calls
@@ -5926,7 +6251,7 @@ mod tests {
             assert_eq!(request.resume.as_deref(), Some("old-native-thread"));
             let event = if self.fail {
                 AgentEvent::Done {
-                    status: zeron_proto::DoneStatus::Errored,
+                    status: zend_proto::DoneStatus::Errored,
                     result: None,
                     error: Some("offline startup failed".into()),
                     session_id: None,
@@ -5948,14 +6273,14 @@ mod tests {
         async fn run(
             &self,
             _request: RunRequest,
-            _controls: zeron_harness::RunControls,
+            _controls: zend_harness::RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<AgentEvent, zeron_harness::HarnessError>>,
-            zeron_harness::HarnessError,
+            futures::stream::BoxStream<'static, Result<AgentEvent, zend_harness::HarnessError>>,
+            zend_harness::HarnessError,
         > {
             self.inference_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err(zeron_harness::HarnessError::Protocol(
+            Err(zend_harness::HarnessError::Protocol(
                 "fixture forbids inference".into(),
             ))
         }
@@ -6021,7 +6346,7 @@ mod tests {
         assert!(
             !entries
                 .iter()
-                .any(|entry| entry.role == zeron_doc::MessageRole::User)
+                .any(|entry| entry.role == zend_doc::MessageRole::User)
         );
         if !fail {
             assert!(entries.is_empty());
@@ -6053,7 +6378,7 @@ mod tests {
         let config = RuntimeConfig::new(
             HarnessId::Grok,
             &initial,
-            Arc::new(zeron_harness::AcpHarness::grok()),
+            Arc::new(zend_harness::AcpHarness::grok()),
         );
 
         let mut follow_up = initial.clone();
@@ -6074,7 +6399,7 @@ mod tests {
         let config = RuntimeConfig::new(
             HarnessId::Grok,
             &spelled,
-            Arc::new(zeron_harness::AcpHarness::grok()),
+            Arc::new(zend_harness::AcpHarness::grok()),
         );
         follow_up
             .model_options
@@ -6085,13 +6410,13 @@ mod tests {
         assert!(!config.can_route(HarnessId::Grok, &follow_up));
         follow_up.model = initial.model.clone();
 
-        follow_up.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
+        follow_up.reasoning = Some(zend_proto::ReasoningLevel::Medium);
         assert!(!config.can_route(HarnessId::Grok, &follow_up));
     }
 
     #[test]
     fn claude_routing_compares_what_the_cli_launches_with() {
-        let claude = || -> Arc<dyn Harness> { Arc::new(zeron_harness::ClaudeHarness::new()) };
+        let claude = || -> Arc<dyn Harness> { Arc::new(zend_harness::ClaudeHarness::new()) };
         let mut initial = request();
         initial.model = Some("claude-opus-5-5".into());
         initial
@@ -6152,7 +6477,7 @@ mod tests {
     async fn subagent_sink_flush_clears_dirty_when_nothing_folded() {
         use super::*;
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap());
+        let store = Arc::new(zend_sync::DocsStore::open(dir.path()).unwrap());
         let host = DocHost::new(
             store,
             crate::doc_host::DocHostConfig {
@@ -6195,13 +6520,13 @@ mod tests {
         fn supports_steering(&self) -> bool {
             true
         }
-        fn steering_mode(&self) -> zeron_proto::SteeringMode {
-            zeron_proto::SteeringMode::StepBoundary
+        fn steering_mode(&self) -> zend_proto::SteeringMode {
+            zend_proto::SteeringMode::StepBoundary
         }
-        fn reasoning_levels(&self) -> &[zeron_proto::ReasoningLevel] {
-            &[zeron_proto::ReasoningLevel::Medium]
+        fn reasoning_levels(&self) -> &[zend_proto::ReasoningLevel] {
+            &[zend_proto::ReasoningLevel::Medium]
         }
-        async fn models(&self) -> Result<Vec<zeron_proto::Model>, zeron_harness::HarnessError> {
+        async fn models(&self) -> Result<Vec<zend_proto::Model>, zend_harness::HarnessError> {
             Ok(vec![])
         }
         async fn run(
@@ -6209,8 +6534,8 @@ mod tests {
             _request: RunRequest,
             _controls: RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<AgentEvent, zeron_harness::HarnessError>>,
-            zeron_harness::HarnessError,
+            futures::stream::BoxStream<'static, Result<AgentEvent, zend_harness::HarnessError>>,
+            zend_harness::HarnessError,
         > {
             let mut feed = self
                 .feed
@@ -6257,7 +6582,7 @@ mod tests {
         // parent clean, parked and past its deadline.
         feed.send(AgentEvent::ToolCall {
             id: "tool-1".into(),
-            call: zeron_proto::ToolCall::Unknown {
+            call: zend_proto::ToolCall::Unknown {
                 name: "Agent: probe".into(),
                 input: None,
             },
@@ -6318,7 +6643,7 @@ mod tests {
             .unwrap();
         let call = |id: &str, name: &str| AgentEvent::ToolCall {
             id: id.into(),
-            call: zeron_proto::ToolCall::Unknown {
+            call: zend_proto::ToolCall::Unknown {
                 name: name.into(),
                 input: None,
             },
@@ -6539,7 +6864,7 @@ mod tests {
     #[test]
     fn only_transient_start_failures_retry() {
         use std::io::{Error, ErrorKind};
-        use zeron_harness::HarnessError;
+        use zend_harness::HarnessError;
         for kind in [
             ErrorKind::ResourceBusy,
             ErrorKind::ExecutableFileBusy,
@@ -6609,7 +6934,7 @@ mod tests {
                 "{harness:?}"
             );
         }
-        let selected = zeron_proto::invocation::Invocation::Command {
+        let selected = zend_proto::invocation::Invocation::Command {
             name: "review".into(),
         }
         .link();
@@ -6647,13 +6972,13 @@ mod tests {
         fn supports_steering(&self) -> bool {
             true
         }
-        fn steering_mode(&self) -> zeron_proto::SteeringMode {
-            zeron_proto::SteeringMode::StepBoundary
+        fn steering_mode(&self) -> zend_proto::SteeringMode {
+            zend_proto::SteeringMode::StepBoundary
         }
-        fn reasoning_levels(&self) -> &[zeron_proto::ReasoningLevel] {
-            &[zeron_proto::ReasoningLevel::Medium]
+        fn reasoning_levels(&self) -> &[zend_proto::ReasoningLevel] {
+            &[zend_proto::ReasoningLevel::Medium]
         }
-        async fn models(&self) -> Result<Vec<zeron_proto::Model>, zeron_harness::HarnessError> {
+        async fn models(&self) -> Result<Vec<zend_proto::Model>, zend_harness::HarnessError> {
             Ok(vec![])
         }
         async fn run(
@@ -6661,8 +6986,8 @@ mod tests {
             _request: RunRequest,
             controls: RunControls,
         ) -> Result<
-            futures::stream::BoxStream<'static, Result<AgentEvent, zeron_harness::HarnessError>>,
-            zeron_harness::HarnessError,
+            futures::stream::BoxStream<'static, Result<AgentEvent, zend_harness::HarnessError>>,
+            zend_harness::HarnessError,
         > {
             *self.turn.lock().unwrap() = Some(controls.turn.clone());
             let mut feed = self
@@ -6685,10 +7010,10 @@ mod tests {
 
     /// A run on [`WakeHarness`] whose runtime wakes its agent (`wakes`),
     /// started and mid-turn. The grace a wait gets once its work is gone is
-    /// short here (`ZERON_WAKE_GRACE_MS`, read per run).
+    /// short here (`ZEND_WAKE_GRACE_MS`, read per run).
     async fn wake_rig(chat: &'static str, wakes: bool) -> WakeRig {
         // SAFETY: tests only; nothing reads this but the run loop, per run.
-        unsafe { std::env::set_var("ZERON_WAKE_GRACE_MS", "300") };
+        unsafe { std::env::set_var("ZEND_WAKE_GRACE_MS", "300") };
         let (feed, rx) = mpsc::unbounded_channel();
         let turn_slot = Arc::new(Mutex::new(None));
         let registry = HarnessRegistry::new();
@@ -6716,16 +7041,16 @@ mod tests {
         WakeRig { core, feed, turn, chat, _dir: dir }
     }
 
-    fn waiting_agent(id: &str) -> zeron_proto::WaitingOn {
-        zeron_proto::WaitingOn {
+    fn waiting_agent(id: &str) -> zend_proto::WaitingOn {
+        zend_proto::WaitingOn {
             id: id.into(),
-            kind: zeron_proto::WaitingKind::Agent,
+            kind: zend_proto::WaitingKind::Agent,
             label: format!("agent {id}"),
         }
     }
 
-    fn bg_process(id: &str) -> zeron_proto::BackgroundTask {
-        zeron_proto::BackgroundTask {
+    fn bg_process(id: &str) -> zend_proto::BackgroundTask {
+        zend_proto::BackgroundTask {
             id: id.into(),
             command: format!("run {id}"),
             description: None,
@@ -6882,5 +7207,74 @@ mod tests {
         assert_eq!(s.status, SessionStatus::Idle);
         assert!(s.last_completed_turn.is_some(), "a wait never swallows the finish");
         rig.core.sessions.shutdown().await;
+    }
+
+    /// What a turn revived on boot waits on before it dispatches: the port its
+    /// Zend tools dial. An engine serving none goes on at the limit.
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_for_the_port_gives_up_at_its_limit_wakes_as_it_is_recorded_and_is_over_after() {
+        use std::time::Duration;
+        use tokio::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = SessionsEngine::new(
+            "host".into(),
+            Arc::new(RunJournal::open(dir.path().join("journals")).unwrap()),
+            Arc::new(HarnessRegistry::new()),
+        );
+        let limit = Duration::from_secs(10);
+
+        // No port, none coming: the whole limit, then on without one.
+        let start = Instant::now();
+        sessions.ipc_port_ready(limit).await;
+        assert_eq!(start.elapsed(), limit);
+
+        // The port recorded midway: the wait ends then, not at the limit.
+        let start = Instant::now();
+        let waiting = tokio::spawn({
+            let sessions = sessions.clone();
+            async move { sessions.ipc_port_ready(limit).await }
+        });
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!waiting.is_finished(), "no port yet: still waiting");
+        sessions.set_ipc_port(27699);
+        waiting.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_secs(3));
+
+        // Recorded already: no wait at all.
+        let start = Instant::now();
+        sessions.ipc_port_ready(limit).await;
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    /// An engine that knows it serves no port says so, and the wait for one
+    /// ends then rather than at its limit.
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_for_the_port_ends_when_none_is_coming() {
+        use std::time::Duration;
+        use tokio::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = SessionsEngine::new(
+            "host".into(),
+            Arc::new(RunJournal::open(dir.path().join("journals")).unwrap()),
+            Arc::new(HarnessRegistry::new()),
+        );
+        let limit = Duration::from_secs(10);
+
+        // Said midway: the wait ends then.
+        let start = Instant::now();
+        let waiting = tokio::spawn({
+            let sessions = sessions.clone();
+            async move { sessions.ipc_port_ready(limit).await }
+        });
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!waiting.is_finished(), "not said yet: still waiting");
+        sessions.set_no_ipc_port();
+        waiting.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
+
+        // Said already: no wait at all.
+        let start = Instant::now();
+        sessions.ipc_port_ready(limit).await;
+        assert_eq!(start.elapsed(), Duration::ZERO);
     }
 }

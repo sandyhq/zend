@@ -13,18 +13,18 @@
 //!   or a template's consent, src/plugins/consent.rs) never touches it, and
 //!   a window closing puts back the bar of the one under it. (Before Nov 3
 //!   every window set its own: the consent sheet a plugin asks for as it's
-//!   added set a bar with none of Zeron's commands, and when it closed
+//!   added set a bar with none of Zend's commands, and when it closed
 //!   nothing set the main window's back. Every shortcut was gone until a
 //!   relaunch: src/menu_bar_tests.rs.)
 //! - **It refuses a whole bar for one bad item**, keeping the last: a
 //!   label or action empty, an action twice, a shortcut a menu can't name
 //!   (`⌘?`, `⌘é`) or one named twice. So the bar is made to be one it
-//!   takes, item by item (`Bar::of`): Zeron's commands first, then the
+//!   takes, item by item (`Bar::of`): Zend's commands first, then the
 //!   plugins', each command once, each shortcut once (as the menu names
-//!   it: `meta+k` is `cmd+k` on a Mac). Zeron's always keep theirs; a
+//!   it: `meta+k` is `cmd+k` on a Mac). Zend's always keep theirs; a
 //!   plugin's that is taken, or no key at all, is left off that one item,
 //!   which stays in the menu, and its plugin's row on the Plugins page says
-//!   so (`Dropped`). Should the platform refuse a bar anyway, Zeron's own
+//!   so (`Dropped`). Should the platform refuse a bar anyway, Zend's own
 //!   goes in, never nothing, and it says so loudly.
 //!
 //! Each change makes the whole bar again from the one window's commands and
@@ -70,9 +70,20 @@ pub enum Role {
 }
 
 /// The host's own command ids: no script's command may have one.
-pub const HOST_COMMANDS: &str = "zeron.";
+pub const HOST_COMMANDS: &str = "zend.";
 
-/// A plugin's command (zgx names each `<plugin>/<id>`; Zeron's have no `/`).
+/// "Use Zend v3"'s shortcut, the host's whatever a script declares:
+/// ⌘⌥⇧Home on a Mac, Ctrl+Alt+Shift+Home on Linux and Windows, where
+/// there's no menu bar to reach the item from and a template draws the
+/// palette. (Home for the default; no letter, which AltGr+Shift types on
+/// some layouts, and no F key, which Ctrl+Alt switches consoles with on
+/// Linux.) Reserved too, so a focused web page or terminal never has it.
+pub const DEFAULT_INTERFACE_KEY: &str = "cmd+alt+shift+home";
+
+/// The host's own item that switches to the default interface.
+const USE_ZEND_TITLE: &str = "Use Zend v3";
+
+/// A plugin's command (zgx names each `<plugin>/<id>`; Zend's have no `/`).
 pub fn is_plugins(command: &Command) -> bool {
     command.id.contains('/')
 }
@@ -93,8 +104,8 @@ pub struct Dropped {
 /// Why a plugin command has no shortcut.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// It's Zeron's: the title of Zeron's command with it.
-    Zerons(String),
+    /// It's Zend's: the title of Zend's command with it.
+    Zends(String),
     /// Another plugin (its id) had it first.
     Plugins(String),
     /// It isn't a key a menu can show (`cmd+é`, `cmd+?`, a misspelling).
@@ -107,11 +118,11 @@ pub enum Why {
 /// One window's menu bar, made to be one the platform takes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bar {
-    /// Zeron's commands and the plugins'.
+    /// Zend's commands and the plugins'.
     pub menus: Vec<AppMenu>,
-    /// Zeron's alone: what goes in should the platform refuse `menus`.
+    /// Zend's alone: what goes in should the platform refuse `menus`.
     pub own: Vec<AppMenu>,
-    /// The reserved commands' shortcuts (Zeron's alone reserve).
+    /// The reserved commands' shortcuts (Zend's alone reserve).
     pub reserved: Vec<MenuAccelerator>,
     /// The plugin commands shown without their shortcut, and why.
     pub dropped: Vec<Dropped>,
@@ -123,7 +134,7 @@ impl Bar {
     /// (`dropped`, `ScriptHost::dropped_shortcuts`) and the template in
     /// preview, if any.
     pub fn of(commands: &[Command], reserved: &[String], dropped: &[DroppedShortcut], preview: Option<&Preview>) -> Bar {
-        let mut menus = Menus::default();
+        let mut menus = Menus::new();
         for (at, command) in commands.iter().enumerate().filter(|(_, c)| !is_plugins(c)) {
             menus.add(at, command);
         }
@@ -131,7 +142,7 @@ impl Bar {
         for (at, command) in commands.iter().enumerate().filter(|(_, c)| is_plugins(c)) {
             menus.add(at, command);
         }
-        // What zgx took off before the list reached here: a key Zeron's (or
+        // What zgx took off before the list reached here: a key Zend's (or
         // an earlier plugin's) commands have, spelled the same.
         let find = |id: &str| commands.iter().position(|c| c.id == id);
         for d in dropped.iter().filter(|d| !d.plugin.is_empty()) {
@@ -139,17 +150,22 @@ impl Bar {
                 // (Nothing holds it: zgx refused it for what it is.)
                 _ if d.holder.is_empty() => Why::NoModifier,
                 Some((plugin, _)) => Why::Plugins(plugin.to_string()),
-                None => Why::Zerons(find(&d.holder).map_or_else(|| d.holder.clone(), |at| commands[at].title.clone())),
+                None => Why::Zends(find(&d.holder).map_or_else(|| d.holder.clone(), |at| commands[at].title.clone())),
             };
             let at = find(&d.command).unwrap_or(usize::MAX);
             let title = commands.get(at).map(|c| c.title.clone()).unwrap_or_default();
             menus.dropped.push((at, Dropped { plugin: d.plugin.clone(), key: d.key.clone(), title, why }));
         }
-        let reserved = reserved
+        let mut reserved: Vec<MenuAccelerator> = reserved
             .iter()
             .filter_map(|key| accelerator(key))
             .filter(|key| menus.keys.get(&key.label()).is_some_and(|holder| !holder.contains('/')))
             .collect();
+        if let Some(key) = accelerator(DEFAULT_INTERFACE_KEY)
+            && !reserved.contains(&key)
+        {
+            reserved.push(key);
+        }
         // In the order they're declared.
         let mut dropped = std::mem::take(&mut menus.dropped);
         dropped.sort_by_key(|(at, _)| *at);
@@ -159,7 +175,7 @@ impl Bar {
 
     /// The host's own items alone: the last resort.
     fn host_only(preview: Option<&Preview>) -> Vec<AppMenu> {
-        Menus::default().finish(preview)
+        Menus::new().finish(preview)
     }
 }
 
@@ -169,7 +185,7 @@ impl Bar {
 #[derive(Clone, Default)]
 struct Menus {
     menus: Vec<AppMenu>,
-    /// Actions in the bar so far (no script's is `zeron.`: the host's own,
+    /// Actions in the bar so far (no script's is `zend.`: the host's own,
     /// added by `finish`, are unique by that).
     ids: HashSet<String>,
     /// Shortcuts in the bar so far, as the platform names them (its
@@ -181,6 +197,16 @@ struct Menus {
 }
 
 impl Menus {
+    /// None yet, the host's shortcut held (`DEFAULT_INTERFACE_KEY`): a
+    /// script's command declaring it goes without.
+    fn new() -> Self {
+        let mut menus = Menus::default();
+        if let Some(key) = accelerator(DEFAULT_INTERFACE_KEY) {
+            menus.keys.insert(key.label(), plugins::USE_ZEND_TEMPLATE.to_string());
+        }
+        menus
+    }
+
     /// `command`, the `at`th declared, as an item.
     fn add(&mut self, at: usize, command: &Command) {
         let menu = clean(&command.menu);
@@ -195,17 +221,17 @@ impl Menus {
         }
         let title = clean(&command.title);
         if command.id.is_empty() || command.id.contains('\0') || title.is_empty() {
-            eprintln!("zeron-zgx: menus: `{}` has no id or title a menu can show; left out", command.id);
+            eprintln!("zend-zgx: menus: `{}` has no id or title a menu can show; left out", command.id);
             return;
         }
-        // `zeron.` is the host's: a script's (a template's) command by such
+        // `zend.` is the host's: a script's (a template's) command by such
         // an id would be a second item with the host's action.
         if command.id.starts_with(HOST_COMMANDS) {
-            eprintln!("zeron-zgx: menus: {} is the host's; the script's is left out", command.id);
+            eprintln!("zend-zgx: menus: {} is the host's; the script's is left out", command.id);
             return;
         }
         if !self.ids.insert(command.id.clone()) {
-            eprintln!("zeron-zgx: menus: {} is declared twice; shown once", command.id);
+            eprintln!("zend-zgx: menus: {} is declared twice; shown once", command.id);
             return;
         }
         let mut item = AppMenuEntry::item(title.clone(), command.id.as_str());
@@ -213,7 +239,7 @@ impl Menus {
             match self.claim(command, key) {
                 Ok(accelerator) => item = item.accelerator(accelerator),
                 Err(why) => {
-                    eprintln!("zeron-zgx: menus: {}'s shortcut `{key}` left off ({why:?})", command.id);
+                    eprintln!("zend-zgx: menus: {}'s shortcut `{key}` left off ({why:?})", command.id);
                     if let Some((plugin, _)) = command.id.split_once('/') {
                         self.dropped.push((at, Dropped { plugin: plugin.to_string(), key: key.to_string(), title, why }));
                     }
@@ -239,7 +265,7 @@ impl Menus {
         if let Some(holder) = self.keys.get(&name) {
             return Err(match holder.split_once('/') {
                 Some((plugin, _)) => Why::Plugins(plugin.to_string()),
-                None => Why::Zerons(self.title_of(holder)),
+                None => Why::Zends(self.title_of(holder)),
             });
         }
         self.keys.insert(name, command.id.clone());
@@ -247,6 +273,9 @@ impl Menus {
     }
 
     fn title_of(&self, id: &str) -> String {
+        if id == plugins::USE_ZEND_TEMPLATE {
+            return USE_ZEND_TITLE.to_string();
+        }
         for menu in &self.menus {
             for entry in &menu.entries {
                 if let AppMenuEntry::Item { label, action, .. } = entry
@@ -260,7 +289,7 @@ impl Menus {
     }
 
     /// The bar, with the host's own after the scripts' View items:
-    /// "Use Zeron v3" (the default's way back), which no template can take
+    /// "Use Zend v3" (the default's way back), which no template can take
     /// away, and, with a template in preview, "Keep <name>…" (its ellipsis
     /// the macOS one for an item that asks before acting: it opens the keep
     /// sheet).
@@ -279,7 +308,11 @@ impl Menus {
         if let Some(preview) = preview {
             entries.push(AppMenuEntry::item(format!("Keep {}…", clean(&preview.name)), plugins::KEEP_TEMPLATE));
         }
-        entries.push(AppMenuEntry::item("Use Zeron v3", plugins::USE_ZERON_TEMPLATE));
+        let mut back = AppMenuEntry::item(USE_ZEND_TITLE, plugins::USE_ZEND_TEMPLATE);
+        if let Some(key) = accelerator(DEFAULT_INTERFACE_KEY) {
+            back = back.accelerator(key);
+        }
+        entries.push(back);
         self.menus.retain(|m| !m.entries.is_empty());
         self.menus
     }
@@ -307,7 +340,7 @@ pub fn accelerator(text: &str) -> Option<MenuAccelerator> {
             "alt" | "opt" | "option" => modifiers.alt = true,
             "shift" => modifiers.shift = true,
             other => {
-                eprintln!("zeron-zgx: menus: unknown modifier `{other}` in `{text}`");
+                eprintln!("zend-zgx: menus: unknown modifier `{other}` in `{text}`");
                 return None;
             }
         }
@@ -323,9 +356,13 @@ pub fn accelerator(text: &str) -> Option<MenuAccelerator> {
         "backspace" => Key::Backspace,
         "delete" => Key::Delete,
         "space" => Key::Space,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "pageup" => Key::PageUp,
+        "pagedown" => Key::PageDown,
         single if single.chars().count() == 1 => Key::Character(single.into()),
         other => {
-            eprintln!("zeron-zgx: menus: unknown key `{other}` in `{text}`");
+            eprintln!("zend-zgx: menus: unknown key `{other}` in `{text}`");
             return None;
         }
     };
@@ -434,18 +471,18 @@ impl MenuBar {
             return;
         }
         if let Err(error) = self.platform.set_menus(bar.menus.clone()) {
-            // Never a bar without Zeron's shortcuts: `Bar::of` made one the
+            // Never a bar without Zend's shortcuts: `Bar::of` made one the
             // platform should take, so this is a bug to find.
-            eprintln!("zeron-zgx: MENU BAR REFUSED: {error}. Zeron's own commands alone instead; plugins' are out of the menu bar until the next change.");
+            eprintln!("zend-zgx: MENU BAR REFUSED: {error}. Zend's own commands alone instead; plugins' are out of the menu bar until the next change.");
             if let Err(error) = self.platform.set_menus(bar.own.clone()) {
-                eprintln!("zeron-zgx: MENU BAR REFUSED AGAIN (Zeron's own): {error}. The host's items alone.");
+                eprintln!("zend-zgx: MENU BAR REFUSED AGAIN (Zend's own): {error}. The host's items alone.");
                 if let Err(error) = self.platform.set_menus(Bar::host_only(None)) {
-                    eprintln!("zeron-zgx: menus: {error}");
+                    eprintln!("zend-zgx: menus: {error}");
                 }
             }
         }
         if let Err(error) = self.platform.set_reserved_shortcuts(bar.reserved.clone()) {
-            eprintln!("zeron-zgx: reserved shortcuts: {error}");
+            eprintln!("zend-zgx: reserved shortcuts: {error}");
         }
         // A plugin whose shortcut is left off says so on its Plugins row.
         plugins::shortcuts_taken(bar.dropped.clone());

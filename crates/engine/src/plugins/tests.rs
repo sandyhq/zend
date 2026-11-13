@@ -27,7 +27,7 @@ async fn call(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    // Allowing and signing as Zeron's consent window does: with a review.
+    // Allowing and signing as Zend's consent window does: with a review.
     let params = super::authority_tests::as_consent_window(plugins, method, params).await;
     match plugins.dispatch(method, params).await {
         Ok(RpcReply::Value(value)) => Ok(value),
@@ -84,16 +84,16 @@ async fn plugins_new_plugin_scaffolds_signs_and_is_on() {
     let dir = f.plugins.plugins_dir().join("hello");
     let init = std::fs::read_to_string(dir.join("init.luau")).unwrap();
     assert!(
-        init.starts_with("local zeron = require(\"./zeron\")(\"hello\")"),
+        init.starts_with("local zend = require(\"./zend\")(\"hello\")"),
         "{init}"
     );
     assert_eq!(
-        std::fs::read_to_string(dir.join("zeron.luau")).unwrap(),
+        std::fs::read_to_string(dir.join("zend.luau")).unwrap(),
         scaffold::SDK
     );
     let snapshot = PathBuf::from(made["snapshot"].as_str().unwrap());
     assert!(snapshot.join("init.luau").is_file());
-    assert!(snapshot.join("zeron.luau").is_file());
+    assert!(snapshot.join("zend.luau").is_file());
     assert!(snapshot.join(MANIFEST_FILE).is_file());
     // Its words, in English, signed and snapshotted with the rest.
     let english: serde_json::Value =
@@ -119,10 +119,10 @@ async fn plugins_new_plugin_scaffolds_signs_and_is_on() {
     let reserved = call(
         &f.plugins,
         methods::NEW_PLUGIN,
-        serde_json::json!({ "id": "zeron", "name": "Z" }),
+        serde_json::json!({ "id": "zend", "name": "Z" }),
     )
     .await;
-    assert_eq!(reserved.unwrap_err(), "Zeron already uses that name");
+    assert_eq!(reserved.unwrap_err(), "Zend already uses that name");
     assert!(
         call(
             &f.plugins,
@@ -551,7 +551,7 @@ async fn plugins_list_is_sorted_and_reports_broken() {
     };
     assert_eq!(by_id("bad")["status"], "broken");
     assert!(by_id("bad")["error"].as_str().unwrap().contains("native"));
-    assert_eq!(by_id("app")["error"], "Zeron already uses that name");
+    assert_eq!(by_id("app")["error"], "Zend already uses that name");
     #[cfg(unix)]
     assert_eq!(by_id("linky")["error"], files::LINK_ERROR);
     assert!(
@@ -576,11 +576,9 @@ async fn plugins_list_is_sorted_and_reports_broken() {
     .await
     .unwrap();
     assert!(!f.plugins.plugins_dir().join("aa").exists());
-    let removed: Vec<_> = std::fs::read_dir(f.plugins.plugins_dir().join(REMOVED_DIR))
-        .unwrap()
-        .flatten()
-        .collect();
-    assert!(removed[0].file_name().to_string_lossy().starts_with("aa-"));
+    // Taken away, not kept in `.removed`.
+    let removed = std::fs::read_dir(f.plugins.plugins_dir().join(REMOVED_DIR)).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(removed, 0);
     assert!(
         call(
             &f.plugins,
@@ -673,7 +671,7 @@ async fn allowed_plugin(f: &Fixture, id: &str, extra: serde_json::Value) -> serd
 async fn plugins_tools_through_the_broker_over_rpc() {
     struct Service(Plugins);
     #[async_trait::async_trait]
-    impl zeron_rpc::RpcService for Service {
+    impl zend_rpc::RpcService for Service {
         async fn handle(
             &self,
             method: &str,
@@ -694,7 +692,7 @@ async fn plugins_tools_through_the_broker_over_rpc() {
     )
     .await;
     assert_eq!(on["status"], "on");
-    let client = Arc::new(zeron_rpc::memory_client(Arc::new(Service(
+    let client = Arc::new(zend_rpc::memory_client(Arc::new(Service(
         f.plugins.clone(),
     ))));
     let tools = client
@@ -719,7 +717,7 @@ async fn plugins_tools_through_the_broker_over_rpc() {
         )
         .await
         .unwrap_err();
-    assert!(closed.to_string().starts_with("Open Zeron on "), "{closed}");
+    assert!(closed.to_string().starts_with("Open Zend on "), "{closed}");
     assert!(closed.to_string().ends_with(" to use count_words"));
     let unknown = client
         .call(
@@ -1031,7 +1029,7 @@ async fn plugins_watch_plugins_emits_at_once_then_on_change() {
 }
 
 #[tokio::test]
-async fn plugins_zeron_s_own_are_allowed_what_they_ask_turn_off_and_never_go() {
+async fn plugins_zend_s_own_are_allowed_what_they_ask_turn_off_and_never_go() {
     let f = fixture();
     let shipped = f.data.join("app-plugins");
     std::fs::create_dir_all(&shipped).unwrap();
@@ -1043,8 +1041,8 @@ async fn plugins_zeron_s_own_are_allowed_what_they_ask_turn_off_and_never_go() {
         .unwrap();
     let list = call(&f.plugins, methods::LIST_PLUGINS, serde_json::json!({})).await.unwrap();
     let all = list["plugins"].as_array().unwrap();
-    let theirs = all.iter().find(|p| p["id"] == "github" && p["builtin"] == true).expect("Zeron's");
-    assert_eq!(theirs["author"]["kind"], "zeron");
+    let theirs = all.iter().find(|p| p["id"] == "github" && p["builtin"] == true).expect("Zend's");
+    assert_eq!(theirs["author"]["kind"], "zend");
     assert_eq!(theirs["status"], "on");
     assert_eq!(theirs["allowed"], serde_json::json!(["github", "ui.add"]));
     assert!(theirs["snapshot"].is_string(), "on means a snapshot to load: {theirs}");
@@ -1055,6 +1053,9 @@ async fn plugins_zeron_s_own_are_allowed_what_they_ask_turn_off_and_never_go() {
     let list = call(&f.plugins, methods::LIST_PLUGINS, serde_json::json!({})).await.unwrap();
     let off = list["plugins"].as_array().unwrap().iter().find(|p| p["builtin"] == true).unwrap().clone();
     assert_eq!(off["status"], "off");
+    // Removing takes your folder away, and Zend's own stays, still off.
+    call(&f.plugins, methods::REMOVE_PLUGIN, serde_json::json!({ "id": "github" })).await.unwrap();
+    assert_eq!(item(&f.plugins, "github").await["status"], "off");
     let removed = call(&f.plugins, methods::REMOVE_PLUGIN, serde_json::json!({ "id": "github" })).await;
     assert!(removed.unwrap_err().contains("turned off, but not removed"));
     // A new version asking more is allowed it as it ships.
@@ -1066,9 +1067,9 @@ async fn plugins_zeron_s_own_are_allowed_what_they_ask_turn_off_and_never_go() {
 }
 
 #[tokio::test]
-async fn plugins_zeron_s_own_load_from_the_app_s_folder_with_none_of_yours_beside_it() {
+async fn plugins_zend_s_own_load_from_the_app_s_folder_with_none_of_yours_beside_it() {
     // (The test above has a folder of yours by the same name, which hid that
-    // the snapshot was copied from `<data>/plugins/<id>`: Zeron's own never
+    // the snapshot was copied from `<data>/plugins/<id>`: Zend's own never
     // had one, so it never loaded.)
     let f = fixture();
     let shipped = f.data.join("app-plugins");
@@ -1112,7 +1113,7 @@ async fn plugins_install_from_a_package_waits_for_consent_unless_yours() {
     let f = fixture();
     let fake = Arc::new(FakeDirectory::default());
     let ada = someone(&f, &fake, "ada");
-    let path = package_file(&f, "focus.zeron-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
+    let path = package_file(&f, "focus.zend-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
     let installed = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
     assert_eq!(installed["update"], false);
     assert_eq!(installed["waiting"], true, "{installed}");
@@ -1130,7 +1131,7 @@ async fn plugins_install_from_a_package_waits_for_consent_unless_yours() {
 
     // Signed by this device's key: on at once, no asking.
     let own = signing::load_or_create_key(&f.data).unwrap();
-    let path = package_file(&f, "mine.zeron-plugin", &signed_package(&own, "mine", "1.0.0", &["ui.add", "links.open"], "return 1"));
+    let path = package_file(&f, "mine.zend-plugin", &signed_package(&own, "mine", "1.0.0", &["ui.add", "links.open"], "return 1"));
     let mine = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
     assert_eq!((mine["plugin"]["status"].as_str(), mine["waiting"].as_bool()), (Some("on"), Some(false)), "{mine}");
     assert_eq!(mine["plugin"]["allowed"], serde_json::json!(["links.open", "ui.add"]));
@@ -1140,12 +1141,12 @@ async fn plugins_install_from_a_package_waits_for_consent_unless_yours() {
     let mut value: serde_json::Value =
         serde_json::from_slice(&signed_package(&ada, "evil", "1.0.0", &[], "return 1")).unwrap();
     value["files"]["init.luau"] = serde_json::json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"return 2"));
-    let path = package_file(&f, "evil.zeron-plugin", &serde_json::to_vec(&value).unwrap());
+    let path = package_file(&f, "evil.zend-plugin", &serde_json::to_vec(&value).unwrap());
     let refused = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap_err();
     assert_eq!(refused, install::WORDS.tampered);
     assert!(!f.plugins.plugins_dir().join("evil").exists());
     // Not a package at all.
-    let path = package_file(&f, "x.zeron-plugin", b"{}");
+    let path = package_file(&f, "x.zend-plugin", b"{}");
     assert_eq!(call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap_err(), install::WORDS.not_a_package);
 }
 
@@ -1154,7 +1155,7 @@ async fn plugins_updates_keep_consent_ask_for_new_permissions_and_refuse_tamperi
     let f = fixture();
     let fake = Arc::new(FakeDirectory::default());
     let ada = someone(&f, &fake, "ada");
-    let path = package_file(&f, "focus.zeron-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
+    let path = package_file(&f, "focus.zend-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
     let installed = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
     call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "focus", "allow": true, "hash": installed["plugin"]["hash"] }))
         .await
@@ -1214,7 +1215,7 @@ async fn plugins_an_unknown_authors_update_keeps_consent_by_key() {
     let f = fixture();
     // Signed out: no author can be checked.
     let (zed, _) = SigningKey::generate().unwrap();
-    let path = package_file(&f, "z.zeron-plugin", &signed_package(&zed, "zed", "1", &["ui.add"], "return 1"));
+    let path = package_file(&f, "z.zend-plugin", &signed_package(&zed, "zed", "1", &["ui.add"], "return 1"));
     let installed = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
     assert_eq!(installed["plugin"]["author"]["kind"], "unknown");
     call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "zed", "allow": true, "hash": installed["plugin"]["hash"] }))
@@ -1234,7 +1235,30 @@ async fn plugins_an_unknown_authors_update_keeps_consent_by_key() {
     assert_eq!(updated["plugin"]["ask"], serde_json::json!(["notifications"]));
     // Changed by hand after that: tampered, as before.
     std::fs::write(f.plugins.plugins_dir().join("zed/init.luau"), "changed()").unwrap();
+    let tampered = item(&f.plugins, "zed").await;
+    assert_eq!(tampered["status"], "tampered");
+    // Never allowed as it is now: removed, or installed again.
+    let refused = call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "zed", "allow": true, "hash": tampered["hash"] }))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("changed after you allowed it"), "{refused}");
     assert_eq!(item(&f.plugins, "zed").await["status"], "tampered");
+    // Installed again from where it came from: what was signed, asking again.
+    let storage = f.plugins.plugins_dir().join(".storage");
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::write(storage.join("zed.json"), "{\"kept\":1}").unwrap();
+    let again = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "reinstall": "zed" })).await.unwrap();
+    assert_eq!((again["plugin"]["status"].as_str(), again["plugin"]["version"].as_str()), (Some("pending"), Some("3")), "{again}");
+    assert_eq!(std::fs::read_to_string(f.plugins.plugins_dir().join("zed/init.luau")).unwrap(), "return 3");
+    assert!(storage.join("zed.json").exists(), "what it stored stays");
+    let incoming = f.plugins.plugins_dir().join(install::INCOMING_DIR);
+    assert_eq!(std::fs::read_dir(&incoming).unwrap().count(), 0, "nothing left aside");
+    // Its file gone: says so, and the installed one stays as it is.
+    std::fs::write(f.plugins.plugins_dir().join("zed/init.luau"), "changed()").unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let gone = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "reinstall": "zed" })).await.unwrap_err();
+    assert_eq!(install::reason_of(&gone), Some(install::reason::NO_SOURCE), "{gone}");
+    assert_eq!(std::fs::read_to_string(f.plugins.plugins_dir().join("zed/init.luau")).unwrap(), "changed()");
 }
 
 #[tokio::test]
@@ -1292,7 +1316,7 @@ async fn plugins_install_from_git_and_update_from_its_branch() {
     assert_ne!(moved.commit, source.commit, "the source follows the commit installed");
     // A folder with no plugin in it.
     let err = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "url": url, "folder": "nothing" })).await.unwrap_err();
-    assert!(err.contains("no zeron-plugin.json"), "{err}");
+    assert!(err.contains("no zend-plugin.json"), "{err}");
 }
 
 #[tokio::test]
@@ -1300,7 +1324,7 @@ async fn plugins_uninstall_removes_its_folder_decision_storage_and_update() {
     let f = fixture();
     let fake = Arc::new(FakeDirectory::default());
     let ada = someone(&f, &fake, "ada");
-    let path = package_file(&f, "focus.zeron-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
+    let path = package_file(&f, "focus.zend-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
     let installed = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
     call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "focus", "allow": true, "hash": installed["plugin"]["hash"] }))
         .await
@@ -1333,7 +1357,7 @@ async fn plugins_export_packs_a_plugin_that_installs_elsewhere() {
     let out = f.data.join("out");
     let exported = call(&f.plugins, methods::EXPORT_PLUGIN, serde_json::json!({ "id": "hello", "to": out })).await.unwrap();
     let path = PathBuf::from(exported["path"].as_str().unwrap());
-    assert_eq!(path, out.join("hello-0.1.0.zeron-plugin"));
+    assert_eq!(path, out.join("hello-0.1.0.zend-plugin"));
     let package = install::parse(std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(package.key, signing::load_key(&f.data).unwrap().public());
     // On another device of someone else's.
@@ -1354,15 +1378,15 @@ async fn theme_methods_write_this_device_s_files_and_tell_the_window() {
         Ok(RpcReply::Stream(stream)) => stream,
         _ => panic!("stream"),
     };
-    let nord = zeron_theme::builtin_registry().families.iter().flat_map(|fam| &fam.variants).find(|v| v.id == "nord").unwrap();
-    let dark = zeron_theme::catalog::Palette::of(nord).to_json(None);
+    let nord = zend_theme::builtin_registry().families.iter().flat_map(|fam| &fam.variants).find(|v| v.id == "nord").unwrap();
+    let dark = zend_theme::catalog::Palette::of(nord).to_json(None);
     let made = call(&f.plugins, methods::CREATE_THEME, serde_json::json!({ "name": "Ink", "dark": dark })).await.unwrap();
     assert_eq!(made["id"], "custom-ink");
     assert_eq!(told.next().await.unwrap(), serde_json::json!({ "changed": true }));
-    assert!(zeron_theme::CustomThemeLibrary::load(&f.data).unwrap().entry("custom-ink").is_some(), "in the data dir");
+    assert!(zend_theme::CustomThemeLibrary::load(&f.data).unwrap().entry("custom-ink").is_some(), "in the data dir");
     call(&f.plugins, methods::USE_THEME, serde_json::json!({ "id": "custom-ink" })).await.unwrap();
     assert_eq!(told.next().await.unwrap(), serde_json::json!({ "changed": true }));
-    assert_eq!(zeron_theme::catalog::chosen(&f.data).dark.as_deref(), Some("custom-ink-dark"));
+    assert_eq!(zend_theme::catalog::chosen(&f.data).dark.as_deref(), Some("custom-ink-dark"));
     // Reading tells nothing; a refusal says why and changes nothing.
     let listed = call(&f.plugins, methods::LIST_THEMES, serde_json::json!({})).await.unwrap();
     assert_eq!(listed["wearing"]["dark"]["theme"], "custom-ink");
@@ -1370,5 +1394,141 @@ async fn theme_methods_write_this_device_s_files_and_tell_the_window() {
     assert!(refused.contains("built in"), "{refused}");
     call(&f.plugins, methods::DELETE_THEME, serde_json::json!({ "id": "custom-ink" })).await.unwrap();
     assert_eq!(told.next().await.unwrap(), serde_json::json!({ "changed": true }));
-    assert!(zeron_theme::catalog::chosen(&f.data).is_empty());
+    assert!(zend_theme::catalog::chosen(&f.data).is_empty());
+}
+
+// ── Launch checklist: key rotation, squatted ids, what removing leaves ─────
+
+/// B4: an update had to be signed by the installed one's own key, so an
+/// author on a new machine stranded everyone. Another live key of the same
+/// account updates it, and asks again; anyone else's, a revoked one, or one
+/// that can't be checked doesn't.
+#[tokio::test]
+async fn plugins_an_authors_new_key_updates_and_asks_again() {
+    let f = fixture();
+    let fake = Arc::new(FakeDirectory::default());
+    let laptop = someone(&f, &fake, "ada");
+    let path = package_file(&f, "focus.zend-plugin", &signed_package(&laptop, "focus", "1.0.0", &["ui.add"], "return 1"));
+    let installed = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
+    call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "focus", "allow": true, "hash": installed["plugin"]["hash"] }))
+        .await
+        .unwrap();
+
+    // Ada's new machine: found, not refused, said to be a new key.
+    let desktop = someone(&f, &fake, "ada");
+    std::fs::write(&path, signed_package(&desktop, "focus", "1.1.0", &["ui.add"], "return 2")).unwrap();
+    let checked = call(&f.plugins, methods::CHECK_PLUGIN_UPDATES, serde_json::json!({})).await.unwrap();
+    let found = &checked["updates"][0];
+    assert!(found.get("refused").is_none(), "{checked}");
+    assert_eq!(found["new_key"], true, "{checked}");
+    // Installed, and it waits for you, with what you allowed shown.
+    let updated = call(&f.plugins, methods::UPDATE_PLUGIN, serde_json::json!({ "id": "focus" })).await.unwrap();
+    assert_eq!((updated["update"].as_bool(), updated["waiting"].as_bool()), (Some(true), Some(true)), "{updated}");
+    let waiting = item(&f.plugins, "focus").await;
+    assert_eq!((waiting["version"].as_str(), waiting["status"].as_str()), (Some("1.1.0"), Some("pending")));
+    assert_eq!(waiting["allowed"], serde_json::json!(["ui.add"]));
+    call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "focus", "allow": true, "hash": waiting["hash"] }))
+        .await
+        .unwrap();
+    assert_eq!(item(&f.plugins, "focus").await["status"], "on");
+
+    // The old machine lost and its key revoked: still Ada's, so a later
+    // key of hers updates it (installing straight from the file too).
+    fake.keys.lock().unwrap().insert(
+        desktop.public(),
+        Lookup::Found { username: Some("ada".into()), mine: false, revoked: true, verified: Some(false) },
+    );
+    let phone = someone(&f, &fake, "ada");
+    let path = package_file(&f, "focus-2.zend-plugin", &signed_package(&phone, "focus", "1.2.0", &["ui.add"], "return 3"));
+    let again = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
+    assert_eq!((again["plugin"]["version"].as_str(), again["waiting"].as_bool()), (Some("1.2.0"), Some(true)), "{again}");
+
+    // Someone else's key, a revoked key of Ada's, or Ada's when the edge
+    // can't be reached: refused, the installed one kept.
+    let eve = someone(&f, &fake, "eve");
+    let stolen = someone(&f, &fake, "ada");
+    fake.keys.lock().unwrap().insert(
+        stolen.public(),
+        Lookup::Found { username: Some("ada".into()), mine: false, revoked: true, verified: Some(false) },
+    );
+    let unchecked = someone(&f, &fake, "ada");
+    for (key, offline) in [(&eve, false), (&stolen, false), (&unchecked, true)] {
+        fake.unreachable.store(offline, std::sync::atomic::Ordering::SeqCst);
+        let path = package_file(&f, "focus-x.zend-plugin", &signed_package(key, "focus", "9.0.0", &["ui.add"], "return 9"));
+        let refused = call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap_err();
+        assert!(refused.contains("signed by someone else"), "{refused}");
+    }
+    fake.unreachable.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(item(&f.plugins, "focus").await["version"], "1.2.0");
+}
+
+/// B11 (R25c): a folder of yours under a built-in's id was the plugin
+/// `RemovePlugin` found when its name sorted first, so removing it wiped the
+/// built-in's decision and storage.
+#[tokio::test]
+async fn plugins_removing_a_folder_that_squats_a_builtin_keeps_the_builtins() {
+    let f = fixture();
+    let shipped = f.data.join("app-plugins");
+    std::fs::create_dir_all(&shipped).unwrap();
+    write_plugin(&shipped, "github", serde_json::json!({ "name": "GitHub", "permissions": ["ui.add"] }), None);
+    // Named to sort before Zend's own.
+    write_plugin(f.plugins.plugins_dir(), "github", serde_json::json!({ "name": "Aardvark" }), None);
+    call(&f.plugins, methods::SET_BUILTIN_PLUGINS, serde_json::json!({ "dir": shipped })).await.unwrap();
+    call(&f.plugins, methods::SET_PLUGIN_OFF, serde_json::json!({ "id": "github", "off": true })).await.unwrap();
+    let storage = f.plugins.plugins_dir().join(".storage");
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::write(storage.join("github.json"), "{}").unwrap();
+    std::fs::write(storage.join("github.settings.json"), "{}").unwrap();
+
+    call(&f.plugins, methods::REMOVE_PLUGIN, serde_json::json!({ "id": "github" })).await.unwrap();
+    assert!(!f.plugins.plugins_dir().join("github").exists(), "your folder went");
+    assert!(storage.join("github.json").is_file() && storage.join("github.settings.json").is_file(), "the built-in's storage stays");
+    assert!(State::load(f.plugins.plugins_dir()).decisions.get("github").is_some_and(|d| d.off), "and its off switch");
+    let list = call(&f.plugins, methods::LIST_PLUGINS, serde_json::json!({})).await.unwrap();
+    let github: Vec<_> = list["plugins"].as_array().unwrap().iter().filter(|p| p["id"] == "github").collect();
+    assert_eq!(github.len(), 1, "{list}");
+    assert_eq!((github[0]["builtin"].as_bool(), github[0]["status"].as_str()), (Some(true), Some("off")));
+    // The built-in itself still can't be removed.
+    let refused = call(&f.plugins, methods::REMOVE_PLUGIN, serde_json::json!({ "id": "github" })).await.unwrap_err();
+    assert!(refused.contains("not removed"), "{refused}");
+}
+
+/// B12 (R29) and B8: a plugin new under an id starts with nothing a plugin
+/// once under it kept; a folder gone for a while keeps its storage; removing
+/// takes the folder away rather than leaving it in `.removed`.
+#[tokio::test]
+async fn plugins_storage_and_removed_folders_go_with_the_plugin() {
+    let f = fixture();
+    let fake = Arc::new(FakeDirectory::default());
+    let ada = someone(&f, &fake, "ada");
+    let storage = f.plugins.plugins_dir().join(".storage");
+    std::fs::create_dir_all(&storage).unwrap();
+    // Left by a plugin once called "focus", before this one.
+    std::fs::write(storage.join("focus.json"), "{\"secret\":1}").unwrap();
+    let path = package_file(&f, "focus.zend-plugin", &signed_package(&ada, "focus", "1.0.0", &["ui.add"], "return 1"));
+    call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
+    assert!(!storage.join("focus.json").exists(), "a new plugin under the id inherits nothing");
+
+    // Its folder gone for a while (a rename by hand, an editor or sync tool
+    // replacing it): what it kept stays, and it's back as it was.
+    std::fs::write(storage.join("focus.json"), "{\"kept\":1}").unwrap();
+    let away = f.data.join("focus-away");
+    std::fs::rename(f.plugins.plugins_dir().join("focus"), &away).unwrap();
+    f.plugins.rescan().await;
+    std::fs::rename(&away, f.plugins.plugins_dir().join("focus")).unwrap();
+    f.plugins.rescan().await;
+    assert_eq!(std::fs::read_to_string(storage.join("focus.json")).unwrap(), "{\"kept\":1}");
+    std::fs::remove_dir_all(f.plugins.plugins_dir().join("focus")).unwrap();
+    f.plugins.rescan().await;
+
+    // Removed: nothing left in `.removed`.
+    call(&f.plugins, methods::INSTALL_PLUGIN, serde_json::json!({ "path": path })).await.unwrap();
+    call(&f.plugins, methods::REMOVE_PLUGIN, serde_json::json!({ "id": "focus" })).await.unwrap();
+    let removed = f.plugins.plugins_dir().join(REMOVED_DIR);
+    assert_eq!(std::fs::read_dir(&removed).map(|d| d.count()).unwrap_or(0), 0);
+    // What an older engine left there goes at the next start.
+    std::fs::create_dir_all(removed.join("old-1").join("lib")).unwrap();
+    std::fs::write(removed.join("old-1").join("lib").join("x.luau"), "return 1").unwrap();
+    sweep_removed(f.plugins.plugins_dir());
+    assert_eq!(std::fs::read_dir(&removed).unwrap().count(), 0);
 }

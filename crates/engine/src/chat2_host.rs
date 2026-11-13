@@ -1,6 +1,6 @@
 //! chat2 host wiring (docs/chat2-sync.md C3): the engine-side implementations
-//! of [`zeron_sync::chat_client::ChatDocSink`] and
-//! [`zeron_sync::chat_client::CheckpointFetcher`], binding a
+//! of [`zend_sync::chat_client::ChatDocSink`] and
+//! [`zend_sync::chat_client::CheckpointFetcher`], binding a
 //! [`crate::doc_host::ChatDocHandle`]'s live doc to a chat2 room.
 //!
 //! The C2 rule is enforced by the coalescing persister: doc content AND its
@@ -11,9 +11,9 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use zeron_doc::SessionDoc;
-use zeron_sync::chat_client::{ChatDocSink, CheckpointFetcher, RowImportOutcome};
-use zeron_sync::{DocsStore, SyncError};
+use zend_doc::SessionDoc;
+use zend_sync::chat_client::{ChatDocSink, CheckpointFetcher, RowImportOutcome};
+use zend_sync::{DocsStore, SyncError};
 
 use crate::doc_host::EdgeConfig;
 use crate::http_error::describe_http_error;
@@ -21,6 +21,12 @@ use crate::http_error::describe_http_error;
 /// Doc epoch stamped on every chat2-synced snapshot (docs/chat2-sync.md M1:
 /// thin docs are lineage epoch 2; M3 readers discard-and-adopt below it).
 pub const CHAT2_DOC_EPOCH: u32 = 2;
+
+/// The journal key for relayed updates that arrived ahead of their history. Kept
+/// apart from the chat's own journal, which a save retires, and replayed with it.
+pub(crate) fn parked_inbox(chat_id: &str) -> String {
+    format!("{chat_id}#parked")
+}
 
 /// [`ChatDocSink`] over a live [`SessionDoc`] + the cursor-bearing store.
 ///
@@ -61,6 +67,30 @@ impl EngineChatSink {
         }
     }
 
+    /// The sink for an open handle: it shares the handle's persister, which
+    /// was seeded with the cursor its load returned. [`Self::new`] would
+    /// read that cursor again (with snapshot deltas on disk, a second merge
+    /// of the whole doc) and start a persister only to drop it.
+    pub(crate) fn for_handle(
+        doc: &Arc<SessionDoc>,
+        store: Arc<DocsStore>,
+        chat_id: impl Into<String>,
+        handle: std::sync::Weak<crate::doc_host::ChatDocHandle>,
+    ) -> Self {
+        let chat_id = chat_id.into();
+        let persistence = handle.upgrade().and_then(|owner| owner.persistence.clone());
+        match persistence {
+            Some(persistence) => Self {
+                doc: Arc::downgrade(doc),
+                store,
+                chat_id,
+                persistence,
+                handle,
+            },
+            None => Self::new(doc, store, chat_id).with_handle(handle),
+        }
+    }
+
     pub(crate) fn with_handle(
         mut self,
         handle: std::sync::Weak<crate::doc_host::ChatDocHandle>,
@@ -83,7 +113,7 @@ impl EngineChatSink {
         } else {
             ""
         };
-        match doc.doc().import_with(bytes, origin) {
+        match doc.import_with(bytes, origin) {
             Ok(status) => {
                 if status.pending.is_some() {
                     // Room sequence contiguity does not prove causal history
@@ -132,13 +162,16 @@ impl ChatDocSink for EngineChatSink {
             .map_err(|e| e.to_string())?;
         let mut updates = Vec::new();
         for (id, bytes) in pending {
-            if bytes.len() > zeron_sync::chat_client::MAX_PUSH_BYTES {
+            if bytes.len() > zend_sync::chat_client::MAX_PUSH_BYTES {
                 self.store
                     .reject_chat_update(&self.chat_id, &id)
                     .map_err(|e| e.to_string())?;
             } else if !rejected.iter().any(|(r, _)| r == &id) {
                 updates.push((id, bytes));
             }
+        }
+        if let Some(handle) = self.handle.upgrade() {
+            updates = handle.uploadable_updates(updates);
         }
         Ok(updates)
     }
@@ -176,7 +209,6 @@ impl ChatDocSink for EngineChatSink {
         let import = || {
             let doc = self.doc.upgrade().ok_or("doc evicted")?;
             let status = doc
-                .doc()
                 .import_with(bytes, crate::transcript_history::REPLAY_ORIGIN)
                 .map_err(|e| format!("checkpoint import: {e}"))?;
             if status.pending.is_some() {
@@ -229,6 +261,100 @@ impl ChatDocSink for EngineChatSink {
     fn advance_cursor(&self, cursor: u64) {
         self.persist_with_cursor(cursor);
     }
+
+    fn relay_version(&self) -> Option<Vec<u8>> {
+        Some(self.doc.upgrade()?.doc().oplog_vv().encode())
+    }
+
+    fn relay_lacks(&self, version: &[u8]) -> bool {
+        let (Some(doc), Ok(vv)) = (self.doc.upgrade(), loro::VersionVector::decode(version)) else {
+            return false;
+        };
+        !doc.doc().oplog_vv().includes_vv(&vv)
+    }
+
+    fn relay_behind(&self, version: &[u8]) -> bool {
+        let (Some(doc), Ok(vv)) = (self.doc.upgrade(), loro::VersionVector::decode(version)) else {
+            return false;
+        };
+        !vv.includes_vv(&doc.doc().oplog_vv())
+    }
+
+    fn relay_export(&self, since: &[u8]) -> Option<Vec<u8>> {
+        let doc = self.doc.upgrade()?;
+        let vv = loro::VersionVector::decode(since).ok()?;
+        if vv.includes_vv(&doc.doc().oplog_vv()) {
+            return Some(Vec::new()); // nothing it lacks
+        }
+        // A fresh reader takes the snapshot: smaller, and quicker to import.
+        if vv.is_empty() {
+            return doc.export_snapshot().ok();
+        }
+        doc.export(loro::ExportMode::updates(&vv)).ok()
+    }
+
+    fn relay_import(&self, bytes: &[u8], history: bool) -> zend_sync::chat_relay::RelayImport {
+        use zend_sync::chat_relay::RelayImport;
+        let import = || {
+            // An evicted handle: nothing took it in, so it must not count as read.
+            let Some(doc) = self.doc.upgrade() else {
+                return RelayImport::Unreadable;
+            };
+            let origin = if history {
+                crate::transcript_history::REPLAY_ORIGIN
+            } else {
+                ""
+            };
+            let before = doc.doc().oplog_vv();
+            match doc.import_with(bytes, origin) {
+                Ok(status) if status.pending.is_some() => {
+                    // Held in memory until its history arrives. Kept on disk too, apart
+                    // from the journal a save retires: a save doesn't hold what's parked.
+                    if let Err(err) = self.store.journal_chat_inbox(&parked_inbox(&self.chat_id), bytes) {
+                        tracing::warn!(chat = %self.chat_id, %err, "chat relay: parked journal write failed");
+                    }
+                    return RelayImport::Parked;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(chat = %self.chat_id, error = %err, "chat relay: import failed");
+                    return RelayImport::Unreadable;
+                }
+            }
+            // Nobody else may be able to give this back: the room didn't store it,
+            // and the host may be gone by the time this device restarts.
+            if doc.doc().oplog_vv() != before {
+                match self.store.journal_chat_inbox(&self.chat_id, bytes) {
+                    Ok(ordinal) => {
+                        if let Some(handle) = self.handle.upgrade() {
+                            handle.note_journaled(ordinal);
+                        }
+                    }
+                    Err(err) => tracing::warn!(chat = %self.chat_id, %err, "chat relay: journal write failed"),
+                }
+            }
+            // No row seq here: the save covers the content at the same cursor.
+            self.persistence.dirty(false);
+            // A host that's storing must store this too, or its next row parks on
+            // every old reader. Only what's new, however often it's delivered.
+            if let Some(handle) = self.handle.upgrade()
+                && handle.republishes_imports()
+                && doc.doc().oplog_vv() != before
+                && let Ok(delta) = doc.export(loro::ExportMode::updates(&before))
+            {
+                handle.republish(delta);
+            }
+            RelayImport::Applied
+        };
+        match self.handle.upgrade() {
+            Some(handle) => handle.import_transcript(import),
+            None => import(),
+        }
+    }
+
+    fn relay_durable(&self) -> bool {
+        self.persistence.is_clean()
+    }
 }
 
 /// `GET /chat2/{chatId}/checkpoint` with Range resume — the fetcher half of
@@ -236,21 +362,21 @@ impl ChatDocSink for EngineChatSink {
 /// the previous attempt died (the DO serves 206), which is the entire point
 /// of checkpoint-over-HTTP on the 1.2 Mbps links this design targets.
 pub struct EdgeCheckpointFetcher {
-    priority: zeron_sync::budget::Priority,
+    priority: zend_sync::budget::Priority,
     http: reqwest::Client,
     edge: EdgeConfig,
     chat_id: String,
 }
 
 impl EdgeCheckpointFetcher {
-    pub fn with_priority(mut self, priority: zeron_sync::budget::Priority) -> Self {
+    pub fn with_priority(mut self, priority: zend_sync::budget::Priority) -> Self {
         self.priority = priority;
         self
     }
 
     pub fn new(http: reqwest::Client, edge: EdgeConfig, chat_id: impl Into<String>) -> Self {
         Self {
-            priority: zeron_sync::budget::Priority::Interactive,
+            priority: zend_sync::budget::Priority::Interactive,
             http,
             edge,
             chat_id: chat_id.into(),
@@ -276,7 +402,7 @@ impl CheckpointFetcher for EdgeCheckpointFetcher {
             // the last one stopped. Attempt count bounds a flapping link;
             // the ChatClient's own deadline bounds wall clock.
             for _attempt in 0..4 {
-                let _permit = zeron_sync::budget::shared().http(priority).await?;
+                let _permit = zend_sync::budget::shared().http(priority).await?;
                 let bearer = edge.bearer().await.map_err(SyncError::from)?;
                 let mut req = http
                     .get(&url)
@@ -352,12 +478,13 @@ impl CheckpointFetcher for EdgeCheckpointFetcher {
 /// Plain-HTTPS chat pull/push (the airplane-wifi transport): GET/POST
 /// `/chat2/{id}/rows` with the same bearer auth the checkpoint fetcher uses.
 pub struct EdgeChatTransport {
-    priority: zeron_sync::budget::Priority,
+    priority: zend_sync::budget::Priority,
     http: reqwest::Client,
     edge: EdgeConfig,
     chat_id: String,
     device_id: String,
     host_device: Option<String>,
+    relay: bool,
 }
 
 impl EdgeChatTransport {
@@ -366,7 +493,13 @@ impl EdgeChatTransport {
         self
     }
 
-    pub fn with_priority(mut self, priority: zeron_sync::budget::Priority) -> Self {
+    /// This client runs the relay layer: its bootstrap pull isn't an old reader.
+    pub fn with_relay(mut self, relay: bool) -> Self {
+        self.relay = relay;
+        self
+    }
+
+    pub fn with_priority(mut self, priority: zend_sync::budget::Priority) -> Self {
         self.priority = priority;
         self
     }
@@ -378,12 +511,13 @@ impl EdgeChatTransport {
         device_id: impl Into<String>,
     ) -> Self {
         Self {
-            priority: zeron_sync::budget::Priority::Interactive,
+            priority: zend_sync::budget::Priority::Interactive,
             http,
             edge,
             chat_id: chat_id.into(),
             device_id: device_id.into(),
             host_device: None,
+            relay: false,
         }
     }
 
@@ -394,22 +528,28 @@ impl EdgeChatTransport {
             self.chat_id
         )
     }
-}
 
-impl zeron_sync::chat_client::ChatTransport for EdgeChatTransport {
-    fn fetch_rows(&self, after: u64) -> BoxFuture<'static, Result<Vec<u8>, SyncError>> {
+    fn pull_rows(&self, after: u64, fallback: bool) -> BoxFuture<'static, Result<Vec<u8>, SyncError>> {
         let priority = self.priority;
         let http = self.http.clone();
         let edge = self.edge.clone();
         let url = self.rows_url();
         let device = self.device_id.clone();
+        let relay = self.relay;
         Box::pin(async move {
-            let _permit = zeron_sync::budget::shared().http(priority).await?;
+            let _permit = zend_sync::budget::shared().http(priority).await?;
             let bearer = edge.bearer().await.map_err(SyncError::from)?;
-            let res = http
+            let mut request = http
                 .get(&url)
                 .query(&[("after", after.to_string()), ("device", device)])
-                .bearer_auth(&bearer)
+                .bearer_auth(&bearer);
+            if relay {
+                request = request.query(&[("relay", "1")]);
+                if fallback {
+                    request = request.query(&[("fallback", "1")]);
+                }
+            }
+            let res = request
                 .send()
                 .await
                 .map_err(|e| SyncError::WebSocket(describe_http_error(e)))?;
@@ -426,6 +566,16 @@ impl zeron_sync::chat_client::ChatTransport for EdgeChatTransport {
             Ok(bytes.to_vec())
         })
     }
+}
+
+impl zend_sync::chat_client::ChatTransport for EdgeChatTransport {
+    fn fetch_rows(&self, after: u64) -> BoxFuture<'static, Result<Vec<u8>, SyncError>> {
+        self.pull_rows(after, false)
+    }
+
+    fn fetch_rows_fallback(&self, after: u64) -> BoxFuture<'static, Result<Vec<u8>, SyncError>> {
+        self.pull_rows(after, true)
+    }
 
     fn push(
         &self,
@@ -439,7 +589,7 @@ impl zeron_sync::chat_client::ChatTransport for EdgeChatTransport {
         let device = self.device_id.clone();
         let host = self.host_device.clone();
         Box::pin(async move {
-            let _permit = zeron_sync::budget::shared().http(priority).await?;
+            let _permit = zend_sync::budget::shared().http(priority).await?;
             let bearer = edge.bearer().await.map_err(SyncError::from)?;
             let mut request = http
                 .post(&url)
@@ -467,6 +617,47 @@ impl zeron_sync::chat_client::ChatTransport for EdgeChatTransport {
 }
 
 #[cfg(test)]
+mod relay_sink_tests {
+    use super::*;
+    use std::sync::Arc;
+    use zend_sync::chat_client::ChatDocSink as _;
+    use zend_sync::chat_relay::RelayImport;
+
+    fn sink() -> (EngineChatSink, Arc<SessionDoc>, Arc<DocsStore>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let doc = Arc::new(SessionDoc::init("chat").unwrap());
+        (EngineChatSink::new(&doc, store.clone(), "chat"), doc, store, dir)
+    }
+
+    #[tokio::test]
+    async fn a_relayed_update_for_an_evicted_doc_is_not_taken_as_read() {
+        let (sink, doc, _store, _dir) = sink();
+        drop(doc);
+        let other = loro::LoroDoc::new();
+        other.get_text("t").insert(0, "x").unwrap();
+        other.commit();
+        let bytes = other.export(loro::ExportMode::all_updates()).unwrap();
+        assert_eq!(sink.relay_import(&bytes, false), RelayImport::Unreadable);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_update_that_arrives_ahead_of_its_history_is_kept() {
+        let (sink, _doc, store, _dir) = sink();
+        let author = loro::LoroDoc::new();
+        author.get_text("t").insert(0, "first").unwrap();
+        author.commit();
+        let before = author.oplog_vv();
+        author.get_text("t").insert(5, " second").unwrap();
+        author.commit();
+        let later = author.export(loro::ExportMode::updates(&before)).unwrap();
+        assert_eq!(sink.relay_import(&later, false), RelayImport::Parked);
+        let (kept, _) = store.pending_chat_inbox(&parked_inbox("chat")).unwrap();
+        assert_eq!(kept, vec![later], "lost with this process otherwise");
+    }
+}
+
+#[cfg(test)]
 mod frontier_tests {
     use super::*;
     use std::sync::Arc;
@@ -474,7 +665,7 @@ mod frontier_tests {
     #[tokio::test]
     async fn http_sync_and_exhausted_checkpoint_retries_retain_dns_cause() {
         use crate::http_error::test_support::FailingDns;
-        use zeron_sync::chat_client::ChatTransport;
+        use zend_sync::chat_client::ChatTransport;
 
         let dns = Arc::new(FailingDns::default());
         let edge = EdgeConfig::with_static_token("https://edge.invalid", "token-secret");
@@ -504,7 +695,7 @@ mod frontier_tests {
     /// containment.
     #[test]
     fn encoded_empty_frontier_is_not_contained() {
-        let dir = std::env::temp_dir().join(format!("zeron-frontier2-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("zend-frontier2-{}", std::process::id()));
         let store = Arc::new(DocsStore::open(&dir).expect("store opens"));
         let doc = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
         let sink = EngineChatSink::new(&doc, store, "frontier-test-2");
@@ -518,7 +709,7 @@ mod frontier_tests {
 
     #[test]
     fn empty_frontier_is_not_contained() {
-        let dir = std::env::temp_dir().join(format!("zeron-frontier-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("zend-frontier-test-{}", std::process::id()));
         let store = Arc::new(DocsStore::open(&dir).expect("store opens"));
         let doc = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
         let sink = EngineChatSink::new(&doc, store, "frontier-test");
@@ -602,7 +793,7 @@ pub(crate) fn publication_updates(doc: &loro::LoroDoc) -> Result<Vec<Vec<u8>>, S
                 peer, start, end,
             )]))
             .map_err(|e| e.to_string())?;
-        if bytes.len() <= zeron_sync::chat_client::MAX_PUSH_BYTES || end - start <= 1 {
+        if bytes.len() <= zend_sync::chat_client::MAX_PUSH_BYTES || end - start <= 1 {
             // An indivisible oversized op remains durable until checkpointed.
             out.push(bytes);
         } else {
@@ -743,5 +934,88 @@ mod own_ops_order_tests {
         let (doc, mut order, hooks) = three_commits();
         let published: Vec<Vec<u8>> = hooks.iter().flat_map(|h| order.order(&doc, h)).collect();
         assert_eq!(published, hooks);
+    }
+}
+
+#[cfg(test)]
+mod open_with_deltas_tests {
+    use super::*;
+    use crate::doc_host::{DocHost, DocHostConfig};
+    use zend_proto::HarnessId;
+
+    /// A chat whose delta chain lost a row (peer P's ops) before a row of
+    /// independent, concurrent ops (peer Q's). Opening it: the cursor stays
+    /// before the lost row (the room resends P), Q's ops come back from the
+    /// parked inbox, and the sync sink reuses the open's persister: one
+    /// merge per open, not two.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn opening_a_chat_after_a_lost_delta_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let doc = SessionDoc::init("lost").unwrap();
+        let raw = doc.doc();
+        raw.set_peer_id(1).unwrap();
+        raw.get_text("t").insert(0, "base").unwrap();
+        raw.commit();
+        let base = store
+            .save_base_snapshot("lost", &doc.export_snapshot().unwrap(), 10, CHAT2_DOC_EPOCH)
+            .unwrap();
+        let vv = raw.oplog_vv();
+        raw.get_text("t").insert(4, " one").unwrap();
+        raw.commit();
+        let one = raw.export(loro::ExportMode::updates(&vv)).unwrap();
+        let after_one = raw.oplog_vv();
+        let concurrent = |peer: u64, key: &str| {
+            let fork = loro::LoroDoc::new();
+            fork.import(&raw.export(loro::ExportMode::Snapshot).unwrap()).unwrap();
+            fork.set_peer_id(peer).unwrap();
+            fork.get_map("peers").insert(key, "op").unwrap();
+            fork.commit();
+            fork.export(loro::ExportMode::updates(&after_one)).unwrap()
+        };
+        let (p, q) = (concurrent(2, "p"), concurrent(3, "q"));
+        assert!(store.append_snapshot_delta("lost", base, &one, 11).unwrap());
+        assert!(store.append_snapshot_delta("lost", base, &p, 12).unwrap());
+        assert!(store.append_snapshot_delta("lost", base, &q, 13).unwrap());
+        drop(store);
+        {
+            let db = rusqlite::Connection::open(dir.path().join("docs.sqlite3")).unwrap();
+            db.execute("DELETE FROM snapshot_deltas WHERE cursor = 12", []).unwrap();
+        }
+
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig { device_id: "host".into(), default_harness: HarnessId::Mock, edge: None },
+        );
+        let handle = host.open_local("lost").unwrap();
+        let persistence = handle.persistence.clone().expect("chat2 persister");
+        assert_eq!(persistence.cursor(), 11, "the cursor passed the lost row");
+        let peers = handle.doc().doc().get_map("peers");
+        assert!(peers.get("q").is_some(), "Q's ops didn't come back from the parked inbox");
+        assert!(peers.get("p").is_none());
+        assert!(store.pending_chat_inbox(&parked_inbox("lost")).unwrap().0.is_empty(), "nothing waits, so it retires");
+        // Retired only because a save already holds Q's ops: with no change
+        // since the open, what's on disk (an eviction, a stopped process)
+        // still has them.
+        {
+            let on_disk = DocsStore::open(dir.path()).unwrap();
+            let (bytes, _, _) = on_disk.load_snapshot_with_cursor("lost").unwrap().unwrap();
+            let reloaded = loro::LoroDoc::new();
+            reloaded.import(&bytes).unwrap();
+            assert!(
+                reloaded.get_map("peers").get("q").is_some(),
+                "the parked ops were retired before any save held them"
+            );
+        }
+
+        let merges = store.delta_merges();
+        let sink = EngineChatSink::for_handle(&handle.doc_arc(), store.clone(), "lost", Arc::downgrade(&handle));
+        assert_eq!(store.delta_merges(), merges, "the sink merged the doc again");
+        assert!(Arc::ptr_eq(&sink.persistence, &persistence));
+        drop(sink);
+        drop(persistence);
+        drop(handle);
+        host.shutdown_workers().await;
     }
 }

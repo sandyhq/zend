@@ -1,4 +1,4 @@
--- The pictures a reply names (`![alt](path)`), as Zeron's transcript draws
+-- The pictures a reply names (`![alt](path)`), as Zend's transcript draws
 -- them (crates/ui/src/reply_images.rs): only a path on the chat's own device,
 -- absolute or in the chat's folder, of a PNG, JPEG or WebP by its name. No
 -- URL is ever fetched (`http:`, `file:`, `data:`…), and `~`, network and
@@ -10,8 +10,8 @@
 -- What each picture is (coming, shown, couldn't be read) is kept by chat
 -- and path in state that outlives the view: a reload, a chat opened again,
 -- the same picture in another reply, none reads it twice. At most four are
--- read at once, as Zeron's. One that couldn't be read is read again, as
--- Zeron's shared backoff does (a picture an agent names a moment before it
+-- read at once, as Zend's. One that couldn't be read is read again, as
+-- Zend's shared backoff does (a picture an agent names a moment before it
 -- writes the file): 3, 10, 30 and 90 seconds on, while it shows
 -- (`retry`, the time it's due, which ds/reply_picture waits for).
 --
@@ -65,6 +65,12 @@ end
 
 local RASTER = { png = true, jpg = true, jpeg = true, webp = true, gif = true }
 
+-- Whether `path` is a whole path on its device: a Mac's or Linux's (`/…`)
+-- or Windows' (`C:\…`, `C:/…`).
+function M.whole(path: string): boolean
+	return string.sub(path, 1, 1) == "/" or string.match(path, "^%a:[\\/]") ~= nil
+end
+
 -- The path of a picture a reply names, in a chat whose folder is `cwd`, or
 -- nil when it isn't one to draw.
 function M.path(src: string, cwd: string?): string?
@@ -80,15 +86,17 @@ function M.path(src: string, cwd: string?): string?
 	if not RASTER[ext] then
 		return nil
 	end
-	if string.sub(src, 1, 1) == "/" then
+	if M.whole(src) then
 		return src
 	end
 	-- Relative: in the chat's folder, which must be a path of its own.
-	if not cwd or string.sub(cwd, 1, 1) ~= "/" then
+	if not cwd or not M.whole(cwd) then
 		return nil
 	end
-	local rel = string.gsub(src, "^%./", "")
-	return (string.gsub(cwd, "/+$", "")) .. "/" .. rel
+	-- (A Windows folder's own separator, as its device reads it.)
+	local sep = if string.sub(cwd, 1, 1) == "/" then "/" else "\\"
+	local rel = string.gsub(src, "^%.[\\/]", "")
+	return (string.gsub(cwd, "[\\/]+$", "")) .. sep .. rel
 end
 
 local function key_of(s: Session, path: string): string
@@ -222,7 +230,7 @@ end
 -- The pictures sent with messages (each a path on the chat's device): in a
 -- chat on this device, the path itself; on another (`session()`'s `device`
 -- not its `here`), read from there through the engine (`files.attachment`,
--- Zeron's transcript thumbnails), kept as reply pictures are.
+-- Zend's transcript thumbnails), kept as reply pictures are.
 function M.for_attachments(session: () -> Session?, read: Read?): Pictures
 	-- (Any path here shows as it is; one read from another device must be
 	-- a path of its own there.)

@@ -62,6 +62,10 @@ export const verifyToken = async (env: Env, token: string): Promise<Verified | u
     // `userId@orgId` additionally carries a fake org claim so workspace-room
     // membership is exercisable locally (smoke tests), and
     // `runner:{userId}@{orgId}:{deviceId}` acts as that user's Cloud runner.
+    if (env.DEV_USERS !== undefined) {
+      const allowed = env.DEV_USERS.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!allowed.includes(token)) return undefined;
+    }
     if (token.startsWith("runner:")) {
       const runner = parseDevRunnerBearer(token);
       return runner && { ...runner, kind: "runner" };

@@ -35,7 +35,7 @@ pub mod capabilities {
     /// rows and answers `StopBackgroundTask` / `ReadBackgroundTaskOutput`
     /// (forwarding them, for a chat another device hosts).
     pub const BACKGROUND_TASKS_V1: &str = "background-tasks-v1";
-    /// The host serves the zgx interface (Zeron.app's beta): `AccessToken`,
+    /// The host serves the zgx interface (Zend.app's beta): `AccessToken`,
     /// plugins and templates, the ACP registry, `setSpaceIcon`,
     /// `PostNotification`, `TerminalStatus` and change-request threads. The
     /// interface asks for it on connect and offers Stable on an engine
@@ -45,6 +45,11 @@ pub mod capabilities {
     /// device can update it (`install`, `canApplyRemotely`, and why not).
     /// Older hosts don't say: a client can't tell without trying.
     pub const UPDATE_ABILITY_V1: &str = "update-ability-v1";
+    /// The host looks in the edge's attachment store for bytes a message names
+    /// (`/blob/{chatId}/attachments/{uploadId}`). A sender holds a message for
+    /// such a host until its bytes are stored; older hosts get them over the
+    /// peer link, as they always did.
+    pub const ATTACHMENT_STORE_V1: &str = "attachment-store-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -60,6 +65,7 @@ pub mod capabilities {
         BACKGROUND_TASKS_V1,
         ZGX_INTERFACE_V1,
         UPDATE_ABILITY_V1,
+        ATTACHMENT_STORE_V1,
         crate::voice::remote::CAPABILITY,
     ];
 
@@ -93,7 +99,7 @@ pub struct EngineInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
     /// Which build of the engine this is: its git commit and when its
-    /// executable was built (`zeron-engine --build-id` says the same of a
+    /// executable was built (`zend-engine --build-id` says the same of a
     /// binary on disk), so a client that started it can tell it's older than
     /// the one it would start now. Absent on older engines: unknown, stale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,6 +160,7 @@ mod tests {
                     "background-tasks-v1",
                     "zgx-interface-v1",
                     "update-ability-v1",
+                    "attachment-store-v1",
                     "voice-client-media-v1"
                 ],
             })

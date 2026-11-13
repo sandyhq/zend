@@ -64,6 +64,7 @@ SUITE_JOBS: dict[str, list[tuple[str, str]]] = {
     "frame_source": [("macos-frame-source", "macos")],  # macos.yml
     "ios": [("ios-core", "linux"), ("ios-tests", "macos")],  # macos.yml (+ android publish below)
     "android": [("apk", "linux")],  # android.yml (+ publish on main, added below)
+    "zgx": [("zgx-macos", "macos"), ("zgx-linux", "linux")],  # zgx-tests.yml
 }
 # Run only nightly, manually or with `ci:full` (see the module docstring): voice
 # (the AEC3 audio stack and the packaged Windows media runtime; no failures of
@@ -84,7 +85,7 @@ CI_SELF = [
 ]
 
 # The apps link the Rust mobile core and everything it depends on (iOS and Android).
-# main() replaces this with zeron-mobile's dependency closure from the Cargo.toml
+# main() replaces this with zend-mobile's dependency closure from the Cargo.toml
 # files; this list is the fallback when they cannot be read.
 MOBILE_CORE = [
     "crates/mobile/**", "crates/client/**", "crates/text/**", "crates/markdown/**",
@@ -93,15 +94,24 @@ MOBILE_CORE = [
     "crates/term/**", "crates/term-link/**", "crates/veil/**", "crates/zatex/**", "crates/preview/**",
 ]
 
-# Voice: the WebRTC audio stack (zeron-audio, which nothing else builds yet) and
+# Voice: the WebRTC audio stack (zend-audio, which nothing else builds yet) and
 # the packaged Windows media runtime. The rest of voice is tested where it is
 # built: protocol and transport in core-tests, mobile voice in ios-core,
 # voice-media in core-tests and the Windows tests.
 VOICE_PATHS = ["crates/audio/**", "crates/voice-media/**", "dist/voice/**", "scripts/package-voice-runtime.py",
                "scripts/codex-voice-remote-smoke.py", "scripts/tests/*voice*", ".github/workflows/voice-tests.yml"]
 
+# The zgx suite's own files, and the crates it builds: main() replaces ZGX_CORE
+# with the closure of reuse.SUITE_PACKAGES["zgx"]; this list is the fallback.
+ZGX_PATHS = ["apps/zgx/**", "scripts/ci/nextest.toml", ".github/workflows/zgx-tests.yml"]
+ZGX_CORE = [
+    "crates/engine/**", "crates/plugin-guard/**", "crates/zatex/**", "crates/theme/**",
+    "crates/preview-label/**", "crates/cli/**", "crates/launch/**", "crates/notify/**",
+    "crates/proto/**", "crates/update/**", "crates/visual/**", "crates/visual-gpu/**",
+]
+
 BROAD: dict[str, list[str]] = {
-    "core": CARGO + ["crates/**", "apps/zeron/**", "scripts/ci/**", ".github/actions/linux-ci/**",
+    "core": CARGO + ["crates/**", "apps/zend/**", "scripts/ci/**", ".github/actions/linux-ci/**",
                      ".github/workflows/ui-tests.yml"],
     "ui": CARGO + ["crates/**", "scripts/ci/**", ".github/actions/linux-ci/**",
                    "scripts/test-linux-browser.sh", "scripts/test-browser-storage.py",
@@ -110,30 +120,34 @@ BROAD: dict[str, list[str]] = {
                        "scripts/*cursor-sdk*", ".github/workflows/cursor-*.yml"],
     "edge": ["edge/**", ".github/workflows/preview-tests.yml"],
     "installer": ["edge/src/install.sh", "scripts/package-linux.sh", "scripts/test-linux-desktop-entry.sh",
-                  "scripts/ci/apt-install.sh", "dist/zeron.desktop", "dist/zeron.png",
+                  "scripts/ci/apt-install.sh", "dist/zend.desktop", "dist/zend.png",
                   ".github/workflows/linux-installer.yml"],
     "voice": CARGO + VOICE_PATHS,
-    "windows": CARGO + ["crates/**", "apps/zeron/**", "dist/windows/**", "scripts/test-windows-*.ps1",
+    "windows": CARGO + ["crates/**", "apps/zend/**", "dist/windows/**", "scripts/test-windows-*.ps1",
                         "scripts/package-windows.ps1", ".github/actions/windows-ci-setup/**",
                         ".github/workflows/windows.yml"],
-    "macos": CARGO + ["crates/**", "apps/zeron/**", "edge/**", "scripts/run-macos-browser-fixture.sh",
+    "macos": CARGO + ["crates/**", "apps/zend/**", "edge/**", "scripts/run-macos-browser-fixture.sh",
                       "scripts/test-browser-storage.py", "scripts/ci/run-macos-fixture.sh",
                       "dist/macos/Info.plist", ".github/workflows/macos.yml"],
     # Tests the pinned GPUI checkout: only when the pin moves (see gpui_moved()).
     "frame_source": [".github/workflows/macos.yml"],
     "ios": CARGO + MOBILE_CORE + ["apps/ios/**", "scripts/ios/**", ".github/workflows/macos.yml"],
-    "android": CARGO + ["apps/android/**", "crates/**", "scripts/android/**", "apps/ios/Zeron/Fonts/**",
-                        "apps/ios/Zeron/Assets.xcassets/**", ".github/workflows/android.yml"],
+    "android": CARGO + ["apps/android/**", "crates/**", "scripts/android/**", "apps/ios/Zend/Fonts/**",
+                        "apps/ios/Zend/Assets.xcassets/**", ".github/workflows/android.yml"],
+    # The zgx interface (its own workspace: apps/zgx/Cargo.lock) with its Rust and
+    # Luau UI tests, and the engine's plugin host (also on macOS here; core-tests
+    # runs it on Linux).
+    "zgx": CARGO + ZGX_PATHS + ZGX_CORE,
 }
 
 # Fast tier: the files that always select the platform suite...
 FAST_PATHS: dict[str, list[str]] = {
     "voice": VOICE_PATHS,
-    "windows": CARGO + ["apps/zeron/**", "dist/windows/**", "scripts/test-windows-*.ps1",
+    "windows": CARGO + ["apps/zend/**", "dist/windows/**", "scripts/test-windows-*.ps1",
                         "scripts/package-windows.ps1", ".github/actions/windows-ci-setup/**",
                         ".github/workflows/windows.yml", "crates/update/**", "crates/cli/**",
                         "crates/launch/**"],
-    "macos": CARGO + ["apps/zeron/**", "crates/update/**", "crates/cli/**", "crates/launch/**",
+    "macos": CARGO + ["apps/zend/**", "crates/update/**", "crates/cli/**", "crates/launch/**",
                       "crates/preview/**", "crates/text/**",
                       "edge/package.json", "edge/package-lock.json", "scripts/run-macos-browser-fixture.sh",
                       "scripts/test-browser-storage.py", "scripts/ci/run-macos-fixture.sh",
@@ -141,7 +155,7 @@ FAST_PATHS: dict[str, list[str]] = {
     # The Rust is the same code the Linux suites test (no Android cfg), so a pull
     # request builds the APK for the app, the FFI crate and dependency changes.
     "android": CARGO + ["apps/android/**", "scripts/android/**", "crates/mobile/**", "crates/mobile-bindgen/**",
-                        "apps/ios/Zeron/Fonts/**", "apps/ios/Zeron/Assets.xcassets/**",
+                        "apps/ios/Zend/Fonts/**", "apps/ios/Zend/Assets.xcassets/**",
                         ".github/workflows/android.yml"],
 }
 
@@ -150,7 +164,7 @@ FAST_PATHS: dict[str, list[str]] = {
 JOB_PATHS: dict[tuple[str, str], list[str]] = {
     # Release build, packaging, installer and startup probes (`tests` already
     # compiles the app).
-    ("windows", "app"): CARGO + ["apps/zeron/**", "dist/windows/**", "scripts/test-windows-*.ps1",
+    ("windows", "app"): CARGO + ["apps/zend/**", "dist/windows/**", "scripts/test-windows-*.ps1",
                                  "scripts/package-windows.ps1", ".github/actions/windows-ci-setup/**",
                                  ".github/workflows/windows.yml", "crates/update/**"],
     # The simulator unit tests (and the bindings they link): the app, the FFI
@@ -250,19 +264,23 @@ def gpui_moved(files: list[dict]) -> bool:
 
 
 def plan(files: list[dict] | None, tier: str, mobile: list[str] | None = None,
-         nightly: bool = False) -> dict[str, bool]:
+         nightly: bool = False, zgx: list[str] | None = None) -> dict[str, bool]:
     """files: [{"filename", "previous_filename"?, "patch"?}], or None for "everything".
+
+    `mobile`, `zgx`: the crate directories (`crates/x/**`) the iOS/Android and
+    zgx suites build, when the workspace could be read.
 
     `nightly`: the nightly schedule, a manual run or `ci:full`, which also run NIGHTLY_SUITES.
     """
-    suites = select(files, tier, mobile)
+    suites = select(files, tier, mobile, zgx)
     if not nightly:
         for suite in NIGHTLY_SUITES:
             suites[suite] = False
     return suites
 
 
-def select(files: list[dict] | None, tier: str, mobile: list[str] | None) -> dict[str, bool]:
+def select(files: list[dict] | None, tier: str, mobile: list[str] | None,
+           zgx: list[str] | None = None) -> dict[str, bool]:
     if files is None:
         return {suite: True for suite in SUITE_JOBS}
     files = [f for f in files if not version_only(f)]
@@ -273,6 +291,8 @@ def select(files: list[dict] | None, tier: str, mobile: list[str] | None) -> dic
     broad = dict(BROAD)
     if mobile is not None:
         broad["ios"] = CARGO + mobile + ["apps/ios/**", "scripts/ios/**", ".github/workflows/macos.yml"]
+    if zgx is not None:
+        broad["zgx"] = CARGO + ZGX_PATHS + zgx
     suites = {suite: any(matches(p, broad[suite]) for p in paths) for suite in SUITE_JOBS}
     suites["frame_source"] = suites["frame_source"] or gpui_moved(files)
     if tier == "fast":
@@ -430,10 +450,15 @@ def main() -> int:
 
     mobile = None
     try:
-        mobile = [d + "/**" for d in sorted(reuse.Workspace(".").closure(["zeron-mobile"]))] + ["crates/mobile-bindgen/**"]
+        mobile = [d + "/**" for d in sorted(reuse.Workspace(".").closure(["zend-mobile"]))] + ["crates/mobile-bindgen/**"]
     except (OSError, ValueError, KeyError) as error:
         print(f"::warning::could not read the workspace ({error}); using the static mobile core list")
-    selected = plan(files, tier, mobile, nightly)
+    zgx = None
+    try:
+        zgx = [d + "/**" for d in sorted(reuse.Workspace(".").closure(reuse.SUITE_PACKAGES["zgx"]))]
+    except (OSError, ValueError, KeyError) as error:
+        print(f"::warning::could not read the workspace ({error}); using the static zgx crate list")
+    selected = plan(files, tier, mobile, nightly, zgx)
     off, flags = gated(files, tier, selected, nightly)
     # What a job does depends on its gated jobs and flags too: they are part of the fingerprint.
     variants = {suite: " ".join(f"-{j}" for j in off.get(suite, [])) + " " + " ".join(flags.get(suite, []))

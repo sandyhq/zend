@@ -1,6 +1,6 @@
 //! Live mode: the edge transports behind [`crate::Client`].
 //!
-//! - registry: `RegistryClient` over the shared [`zeron_doc::RegistryDoc`]
+//! - registry: `RegistryClient` over the shared [`zend_doc::RegistryDoc`]
 //!   (WS + HTTPS pull/push), persisted in the docs store, presence beats,
 //!   sidebar-pin reconciliation once synced;
 //! - rooms ([`room`]): one chat2 `ChatClient` per open session;
@@ -16,6 +16,8 @@
 pub(crate) mod delivery;
 pub(crate) mod direct;
 pub(crate) mod escort;
+pub(crate) mod held;
+pub(crate) mod path_gate;
 pub(crate) mod relay;
 pub(crate) mod room;
 pub(crate) mod urls;
@@ -28,8 +30,8 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use zeron_doc::{REGISTRY_DOC_ID, RegistryDoc};
-use zeron_sync::{
+use zend_doc::{REGISTRY_DOC_ID, RegistryDoc};
+use zend_sync::{
     DocsStore, RegistryClient, RegistryEvent, RegistryTransport, RegistryTuning, SyncError,
     UrlProvider,
 };
@@ -52,20 +54,24 @@ const OFFLINE_PARK: Duration = Duration::from_secs(30);
 /// Sleep `wait` (jittered), cut short by wake/online events. `false` when
 /// cancelled.
 pub(crate) async fn wait_backoff(cancel: &CancellationToken, wait: Duration) -> bool {
-    let mut wake = zeron_sync::wake::subscribe();
-    let mut online = zeron_sync::wake::subscribe_online();
+    let mut wake = zend_sync::wake::subscribe();
+    let mut online = zend_sync::wake::subscribe_online();
     while online.try_recv().is_ok() {}
     let jitter = Duration::from_millis((now_ms().unsigned_abs() % 250) + 1);
-    let wait = if zeron_sync::wake::path_is_offline() {
+    let wait = if zend_sync::wake::path_is_offline() {
         wait.max(OFFLINE_PARK)
     } else {
         wait + jitter
     };
     tokio::select! {
+        _ = cancel.cancelled() => return false,
+        _ = tokio::time::sleep(wait) => {}
+        _ = wake.recv() => {}
+        _ = online.recv() => {}
+    }
+    tokio::select! {
         _ = cancel.cancelled() => false,
-        _ = tokio::time::sleep(wait) => true,
-        _ = wake.recv() => true,
-        _ = online.recv() => true,
+        _ = zend_sync::wake::until_awake() => true,
     }
 }
 
@@ -87,12 +93,12 @@ impl Bearer {
 }
 
 #[async_trait::async_trait]
-impl zeron_rpc::TokenSource for Bearer {
-    async fn token(&self) -> std::result::Result<String, zeron_rpc::TokenError> {
+impl zend_rpc::TokenSource for Bearer {
+    async fn token(&self) -> std::result::Result<String, zend_rpc::TokenError> {
         match self.get().await {
             Ok(token) => Ok(token),
-            Err(SyncError::Auth(_) | SyncError::Closed) => Err(zeron_rpc::TokenError::SignedOut),
-            Err(err) => Err(zeron_rpc::TokenError::TemporarilyUnavailable(
+            Err(SyncError::Auth(_) | SyncError::Closed) => Err(zend_rpc::TokenError::SignedOut),
+            Err(err) => Err(zend_rpc::TokenError::TemporarilyUnavailable(
                 err.to_string(),
             )),
         }
@@ -127,6 +133,7 @@ struct RegistryHttp {
     edge: String,
     org_id: String,
     device_id: String,
+    relay: bool,
 }
 
 fn http_err(err: reqwest::Error) -> SyncError {
@@ -136,7 +143,7 @@ fn http_err(err: reqwest::Error) -> SyncError {
 impl RegistryTransport for RegistryHttp {
     fn fetch(&self, since: u64) -> BoxFuture<'static, std::result::Result<String, SyncError>> {
         let bearer = self.bearer.clone();
-        let url = urls::registry_rows(&self.edge, &self.org_id, &self.device_id, since);
+        let url = urls::registry_rows(&self.edge, &self.org_id, &self.device_id, since, self.relay);
         Box::pin(async move {
             let token = bearer.get().await?;
             let response = crate::auth::http()
@@ -201,8 +208,9 @@ pub(crate) struct LiveBackend {
     last_liveness_probe: AtomicI64,
     pub(crate) relay: relay::Relay,
     /// Direct peer connections (terminals), started with the backend.
-    pub(crate) direct: std::sync::OnceLock<Option<zeron_preview::viewer::ViewerPeers>>,
+    pub(crate) direct: std::sync::OnceLock<Option<zend_preview::viewer::ViewerPeers>>,
     pub(crate) escorts: escort::Escorts,
+    pub(crate) held: held::HeldSends,
     pub(crate) delivery_wake: Arc<Notify>,
     cancel: CancellationToken,
 }
@@ -233,6 +241,7 @@ impl LiveBackend {
             relay: relay::Relay::new(inner, &edge, bearer),
             direct: std::sync::OnceLock::new(),
             escorts: escort::Escorts::new(&inner.config.data_dir),
+            held: held::HeldSends::default(),
             delivery_wake: Arc::new(Notify::new()),
             edge,
             store,
@@ -255,16 +264,30 @@ impl LiveBackend {
     /// registry saver.
     pub(crate) fn start(&self, inner: &Arc<ClientInner>) {
         // Signaling first: pairing with a host can then start the moment a
-        // terminal wants it.
-        let _ = self.direct.set(direct::start(inner));
+        // terminal wants it. It dials the edge too, so it waits on the platform's
+        // first path report like every other connect.
+        let path = inner.path_gate();
+        let weak = Arc::downgrade(inner);
+        let cancel = self.cancel.clone();
+        crate::runtime::shared().spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = path.ready() => {}
+            }
+            let Some(inner) = weak.upgrade() else { return };
+            if let Some(live) = inner.live() {
+                let _ = live.direct.set(direct::start(&inner));
+            }
+        });
         self.spawn_registry(inner);
         self.spawn_registry_saver(inner);
         self.escorts.respawn(inner);
+        self.held.resume(inner);
         delivery::start(inner, self.delivery_wake.clone(), self.cancel.clone());
     }
 
     /// The direct peers, when they started.
-    pub(crate) fn direct(&self) -> Option<&zeron_preview::viewer::ViewerPeers> {
+    pub(crate) fn direct(&self) -> Option<&zend_preview::viewer::ViewerPeers> {
         self.direct.get().and_then(Option::as_ref)
     }
 
@@ -334,7 +357,7 @@ impl LiveBackend {
                 .await
                 .is_ok_and(|r| r.status().is_success());
             if ok {
-                zeron_sync::wake::notify_online();
+                zend_sync::wake::notify_online();
             }
         });
     }
@@ -370,7 +393,7 @@ impl LiveBackend {
                 client.redial();
             }
         }
-        zeron_sync::wake::notify_online();
+        zend_sync::wake::notify_online();
     }
 
     fn flush_registry_now_with(&self, inner: Option<&ClientInner>) {
@@ -450,12 +473,18 @@ impl LiveBackend {
             edge: self.edge.clone(),
             org_id: inner.credentials.org_id().to_owned(),
             device_id: inner.config.device_id.clone(),
+            relay: inner.config.relay_layer,
         });
         let doc = inner.workspace.doc().clone();
         let device_id = inner.config.device_id.clone();
+        let path = inner.path_gate();
         crate::runtime::shared().spawn(async move {
             let mut backoff = JOIN_RETRY_BASE;
             let client = loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = path.ready() => {}
+                }
                 let attempt = RegistryClient::connect_via_transport(
                     provider.clone(),
                     doc.clone(),
@@ -505,7 +534,10 @@ impl LiveBackend {
                     _ = cancel.cancelled() => return,
                     _ = beat.tick() => {
                         let Some(inner) = weak.upgrade() else { return };
-                        if let Some(live) = inner.live()
+                        // Not suspended isn't the same as in use: Android can leave a
+                        // backgrounded process running for hours, and each beat wakes the radio.
+                        if inner.is_foreground()
+                            && let Some(live) = inner.live()
                             && let Some(client) = lock(&live.registry).as_ref()
                         {
                             client.set_presence(now_ms());

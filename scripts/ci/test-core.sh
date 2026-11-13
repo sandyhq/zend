@@ -5,20 +5,21 @@
 # dependency graph with different feature sets).
 #
 # Same coverage as the old invocations:
-#   zeron-harness  every test binary (cursor-compatibility ran `-p zeron-harness`
+#   zend-harness  every test binary (cursor-compatibility ran `-p zend-harness`
 #                  plus `--test pi_rpc` with native-fixture; native-fixture only
 #                  adds the pi_rpc fixture binaries, so it is on for the whole build)
-#   zeron-preview  every test binary (preview-tests)
-#   zeron-doc      lib + persistence and memory regressions + attachments_roundtrip
-#   zeron-sync, zeron-update   lib only (session-sync-regressions)
-#   zeron-cli, zeron-launch, zeron-notify   `zeron`'s command line, the engine
-#                  helper's start-up and the zeron:// links, shared by the apps
-#   zeron-engine   lib + the integration tests named below. Engine has many other
+#   zend-preview  every test binary (preview-tests)
+#   zend-doc      lib + persistence and memory regressions + attachments_roundtrip
+#   zend-sync, zend-update   lib only (session-sync-regressions)
+#   zend-cli, zend-launch, zend-notify   `zend`'s command line, the engine
+#                  helper's start-up and the zend:// links, shared by the apps
+#   zend-engine   lib + the integration tests named below (plugin_services: the
+#                  plugin host's services, end to end; also on macOS in zgx-tests.yml). Engine has many other
 #                  integration binaries (live agents etc.) that no workflow ran, so
 #                  they are listed instead of globbed to avoid compiling them.
 #   voice (moved from voice-tests.yml offline-linux, which ran them as 14 separate
-#   `cargo test` builds): zeron-voice-media, zeron-voice-session and zeron-orb
-#                  lib, zeron-proto lib `voice` tests, zeron-mcp lib, zeron-rpc
+#   `cargo test` builds): zend-voice-media, zend-voice-session and zend-orb
+#                  lib, zend-proto lib `voice` tests, zend-mcp lib, zend-rpc
 #                  device_room, engine voice_runtime and device_routing. They need no
 #                  audio stack, and harness already depends on all of them.
 # nextest does not run doctests; these crates have none (their doc comments
@@ -39,15 +40,16 @@ for f in crates/harness/tests/*.rs crates/preview/tests/*.rs crates/doc/tests/*.
   [[ "$skip" == *" $name "* ]] || tests+=(--test "$name")
 done
 # `misc` (harness, engine and preview): the small suites, one binary each.
-# The orb geometry tests live in zeron-orb's `geometry`.
-for t in misc geometry session_publication restart_resume side_chats message_queue voice_runtime device_routing device_room; do
+# The orb geometry tests live in zend-orb's `geometry`. `restart_hook`
+# stays a binary of its own: the hook it checks is process-wide.
+for t in misc geometry session_publication restart_resume side_chats message_queue voice_runtime device_routing device_room plugin_services restart_hook; do
   tests+=(--test "$t")
 done
 
 exec cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast \
-  -p zeron-harness -p zeron-engine -p zeron-sync -p zeron-update -p zeron-doc -p zeron-preview \
-  -p zeron-mcp -p zeron-proto -p zeron-rpc -p zeron-orb -p zeron-voice-session -p zeron-voice-media \
-  -p zeron-cli -p zeron-launch -p zeron-notify \
-  --features zeron-harness/native-fixture \
+  -p zend-harness -p zend-engine -p zend-sync -p zend-update -p zend-doc -p zend-preview \
+  -p zend-mcp -p zend-proto -p zend-rpc -p zend-orb -p zend-voice-session -p zend-voice-media \
+  -p zend-cli -p zend-launch -p zend-notify \
+  --features zend-harness/native-fixture \
   --lib --bins "${tests[@]}" \
-  -E 'not ((package(zeron-proto) & not test(voice)) | (package(zeron-rpc) & kind(lib)))' "$@"
+  -E 'not ((package(zend-proto) & not test(voice)) | (package(zend-rpc) & kind(lib)))' "$@"

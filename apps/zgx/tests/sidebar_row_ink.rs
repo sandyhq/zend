@@ -21,7 +21,7 @@ use zgx::theme::{Appearance, ColorToken, tok};
 use zgx_script::{ScriptHost, testing::TestApp};
 
 fn ui_dir() -> PathBuf {
-    std::env::var_os("ZERON_ZGX_TEST_UI")
+    std::env::var_os("ZEND_ZGX_TEST_UI")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"))
 }
@@ -53,15 +53,15 @@ fn scheme(app: &mut TestApp, which: &str) {
     let themes = app.ui.theme().clone();
     match which {
         "System" => {
-            themes.follow_system(Some(("zeron-dark", "zeron-light")));
+            themes.follow_system(Some(("zend-dark", "zend-light")));
             themes.set_system_appearance(Appearance::Dark);
         }
         name => {
             themes.follow_system(None);
             let theme = if name == "Light" {
-                "zeron-light"
+                "zend-light"
             } else {
-                "zeron-dark"
+                "zend-dark"
             };
             themes.set(theme).unwrap();
         }

@@ -65,7 +65,7 @@ fn start(app: &mut TestApp, from: From) {
             app.ui.input.focus(&app.ui.scene, None);
         }
         From::Composer => app.click("#chat-composer >> role:textbox"),
-        From::Row => app.click("#shell-sidebar >> role:button \"Fix the build\""),
+        From::Row => crate::focus_tests::keys_on_row(app, "#shell-sidebar >> role:button \"Fix the build\""),
     }
     app.frames(20);
 }
@@ -104,7 +104,7 @@ enum Close {
     /// ⌘K again: the shell's command shuts it.
     Toggle,
     /// Escape, the scripts having reloaded meanwhile (a save while it's
-    /// open, as other chats save Zeron's files).
+    /// open, as other chats save Zend's files).
     Reloaded,
     /// Escape, the sessions having changed meanwhile (one starts working,
     /// one finishes, one renamed elsewhere), as the engine's do.

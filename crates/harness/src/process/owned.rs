@@ -4,21 +4,28 @@ use std::ops::{Deref, DerefMut};
 use crate::process::{Child as ProcessChild, Command};
 
 /// A private process group, and none of the markers a Claude Code session
-/// leaves in its children's environment. Zeron is often launched from one
+/// leaves in its children's environment. Zend is often launched from one
 /// (or runs inside one, on a Cloud machine): inherited, they make an agent's
 /// own Claude believe it is nested in that session — it reports to its
 /// socket, IDE port and session id, and takes its effort level. The user's
 /// own configuration (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK`/`VERTEX`,
-/// `CLAUDE_CODE_GIT_BASH_PATH`, `ANTHROPIC_*`) is kept. Every Claude Zeron
-/// starts, directly or through an adapter, reports Zeron as its entrypoint.
+/// `CLAUDE_CODE_GIT_BASH_PATH`, `ANTHROPIC_*`) is kept. Every Claude Zend
+/// starts, directly or through an adapter, reports Zend as its entrypoint.
 pub(crate) fn configure(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
     for key in INHERITED_SESSION_MARKERS {
         command.env_remove(key);
     }
-    command.env("CLAUDE_CODE_ENTRYPOINT", "zeron");
+    // The engine's own secrets never reach an agent (the engine drops them
+    // from its environment at start; this holds for embeds too).
+    for key in ENGINE_SECRETS {
+        command.env_remove(key);
+    }
+    command.env("CLAUDE_CODE_ENTRYPOINT", "zend");
 }
+
+const ENGINE_SECRETS: [&str; 3] = ["ZEND_EDGE_TOKEN", "ZEND_EDGE_TOKEN_FILE", "ZEND_IPC_TOKEN"];
 
 const INHERITED_SESSION_MARKERS: [&str; 11] = [
     "CLAUDECODE",
@@ -165,6 +172,10 @@ mod tests {
                 "CLAUDE_CODE_SSE_PORT",
                 "CLAUDE_EFFORT",
                 "CLAUDE_PID",
+                // The engine's secrets: never an agent's.
+                "ZEND_EDGE_TOKEN",
+                "ZEND_EDGE_TOKEN_FILE",
+                "ZEND_IPC_TOKEN",
             ]
         );
         assert_eq!(
@@ -173,7 +184,7 @@ mod tests {
                 .get_envs()
                 .find(|(key, _)| *key == "CLAUDE_CODE_ENTRYPOINT")
                 .and_then(|(_, value)| value),
-            Some(std::ffi::OsStr::new("zeron"))
+            Some(std::ffi::OsStr::new("zend"))
         );
         // The user's own configuration is never touched.
         for kept in [

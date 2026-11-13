@@ -1,7 +1,7 @@
 use super::{Process, normalize::string};
 use crate::HarnessError;
 use serde_json::{Value, json};
-use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel, SlashCommand};
+use zend_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel, SlashCommand};
 
 pub(super) fn levels(data: &Value) -> Vec<ReasoningLevel> {
     data["levels"]
@@ -33,6 +33,7 @@ pub(super) async fn models(process: &mut Process) -> Result<Vec<Model>, HarnessE
             )
             .await?;
         result.push(Model {
+            default: false,
             id: format!("{provider}/{id}"),
             label: model["name"].as_str().unwrap_or(id).into(),
             description: Some(provider.into()),
