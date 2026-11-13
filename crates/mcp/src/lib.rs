@@ -29,7 +29,7 @@ pub use zend::{Origin, Zend};
 /// How `zend mcp` finds the engine and who it speaks for.
 #[derive(Debug, Clone)]
 pub struct McpConfig {
-    /// Loopback IPC port of the engine to proxy (`ZEND_IPC_PORT`, default 27654).
+    /// Loopback IPC port of the engine to proxy (`ZEND_IPC_PORT`, default 27871, zend's own: `zend_cli::DEFAULT_IPC_PORT`).
     pub ipc_port: u16,
     /// The engine's data dir, whose `ipc-token-agent` authenticates the IPC
     /// dial (`ZEND_DATA_DIR`; the `zend` binary fills in its default). The
@@ -50,7 +50,7 @@ impl McpConfig {
         let ipc_port = std::env::var("ZEND_IPC_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(27654);
+            .unwrap_or(27871);
         Self {
             ipc_port,
             data_dir: std::env::var_os("ZEND_DATA_DIR")
