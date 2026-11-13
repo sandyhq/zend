@@ -12344,7 +12344,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         zend_doc::TranscriptUpdate {
-                            frame: zend_doc::TranscriptFrame::reset(&[]),
+                            frame: zend_doc::TranscriptFrame::reset::<zend_doc::SessionMessageEntry>(&[]),
                             context_usage: None,
                             replay_baseline: Some(Default::default()),
                         },

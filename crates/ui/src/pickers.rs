@@ -10927,7 +10927,7 @@ mod tests {
         // Case-insensitive; the length indexes into the NAME's bytes.
         assert_eq!(completion_prefix_len("Documents", "doc"), Some(3));
         assert_eq!(&"Documents"[3..], "uments");
-        assert_eq!(completion_prefix_len("zend", "zend"), Some(5));
+        assert_eq!(completion_prefix_len("zend", "zend"), Some(4));
         assert_eq!(completion_prefix_len("zend", ""), Some(0));
         assert_eq!(completion_prefix_len("zend", "dev"), None);
         // Longer than the name → not a prefix.
