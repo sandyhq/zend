@@ -1,0 +1,515 @@
+# zgx patch to cosmic-text 0.19.0
+
+Vendored from crates.io `cosmic-text` 0.19.0 (MIT OR Apache-2.0, license files
+unchanged) and published as `zgx-cosmic-text`, its library still
+`cosmic_text`, which zgx's crates depend on by path and version
+(`cosmic-text = { package = "zgx-cosmic-text", … }`): they build from
+crates.io with these changes and no `[patch]` section. Changes are marked "zgx patch" or "zgx:" in the source. The
+crate's tests, benchmarks, fonts, samples and scripts are left out, and
+`check/` is new.
+
+## Why
+
+Shaping is the largest share of zgx's CPU while text streams: about 40% of
+the lab workload's streaming frames, a fifth of the heavy dashboard's. Each
+tick reshapes the lines whose text changed. With the shape-run cache most
+words are already shaped, so the cost is in what surrounds the lookups:
+building a cache key per word, and running the Unicode bidi algorithm on every
+line, which allocates its per-byte tables.
+
+## What
+
+1. **One reusable cache key.** `shape_run_cached` built a `ShapeRunKey` (a
+   `String` of the word and copies of its attributes) for every word it
+   looked up. The shape buffer now keeps the last key and refills it; its
+   default attributes are rebuilt only when they differ.
+2. **No bidi analysis for plain ASCII lines.** A line of ASCII without
+   paragraph separators (`\n`, `\r`, U+001C–U+001E) holds no right-to-left
+   or explicit embedding characters, so the bidi algorithm finds one
+   left-to-right paragraph at level 0: one span over the whole line.
+   `ShapeLine::build` builds that span directly. So does `build_mixed` for
+   a line beyond ASCII that `classify` finds nothing right to left, no
+   bidi control and no paragraph separator in, by one look at its bytes
+   (`LineKind::LeftToRight`: accents, `—`, `…`, emoji); the rest takes the
+   upstream path. `classify_finds_every_character_that_needs_the_analysis_or_hints`
+   checks every code point the analysis treats otherwise than a
+   left-to-right paragraph's is caught. ASCII's path is a copy of
+   `build_spans` with no bidi in it at all, so a line beyond ASCII costs it
+   nothing (the gate's lab-scroll, such text, runs 4.5% fewer
+   instructions).
+
+3. **Span attributes by id.** A rich text's line has attribute spans
+   (zgx gives each run of a paragraph its own, with its metrics and
+   metadata). For every word, the shape-run cache's key looked up the spans
+   overlapping it, compared each with the defaults, and cloned it into the
+   key, which the cache then hashed and compared whole. The spans that
+   differ from a line's defaults now get ids from the cache's intern table
+   once a line (`ShapeBuffer::line_spans`). A word's key holds the
+   overlapping spans' ranges and ids, so it is equal to another exactly when
+   the attributes are. The intern table only grows (`trim` never prunes it,
+   as it never pruned the defaults): one entry for each distinct set of
+   attributes. zgx's span metadata is the run's index in its paragraph, so
+   that is about the longest paragraph's run count times the styles it uses.
+4. **Ids from the cache they were given by.** A renderer at rest replaces
+   its shape-run cache, and the new cache numbers attributes from 0 again.
+   The key kept for reuse still held the old cache's id for its defaults,
+   so a word shaped next under the same defaults went into the new cache
+   under an id the new table could then give other attributes, and their
+   words were served its glyphs (a bold label drawn regular). Each cache
+   now has a generation of its own (a clone too: its table diverges), and
+   a key from another's re-interns its defaults (zgx-gpu's
+   `tests/word_cache.rs`).
+
+## Checked
+
+`check/` lays out 4,000 random lines (ASCII with every control and
+separator, a quarter mixed with accents, CJK, Hebrew, Arabic, emoji and bidi
+controls) at four widths and wrap modes with this crate and with upstream,
+and requires identical glyphs, positions, levels and lines to upstream
+shaping every run afresh (without its word cache, so the patched cache is
+checked never to change what is drawn):
+
+    cargo run --release --manifest-path vendor/cosmic-text/check/Cargo.toml
+    cargo run --release --manifest-path vendor/cosmic-text/check/Cargo.toml -- bench
+    cargo run --release --manifest-path vendor/cosmic-text/check/Cargo.toml -- bench mono
+    cargo run --release --manifest-path vendor/cosmic-text/check/Cargo.toml -- kept
+
+The faces this crate chooses for Chinese where upstream doesn't, on purpose
+("PingFang on macOS 26": PingFang through the platform, then Heiti SC or TC,
+where upstream takes Arial Unicode MS), are left out of both font systems, so
+both take the same face and the comparison stays exact; text in those faces
+is checked in zgx-gpu (`chinese_text_on_macos_draws`).
+
+A layout is counted apart where upstream shaped a glyph of infinite or no
+advance and this crate shaped none (`advances_finite!`): upstream divides
+by a face's zero units per em, macOS's GB18030Bitmap, which this crate
+passes by ("A font without units per em is no font", below). Upstream's
+layout then shows `inf` or `NaN`, or loses the visual line such a glyph is
+in. Rich text 120, a line of ASCII and controls with a tab, is that last
+case: upstream shapes its `\x08` and `\x00` (in a monospace span) with
+GB18030Bitmap, their advance infinite and the tab stop after them `NaN`,
+and its word wrap drops the visual line holding bytes 0 to 17; this crate
+shapes them with another face and draws the line, one more than upstream.
+With GB18030Bitmap removed from upstream's fonts, every layout is identical
+and none is counted apart. `kept` lays the texts out only with this crate,
+monospaced and with an installed monospace face, with fonts kept against
+nothing kept ("A run's first font is kept", below).
+
+15,076 layouts are identical, and so are 8,451 of the same texts in up to
+four spans of different weight, family, metadata and size, cut at random
+places (`set_rich_text`); 3,582 differ only by GB18030Bitmap, as above
+(12,033 identical without it); on 968 (lines mixing paragraph directions)
+both versions panic, as upstream documents. 11,307 monospaced layouts are
+identical with fonts kept and with none. Reshaping a
+streaming transcript's last seven 105-byte lines takes 40.2 µs a tick instead
+of 48.7 µs (M5 Max), and zgx's headless lab stream lays out in 0.047 ms a
+tick instead of 0.061 ms.
+
+## Axis ranges from the font file
+
+A font file can give a variation axis a minimum above its maximum, and neither
+skrifa nor swash checks: upstream's weight clamp in `swash.rs` called
+`f32::clamp` on that range and panicked, so one malformed installed or
+registered font ended the process the first time its glyphs were drawn. It
+goes through `clamp_to_axis` (`src/lib.rs`), which never panics, as
+`read-fonts` guards its own. `variation_axis_tests` in zgx-gpu's
+`src/text.rs` shapes and draws a font with its `wght` or `opsz` axis
+reversed.
+
+## Font matching without reopening font files
+
+Each new family, weight and style asked for (`get_font_matches`) scored every
+installed face, and for every face of another weight mapped its file to see
+whether a `wght` axis spans the weight asked for: about 800 faces and 4 ms
+per new style on macOS, at startup and again the first time an app shows,
+say, bold or monospace. The axis range is now read once per face and kept
+(`src/font/system.rs`, "zgx patch"). `FontSystem::new_with_db`,
+`weight_axis` and `set_weight_axis` let zgx-gpu load the system's faces and
+their axes from a cache instead of opening their files (`font_cache.rs`).
+
+## The word cache sweeps every eighth shaping frame
+
+`ShapeRunCache::trim` visited every cached word on every call, and zgx
+calls it on each frame that shapes text: a dashboard changing a few values
+a frame swept a table of thousands each time, and zgx dropped the whole
+table every 512 texts shaped to bound its size, after which every word was
+shaped again. The sweep now runs every `TRIM_PERIOD` (8) ages, a word
+lives `keep_ages` to `keep_ages + 8` ages unused, and a table left more
+than twice as large as what it holds is shrunk, so zgx no longer
+drops it (`len` and `is_empty` report its size). zgx-gpu's
+`tests/word_cache.rs` checks it stays the size of what is shown.
+
+A run's key now holds its direction (`ShapeRunKey::rtl`): upstream keyed a
+word by its text and attributes alone, so a word shaped right to left (in
+a bidi line) could be served for the same text left to right. Kept longer,
+words made that reachable, and `check/` caught it on a mixed line; with the
+direction in the key, how long a word is kept cannot change what is drawn. This is
+an upstream bug (0.19.0's `ShapeRunKey` has no direction), worth fixing
+there; the one-field change is all it needs.
+
+## Tab stops only in lines with tabs
+
+`ShapeLine::build` sliced every glyph's text to see whether it was a tab
+before laying out tab stops. It now looks only in a line that has a tab
+(one byte search); `check/` finds every layout identical.
+
+## A cached word is looked up without comparing attributes
+
+Every word shaped looked its run up in the shape run cache, and each
+lookup compared the line's default attributes with the reused key's (a
+whole `Attrs`, a family name among them), queried the attribute spans
+even when there were none, and on a hit compared the key's attributes
+again, whole; a miss cloned them, family string included. Now the cache
+gives each set of default attributes an id (`ShapeRunCache::intern`) that
+keys compare and hash, keeping the attributes behind an `Arc`; a line's
+words check its defaults once (`ShapeBuffer::run_key_line`); and an empty
+span map is not queried. `check/` finds every layout identical.
+
+## Attributes are borrowed, not copied out
+
+`AttrsList::get_span` built the default `Attrs` (a copy of every field, the
+font-feature list cloned) for every lookup, even one a span answered, and
+shaping called it for each glyph. It now builds them only when no span
+holds the index. Without spans, `shape_fallback` takes a run's attributes
+once rather than for each glyph, `ShapeWord::build` has no spans to compare,
+and the word cache key and decoration check borrow the defaults
+(`AttrsList::defaults_owned`). An ASCII run skips the per-character script
+lookup: ASCII is all Common or Latin, which the lookup skipped anyway.
+`check/` finds every layout identical.
+
+## A visual line's display order goes into a kept list
+
+`ShapeLine::reorder` returned a new list of ranges for every visual line
+laid out, the usual all-left-to-right line included. It now fills a list
+kept in the `ShapeBuffer`. `check/` finds every layout identical.
+
+## No font at all shapes to nothing
+
+With no font installed, or none fontconfig finds (a minimal system, a
+container), `shape_run` and `shape_skip` panicked (`no default font found`)
+for every run of text, every frame: zgx contained the panics, and its window
+drew nothing at all. A run with no font now shapes to no glyphs, so
+everything but the text draws, and the first such run says once on stderr
+why the text does not show. `font_cache`'s
+`text_shapes_to_nothing_with_no_font_installed` and the Linux `no-fonts`
+probe check it.
+
+## A run's first font is kept for its attributes
+
+Every run shaped without the word cache (a new value: a dashboard's figure)
+looked its attributes' font matches up by an owned key (`get_font_matches`)
+and walked them to its family's face again (`FontFallbackIter::next`). For a
+family other than monospace, which looks at each word's characters, that face
+depends only on the attributes, so `FontSystem::first_font` keeps it with the
+matches for the last eight attribute sets runs shaped with (a font without an
+optical size axis matching at any size, as `get_font_at` instances it once).
+`shape_run` starts its fallback search past the face it knows. Both are
+forgotten when the font matches are (`db_mut`, or the cache's limit).
+`shape_run` is out of line, so the word cache's path through `Shaping::run`
+keeps its code. zgx-gpu's `first_font` test shapes texts in turn under
+changing families, weights, sizes and scripts, with characters only another
+font has, to the same glyphs from the same fonts as each alone.
+
+A family with no face of its own is kept too. Its search goes on to its
+fallbacks, by the run's scripts, and looks at no word's characters, so what it
+finds is kept for runs of the same scripts, with where it stopped, in a list
+of its own (`first_fallback`): a family with a face pays nothing for it. A plain
+`SansSerif` on macOS comes here: each new word walked all 819 font matches
+comparing family names, a quarter of mounting a 40 KB document.
+`check/`'s `kept` mode covers the default family too: 11,307 layouts are
+identical on macOS, kept against nothing kept, with mixed scripts and languages
+changing as it goes.
+
+Monospace is kept too. With a face of its own, its search gives that face
+first whatever the word, but as it does it weighs every fixed-width face
+against the word's characters, for the faces it gives next. That cost was
+paid for every new word: each line a terminal printed scanned every
+installed face (a quarter of an engine-drawn terminal's CPU while output
+streamed on macOS, more with Windows' fonts). A kept monospace face is now
+used at once, and the search takes its first step only when a character is
+missing from it (`shape_run`'s `searched`), leaving it where a search from
+scratch would be. A face is kept only when it is the family's own
+(`FontFallbackIter::is_default_face`): without one, the search gives the
+fixed-width face with most of the word's characters, which depends on the
+word. The `first_font` test adds monospaced runs whose characters only a
+second fixed-width face or a proportional one has; `check/`'s `kept` mode
+(below) lays its texts out monospaced, whole and in spans, with an installed
+monospace face, kept against nothing kept: 11,307 layouts are identical on
+macOS (Menlo). Shaping a terminal's tick of 24 new lines (`-- bench mono`)
+takes 32 µs instead of 135 µs, and 1,100 µs upstream.
+
+`FontSystem::query_face` finds a family's face at a weight and style once,
+forgotten with the font matches (`db_mut`): zgx-gpu asks it for each
+fallback family of a text whenever the text is laid out anew, and a
+`fontdb` query reads every installed face's names.
+
+`ShapeRunCache::clear` empties the word cache at once. `trim` sweeps only
+every `TRIM_PERIOD` ages (above), so it cannot drop runs shaped with a font
+that was just replaced; zgx-gpu's `FontData::replace_in` clears it, and its
+`font_replace` test checks a replaced font measures and draws as a fresh one.
+
+## A font without units per em is no font
+
+macOS has a bitmap-only face, GB18030Bitmap, with no `head` table: its units
+per em read as 0, so every advance it gave divided by zero. Monospaced text
+fell back to it for CJK (it is marked monospaced), and the line took
+infinite width: nothing after the first CJK character showed, and the
+text's box broke its layout. `Font::new_at` now gives no font for a face
+without units per em, so fallback passes it by (to Arial Unicode MS, or
+PingFang). zgx-gpu's `cjk_in_monospaced_text_takes_finite_room` checks it.
+
+## Words break with a hyphen
+
+Text whose features carry `FontFeatures::HYPHENS` (`_hyp`, a tag outside
+OpenType's two tag spaces, so no font has it) breaks words at the points
+`FontSystem::set_hyphenator`'s function gives, a hyphen (U+2010, or `-`)
+ending the line, and after a soft hyphen (U+00AD), as CSS's
+`hyphens: auto`. Nothing is kept per line: `BufferLine::layout` works out
+a line's points and shapes the hyphen for the layout that needs it,
+into the font system's `ShapeBuffer`, which `layout_to_buffer` takes
+(`ShapeLine::hyphenate`). Text without the tag, and every process that
+never sets it (`note_hyphens`), pays one test.
+
+## Emoji presentation takes a color font
+
+A cluster asking for emoji presentation (U+FE0F after it, or a keycap's
+U+20E3) is missing from a font without color glyphs (`Font::is_color`:
+`COLR`, `CBDT` or `sbix`, read when asked), so fallback reaches the emoji
+font, as browsers do: Windows' Segoe UI has `1` and the keycap mark, and
+drew 1️⃣ in black. Found as a run's scripts are (`run_scripts`), in text
+beyond ASCII; with no emoji font installed, the text glyphs stay.
+
+## A line's kana or hangul say its Han characters' language
+
+Han characters took the fallback font of the system's language, so on an
+English system a Japanese line's kanji came from another font than its kana
+(Arial Unicode MS beside Hiragino Sans on macOS). A line beyond ASCII with
+kana (or hangul) is built again (`build_hinted`) with `FontFeatures::HAN`
+(`_han`, 1 Japanese, 2 Korean, no font's) on its attributes: its Han
+characters take Hiragana's (or Hangul's) fallback list, and the shape-run
+cache, keyed by attributes, keeps its runs apart from a Chinese line's
+without a change to its key. zgx-gpu's
+`kanji_in_a_japanese_line_come_from_its_kana_font_whatever_the_system_language`
+checks both, a Chinese line before and after.
+
+An app's language comes first (`FontSystem::set_language`, from zgx's
+`ui.i18n` locale): set to Chinese, Japanese or Korean, it decides every
+line's Han and the kana hint stands down. Setting it rebuilds the fallback
+lists and clears the shape-run cache, whose glyphs carry the old lists'
+faces. The lists name Han's languages `ja`, `ko`, `zh-HK`, `zh-TW` and
+`zh-CN` (`han_unification`), which a system locale such as `ja-JP` never
+matched, so upstream gave a Japanese system Chinese Han; `han_locale`
+maps any locale onto them.
+
+A text's own language (zgx's `lang`, HTML's; zgx-cosmic-text 0.19.8) comes before both: zgx sets
+`_han` on its attributes (1 or 2, 4 simplified Chinese, 5 traditional, 6
+Hong Kong's, 3 another language), and the hint and the app's language
+fill only the spans that say nothing (`hinted`). Chinese has no script of
+its own to look its fonts up by, so `Fallbacks` keeps the three Chinese
+lists beside the locale's (`chinese`, built with the others), and
+`run_scripts`, as it finds a run's Han, notes their language in the shape
+buffer (`ShapeBuffer::han`), which the search reads for Han's fallbacks: a
+Chinese quote in a Japanese app gets a Chinese face whatever the locale.
+ASCII runs pass as before, and the search looks only when it reaches Han's
+fallbacks.
+
+## PingFang on macOS 26
+
+macOS 26 keeps PingFang (its simplified, traditional and Hong Kong Chinese
+faces) in `FontServices.framework`'s `Reserved` directory, where Core Text
+finds it, and not in the font directories `load_system_fonts` reads. The
+fallback lists named only PingFang, so Chinese Han drew in Arial Unicode MS
+whatever the Chinese. `load_pingfang` loads that file after the system's
+fonts if no PingFang face is loaded (another macOS has it in
+`/System/Library/Fonts`), and the lists name Heiti SC or TC after PingFang
+in case the file moves. zgx-gpu's
+`chinese_text_on_macos_takes_the_systems_chinese_face_in_each_chinese`
+checks both.
+
+## Faces with nothing to draw
+
+A face whose glyphs have no outlines, bitmaps or color layers swash can draw
+(no `glyf`, `CFF `, `CFF2`, `sbix`, `CBDT`, `EBDT` or `COLR`) gives no
+`Font` (`Font::new_at` returns `None`, as it does for a face without units
+per em), so fallback takes the next face that covers its text. macOS 26.4's
+`PingFangUI.ttc`, the file `load_pingfang` loads, keeps its shapes only in
+Apple's `hvgl` table: from 22fb994f7 to zgx 0.1.7 every Chinese character
+shaped in it and drew blank. Now Heiti SC or TC, which the lists name after
+PingFang, draws Chinese there. The check is once a face, as it loads.
+zgx-gpu's `undrawable_fonts` test strips a font's `glyf` and checks its text
+falls to the next face; `chinese_text_on_macos_draws` checks Chinese lights
+pixels.
+
+On macOS an `hvgl` face is a font, flagged `needs_platform_outlines`: zgx-gpu
+draws its glyphs through Core Text (`core_text_glyphs`) where swash gives
+none, at the weight they were shaped at (PingFang is one variable face,
+Medium by default). There Chinese draws in PingFang itself again; elsewhere
+`hvgl` faces are passed by as above.
+
+## A paragraph's words for a layout outside a line (zgx-cosmic-text 0.19.8)
+
+zgx-gpu lays out a paragraph that this crate shapes as one left-to-right span
+from its words, kept and shared between texts, without a `BufferLine`, a
+`ShapeLine` or `layout_to_buffer` (zgx-gpu's `prepared_words.rs`). What it
+needs of this crate, all additions:
+
+- `plain_words(line, word)`: the line's words and blanks as
+  `ShapeSpan::build` finds them (the same `unicode_linebreak` breaks and
+  blank split), or false for a line `build` treats otherwise: a tab, a soft
+  hyphen, a line `classify` finds may need the bidi analysis or a language
+  hint, a break between two ASCII punctuation marks (the ligature probe).
+  It is `plain_line` (the bytes alone, one pass stopping at the first that
+  disqualifies, as most text that doesn't qualify is turned away: a line
+  break) then `line_words`.
+- `ShapeWord::plain(font_system, word, attrs_list, blank)`: a word shaped
+  alone, as the shape-run cache already shapes runs. It resets
+  `shape_buffer.run_key_line` first, as `build_spans` does: the run key keeps
+  the last attribute list's address, and a list since freed or moved could
+  share it, its attributes another's (a run shaped at another size).
+- `ShapeGlyph::laid`: `layout` for a left-to-right glyph placed outside.
+- `line_han(font_system, line)`: the language a line's kana or hangul say
+  its Han characters are in, as `build_hinted` takes it, for text measured
+  apart from its line: zgx-gpu's min-content copy of a line (a word to a
+  line, a word of kanji alone) takes it as `FontFeatures::HAN`.
+- `LayoutRunIter::from_paragraph(text, layout, height_opt, line_height)`: the
+  runs of such a paragraph's `LayoutLine`s, as `from_lines` gives a buffer
+  line's (`next` shares their walk, `next_in`).
+
+zgx-gpu's `plain_text_from_its_words_lays_out_as_its_line` and
+`rich_paragraphs_from_their_words_lay_out_as_their_line` check that its
+glyphs, runs and sizes are this crate's, bit for bit, at every width.
+
+## A sweep without the trim's period (zgx-cosmic-text 0.19.8)
+
+`ShapeRunCache::sweep(keep)`: the words not looked up in the last `keep`
+sweeps go, at once and without shrinking the table, for a host with no
+renderer to trim the cache as it draws (zgx-gpu's `TextServices`, through
+its text cache once the cache has grown past what the last sweep left).
+`trim` sweeps only every `TRIM_PERIOD` ages and shrinks the table after,
+which rehashed every word a sweep kept.
+
+## A family's nearest face for a weight it lacks (zgx-cosmic-text 0.19.10)
+
+`default_font_match_key` took a run's own family only where it has a face
+of exactly the weight asked for (or a variable face spanning it). Most
+installed families have Regular and Bold alone, so Medium (500) text in one
+drew in another family: the first in the platform's fallback list that has
+a Medium (Noto Sans on Linux). Failing an exact weight, it now takes the
+face fontdb's query picks for the family (CSS font matching: 500 takes 400
+first). `get_font_matches` puts that face first among the match keys and
+marks it (`FontMatchKey::query`, in the key's padding: keys stay 20
+bytes), so it is the first key or none. Where fontdb found none (the family
+isn't installed) nothing more is looked at. A face that can't be drawn
+(`Font::new_at` gives none: a bitmap-only face, or an `hvgl` one off macOS)
+is passed to the script fallbacks, as an exact-weight face is, so Chinese
+falls through to its fonts as before. zgx-gpu's
+`a_family_without_the_weight_asked_for_draws_in_its_nearest` checks it,
+under each platform's first fallback family's name.
+
+## An ASCII run's script read from its bytes (zgx-cosmic-text 0.19.11)
+
+`shape_fallback` asked harfrust to guess each run's segment properties,
+which looks up every character's script until it finds one that isn't
+Common, Inherited or Unknown. For an ASCII run the answer is known from its
+bytes: Latin if it has a letter, none otherwise (every other ASCII character
+is Common). The direction is set before, and the guess sets no language.
+`guess_script` sets that script, and still guesses any other run. A
+dashboard's changing values (digits, a unit) were most of what the heavy
+dashboard shapes each frame: its flush is 0.78% shorter. Its test checks all
+128 ASCII characters and mixed runs against the guess.
+
+## A run on a grid of cells (zgx-cosmic-text 0.19.12)
+
+`Attrs::cell_grid` (in EM, as tracking is; kept in `padding_opt` as a
+NaN's payload, `LetterSpacing::grid`, which no padding is, so `Attrs` is
+no bigger and copies, compares and hashes as before, and only a run with
+padding reads it: a field of its own made every attribute copy, comparison
+and hash dearer, +0.31% in zgx's mount-text gate cell, and decoding it from
+`letter_spacing_opt` masked every glyph's tracking, +0.25% in lab-stream):
+each cluster
+of a run takes exactly its characters' cells, their widths as
+unicode-width tells them (as a terminal places them), its glyphs moved
+together to sit centred in them (`snap_to_cells`, after shaping and the
+fallback fonts, beside the span padding pass). A fallback font's glyph a
+little wider or narrower than the grid's then moves nothing after it: in
+macOS's monospaced font, braille falls back to a font 1.14 cells wide, so
+a spinner (⠋ Loading) pushed every character after it off the grid. Unlike
+`Buffer::set_monospace_width`, which rounds each glyph's advance, a cluster
+of several characters (a conjunct) takes their cells, and a glyph is
+centred, not left at its cell's start. zgx-terminal draws its runs on the
+grid; zgx-gpu's `a_run_on_a_grid_takes_its_cells_whichever_font_draws_it`
+checks braille, a letterlike symbol, Thai, a combining accent and plain
+letters with the platform's fonts. The padding pass skips a grid, and a NaN
+compares and hashes by its bits, so grids of other cells are other keys. The crate depends on `unicode-width`.
+
+## Shaping's scratch at rest (zgx-cosmic-text 0.19.13)
+
+`FontSystem::rest` gives back `ShapeBuffer`'s buffers. They hold what the longest
+text shaped since left there, kept for reuse: a visual line's lists, one per line
+of that text, for as long as the app runs. zgx-gpu calls it as a window goes idle.
+
+## Inline boxes (zgx-cosmic-text 0.19.14)
+
+A span can be an atomic inline box (CSS's inline-block): `Attrs::inline_box`
+makes it one, its text one U+FFFC per box: an `InlineBox` of a width, a
+height, its baseline below its top, and an `InlineAlign` (CSS's
+`vertical-align`: baseline, middle, text-top, text-bottom, top, bottom, or
+raised). A box lives in its span: marked in `padding_opt` as a negative NaN
+(`LetterSpacing::INLINE_BOX`; the cell grid is a positive one), its size and
+alignment in its features as private tags (`_ibw` and the like, as `_hyp`),
+which no font is given, a box's span being never shaped. So `Attrs` is no
+bigger, and neither is `AttrsList` nor `BufferLine`, which plain text builds
+for every line (`boxes_make_no_list_or_line_bigger`: a 16-byte list on
+`AttrsList` made every prepared text's frame bigger). A line holding a box
+says so (`BufferLine::set_inline_boxes`, or `Buffer::find_inline_boxes` for a
+buffer's lines, after its text is set): a bool in the line's padding, which
+setting its text or attributes again clears and a split works out again.
+
+A box is never shaped. Its character is a word of its own (U+FFFC's line
+break class is CB: a line breaks before and after it), and a word holding one
+goes apart (`build_boxed`, behind a test of its line's flag, which
+`BufferLine::shape` passes in `ShapeBuffer::boxes`, on the complex path, which
+ASCII never takes): its runs split at each box, whose characters
+become glyphs of their own (`box_glyphs`), as wide as the box, drawing nothing
+(their font's space, or no font at all where it has none: an icon font's
+`.notdef` shows), flagged `CacheKeyFlags::INLINE_BOX` (and
+`INLINE_LINE_TOP` or `INLINE_LINE_BOTTOM`), never in the shape-run cache. A box
+takes its own character alone, so marks after it are text. Its
+`ascent` and `descent` are how far the box reaches above and below the
+baseline, from the run font's ascent, descent and x-height (half an em where
+its OS/2 table has none, as CSS takes it), and its `x_offset` the run font's
+strut.
+
+A line holding a box takes CSS's line box (`ShapeLine::inline_line_box`, cold,
+for a line said to hold boxes and which holds one): as far above the
+baseline as any run reaches (its ascent and half its leading), any box, or a
+box's strut, and as far below; then boxes at the line's top or bottom, a
+taller one growing the line down (or up). It is written as the line's
+`max_ascent`, `max_descent` and `line_height_opt`, so `layout_runs` places the
+line as it places any (no glyph centring left over), and each box glyph's
+`y_offset` says how far its top is above the baseline, for the host to place
+what it holds. Every other line is laid out as before: the check is one bool a
+line (`ShapeLine::boxes`). `inline_box_tests` check a box's room, a tall box
+growing only its line, breaking around a box, each alignment, a box kept in
+its span, a split line keeping its boxes, and a line said to hold boxes but
+holding none laid out exactly as one that isn't.
+
+## A kana run's Han in a Chinese face; the last stage once a character
+
+A Han run beside kana is taken for Japanese, and Japanese faces lack
+simplified forms (车, 见 in "明天在车站见面吧" after a Japanese sentence).
+Hiragana's, Katakana's and Hangul's lists name no Chinese face and nor does
+the common list, so the search went to its last stage, every face in turn,
+and drew them in the first that had them: Arial Unicode MS on macOS. On an
+iOS simulator, where PingFang is loaded last, that stage loaded some 400
+faces, 14 ms on a paragraph's first layout. A kana or Hangul run now tries
+the Chinese list after its own (its run's Chinese where `han` says one,
+simplified otherwise), as Core Text's cascade does.
+
+That last stage loads each face it looks at, so it now runs once a
+character: `FontSystem::scanned` keeps the first face it found holding each
+character it was asked for, or none, and a word whose characters it has all
+looked for takes those faces (in their order) without looking again. It is
+forgotten when the database can change (`db_mut`). `FontSystem::full_scans`
+counts the stage's runs. zgx-gpu's `simplified_han_after_kana_takes_a_chinese_face`
+and `every_face_is_looked_at_once_a_character` check both.
