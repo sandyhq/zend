@@ -36,13 +36,15 @@ model, read transcripts, and send messages between chats.\n\
 \n\
 Chats are referenced by full id, a unique id prefix, or an exact title. Use \
 `whoami` to learn which chat you are speaking from; messages you send are \
-attributed to it and a chat cannot message itself. For request/response \
-with a single chat, `send_message` with `wait: true` returns its reply. \
+attributed to it and a chat cannot message itself. \
 For parallel delegation, use `create_chats` with a prompt for each chat or \
 `send_messages` for existing chats. These batch tools launch requests concurrently \
-even if your harness executes tool calls sequentially. Alternatively, launch ALL \
-chats/messages with `wait: false` first, then use `wait_for_turn` to collect replies. \
-Do not wait for one worker before launching the next independent worker. \
+even if your harness executes tool calls sequentially. \
+After launching children, end your turn. You will receive a [Zend event: …] message \
+when each settles (completed, errored, interrupted, or waiting for input), with its last \
+reply or its question; children settling together arrive in one message. Do not call \
+`wait_for_turn`, sleep or poll. Pass `notify_parent: false` for a child you don't need \
+to hear from. \
 A chat you create from your chat is your subagent by default (`kind: subagent`): \
 it lists under your chat's Subagents and in its transcript's subagent block. Use \
 `kind: side` only for a side conversation the person should treat as their own, \

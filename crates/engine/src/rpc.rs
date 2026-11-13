@@ -162,6 +162,10 @@ struct QueueCommandParams {
     /// durably queued — never as a gate in front of it.
     #[serde(default)]
     transfers: Vec<crate::uploads::AttachmentTransfer>,
+    /// The sender blocks on the turn this command starts until then (epoch
+    /// millis; Zend MCP's `wait: true`): its settling tells no parent.
+    #[serde(default)]
+    awaited_until_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +199,10 @@ struct QueueMessageParams {
     /// chat's row waits until they're in the edge's store.
     #[serde(default)]
     transfers: Vec<crate::uploads::AttachmentTransfer>,
+    /// As [`QueueCommandParams::awaited_until_ms`], for the turn this row
+    /// starts when it's sent (it keeps its id).
+    #[serde(default)]
+    awaited_until_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -744,6 +752,11 @@ enum MutateParams {
         /// unknown kind reads as none (a side chat).
         #[serde(default, deserialize_with = "zend_proto::lenient_child_kind")]
         child_kind: Option<zend_proto::ChildKind>,
+        /// Whether its settled turns are told to its parent (Zend MCP's
+        /// `notify_parent`; `child_events`). Unsaid: on for a subagent,
+        /// off for a side chat. Kept beside its transcript.
+        #[serde(default)]
+        notify_parent: Option<bool>,
         /// Run on Cloud (the checkout picker's Cloud): the chat gets its own
         /// Cloud machine, cloning the project's GitHub repository.
         #[serde(default)]
@@ -1237,6 +1250,15 @@ impl EngineRpc {
             })
             .collect();
         RpcReply::value(&refs)
+    }
+
+    /// Keep what the creator said of `chat_id`'s parent hearing its turns
+    /// (`child_events`). Best effort: the chat is made either way.
+    fn keep_notify_parent(&self, chat_id: &str, notify: Option<bool>) {
+        let Some(notify) = notify else { return };
+        if let Err(error) = self.doc_host.set_notify_parent(chat_id, notify) {
+            tracing::warn!(chat = %chat_id, %error, "keeping notifyParent failed");
+        }
     }
 
     /// Where a chat runs when it runs on Cloud: its own new session machine
@@ -1978,6 +2000,7 @@ impl EngineRpc {
                 cwd,
                 parent_chat_id,
                 child_kind,
+                notify_parent,
                 cloud: _,
             } => {
                 // A voice orchestrator is hidden, so the chats it creates are
@@ -2001,6 +2024,7 @@ impl EngineRpc {
                         .set_chat_branch(&chat_id, branch)
                         .map_err(failed)?;
                 }
+                self.keep_notify_parent(&chat_id, notify_parent);
                 Ok(())
             }
             MutateParams::CreateSpace {
@@ -3439,6 +3463,17 @@ impl RpcService for EngineRpc {
             }
             methods::QUEUE_COMMAND => {
                 let p: QueueCommandParams = parse_params(params)?;
+                let message_id = match &p.command {
+                    SessionCommandPayload::Run { message_id, .. } => Some(message_id.as_str()),
+                    SessionCommandPayload::Steer { message_id, .. } => message_id.as_deref(),
+                    _ => None,
+                };
+                // Before it's queued: an instant turn may settle before this returns.
+                if let (Some(until), Some(id)) = (p.awaited_until_ms, message_id)
+                    && let Err(error) = self.doc_host.mark_awaited(&p.chat_id, id, until)
+                {
+                    tracing::warn!(chat = %p.chat_id, %error, "marking an awaited send failed");
+                }
                 let command_id = self
                     .doc_host
                     .queue_command_with_transfers(&p.chat_id, p.command, p.transfers)
@@ -3748,6 +3783,11 @@ impl RpcService for EngineRpc {
                         p.transfers,
                     )
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                if let Some(until) = p.awaited_until_ms
+                    && let Err(error) = self.doc_host.mark_awaited(&p.chat_id, &id, until)
+                {
+                    tracing::warn!(chat = %p.chat_id, %error, "marking an awaited send failed");
+                }
                 RpcReply::value(&serde_json::json!({ "id": id }))
             }
             methods::UPDATE_QUEUED_MESSAGE => {
@@ -4238,6 +4278,7 @@ impl RpcService for EngineRpc {
                     cwd,
                     parent_chat_id,
                     child_kind,
+                    notify_parent,
                     cloud,
                 } = &p
                     && let Some(host) = Box::pin(self.cloud_chat_host(
@@ -4251,6 +4292,7 @@ impl RpcService for EngineRpc {
                     .await?
                 {
                     if host.row_written {
+                        self.keep_notify_parent(chat_id, *notify_parent);
                         return RpcReply::value(&serde_json::json!({
                             "ok": true, "deviceId": host.device_id, "cwd": host.cwd,
                         }));
@@ -4276,6 +4318,7 @@ impl RpcService for EngineRpc {
                             .set_chat_branch(chat_id, branch)
                             .map_err(failed)?;
                     }
+                    self.keep_notify_parent(chat_id, *notify_parent);
                     return RpcReply::value(&serde_json::json!({
                         "ok": true, "deviceId": host.device_id, "cwd": cwd,
                     }));

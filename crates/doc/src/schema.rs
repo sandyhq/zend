@@ -25,6 +25,8 @@ use crate::parts::{MessagePart, MessageStatus, SubagentStatus};
 
 /// The plugins' sends a chat keeps a record of (`SessionDoc::sent_by`).
 pub const SENT_BY_KEPT: usize = 200;
+/// How many [`SessionDoc::awaited_sends`] a chat keeps (the newest).
+pub const AWAITED_KEPT: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DocError {
@@ -773,6 +775,57 @@ impl SessionDoc {
         self.doc
             .get_map("meta")
             .insert("sentBy", serde_json::to_string(&all)?.as_str())?;
+        self.commit();
+        Ok(())
+    }
+
+    /// Whether this chat, a child, tells its parent each time a turn of it
+    /// settles (a `[Zend event: …]` message, docs/mcp.md "Child events").
+    /// `None`: never said, so its kind decides (a subagent tells, a side
+    /// chat doesn't). Synced with the chat, so its host reads what the device
+    /// that created it wrote.
+    pub fn notify_parent(&self) -> Option<bool> {
+        match self.doc.get_map("meta").get("notifyParent") {
+            Some(loro::ValueOrContainer::Value(LoroValue::Bool(notify))) => Some(notify),
+            _ => None,
+        }
+    }
+
+    pub fn set_notify_parent(&self, notify: bool) -> Result<(), DocError> {
+        if self.notify_parent() != Some(notify) {
+            self.doc.get_map("meta").insert("notifyParent", notify)?;
+            self.commit();
+        }
+        Ok(())
+    }
+
+    /// Sends whose sender blocks until the turn they start settles (Zend
+    /// MCP's `wait: true`), by message id: until when (epoch millis) it
+    /// waits. That sender gets the reply itself, so the turn's settling is
+    /// not told to the parent again. The newest [`AWAITED_KEPT`]; one atomic
+    /// value so a synced reader never sees half a record.
+    pub fn awaited_sends(&self) -> BTreeMap<String, i64> {
+        let Some(loro::ValueOrContainer::Value(LoroValue::String(value))) =
+            self.doc.get_map("meta").get("awaitedSends")
+        else {
+            return BTreeMap::new();
+        };
+        serde_json::from_str(&value).unwrap_or_default()
+    }
+
+    pub fn mark_awaited(&self, id: &str, until_ms: i64) -> Result<(), DocError> {
+        let mut all = self.awaited_sends();
+        all.insert(id.to_owned(), until_ms);
+        while all.len() > AWAITED_KEPT {
+            let oldest = all.iter().min_by_key(|(_, until)| **until).map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => all.remove(&k),
+                None => break,
+            };
+        }
+        self.doc
+            .get_map("meta")
+            .insert("awaitedSends", serde_json::to_string(&all)?.as_str())?;
         self.commit();
         Ok(())
     }
@@ -2650,6 +2703,26 @@ mod tests {
         let all = doc.sent_by();
         assert_eq!(all.len(), SENT_BY_KEPT);
         assert!(!all.contains_key("m1") && all.contains_key(&format!("n{}", SENT_BY_KEPT + 4)));
+    }
+
+    #[test]
+    fn a_childs_notify_flag_and_awaited_sends_are_kept_beside_the_transcript() {
+        let doc = SessionDoc::init("child").unwrap();
+        assert_eq!(doc.notify_parent(), None, "unsaid: the kind decides");
+        doc.set_notify_parent(false).unwrap();
+        assert_eq!(doc.notify_parent(), Some(false));
+        doc.set_notify_parent(true).unwrap();
+        assert_eq!(doc.notify_parent(), Some(true));
+        assert!(doc.awaited_sends().is_empty());
+        doc.mark_awaited("m1", 5).unwrap();
+        assert_eq!(doc.awaited_sends().get("m1"), Some(&5));
+        for i in 0..(AWAITED_KEPT + 3) {
+            doc.mark_awaited(&format!("n{i}"), 10 + i as i64).unwrap();
+        }
+        let all = doc.awaited_sends();
+        assert_eq!(all.len(), AWAITED_KEPT);
+        assert!(!all.contains_key("m1"), "the oldest goes first");
+        assert!(doc.read_entries().unwrap().is_empty(), "no entry of its own");
     }
 
     #[test]

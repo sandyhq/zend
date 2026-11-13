@@ -95,6 +95,47 @@ require `parent_chat_id == None`. Children remain addressable by id, deep
 link, and every MCP tool; `list_chats { parent }` is how an orchestrator
 finds them.
 
+### Child events
+
+Agents never wait or poll for a child: the engine tells the parent.
+**After launching children, end your turn. You will receive a `[Zend event: …]`
+message when each settles. Do not call `wait_for_turn`, sleep or poll.**
+
+When a chat with `parentChatId` settles a turn (completed, errored,
+interrupted, or waiting for input), the engine hosting it
+(`crates/engine/src/child_events.rs`, watching its own `watch_sessions`)
+puts one line into the parent:
+
+```text
+[Zend event: chat <title> (<id8>) <completed|errored|was interrupted|is waiting for input>. <Last reply: first ~600 chars | It asks: <question> [options] (request <id>; answer with respond_to_input).> Read more: read_chat <id>.]
+```
+
+It goes in the way `send_message` mode `auto` does: a working parent is
+steered through its live mailbox, a parent at rest starts a turn with it, and a
+parent waiting on the person gets it held for that turn's end (`QueueMessage
+holdForTurnEnd`). It is a durable chat command (`QueueCommand`), so it is
+never lost and never blocks the child. The line is Zend's, not an agent's: it
+has no `[Message from Zend chat …]` header and no reply instructions.
+
+Children of one parent that settle within 2 s of the first are told in one
+message, one line each (a window fixed from the first line, not reset by later
+ones). No agent-visible timer is involved. No event is sent when:
+
+- the parent sent that turn with `wait: true` (`create_chat`/`send_message`):
+  the MCP passes `awaitedUntilMs` with its `QueueCommand`/`QueueMessage`,
+  the engine records the message id in the child's doc meta
+  (`SessionDoc::awaited_sends`), and the first settle of that turn is skipped,
+  since the waiter has the reply;
+- the child is archived, or the parent is archived or gone;
+- the turn was started by an event line (no loops);
+- the child's `notify_parent` is off.
+
+`notify_parent` is a `create_chat`/`create_chats` argument (`Mutate
+createChat { notifyParent? }`), kept in the child's doc meta
+(`SessionDoc::notify_parent`). When it is not set, it is on for `kind: subagent`
+and off for `side` and `chat`. `wait_for_turn` and `wait: true` still work, but
+both are discouraged.
+
 ### Injection
 
 The host engine stamps this server onto every run it drives
@@ -167,7 +208,7 @@ name (default: the local engine's device).
 | `send_messages`    | Concurrent `send_message` requests with per-request results |
 | `read_chat`        | `WatchDocMessages` opening `reset` frame, rendered        |
 | `send_message`     | `QueueCommand` Run / Steer, or `QueueMessage`             |
-| `wait_for_turn`    | `WatchSessions` until the chat settles                    |
+| `wait_for_turn`    | `WatchSessions` until the chat settles (discouraged: see "Child events") |
 | `interrupt_chat`   | `QueueCommand` Interrupt                                  |
 | `respond_to_input` | `QueueCommand` RespondInput                               |
 | `archive_chat`     | `Mutate setChatArchived`                                  |
@@ -425,10 +466,9 @@ or `error`. A failed request does not cancel or roll back successful requests.
 Each request defaults to `wait: false`; explicit waits also run concurrently.
 Only batch independent work, not ordered messages to the same chat.
 
-When using individual tools, launch **all** chats/messages with `wait: false`
-first, then collect replies with `wait_for_turn`. Waiting on each individual
-launch before issuing the next serializes work at the caller, even though
-both the MCP transport and engine support concurrent chat runs.
+After launching, end your turn: each child's settled turn arrives as a
+`[Zend event: …]` message ("Child events"). Do not collect replies with
+`wait_for_turn` or by polling `get_chat`/`read_chat`.
 
 ## Smoke recipe
 

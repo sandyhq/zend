@@ -4259,6 +4259,20 @@ impl DocHost {
         Ok(())
     }
 
+    /// Message `id` of `chat_id` is awaited by its sender until `until_ms`
+    /// (`SessionDoc::awaited_sends`): the turn it starts tells no parent.
+    pub(crate) fn mark_awaited(&self, chat_id: &str, id: &str, until_ms: i64) -> Result<(), EngineError> {
+        self.open(chat_id)?.doc.mark_awaited(id, until_ms)?;
+        Ok(())
+    }
+
+    /// Whether `chat_id`'s settled turns are told to its parent
+    /// (`SessionDoc::notify_parent`; unsaid: on for a subagent).
+    pub(crate) fn set_notify_parent(&self, chat_id: &str, notify: bool) -> Result<(), EngineError> {
+        self.open(chat_id)?.doc.set_notify_parent(notify)?;
+        Ok(())
+    }
+
     pub fn queue_command_with_transfers(
         &self,
         chat_id: &str,

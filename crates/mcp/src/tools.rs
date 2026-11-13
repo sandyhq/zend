@@ -133,7 +133,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a child of your chat to delegate work to (kind subagent, the default when you speak from a chat or pass parent: listed under that chat's Subagents and in its transcript's subagent block), a side chat (kind side: only when the person should treat it as a side conversation of their own), or a standalone session (kind chat, no parent). Any connected provider works (see list_harnesses), whichever provider you run on. Delegation is one level deep: a chat that has a parent cannot create chats. With cloud, the chat runs on a Cloud machine of its own (Codex or Claude Code), from a Cloud chat or a project with a GitHub repository. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt and wait for the reply. For parallel delegation use create_chats, or launch with wait=false and wait only after all chats have started.",
+            description: "Create a child of your chat to delegate work to (kind subagent, the default when you speak from a chat or pass parent: listed under that chat's Subagents and in its transcript's subagent block), a side chat (kind side: only when the person should treat it as a side conversation of their own), or a standalone session (kind chat, no parent). Any connected provider works (see list_harnesses), whichever provider you run on. Delegation is one level deep: a chat that has a parent cannot create chats. With cloud, the chat runs on a Cloud machine of its own (Codex or Claude Code), from a Cloud chat or a project with a GitHub repository. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt, then end your turn: when the child's turn settles, Zend sends you a [Zend event: …] message with its outcome and last reply (notify_parent). For parallel delegation use create_chats.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -152,7 +152,8 @@ fn catalog() -> Vec<ToolDef> {
                     "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
                     "cloud": { "type": "boolean", "default": false, "description": "Run on a Cloud machine of its own (cloning the project's GitHub repository) instead of the project's device. From a Cloud chat, the child clones the same repository; without cloud it shares this machine." },
                     "prompt": { "type": "string", "description": "First message to send right away." },
-                    "wait": { "type": "boolean", "default": false, "description": "With prompt: block until the first turn finishes and return the reply." },
+                    "notify_parent": { "type": "boolean", "description": "Send the parent a [Zend event: …] message each time this chat settles a turn (completed, errored, interrupted, or waiting for input). Default true for kind subagent, false for side and chat." },
+                    "wait": { "type": "boolean", "default": false, "description": "Discouraged: end your turn and take the [Zend event: …] message instead. With prompt: block until the first turn finishes and return the reply (that turn then sends no event)." },
                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
                 }
             }),
@@ -169,7 +170,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "send_message",
-            description: "Send a message to a chat. Messages are attributed to your chat. mode 'auto' starts a turn when the chat is idle, steers a running turn through its live mailbox (at the next supported input boundary without interrupting the agent). Use mode 'queue' only to explicitly hold a message for later. With wait=true, blocks until the turn finishes and returns the assistant's reply. For parallel work use send_messages, or send to all chats with wait=false before waiting.",
+            description: "Send a message to a chat. Messages are attributed to your chat. mode 'auto' starts a turn when the chat is idle, steers a running turn through its live mailbox (at the next supported input boundary without interrupting the agent). Use mode 'queue' only to explicitly hold a message for later. To a child of yours, end your turn after sending: Zend sends you a [Zend event: …] message when its turn settles. wait=true (discouraged) blocks until the turn finishes and returns the assistant's reply instead of that event. For parallel work use send_messages.",
             input_schema: chat_key_schema(json!({
                 "text": { "type": "string" },
                 "mode": { "type": "string", "enum": ["auto", "run", "steer", "queue"], "default": "auto" },
@@ -179,7 +180,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_turn",
-            description: "Wait for completed, awaitingInput, interrupted, errored, or timedOut. Native pendingInput can be answered with respond_to_input; terminalActivity input must be handled in its terminal. Stale/offline activity is not completion. Returns assistant replies when available.",
+            description: "Discouraged: after launching children, end your turn; Zend sends you a [Zend event: …] message when each settles. Do not wait, sleep or poll. Waits for completed, awaitingInput, interrupted, errored, or timedOut. Native pendingInput can be answered with respond_to_input; terminalActivity input must be handled in its terminal. Stale/offline activity is not completion. Returns assistant replies when available.",
             input_schema: chat_key_schema(json!({
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
             })),
@@ -219,12 +220,12 @@ fn catalog() -> Vec<ToolDef> {
         (
             "create_chats",
             "create_chat",
-            "Create multiple chats concurrently: subagents of your chat by default, or side/standalone chats (kind per request, as create_chat). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false. Results preserve request order and include per-request errors; successful requests are not rolled back.",
+            "Create multiple chats concurrently: subagents of your chat by default, or side/standalone chats (kind per request, as create_chat). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false: end your turn after launching, and each child's settled turn reaches you as a [Zend event: …] message. Results preserve request order and include per-request errors; successful requests are not rolled back.",
         ),
         (
             "send_messages",
             "send_message",
-            "Send messages to multiple independent chats concurrently. Prefer this to delegate parallel work to existing chats. Each request has send_message arguments; wait defaults to false. If wait=true, requests still run concurrently. Results preserve request order and include per-request errors; successful sends are not rolled back. Do not include dependent messages to the same chat.",
+            "Send messages to multiple independent chats concurrently. Prefer this to delegate parallel work to existing chats. Each request has send_message arguments; wait defaults to false: end your turn after sending, and your children's settled turns reach you as [Zend event: …] messages. Results preserve request order and include per-request errors; successful sends are not rolled back. Do not include dependent messages to the same chat.",
         ),
     ] {
         let item_schema = tools
@@ -679,6 +680,7 @@ struct CreateChatArgs {
     #[serde(default)]
     cloud: bool,
     prompt: Option<String>,
+    notify_parent: Option<bool>,
     #[serde(default)]
     wait: bool,
     timeout_secs: Option<u64>,
@@ -739,6 +741,15 @@ fn wait_duration(secs: Option<u64>) -> Duration {
     secs.map(Duration::from_secs)
         .unwrap_or(DEFAULT_WAIT)
         .min(MAX_WAIT)
+}
+
+/// Until when (epoch millis) a `wait: true` send awaits its turn: that turn
+/// then sends its parent no [Zend event: …] (the waiter has the reply). A
+/// minute past the wait's own deadline, for a turn that ends as it times out.
+fn awaited_until(timeout_secs: Option<u64>) -> i64 {
+    let wait = chrono::Duration::from_std(wait_duration(timeout_secs) + Duration::from_secs(60))
+        .unwrap_or_else(|_| chrono::Duration::hours(1));
+    (chrono::Utc::now() + wait).timestamp_millis()
 }
 
 #[cfg(test)]
@@ -1301,6 +1312,9 @@ impl Tools {
                 ChatKind::Side => zend_proto::ChildKind::Side,
                 _ => zend_proto::ChildKind::Subagent,
             });
+            if let Some(notify) = args.notify_parent {
+                mutate["notifyParent"] = json!(notify);
+            }
         }
         if let Some(branch) = args
             .branch
@@ -1418,7 +1432,15 @@ impl Tools {
                 sleep: None,
             };
             let delivered = self
-                .deliver(&chat, space.as_ref(), &harnesses, None, prompt, "run")
+                .deliver(
+                    &chat,
+                    space.as_ref(),
+                    &harnesses,
+                    None,
+                    prompt,
+                    "run",
+                    args.wait.then(|| awaited_until(args.timeout_secs)),
+                )
                 .await?;
             result["sent"] = delivered.receipt;
             let pending = Arc::new(PendingTurn {
@@ -1507,7 +1529,15 @@ impl Tools {
             "title": chat.title,
         });
         let delivered = self
-            .deliver(&chat, space, &harnesses, baseline.as_ref(), body, mode)
+            .deliver(
+                &chat,
+                space,
+                &harnesses,
+                baseline.as_ref(),
+                body,
+                mode,
+                args.wait.then(|| awaited_until(args.timeout_secs)),
+            )
             .await?;
         result["sent"] = delivered.receipt;
         let pending = Arc::new(PendingTurn {
@@ -1737,6 +1767,7 @@ impl Tools {
         session: Option<&Session>,
         text: String,
         mode: &str,
+        awaited_until_ms: Option<i64>,
     ) -> anyhow::Result<Delivered> {
         let harness = chat
             .config
@@ -1794,12 +1825,13 @@ impl Tools {
                 };
                 let id = self
                     .zend
-                    .queue_command(
+                    .queue_command_awaited(
                         &chat.id,
                         &SessionCommandPayload::Run {
                             request,
                             message_id: new_message_id.clone(),
                         },
+                        awaited_until_ms,
                     )
                     .await?;
                 (id, new_message_id)
@@ -1807,19 +1839,23 @@ impl Tools {
             "steer" => {
                 let id = self
                     .zend
-                    .queue_command(
+                    .queue_command_awaited(
                         &chat.id,
                         &SessionCommandPayload::Steer {
                             prompt: text,
                             message_id: Some(new_message_id.clone()),
                         },
+                        awaited_until_ms,
                     )
                     .await?;
                 (id, new_message_id)
             }
             // A held message keeps its row's id when it's sent.
             _ => {
-                let id = self.zend.queue_message(&chat.id, &text).await?;
+                let id = self
+                    .zend
+                    .queue_message(&chat.id, &text, awaited_until_ms)
+                    .await?;
                 (id.clone(), id)
             }
         };
@@ -2551,6 +2587,7 @@ mod tests {
                 Some(&session),
                 "follow up".into(),
                 "auto",
+                None,
             )
             .await
             .unwrap();

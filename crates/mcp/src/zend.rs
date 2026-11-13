@@ -498,13 +498,24 @@ impl Zend {
         chat_id: &str,
         payload: &SessionCommandPayload,
     ) -> anyhow::Result<String> {
+        self.queue_command_awaited(chat_id, payload, None).await
+    }
+
+    /// [`Self::queue_command`], saying the caller blocks on the turn it
+    /// starts until `awaited_until_ms` (`wait: true`), so the engine sends
+    /// the chat's parent no event for it.
+    pub async fn queue_command_awaited(
+        &self,
+        chat_id: &str,
+        payload: &SessionCommandPayload,
+        awaited_until_ms: Option<i64>,
+    ) -> anyhow::Result<String> {
         let command = serde_json::to_value(payload).context("serialize command")?;
-        let reply = self
-            .call(
-                methods::QUEUE_COMMAND,
-                json!({ "chatId": chat_id, "command": command }),
-            )
-            .await?;
+        let mut params = json!({ "chatId": chat_id, "command": command });
+        if let Some(until) = awaited_until_ms {
+            params["awaitedUntilMs"] = json!(until);
+        }
+        let reply = self.call(methods::QUEUE_COMMAND, params).await?;
         Ok(reply
             .get("commandId")
             .and_then(Value::as_str)
@@ -514,13 +525,17 @@ impl Zend {
 
     /// Queue-row send for a busy chat whose harness cannot steer mid-turn:
     /// the host promotes it when the live turn ends.
-    pub async fn queue_message(&self, chat_id: &str, text: &str) -> anyhow::Result<String> {
-        let reply = self
-            .call(
-                methods::QUEUE_MESSAGE,
-                json!({ "chatId": chat_id, "text": text, "holdForTurnEnd": true }),
-            )
-            .await?;
+    pub async fn queue_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+        awaited_until_ms: Option<i64>,
+    ) -> anyhow::Result<String> {
+        let mut params = json!({ "chatId": chat_id, "text": text, "holdForTurnEnd": true });
+        if let Some(until) = awaited_until_ms {
+            params["awaitedUntilMs"] = json!(until);
+        }
+        let reply = self.call(methods::QUEUE_MESSAGE, params).await?;
         Ok(reply
             .get("id")
             .and_then(Value::as_str)

@@ -39,6 +39,7 @@ pub mod auth;
 mod change_request_store;
 pub mod change_requests;
 mod chat2_checkpoint;
+pub mod child_events;
 pub mod chat2_host;
 mod chat_persistence;
 mod cloud_accounts;
@@ -209,6 +210,8 @@ pub struct EngineCore {
     updater: std::sync::Mutex<Option<zend_update::Updater>>,
     /// The updater's token-change wake forwarder — owned so shutdown can end it.
     updater_wake: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Tells parents of their children's settled turns ([`child_events`]).
+    child_events: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Cloud runner only: credential broker + heartbeat (dropped on shutdown).
     cloud: std::sync::Mutex<Option<runner::CloudRunner>>,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
@@ -477,6 +480,8 @@ impl EngineCore {
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         plugins.start();
+        let child_events =
+            child_events::spawn(sessions.clone(), doc_host.clone(), workspace.clone());
         Ok(Self {
             sessions,
             doc_host,
@@ -502,6 +507,7 @@ impl EngineCore {
             links: std::sync::Mutex::new(None),
             updater: std::sync::Mutex::new(None),
             updater_wake: std::sync::Mutex::new(None),
+            child_events: std::sync::Mutex::new(Some(child_events)),
             cloud: std::sync::Mutex::new(None),
             viewport_focus,
             _instance_lock: lock,
@@ -722,6 +728,16 @@ impl EngineCore {
     }
 
     pub async fn shutdown(&self) {
+        // Before any run ends: a shutdown's interrupts aren't news to a parent.
+        let child_events = self
+            .child_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = child_events {
+            task.abort();
+            let _ = task.await;
+        }
         // Stop the runner heartbeat + credential refresher first.
         self.cloud
             .lock()
