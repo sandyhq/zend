@@ -747,14 +747,14 @@ enum MutateParams {
         /// on the row as `parentChatId` for orchestration trees.
         #[serde(default)]
         parent_chat_id: Option<String>,
-        /// What the child is to its parent (`childKind`: `side` | `subagent`,
-        /// the Zend MCP's `kind`): kept on the row only with a parent. An
+        /// What the child is to its parent (`childKind`: `side` | `subagent` |
+        /// `session`, the Zend MCP's `kind`): kept on the row only with a parent. An
         /// unknown kind reads as none (a side chat).
         #[serde(default, deserialize_with = "zend_proto::lenient_child_kind")]
         child_kind: Option<zend_proto::ChildKind>,
         /// Whether its settled turns are told to its parent (Zend MCP's
-        /// `notify_parent`; `child_events`). Unsaid: on for a subagent,
-        /// off for a side chat. Kept beside its transcript.
+        /// `notify_parent`; `child_events`). Unsaid: on for a subagent or
+        /// child session, off for a side chat. Kept beside its transcript.
         #[serde(default)]
         notify_parent: Option<bool>,
         /// Run on Cloud (the checkout picker's Cloud): the chat gets its own
@@ -2071,11 +2071,13 @@ impl EngineRpc {
                     .map(|chat| chat.id.clone())
                     .collect();
                 // Their children on Cloud with no project of their own (side
-                // chats on a deleted machine, delegates) go with them.
+                // chats on a deleted machine, delegates) go with them. Child
+                // sessions stay, detached by `RegistryDoc::delete_space`.
                 let orphans: Vec<String> = chats
                     .iter()
                     .filter(|chat| {
                         chat.space_id.is_none()
+                            && chat.child_kind != Some(zend_proto::ChildKind::Session)
                             && zend_proto::is_cloud_device(&chat.device_id, "")
                             && chat
                                 .parent_chat_id
@@ -2283,7 +2285,8 @@ impl EngineRpc {
 /// The chats that go when `root` is deleted, each with whether it is on
 /// Cloud: its children on computers (subagents, side chats) and theirs in
 /// turn, plus — when the parent is itself on Cloud — its children on Cloud.
-/// (A computer's chat keeps its Cloud delegates, as before.)
+/// (A computer's chat keeps its Cloud delegates, as before.) Child sessions
+/// never go: deleting their parent detaches them.
 fn chat_descendants(
     chats: &[zend_proto::Chat],
     root: &str,
@@ -2294,7 +2297,9 @@ fn chat_descendants(
     let mut frontier: Vec<(&str, bool)> = vec![(root, root_on_cloud)];
     while let Some((parent, parent_on_cloud)) = frontier.pop() {
         for chat in chats {
-            if chat.parent_chat_id.as_deref() != Some(parent) {
+            if chat.parent_chat_id.as_deref() != Some(parent)
+                || chat.child_kind == Some(zend_proto::ChildKind::Session)
+            {
                 continue;
             }
             let on_cloud = zend_proto::is_cloud_device(&chat.device_id, "");
@@ -3568,6 +3573,12 @@ impl RpcService for EngineRpc {
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
                 chat.parent_chat_id = Some(parent_chat_id);
+                // A fork is a side chat, a child session's too: kept as a
+                // session it would never hand its copied history to its
+                // provider (`fork_history_prompt`).
+                if chat.child_kind == Some(zend_proto::ChildKind::Session) {
+                    chat.child_kind = Some(zend_proto::ChildKind::Side);
+                }
                 chat.title = None; // First side-chat turn receives its own generated title.
                 chat.archived = false;
                 chat.created_at = chrono::Utc::now();
@@ -5986,6 +5997,7 @@ mod tests {
         for (chat, parent, kind, expected) in [
             ("sub", Some("main"), Some("subagent"), Some(ChildKind::Subagent)),
             ("side", Some("main"), Some("side"), Some(ChildKind::Side)),
+            ("session", Some("main"), Some("session"), Some(ChildKind::Session)),
             // A person's side chat names none; a newer peer's kind reads as none.
             ("plain-side", Some("main"), None, None),
             ("future", Some("main"), Some("orbit"), None),

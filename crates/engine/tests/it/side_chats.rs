@@ -651,6 +651,59 @@ async fn native_commands_and_empty_side_chats_skip_the_history_wrapper() {
     core.shutdown().await;
 }
 
+/// A child session is a chat of its own: nothing of its parent's is copied,
+/// and its doc is never replayed as owed fork history. Control: a side chat
+/// with the same entries is.
+#[tokio::test]
+async fn a_child_session_inherits_no_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    let here = core.device_id.clone();
+    for (id, kind) in [
+        ("main", None),
+        ("worker", Some(zend_proto::ChildKind::Session)),
+        ("aside", Some(zend_proto::ChildKind::Side)),
+    ] {
+        core.workspace
+            .create_chat_hosted(
+                id,
+                None,
+                Some(&here),
+                Some(&here),
+                None,
+                Some("/tmp".into()),
+                kind.map(|_| "main".to_owned()),
+                kind,
+            )
+            .unwrap();
+    }
+    let main = core.doc_host.open("main").unwrap();
+    main.doc()
+        .push_message(&message("m1", MessageRole::User, "Remember PINEAPPLE", MessageStatus::Complete))
+        .unwrap();
+    assert!(core.doc_host.open("worker").unwrap().doc().read_entries().unwrap().is_empty());
+    // The same earlier turns in each, then a fresh provider session.
+    for chat in ["worker", "aside"] {
+        let doc = core.doc_host.open(chat).unwrap();
+        for (id, role, text) in [
+            ("u1", MessageRole::User, "Remember MANGO"),
+            ("a1", MessageRole::Assistant, "I remember MANGO"),
+        ] {
+            doc.doc()
+                .push_message(&message(id, role, text, MessageStatus::Complete))
+                .unwrap();
+        }
+    }
+    let request = side_turn(&core, &requests, "aside", "What should I remember?", "s1").await;
+    assert!(request.prompt.contains("MANGO"), "{}", request.prompt);
+    let request = side_turn(&core, &requests, "worker", "What should I remember?", "w1").await;
+    assert_eq!(request.prompt, "What should I remember?");
+    core.shutdown().await;
+}
+
 /// A provider runtime that stays alive between turns: later sends arrive
 /// through the steering mailbox (the engine's warm dispatch), not new runs.
 /// Each record: (prompt, resumed session, arrived through the mailbox).
@@ -1148,4 +1201,25 @@ async fn a_side_chat_keeps_its_subagent_tools_when_native_subagents_are_off() {
         ]
     );
     core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_child_session_s_fork_is_a_side_chat_and_gets_its_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    core.workspace.create_chat_hosted("worker", None, Some(&core.device_id), Some(&core.device_id),
+        None, Some("/tmp".into()), Some("main".into()), Some(zend_proto::ChildKind::Session)).unwrap();
+    let source = core.doc_host.open("worker").unwrap();
+    source.doc().push_message(&message("u1", MessageRole::User, "Remember PINEAPPLE", MessageStatus::Complete)).unwrap();
+    source.doc().push_message(&message("a1", MessageRole::Assistant, "I remember PINEAPPLE", MessageStatus::Complete)).unwrap();
+    let client = zend_rpc::memory_client(core.rpc_service());
+    let fork: zend_proto::Chat = client.call_as(methods::FORK_SIDE_CHAT,
+        serde_json::json!({"chatId":"fork-of-session", "sourceChatId":"worker", "parentChatId":"main"})).await.unwrap();
+    let request = side_turn(&core, &requests, "fork-of-session", "What should I remember?", "f1").await;
+    eprintln!("fork kind={:?}, top_level={}, provider prompt={:?}", fork.child_kind, fork.is_top_level(), request.prompt);
+    core.shutdown().await;
+    assert!(request.prompt.contains("PINEAPPLE"), "a side-chat fork must deliver its copied history");
 }

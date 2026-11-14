@@ -256,5 +256,13 @@ mod tests {
         assert!(chat.is_top_level());
         chat.parent_chat_id = Some("parent".into());
         assert!(!chat.is_top_level());
+        // A child session is a chat of its own; a subagent is not.
+        chat.child_kind = Some(crate::ChildKind::Session);
+        assert!(chat.is_top_level());
+        chat.child_kind = Some(crate::ChildKind::Subagent);
+        assert!(!chat.is_top_level());
+        chat.id = format!("{ORCHESTRATOR_CHAT_PREFIX}2");
+        chat.child_kind = Some(crate::ChildKind::Session);
+        assert!(!chat.is_top_level());
     }
 }

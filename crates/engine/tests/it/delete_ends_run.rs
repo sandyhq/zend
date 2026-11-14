@@ -379,3 +379,84 @@ async fn deleting_a_parent_deletes_its_local_children_and_ends_their_runs() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(alive(stranger) && rig.core.sessions.has_run("stranger"), "and keeps its run");
 }
+
+/// A child session is a chat of its own: deleting its parent detaches it
+/// (top-level now, its run kept) while the parent's subagent still goes.
+#[tokio::test]
+async fn deleting_a_parent_detaches_its_child_sessions() {
+    let rig = rig();
+    create_chat(&rig.core, "worker", Some((CHAT, ChildKind::Session)));
+    create_chat(&rig.core, "subagent", Some((CHAT, ChildKind::Subagent)));
+    let parent = start(&rig, "parent work", SessionStatus::Idle).await;
+    let worker = start_in(&rig, "worker", "worker work", SessionStatus::Idle).await;
+    delete_chat(&rig).await;
+    assert_ended_in(&rig, CHAT, parent).await;
+    assert!(rig.core.workspace.chat("subagent").unwrap().is_none(), "the subagent still goes");
+    let kept = rig.core.workspace.chat("worker").unwrap().expect("the child session stays");
+    assert_eq!(kept.parent_chat_id, None);
+    assert_eq!(kept.child_kind, None);
+    assert!(kept.is_top_level());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(alive(worker) && rig.core.sessions.has_run("worker"), "and keeps its run");
+}
+
+/// Deleting a project (deleteSpace) deletes its chats, a child session among
+/// them too. A child session of theirs outside it stays, detached, even a
+/// Cloud one with no project, while their Cloud side chats still go.
+#[tokio::test]
+async fn deleting_a_project_detaches_child_sessions_outside_it() {
+    let rig = rig();
+    let here = rig.core.workspace.device_id().to_string();
+    rig.core.workspace.create_space("gone", &here, "/tmp/gone", None, false).unwrap();
+    let mut parent = rig.core.workspace.chat(CHAT).unwrap().unwrap();
+    parent.id = "cloud-parent".into();
+    parent.space_id = Some("gone".into());
+    parent.device_id = format!("{}parent", zend_proto::CLOUD_DEVICE_PREFIX);
+    rig.core.workspace.import_chat_row(&parent).unwrap();
+    for (id, kind, space) in [
+        ("cloud-worker", ChildKind::Session, None),
+        ("cloud-side", ChildKind::Side, None),
+        ("inside", ChildKind::Session, Some("gone")),
+    ] {
+        let mut child = parent.clone();
+        child.id = id.into();
+        child.device_id = format!("{}{id}", zend_proto::CLOUD_DEVICE_PREFIX);
+        child.space_id = space.map(str::to_owned);
+        child.parent_chat_id = Some("cloud-parent".into());
+        child.child_kind = Some(kind);
+        rig.core.workspace.import_chat_row(&child).unwrap();
+    }
+    let client = memory_client(rig.core.rpc_service());
+    let _: serde_json::Value = client
+        .call_as(
+            methods::MUTATE,
+            serde_json::json!({ "op": "deleteSpace", "spaceId": "gone" }),
+        )
+        .await
+        .unwrap();
+    for gone in ["cloud-parent", "cloud-side", "inside"] {
+        assert!(rig.core.workspace.chat(gone).unwrap().is_none(), "{gone} goes");
+    }
+    let kept = rig.core.workspace.chat("cloud-worker").unwrap().expect("the child session stays");
+    assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+}
+
+/// Archiving a parent leaves its child sessions open and still its children.
+#[tokio::test]
+async fn archiving_a_parent_leaves_its_child_sessions_open() {
+    let rig = rig();
+    create_chat(&rig.core, "worker", Some((CHAT, ChildKind::Session)));
+    let client = memory_client(rig.core.rpc_service());
+    let _: serde_json::Value = client
+        .call_as(
+            methods::MUTATE,
+            serde_json::json!({ "op": "setChatArchived", "chatId": CHAT, "archived": true }),
+        )
+        .await
+        .unwrap();
+    assert!(rig.core.workspace.chat(CHAT).unwrap().unwrap().archived);
+    let worker = rig.core.workspace.chat("worker").unwrap().unwrap();
+    assert!(!worker.archived);
+    assert_eq!(worker.parent_chat_id.as_deref(), Some(CHAT));
+    assert_eq!(worker.child_kind, Some(ChildKind::Session));
+}

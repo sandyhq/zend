@@ -1887,6 +1887,35 @@ fn a_child_kind_syncs_and_survives_updates_and_restart() {
     );
 }
 
+#[test]
+fn a_child_session_syncs_and_detaches_everywhere() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    let mut worker = chat("worker", "dev-a");
+    worker.parent_chat_id = Some("main".into());
+    worker.child_kind = Some(zend_proto::ChildKind::Session);
+    a.upsert_chat(&worker).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(b.chat("worker").unwrap(), Some(worker.clone()));
+    let restored = RegistryDoc::from_bytes(&a.to_bytes().unwrap(), "dev-a").unwrap();
+    assert_eq!(
+        restored.chat("worker").unwrap().unwrap().child_kind,
+        Some(zend_proto::ChildKind::Session)
+    );
+    // Its parent deleted: top-level on both devices, the rest kept.
+    a.rename_chat("worker", "Build the thing").unwrap();
+    assert!(a.detach_chat("worker").unwrap());
+    assert!(!a.detach_chat("nobody").unwrap());
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        let row = doc.chat("worker").unwrap().unwrap();
+        assert_eq!((row.parent_chat_id, row.child_kind), (None, None));
+        assert_eq!(row.title.as_deref(), Some("Build the thing"));
+    }
+}
+
 // ── bounded pending: local-only folding and tail coalescing ─────────────────
 
 /// Deterministic xorshift — random op shapes without a rand dependency.
@@ -3224,4 +3253,100 @@ fn a_broken_delta_chain_keeps_its_pending_writes() {
     assert!(!clean);
     let ids: Vec<String> = loaded.read_chats().unwrap().into_iter().map(|c| c.id).collect();
     assert_eq!(ids, ["after", "kept"], "the pending write after the break was lost");
+}
+
+#[test]
+fn a_detach_wins_over_a_link_written_by_a_device_whose_clock_runs_ahead() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    b.upsert_chat(&chat("main", "dev-b")).unwrap();
+    a.clock.next(Utc::now().timestamp_millis() + 60_000, "dev-a");
+    let mut worker = chat("worker", "dev-a");
+    worker.parent_chat_id = Some("main".into());
+    worker.child_kind = Some(zend_proto::ChildKind::Session);
+    a.upsert_chat(&worker).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    b.delete_chat("main").unwrap();
+    assert!(b.detach_chat("worker").unwrap());
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert!(a.chat("main").unwrap().is_none(), "parent was deleted");
+    let kept = a.chat("worker").unwrap().unwrap();
+    eprintln!("after remote detach (creator clock +60s): parent={:?}, childKind={:?}", kept.parent_chat_id, kept.child_kind);
+    assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+}
+
+#[test]
+fn deleting_a_project_detaches_child_sessions_elsewhere_and_deletes_those_inside() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    a.upsert_space(&space("gone", "dev-a", "/tmp/gone")).unwrap();
+    a.upsert_space(&space("kept", "dev-b", "/tmp/kept")).unwrap();
+    let mut parent = chat("parent", "dev-a");
+    parent.parent_chat_id = None;
+    parent.space_id = Some("gone".into());
+    a.upsert_chat(&parent).unwrap();
+    let mut worker = chat("worker", "dev-b");
+    worker.parent_chat_id = Some("parent".into());
+    worker.child_kind = Some(zend_proto::ChildKind::Session);
+    worker.space_id = Some("kept".into());
+    a.upsert_chat(&worker).unwrap();
+    let mut same_space = worker.clone();
+    same_space.id = "same-space".into();
+    same_space.space_id = Some("gone".into());
+    a.upsert_chat(&same_space).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    a.delete_space("gone").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        assert!(doc.chat("parent").unwrap().is_none());
+        assert!(doc.chat("same-space").unwrap().is_none());
+        assert!(doc.space("kept").unwrap().is_some());
+        let kept = doc.chat("worker").unwrap().unwrap();
+        eprintln!("after parent project deletion: parent={:?}, childKind={:?}, space={:?}",
+            kept.parent_chat_id, kept.child_kind, kept.space_id);
+        assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+    }
+}
+
+#[test]
+fn observing_a_clock_keeps_the_hlc_monotonic_at_counter_rollover() {
+    let mut clock = HlcClock::default();
+    let remote = encode_hlc(Utc::now().timestamp_millis() + 60_000, 999_999, "z");
+    clock.observe(&remote);
+    let next = clock.next(Utc::now().timestamp_millis(), "a");
+    assert!(next > remote);
+    clock.observe(&hlc(1));
+    clock.observe("invalid");
+    let later = clock.next(Utc::now().timestamp_millis(), "a");
+    assert!(later > next);
+}
+#[test]
+fn a_detach_keeps_a_concurrent_title_edit() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    let mut parent = chat("parent", "dev-a");
+    parent.parent_chat_id = None;
+    a.upsert_chat(&parent).unwrap();
+    let mut worker = chat("worker", "dev-b");
+    worker.parent_chat_id = Some("parent".into());
+    worker.child_kind = Some(zend_proto::ChildKind::Session);
+    a.upsert_chat(&worker).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    a.delete_chat("parent").unwrap();
+    // A later millisecond: b's clock doesn't observe a's, so a rename in the
+    // same millisecond as a's writes would lose to them, detach or not.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    b.rename_chat("worker", "A concurrent title").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        let kept = doc.chat("worker").unwrap().unwrap();
+        assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+        assert_eq!(kept.title.as_deref(), Some("A concurrent title"));
+    }
 }

@@ -319,6 +319,25 @@ async fn notify_parent_false_tells_no_one() {
     rig.core.shutdown().await;
 }
 
+/// A child session tells its parent as a subagent does, unsaid; a side chat,
+/// unsaid, does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_session_tells_its_parent_by_default() {
+    let rig = Rig::new().await;
+    for (id, kind) in [("worker", "session"), ("aside", "side")] {
+        let extra = serde_json::json!({ "parentChatId": "parent", "childKind": kind });
+        rig.chat(id, &format!("/tmp/{id}"), extra).await;
+        rig.send(id, &format!("{id} work"));
+    }
+    rig.until("the child session's event", |r| !r.events().is_empty()).await;
+    rig.until("the side chat's run", |r| !r.runs_in("/tmp/aside").is_empty()).await;
+    rig.quiet().await;
+    let events = rig.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(events[0].contains("(worker) completed."), "{}", events[0]);
+    rig.core.shutdown().await;
+}
+
 /// A child that asks tells its parent the question and the request to answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_child_awaiting_input_tells_its_parent_the_question() {

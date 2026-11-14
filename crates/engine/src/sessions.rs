@@ -3259,7 +3259,8 @@ impl Inner {
     /// it, or `None` when it lacks nothing. Two kinds of chat owe their
     /// provider session a history: a side chat (its transcript was copied
     /// from the parent) and a chat that switched provider (the earlier turns
-    /// ran on another harness). A fresh session gets the whole transcript
+    /// ran on another harness). A child session owes none: it inherits no
+    /// transcript. A fresh session gets the whole transcript
     /// (`current` excluded). A continued one that a switched chat recorded
     /// gets only what came after the last entry it saw: its own turns are
     /// already in its native history, and the catch-up rides after them so
@@ -3279,7 +3280,10 @@ impl Inner {
         let side_chat = self
             .workspace()
             .and_then(|ws| ws.chat(chat_id).ok().flatten())
-            .is_some_and(|chat| chat.parent_chat_id.is_some());
+            .is_some_and(|chat| {
+                chat.parent_chat_id.is_some()
+                    && chat.child_kind != Some(zend_proto::ChildKind::Session)
+            });
         let switched = doc.provider_switched();
         if native_command(prompt, harness_id) || !(side_chat || switched) {
             return None;
