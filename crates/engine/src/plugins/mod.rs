@@ -32,6 +32,7 @@ pub mod scan;
 pub mod service;
 pub mod signing;
 pub mod snapshot;
+pub mod staging;
 pub mod status;
 pub mod template_packages;
 pub mod templates;
@@ -180,6 +181,8 @@ pub fn handles(method: &str) -> bool {
             | methods::PLUGIN_LOGS
             | methods::WATCH_PLUGIN_LOGS
             | methods::CHECK_PLUGIN
+            | methods::PLUGIN_PREVIEW
+            | methods::PLUGIN_INPUT
             | methods::WATCH_THEMES
     ) || lifecycle::handles(method)
         || themes::handles(method)
@@ -1701,12 +1704,103 @@ impl Plugins {
         method: &str,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
-        let params = if params.is_null() {
+        let mut params = if params.is_null() {
             serde_json::json!({})
         } else {
             params
         };
+        // Asked of a plugin's preview (`PluginPreview`): its engine answers.
+        if matches!(method, methods::PLUGIN_STATUS | methods::PLUGIN_LOGS | methods::PLUGIN_INPUT)
+            && !staging::is_preview(&self.inner.data_dir)
+            && (method == methods::PLUGIN_INPUT || params.get("preview").and_then(serde_json::Value::as_bool) == Some(true))
+        {
+            if let Some(object) = params.as_object_mut() {
+                object.remove("preview");
+            }
+            let id = params.get("id").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+            if id.is_empty() {
+                return Err(RpcError::BadParams("id: a plugin's id".into()));
+            }
+            let preview = staging::need(&self.inner.data_dir, &id).map_err(failed)?;
+            let client = staging::connect(&self.inner.data_dir, &preview).await.map_err(failed)?;
+            let mut reply = client.call(method, params).await?;
+            if let Some(object) = reply.as_object_mut() {
+                object.insert("preview".into(), serde_json::json!(true));
+            }
+            return RpcReply::value(&reply);
+        }
         match method {
+            methods::PLUGIN_PREVIEW => {
+                #[derive(serde::Deserialize)]
+                struct PreviewParams {
+                    #[serde(default)]
+                    path: Option<String>,
+                    #[serde(default)]
+                    id: Option<String>,
+                    #[serde(default)]
+                    stop: bool,
+                }
+                let p: PreviewParams = parse_params(params)?;
+                if staging::is_preview(&self.inner.data_dir) {
+                    return Err(failed("This is a preview's engine: preview from yours"));
+                }
+                let data_dir = self.inner.data_dir.clone();
+                // The folder: a path, or your plugin's (by id).
+                let source = match (&p.path, &p.id) {
+                    (Some(path), _) => {
+                        let path = PathBuf::from(path);
+                        if !path.is_absolute() {
+                            return Err(RpcError::BadParams("path: the plugin folder's absolute path".into()));
+                        }
+                        Some(path)
+                    }
+                    (None, Some(id)) => {
+                        if p.stop {
+                            None
+                        } else {
+                            self.rescan().await;
+                            let entry = self.entry(id).ok_or_else(|| failed(format!("There's no plugin {id}")))?;
+                            Some(PathBuf::from(&entry.item.dir))
+                        }
+                    }
+                    (None, None) => return Err(RpcError::BadParams("path or id: the plugin to preview".into())),
+                };
+                if p.stop {
+                    let id = match (&p.id, &source) {
+                        (Some(id), _) => id.clone(),
+                        (None, Some(path)) => scan::inspect(path, false)
+                            .manifest
+                            .map(|m| m.id)
+                            .ok_or_else(|| failed("That folder has no zend-plugin.json"))?,
+                        (None, None) => unreachable!(),
+                    };
+                    let stopped = staging::stop(&data_dir, &id);
+                    return RpcReply::value(&serde_json::json!({ "id": id, "stopped": stopped }));
+                }
+                let source = source.unwrap_or_default();
+                let binaries = staging::Binaries::here().map_err(failed)?;
+                let (running, started) = staging::start(&data_dir, &source, binaries).await.map_err(failed)?;
+                let preview_data = running.data_dir(&data_dir);
+                RpcReply::value(&serde_json::json!({
+                    "id": running.id,
+                    "source": running.source,
+                    "port": running.port,
+                    "data_dir": preview_data,
+                    "started": started,
+                    "logs": staging::dir(&data_dir, &running.id),
+                }))
+            }
+            methods::PLUGIN_INPUT => {
+                // Here only in a preview's engine (yours forwards it, above):
+                // its window does it.
+                let id = params.get("id").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                match self.inner.tools.call(&id, "@input", params, None, PAGE_STATUS_TIMEOUT).await {
+                    Ok(reply) => RpcReply::value(&reply),
+                    Err(CallError::NotOpen) => Err(failed("The preview's window isn't up yet: ask again in a moment")),
+                    Err(CallError::TimedOut) => Err(failed("The preview's window didn't answer in time")),
+                    Err(CallError::Failed(why)) => Err(failed(why)),
+                }
+            }
             methods::LIST_PLUGINS => {
                 self.rescan().await;
                 RpcReply::value(&self.list_value())

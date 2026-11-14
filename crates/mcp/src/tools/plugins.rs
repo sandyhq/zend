@@ -31,6 +31,8 @@ pub(super) const DESCRIBE_ELEMENTS: &str = "describe_elements";
 pub(super) const PLUGIN_STATUS: &str = "plugin_status";
 pub(super) const PLUGIN_LOGS: &str = "plugin_logs";
 pub(super) const CHECK_PLUGIN: &str = "check_plugin";
+pub(super) const PREVIEW_PLUGIN: &str = "preview_plugin";
+pub(super) const PLUGIN_INPUT: &str = "plugin_input";
 pub(super) const INSTALL_PLUGIN: &str = "install_plugin";
 pub(super) const UPDATE_PLUGIN: &str = "update_plugin";
 pub(super) const EXPORT_PLUGIN: &str = "export_plugin";
@@ -194,9 +196,38 @@ pub(super) fn catalog() -> Vec<ToolDef> {
                     "page": { "type": "string", "description": "With snapshot: picture this page of the plugin's own (its id, as in `pages`), whether or not it's open." },
                     "width": { "type": "number", "description": "With page: the page's width in points (default 1000, 240 to 2400)." },
                     "height": { "type": "number", "description": "With page: the page's height in points (default 760, 160 to 4000)." },
-                    "state": { "type": "object", "description": "With page: values standing in for what the plugin keeps, by zend.store key (e.g. {\"tab\": \"usage\"}), read as the page builds. What it keeps doesn't change." }
+                    "state": { "type": "object", "description": "With page: values standing in for what the plugin keeps, by zend.store key (e.g. {\"tab\": \"usage\"}), read as the page builds. What it keeps doesn't change." },
+                    "preview": { "type": "boolean", "description": "Ask its preview (preview_plugin) instead of Zend's window: the same account, from the preview's own window." }
                 },
                 "required": ["id"]
+            }),
+        },
+        ToolDef {
+            name: PREVIEW_PLUGIN,
+            description: "Run a Zend plugin folder in a preview, to try a change before it reaches the person's window: a Zend of its own beside theirs, its own engine and a window that never shows on the screen and never takes focus, with a copy of the folder, what the plugin keeps copied from theirs, and allowed what they allowed it (a permission they never allowed stays unallowed). Their plugin, its grants and what it keeps stay as they are, whatever fails in the preview. Called again, the folder is copied in again (edit, then call it, then look). Look and act with plugin_status, plugin_logs and plugin_input, each with preview: true (plugin_input acts only in a preview). `stop` ends it; stop it when you're done.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The plugin folder's full path." },
+                    "id": { "type": "string", "description": "Or an installed plugin's id (from list_plugins): its folder." },
+                    "stop": { "type": "boolean", "description": "End the preview of this plugin." }
+                }
+            }),
+        },
+        ToolDef {
+            name: PLUGIN_INPUT,
+            description: "Act in a plugin's preview window (preview_plugin), never in the person's: `click` or `hover` the node a selector finds, as zend.place and describe_elements name them (#id, .class, a text in quotes, role:button \"Name\", `a >> b` for b inside a, [n] or @n for the nth), or `set_state`: values for what the plugin keeps (zend.store keys). A click or hover lands at the node's middle, or at x, y from its top left; hover with x, y and no `at` is a point in the window. An error says why it can't (no such node, more than one, scrolled out of its clip, covered by another). Then picture it: plugin_status with snapshot and preview (e.g. a plugin page opened by clicking its title in the sidebar, \"Value\"; a snapshot when none of the plugin's nodes shows pictures the whole preview window, to find what to click).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The plugin's id: the preview's." },
+                    "action": { "type": "string", "enum": ["click", "hover", "set_state"] },
+                    "at": { "type": "string", "description": "click, hover: a selector." },
+                    "x": { "type": "number", "description": "click, hover: points from the node's left (with at), else the window's." },
+                    "y": { "type": "number", "description": "click, hover: points from the node's top (with at), else the window's." },
+                    "state": { "type": "object", "description": "set_state: zend.store key → value, e.g. {\"tab\": \"models\"}." }
+                },
+                "required": ["id", "action"]
             }),
         },
         ToolDef {
@@ -207,7 +238,8 @@ pub(super) fn catalog() -> Vec<ToolDef> {
                 "properties": {
                     "id": { "type": "string", "description": "The plugin's id, from list_plugins." },
                     "since": { "type": "integer", "minimum": 0, "description": "Only lines after this seq." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many, the newest (default 100)." }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many, the newest (default 100)." },
+                    "preview": { "type": "boolean", "description": "Its preview's log (preview_plugin), not the person's." }
                 },
                 "required": ["id"]
             }),
@@ -631,6 +663,8 @@ impl Tools {
             height: Option<f64>,
             #[serde(default)]
             state: Option<serde_json::Map<String, Value>>,
+            #[serde(default)]
+            preview: bool,
         }
         let args: Args = parse(args)?;
         if !args.snapshot && (args.page.is_some() || args.width.is_some() || args.height.is_some() || args.state.is_some()) {
@@ -652,6 +686,9 @@ impl Tools {
         if let Some(state) = args.state {
             params["state"] = Value::Object(state);
         }
+        if args.preview {
+            params["preview"] = json!(true);
+        }
         self.zend
             .call_rpc(methods::PLUGIN_STATUS, params)
             .await
@@ -665,18 +702,78 @@ impl Tools {
             id: Option<String>,
             since: Option<u64>,
             limit: Option<u64>,
+            #[serde(default)]
+            preview: bool,
         }
         let args: Args = parse(args)?;
         let Some(id) = args.id.filter(|id| !id.trim().is_empty()) else {
             return Err("Say which plugin: `id`, from list_plugins.".into());
         };
-        self.zend
-            .call_rpc(
-                methods::PLUGIN_LOGS,
-                json!({ "id": id.trim(), "since": args.since, "limit": args.limit.map(|n| n.clamp(1, 500)) }),
-            )
-            .await
-            .map_err(plain)
+        let mut params = json!({ "id": id.trim(), "since": args.since, "limit": args.limit.map(|n| n.clamp(1, 500)) });
+        if args.preview {
+            params["preview"] = json!(true);
+        }
+        self.zend.call_rpc(methods::PLUGIN_LOGS, params).await.map_err(plain)
+    }
+
+    /// `preview_plugin`: the engine's `PluginPreview`.
+    pub(super) async fn preview_plugin(&self, args: Value) -> Result<Value, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: Option<String>,
+            path: Option<String>,
+            #[serde(default)]
+            stop: bool,
+        }
+        let args: Args = parse(args)?;
+        let given = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let mut params = match (given(args.id), given(args.path)) {
+            (Some(id), None) => json!({ "id": id }),
+            (None, Some(path)) => json!({ "path": path }),
+            _ => return Err("Give one of `path` (a plugin folder's full path) or `id` (from list_plugins).".into()),
+        };
+        if args.stop {
+            params["stop"] = json!(true);
+        }
+        self.zend.call_rpc(methods::PLUGIN_PREVIEW, params).await.map_err(plain)
+    }
+
+    /// `plugin_input`: the engine's `PluginInput` (a preview's window).
+    pub(super) async fn plugin_input(&self, args: Value) -> Result<Value, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: Option<String>,
+            action: Option<String>,
+            at: Option<String>,
+            x: Option<f64>,
+            y: Option<f64>,
+            state: Option<serde_json::Map<String, Value>>,
+        }
+        let args: Args = parse(args)?;
+        let Some(id) = args.id.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) else {
+            return Err("Say which plugin's preview: `id`.".into());
+        };
+        let action = args.action.unwrap_or_default();
+        match action.as_str() {
+            "click" | "hover" if args.at.is_some() || (action == "hover" && args.x.is_some() && args.y.is_some()) => {}
+            "click" | "hover" => return Err(format!("`{action}` takes `at`: a selector (hover also takes x, y alone)")),
+            "set_state" if args.state.as_ref().is_some_and(|s| !s.is_empty()) => {}
+            "set_state" => return Err("`set_state` takes `state`: zend.store key → value".into()),
+            _ => return Err("`action` is click, hover or set_state".into()),
+        }
+        let mut params = json!({ "id": id, "action": action });
+        if let Some(at) = args.at {
+            params["at"] = json!(at);
+        }
+        for (key, value) in [("x", args.x), ("y", args.y)] {
+            if let Some(value) = value {
+                params[key] = json!(value);
+            }
+        }
+        if let Some(state) = args.state {
+            params["state"] = Value::Object(state);
+        }
+        self.zend.call_rpc(methods::PLUGIN_INPUT, params).await.map_err(plain)
     }
 
     /// `check_plugin`: the engine's `CheckPlugin`, as it answers.

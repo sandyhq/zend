@@ -1961,6 +1961,11 @@ impl Bridge {
             self.status_call(&plugin, id, tool == "@snapshot", &call["args"]);
             return;
         }
+        // An agent's input in its preview (`plugin_input`).
+        if call["tool"].as_str() == Some("@input") {
+            self.input_call(&plugin, id, &call["args"]);
+            return;
+        }
         let loaded = self.loaded.borrow().iter().any(|p| p.name == plugin && plugin != "templates");
         if !loaded {
             let name = self.item(&plugin).map(|i| i.name().to_string()).unwrap_or(plugin.clone());
@@ -2865,6 +2870,83 @@ impl Bridge {
         self.push_call(plugin, id, "where", fields);
     }
 
+    /// An agent's input to the window of a plugin's preview (`zend plugin
+    /// preview`, `plugin_input`): a click or the pointer resting on a node
+    /// named as `zend.place` and inspect name them (`#id`, `.class`,
+    /// `"Label"`, `role:button "Name"`, `>>`), or values its `zend.store`
+    /// keys take. Only in a window that never shows (`ZGX_OFFSCREEN`, which
+    /// the preview runs with): never in the window someone works in.
+    fn input_call(&self, plugin: &str, id: String, args: &Json) {
+        if !zgx_desktop::application::offscreen() {
+            return answer_tool(id, false, Json::Null, "Input goes only to a plugin's preview (`zend plugin preview`), never to the window someone works in".into());
+        }
+        let action = args["action"].as_str().unwrap_or_default();
+        if action == "set_state" {
+            let Some(state) = args["state"].as_object().filter(|s| !s.is_empty()) else {
+                return answer_tool(id, false, Json::Null, "`set_state` takes `state`: the values its `zend.store` keys take, e.g. {\"tab\": \"models\"}".into());
+            };
+            if !self.stores.borrow().contains_key(plugin) {
+                let name = self.item(plugin).map(|i| i.name().to_string()).unwrap_or_else(|| plugin.to_string());
+                return answer_tool(id, false, Json::Null, format!("{name} keeps nothing yet (no `zend.store` read): is it on in the preview?"));
+            }
+            for (key, value) in state {
+                self.store_set(plugin, &json!({ "key": key, "value": value }));
+            }
+            let keys: Vec<&String> = state.keys().collect();
+            return self.answer_after_input(id, json!({ "action": action, "set": keys }));
+        }
+        if action != "click" && action != "hover" {
+            return answer_tool(id, false, Json::Null, format!("No input {action:?}: `click` {{at}}, `hover` {{at, x?, y?}} or {{x, y}}, or `set_state` {{state}}"));
+        }
+        let Some(mut ui) = self.ui.upgrade() else {
+            return answer_tool(id, false, Json::Null, "The window is closed".into());
+        };
+        let Some(view) = self.view.borrow().clone() else {
+            return answer_tool(id, false, Json::Null, "The window isn't built yet".into());
+        };
+        // (As it is now: what the last input changed laid out.)
+        let _ = ui.try_prepare_frame();
+        let at = args["at"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let offset = match (args["x"].as_f64(), args["y"].as_f64()) {
+            (Some(x), Some(y)) => Some((x as f32, y as f32)),
+            (None, None) => None,
+            _ => return answer_tool(id, false, Json::Null, "Give both `x` and `y`, or neither".into()),
+        };
+        let point = match (at, offset) {
+            (Some(at), offset) => match zgx_script::driver::reach(&ui, &view, at) {
+                // A point in the node (from its top left), else its middle.
+                Ok((_, shown)) => match offset {
+                    Some((x, y)) => (shown.x + x, shown.y + y),
+                    None => zgx_script::driver::middle(shown),
+                },
+                Err(why) => return answer_tool(id, false, Json::Null, why),
+            },
+            (None, Some(point)) if action == "hover" => point,
+            _ => return answer_tool(id, false, Json::Null, format!("`{action}` takes `at`: a selector, e.g. \"role:button \\\"Models\\\"\" or \"#id\"")),
+        };
+        // (The pointer comes to it first, as a hand's does.)
+        zgx_script::driver::hover_at(&mut ui, point);
+        if action == "click" {
+            zgx_script::driver::click_at(&mut ui, zgx::scene::Rect::new(point.0, point.1, 0., 0.));
+        } else {
+            zgx_script::driver::hover_at(&mut ui, point);
+        }
+        let mut out = json!({ "action": action, "x": point.0, "y": point.1 });
+        if let Some(at) = at {
+            out["at"] = json!(at);
+        }
+        self.answer_after_input(id, out);
+    }
+
+    /// Answered once what the input changed has had a frame or two: a
+    /// picture asked next shows it.
+    fn answer_after_input(&self, id: String, out: Json) {
+        self.tasks.spawn(async move {
+            zgx::timer::sleep(INPUT_SETTLES).await;
+            answer_tool(id, true, out, String::new());
+        });
+    }
+
     /// The plugin's account of where it is, with the host's, and a picture
     /// of the window cut to it if asked; then to the agent.
     fn status_answer(&self, plugin: &str, id: String, call: &Value, answer: &Value) {
@@ -2922,8 +3004,16 @@ impl Bridge {
         }
         let scale = image.width() as f32 / bounds.width;
         let found = surfaces::regions(placements);
-        let region = surfaces::around(&found, 24., bounds.width, bounds.height)
-            .ok_or("None of its nodes shows now, so there's nothing of it to picture")?;
+        let around = surfaces::around(&found, 24., bounds.width, bounds.height);
+        // In a preview (it never shows), the whole window when none of it
+        // does: where to click to bring it up. Never of the window someone
+        // works in: that's theirs, not the plugin's.
+        let whole = around.is_none() && zgx_desktop::application::offscreen();
+        let region = match around {
+            Some(region) => region,
+            None if whole => surfaces::Region { x: 0., y: 0., w: bounds.width, h: bounds.height },
+            None => return Err("None of its nodes shows now, so there's nothing of it to picture".into()),
+        };
         let (w, h, pixels) = surfaces::crop(image.pixels(), image.width(), image.height(), region, scale);
         let dir = engine::data_dir().ok_or("Zend's data folder isn't known")?.join("plugins").join(".snapshots");
         let path = dir.join(format!("{plugin}.png"));
@@ -2931,7 +3021,7 @@ impl Bridge {
         Ok(json!({
             "snapshot": path.display().to_string(),
             "snapshot_region": { "x": region.x, "y": region.y, "w": region.w, "h": region.h },
-            "snapshot_note": "The window around where its nodes show.",
+            "snapshot_note": if whole { "None of its nodes shows now: the whole preview window, to find where to click (plugin_input) to bring them up." } else { "The window around where its nodes show." },
         }))
     }
 
@@ -3540,6 +3630,8 @@ const STAGE_MOUNTS: Duration = Duration::from_secs(2);
 const STAGE_LOOK: Duration = Duration::from_millis(120);
 const STAGE_STILL: u32 = 2;
 const STAGE_SETTLES: Duration = Duration::from_secs(5);
+/// How long an input's answer waits for what it changed to be laid out.
+const INPUT_SETTLES: Duration = Duration::from_millis(150);
 
 /// Takes a page's stage down (`Bridge::page_picture`) as it's dropped.
 struct Unstage(Weak<Bridge>, String);

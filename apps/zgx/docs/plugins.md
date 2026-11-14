@@ -603,6 +603,15 @@ zend.toast(zend.s("timer.done"))
 5. **Read its log**: `plugin_logs { id, since? }` (MCP) or `zend plugin logs <id> [--follow]`. It holds what the plugin printed and what failed, from its window part and its service.luau, oldest first. An error comes whole, with its traceback (file, line, function), not only the first line the toast shows.
 6. **Fix and save**, then ask again. Matched 0? Check the selector against `describe_elements`. A need? Place it inside something that provides it.
 
+### Preview: trying a change apart from your window
+
+`zend plugin preview <folder>` (MCP `preview_plugin { path }`) runs a copy of a plugin's folder in a Zend of its own: an engine and a window that never shows on any screen, never takes focus and opens no windows of its own. What breaks there breaks only there: the plugin in your window stays as it is, with its grants and what it keeps.
+
+- **What it starts from.** The copy is signed with the preview's own key and allowed what you allowed the plugin (one you never allowed is allowed nothing it must ask for). What it keeps (`zend.store`, its database) is copied from yours as it is now; changes stay in the preview. Its programs (`commands`) run as you, as in your window. It posts no notifications.
+- **Again.** Asked again (the same folder or another with the same id), the folder is copied over the preview's and its window reloads it. Its data is under `plugin-preview/<id>/` in Zend's data folder.
+- **Looking and trying.** `plugin_status` and `plugin_logs` with `preview = true` (`zend plugin logs <id> --preview`) answer for the preview. With `snapshot`, when none of its nodes shows, the picture is the whole preview window, to find what to click. `plugin_input { id, action, at }` acts on the preview's window, by the selectors `describe_elements` and the driver take (`#id`, `.class`, `"Text"`, `role:radio "Usage"`, `>>` for inside): `click`, `hover` (`at`, or `x`, `y` in points), and `set_state` with `state = { tab = "usage" }`: values for what `zend.store` holds, by key. A plugin page opens by clicking its title in the sidebar (`"Value"`). It answers once the window has laid out what the input did.
+- **Stop.** `zend plugin preview <id> --stop` (`preview_plugin { id, stop = true }`) ends both.
+
 ### Logs
 
 Each line has `seq`, `at` (RFC 3339, this device's time), `source` (`window`, `service`, or `check`: what the check after a save found), `level` (`print`, `error`, or `info` for Zend's own word: a service started, stopped, didn't load) and `text`.

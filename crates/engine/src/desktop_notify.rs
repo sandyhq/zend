@@ -257,6 +257,10 @@ pub(crate) fn post_for(
     body: &str,
     session: Option<&str>,
 ) -> &'static str {
+    // A plugin's preview (plugins/staging.rs) shows nothing on your desktop.
+    if crate::plugins::staging::is_preview(data_dir) {
+        return "preview";
+    }
     static PACE: std::sync::LazyLock<Mutex<HashMap<String, std::collections::VecDeque<Instant>>>> =
         std::sync::LazyLock::new(Default::default);
     let body: String = body.chars().take(500).collect();

@@ -237,7 +237,46 @@ pub async fn run(
             );
             println!("Share that file: anyone installs it from the file or a link to it.");
         }
-        PluginCommand::Logs { id, follow, lines } => {
+        PluginCommand::Preview { target, stop } => {
+            let path = std::path::Path::new(&target);
+            let mut params = if target.contains('/') || path.is_dir() && !looks_like_id(&target) {
+                let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                json!({ "path": absolute.display().to_string() })
+            } else {
+                json!({ "id": target })
+            };
+            if stop {
+                params["stop"] = json!(true);
+                let reply = call(methods::PLUGIN_PREVIEW, params).await?;
+                let id = str_of(&reply, "id");
+                if reply["stopped"] == true {
+                    println!("Stopped the preview of {id}.");
+                } else {
+                    println!("No preview of {id} ran.");
+                }
+                return Ok(());
+            }
+            let reply = call(methods::PLUGIN_PREVIEW, params).await?;
+            let id = str_of(&reply, "id");
+            if reply["started"] == true {
+                println!("Previewing {id} from {} (its own engine on port {}, a window that never shows).", str_of(&reply, "source"), reply["port"]);
+            } else {
+                println!("Copied {} into the preview of {id} again.", str_of(&reply, "source"));
+            }
+            println!("Its data: {}", str_of(&reply, "data_dir"));
+            println!("Look: `zend plugin logs {id} --preview`, MCP plugin_status/plugin_input with preview. Stop: `zend plugin preview {id} --stop`.");
+        }
+        PluginCommand::Logs { id, follow, lines, preview } => {
+            if preview {
+                if follow {
+                    anyhow::bail!("--follow reads your log only: ask again for the preview's");
+                }
+                let reply = call(methods::PLUGIN_LOGS, json!({ "id": id, "limit": lines.clamp(1, 500), "preview": true })).await?;
+                for item in reply["lines"].as_array().cloned().unwrap_or_default() {
+                    print!("{}", log_line(&item));
+                }
+                return Ok(());
+            }
             let reply = call(methods::PLUGIN_LOGS, json!({ "id": id, "limit": lines.clamp(1, 500) })).await?;
             let shown = reply["lines"].as_array().cloned().unwrap_or_default();
             if shown.is_empty() && !follow {

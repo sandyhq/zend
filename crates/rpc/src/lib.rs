@@ -652,6 +652,23 @@ pub mod methods {
     /// `{id}` → stream of `{line}` (as in `PluginLogs`), each as it's
     /// logged: `zend plugin logs --follow`.
     pub const WATCH_PLUGIN_LOGS: &str = "WatchPluginLogs";
+    /// `{path | id, stop?}` → `{id, port, data_dir, source, started,
+    /// stopped?}`: plugin folder `path` (or your plugin `id`'s) run in a
+    /// preview, a Zend of its own beside yours (its own engine and an
+    /// offscreen window, never shown), to try a change on: a copy of the
+    /// folder, what it keeps copied, allowed what you allowed it. Asked
+    /// again, the folder is copied in again; `stop` ends it. Yours stays
+    /// as it is. `PluginStatus`, `PluginLogs` and `PluginInput` with
+    /// `preview: true` ask the preview. This device's alone.
+    pub const PLUGIN_PREVIEW: &str = "PluginPreview";
+    /// `{id, action: "click" | "hover" | "set_state", at?, x?, y?, state?}`
+    /// → `{id, action, done, ...}`: input in plugin `id`'s preview window
+    /// (`PluginPreview`), never in yours: click or hover what selector
+    /// `at` finds (as `zend.place` and `DescribeElements` name it; `x`,
+    /// `y` a point inside it, else its middle, or alone a point in the
+    /// window), or set what it keeps (`state`: key → value, as
+    /// `zend.store`). This device's alone.
+    pub const PLUGIN_INPUT: &str = "PluginInput";
     /// `{dir}` → the list: the app's folder of Zend's own plugins, scanned
     /// with yours (allowed what they ask, on unless turned off, never
     /// removed).
@@ -710,6 +727,8 @@ pub fn local_only(method: &str) -> bool {
             | methods::SIGN_PLUGIN
             | methods::VERIFY_PLUGIN
             | methods::CHECK_PLUGIN
+            | methods::PLUGIN_PREVIEW
+            | methods::PLUGIN_INPUT
             | methods::LIST_PLUGIN_TOOLS
             | methods::WATCH_PLUGIN_TOOLS
             | methods::CALL_PLUGIN_TOOL
@@ -820,6 +839,8 @@ pub fn agent_allowed(method: &str) -> bool {
             | methods::PLUGIN_STATUS
             | methods::PLUGIN_LOGS
             | methods::CHECK_PLUGIN
+            | methods::PLUGIN_PREVIEW
+            | methods::PLUGIN_INPUT
             | methods::NEW_PLUGIN
             | methods::INSTALL_PLUGIN
             | methods::CHECK_PLUGIN_UPDATES

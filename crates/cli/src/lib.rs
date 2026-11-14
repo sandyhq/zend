@@ -180,6 +180,22 @@ pub enum PluginCommand {
         /// How many of the last lines to show first.
         #[arg(long, short = 'n', default_value_t = 100)]
         lines: usize,
+        /// Its preview's log (`zend plugin preview`), not yours.
+        #[arg(long)]
+        preview: bool,
+    },
+    /// Run a plugin folder in a preview: a Zend of its own beside yours
+    /// (its own engine and a window that never shows), with a copy of the
+    /// folder, what it keeps copied, allowed what you allowed it. Agents
+    /// try a change there (MCP `plugin_input`, `plugin_status` with
+    /// `preview`); yours stays as it is, whatever fails there. Run it
+    /// again to copy the folder in again.
+    Preview {
+        /// A plugin folder's path, or an id in the plugins folder.
+        target: String,
+        /// End the preview.
+        #[arg(long)]
+        stop: bool,
     },
 }
 
