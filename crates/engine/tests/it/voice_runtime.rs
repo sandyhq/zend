@@ -352,7 +352,7 @@ async fn remote_cancel_before_prepare_and_owner_drop_preserve_other_calls() {
 }
 
 #[cfg(unix)]
-#[path = "support/voice_relay.rs"]
+#[path = "../support/voice_relay.rs"]
 mod voice_relay;
 
 #[cfg(unix)]
