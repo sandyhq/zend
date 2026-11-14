@@ -2071,11 +2071,13 @@ impl EngineRpc {
                     .map(|chat| chat.id.clone())
                     .collect();
                 // Their children on Cloud with no project of their own (side
-                // chats on a deleted machine, delegates) go with them.
+                // chats on a deleted machine, delegates) go with them. Child
+                // sessions stay, detached by `RegistryDoc::delete_space`.
                 let orphans: Vec<String> = chats
                     .iter()
                     .filter(|chat| {
                         chat.space_id.is_none()
+                            && chat.child_kind != Some(zend_proto::ChildKind::Session)
                             && zend_proto::is_cloud_device(&chat.device_id, "")
                             && chat
                                 .parent_chat_id

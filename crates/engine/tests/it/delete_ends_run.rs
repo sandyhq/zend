@@ -400,6 +400,47 @@ async fn deleting_a_parent_detaches_its_child_sessions() {
     assert!(alive(worker) && rig.core.sessions.has_run("worker"), "and keeps its run");
 }
 
+/// Deleting a project (deleteSpace) deletes its chats, a child session among
+/// them too. A child session of theirs outside it stays, detached, even a
+/// Cloud one with no project, while their Cloud side chats still go.
+#[tokio::test]
+async fn deleting_a_project_detaches_child_sessions_outside_it() {
+    let rig = rig();
+    let here = rig.core.workspace.device_id().to_string();
+    rig.core.workspace.create_space("gone", &here, "/tmp/gone", None, false).unwrap();
+    let mut parent = rig.core.workspace.chat(CHAT).unwrap().unwrap();
+    parent.id = "cloud-parent".into();
+    parent.space_id = Some("gone".into());
+    parent.device_id = format!("{}parent", zend_proto::CLOUD_DEVICE_PREFIX);
+    rig.core.workspace.import_chat_row(&parent).unwrap();
+    for (id, kind, space) in [
+        ("cloud-worker", ChildKind::Session, None),
+        ("cloud-side", ChildKind::Side, None),
+        ("inside", ChildKind::Session, Some("gone")),
+    ] {
+        let mut child = parent.clone();
+        child.id = id.into();
+        child.device_id = format!("{}{id}", zend_proto::CLOUD_DEVICE_PREFIX);
+        child.space_id = space.map(str::to_owned);
+        child.parent_chat_id = Some("cloud-parent".into());
+        child.child_kind = Some(kind);
+        rig.core.workspace.import_chat_row(&child).unwrap();
+    }
+    let client = memory_client(rig.core.rpc_service());
+    let _: serde_json::Value = client
+        .call_as(
+            methods::MUTATE,
+            serde_json::json!({ "op": "deleteSpace", "spaceId": "gone" }),
+        )
+        .await
+        .unwrap();
+    for gone in ["cloud-parent", "cloud-side", "inside"] {
+        assert!(rig.core.workspace.chat(gone).unwrap().is_none(), "{gone} goes");
+    }
+    let kept = rig.core.workspace.chat("cloud-worker").unwrap().expect("the child session stays");
+    assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+}
+
 /// Archiving a parent leaves its child sessions open and still its children.
 #[tokio::test]
 async fn archiving_a_parent_leaves_its_child_sessions_open() {

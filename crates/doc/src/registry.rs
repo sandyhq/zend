@@ -1526,7 +1526,8 @@ impl RegistryDoc {
     /// Hard-delete a space and cascade to its chats: one batch tombstones the
     /// space row and every chat/session row whose `spaceId` matches — the
     /// server applies the batch atomically. Returns the removed chat ids so
-    /// the engine can drop local state.
+    /// the engine can drop local state. Child sessions of those chats in
+    /// another space stay, detached (`detach_child_sessions`).
     pub fn delete_space(&mut self, space_id: &str) -> Result<DeletedSpace, DocError> {
         let existed = self.row_exists(KIND_SPACES, space_id);
         let chat_ids: Vec<String> = self
@@ -1535,6 +1536,7 @@ impl RegistryDoc {
             .filter(|c| c.space_id.as_deref() == Some(space_id))
             .map(|c| c.id)
             .collect();
+        self.detach_child_sessions(&chat_ids)?;
         let mut keys: Vec<(&str, &str)> = Vec::with_capacity(chat_ids.len() * 2 + 1);
         for chat_id in &chat_ids {
             keys.push((KIND_CHATS, chat_id));
@@ -1966,20 +1968,29 @@ impl RegistryDoc {
     /// deletes a chat (the engine's `deleteChat`, a client's) shares this.
     pub fn delete_chat(&mut self, chat_id: &str) -> Result<bool, DocError> {
         let existed = self.row_exists(KIND_CHATS, chat_id);
+        self.detach_child_sessions(&[chat_id.to_string()])?;
+        self.delete_row_ops(&[(KIND_CHATS, chat_id), (KIND_SESSIONS, chat_id)]);
+        Ok(existed)
+    }
+
+    /// The detach rule, for every deletion (`delete_chat`, `delete_space`):
+    /// a child session of a chat being deleted stays, made top-level,
+    /// unless it is itself among those deleted.
+    fn detach_child_sessions(&mut self, deleted: &[String]) -> Result<(), DocError> {
         let sessions: Vec<String> = self
             .read_chats()?
             .into_iter()
             .filter(|chat| {
-                chat.parent_chat_id.as_deref() == Some(chat_id)
-                    && chat.child_kind == Some(zend_proto::ChildKind::Session)
+                chat.child_kind == Some(zend_proto::ChildKind::Session)
+                    && chat.parent_chat_id.as_ref().is_some_and(|p| deleted.contains(p))
+                    && !deleted.contains(&chat.id)
             })
             .map(|chat| chat.id)
             .collect();
         for session in sessions {
             self.detach_chat(&session)?;
         }
-        self.delete_row_ops(&[(KIND_CHATS, chat_id), (KIND_SESSIONS, chat_id)]);
-        Ok(existed)
+        Ok(())
     }
 
     // ── sessions ────────────────────────────────────────────────────────────

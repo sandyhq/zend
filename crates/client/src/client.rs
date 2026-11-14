@@ -2184,3 +2184,75 @@ mod child_session_tests {
         assert!(hits.iter().any(|h| h.session.id == worker.id), "visible child session must be searchable");
     }
 }
+
+#[cfg(test)]
+mod child_kind_controls {
+    use super::*;
+    fn client() -> (Client, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(Default::default()), Arc::new(crate::events::NullListener)).unwrap();
+        (client, dir)
+    }
+    #[test]
+    fn the_cloud_cascade_keeps_child_sessions_and_deletes_side_chats_and_subagents() {
+        let (client, _dir) = client();
+        let mut parent = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        parent.device_id = format!("{}parent", zend_proto::CLOUD_DEVICE_PREFIX);
+        client.inner.registry_write(|doc| doc.upsert_chat(&parent)).unwrap();
+        for (id, kind) in [("cloud-worker", zend_proto::ChildKind::Session),
+            ("cloud-side", zend_proto::ChildKind::Side), ("cloud-sub", zend_proto::ChildKind::Subagent)] {
+            let mut child = parent.clone();
+            child.id = id.into();
+            child.device_id = format!("{}{id}", zend_proto::CLOUD_DEVICE_PREFIX);
+            child.parent_chat_id = Some(parent.id.clone());
+            child.child_kind = Some(kind);
+            client.inner.registry_write(|doc| doc.upsert_chat(&child)).unwrap();
+        }
+        client.delete_session(&parent.id).unwrap();
+        assert!(client.inner.workspace.chat("cloud-side").is_none());
+        assert!(client.inner.workspace.chat("cloud-sub").is_none());
+        let kept = client.inner.workspace.chat("cloud-worker").unwrap();
+        assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+    }
+    #[test]
+    fn search_still_drops_side_chats_and_subagents() {
+        let (client, _dir) = client();
+        let parent = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        for (id, kind) in [("side", zend_proto::ChildKind::Side),
+            ("sub", zend_proto::ChildKind::Subagent), ("session", zend_proto::ChildKind::Session)] {
+            let mut row = parent.clone();
+            row.id = id.into();
+            row.title = Some("review2needle".into());
+            row.parent_chat_id = Some(parent.id.clone());
+            row.child_kind = Some(kind);
+            client.inner.registry_write(|doc| doc.upsert_chat(&row)).unwrap();
+        }
+        let ids: Vec<String> = client.workspace().search("review2needle", 20).into_iter()
+            .map(|h| h.session.id.clone()).collect();
+        assert_eq!(ids, vec!["session".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod voice_search_tests {
+    use super::*;
+    #[test]
+    fn search_still_finds_a_voice_orchestrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(Default::default()), Arc::new(crate::events::NullListener)).unwrap();
+        let mut row = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        row.id = format!("{}review2", zend_proto::voice::ORCHESTRATOR_CHAT_PREFIX);
+        row.parent_chat_id = None;
+        row.child_kind = None;
+        row.title = Some("review2voiceneedle".into());
+        client.inner.registry_write(|doc| doc.upsert_chat(&row)).unwrap();
+        let ws = client.workspace();
+        assert!(!ws.front.recent.iter().any(|r| r.id == row.id));
+        assert!(ws.search("review2voiceneedle", 20).iter().any(|h| h.session.id == row.id));
+    }
+}
