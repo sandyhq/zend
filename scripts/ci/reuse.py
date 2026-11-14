@@ -69,7 +69,7 @@ SUITE_INPUTS: dict[str, list[str]] = {
               "scripts/codex-voice-remote-smoke.py", "scripts/tests/*voice*"] + LINUX_SETUP + NEXTEST,
     # apps/zgx is a workspace of its own: all of it (sources, lockfile, Luau UI
     # and tests, plugins, SDK) is an input; its path dependencies are in SUITE_PACKAGES.
-    "zgx": [".github/workflows/zgx-tests.yml", "apps/zgx/**", "third_party/zgx/**"] + NEXTEST,
+    "zgx": [".github/workflows/zgx-tests.yml", "apps/zgx/**"] + NEXTEST,
 }
 
 # The workspace packages each suite builds and tests (their dependencies are added).

@@ -13,3 +13,8 @@ LUAU_CXXFLAGS = "-DNDEBUG"
 # sizes all its own, so one block of 50 KiB left in such a page holds up to a
 # megabyte. Each now has a page of its own, freed with it.
 CFLAGS_aarch64_apple_darwin = "-DMI_ARENA_SLICE_SHIFT=14 -DMI_ENABLE_LARGE_PAGES=0"
+
+# zgx is a git dependency (Cargo.toml): fetch it with git itself, so a
+# machine's git settings (an https-to-ssh insteadOf, credentials) apply.
+[net]
+git-fetch-with-cli = true

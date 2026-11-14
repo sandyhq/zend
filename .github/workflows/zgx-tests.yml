@@ -5,7 +5,7 @@ name: zgx tests
 #
 #   apps/zgx's unit tests (`cargo test --bin zend-zgx`: src/plugins/*_tests.rs
 #   among them) and its Luau UI tests (`zgx test ui`, the zgx CLI built from
-#   sandyhq/zengx at ZENGX_REV), on Linux, the known failures let through
+#   sandyhq/zengx at the commit apps/zgx builds against), on Linux, the known failures let through
 #   (scripts/ci/test-zgx.sh, scripts/ci/zgx-known-failures.txt). The engine's
 #   plugin tests run in core-tests.
 #
@@ -23,9 +23,6 @@ permissions:
   contents: read
 
 env:
-  # The sandyhq/zengx commit the zgx CLI is built from. Move it on purpose: a
-  # new CLI can change what the UI tests see.
-  ZENGX_REV: 758a12c701da35c7a84dd7364905b4548984fedb
   NEXTEST_PROFILE: ${{ github.event_name == 'schedule' && 'default' || 'ci' }}
   CARGO_PROFILE_DEV_DEBUG: 0
   # The zgx CLI without Luau's asserts (they slow scripts by about a fifth).
@@ -55,6 +52,13 @@ jobs:
           workspaces: apps/zgx -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      # The zgx CLI at the sandyhq/zengx commit the app builds against (its
+      # one pin, apps/zgx/Cargo.lock), so the UI tests run the zgx they ship.
+      - name: Which zengx
+        run: |
+          rev=$(sed -n 's|^source = "git+https://github.com/sandyhq/zengx?rev=[0-9a-f]*#\([0-9a-f]*\)"$|\1|p' apps/zgx/Cargo.lock | sort -u)
+          [ "$(printf '%s\n' "$rev" | grep -c .)" = 1 ] || { echo "apps/zgx/Cargo.lock: want one sandyhq/zengx commit, found: $rev"; exit 1; }
+          echo "ZENGX_REV=$rev" >> "$GITHUB_ENV"
       - id: zgx-cli
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

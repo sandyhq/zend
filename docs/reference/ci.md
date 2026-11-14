@@ -30,7 +30,8 @@ were removed. `release.yml` (tags only) is unchanged.
 
 The zgx paths come from the Cargo graph: every crate `apps/zgx` builds
 against. Its zgx CLI is built from [sandyhq/zengx](https://github.com/sandyhq/zengx)
-at the commit `zgx-tests.yml` pins (`ZENGX_REV`).
+at the commit the app builds against: the one sandyhq/zengx commit in
+`apps/zgx/Cargo.lock`, which `zgx-tests.yml` reads (`ZENGX_REV`).
 
 `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` changes run everything
 except a version bump: one that only changes `version = "..."` lines (the
