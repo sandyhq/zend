@@ -3348,6 +3348,243 @@ fn a_detach_keeps_a_concurrent_title_edit() {
     }
 }
 
+#[test]
+fn a_rename_after_loading_an_old_snapshot_wins_over_the_rows_it_holds() {
+    rename_after_loading_old_saved_rows(false);
+}
+
+#[test]
+fn a_rename_after_loading_an_old_delta_wins_over_the_rows_it_holds() {
+    rename_after_loading_old_saved_rows(true);
+}
+
+fn rename_after_loading_old_saved_rows(incremental: bool) {
+    {
+        let mut source = RegistryDoc::new("dev-z");
+        pin_clock_ahead(&mut source);
+        source.upsert_chat(&chat("c", "dev-z")).unwrap();
+        source.rename_chat("c", "from peer").unwrap();
+        let mut server = HashMap::new();
+        let mut seq = 0;
+        server_round(&mut server, &mut seq, &mut [&mut source]);
+        let mut receiver = RegistryDoc::new("dev-a");
+        let base = receiver.to_bytes().unwrap();
+        receiver.mark_saved();
+        let old_clock = receiver.clock.clone();
+        assert!(receiver.apply_rows(seq, server.values().cloned().collect()));
+        // Exact pre-896d7ce8 persisted shape: received rows/cursor, unobserved clock.
+        receiver.clock = old_clock;
+        let mut loaded = if incremental {
+            let delta = receiver.delta_bytes().unwrap().unwrap();
+            RegistryDoc::from_saved(&base, &[delta], &[], "dev-a").unwrap().0
+        } else {
+            RegistryDoc::from_bytes(&receiver.to_bytes().unwrap(), "dev-a").unwrap()
+        };
+        // Ordinary hello at the saved cursor sends no already-seen rows.
+        let _ = loaded.apply_state(seq, false, 0, vec![]);
+        loaded.rename_chat("c", "later after upgrade").unwrap();
+        server_round(&mut server, &mut seq, &mut [&mut loaded]);
+        assert_eq!(loaded.chat("c").unwrap().unwrap().title.as_deref(),
+            Some("later after upgrade"), "incremental={incremental}");
+    }
+}
+
+#[test]
+fn a_received_counter_out_of_range_doesnt_break_later_writes() {
+    let mut doc = RegistryDoc::new("dev-a");
+    let mut row = applied(None, &upsert(&[("title", json!("peer"))], 1000));
+    row.clocks.insert("title".into(),
+        format!("{:013}-4294967295-peer", RegistryDoc::now_ms() + 60_000));
+    assert!(doc.apply_rows(1, vec![row]));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        doc.upsert_chat(&chat("unrelated", "dev-a")).unwrap();
+    }));
+    assert!(result.is_ok(), "malformed received counter poisoned the global clock");
+}
+
+#[test]
+fn a_received_stamp_at_the_top_of_the_range_keeps_later_writes_on_the_wire() {
+    let mut doc = RegistryDoc::new("dev-a");
+    let remote = encode_hlc(9_999_999_999_999, 999_999, "peer");
+    let mut row = applied(None, &upsert(&[("title", json!("peer"))], 1000));
+    row.clocks.insert("title".into(), remote.clone());
+    assert!(doc.apply_rows(1, vec![row]));
+    doc.upsert_chat(&chat("unrelated", "dev-a")).unwrap();
+    let batches = doc.take_pushable();
+    let stamp = &batches[0].ops[0].hlc;
+    assert_eq!(stamp.split('-').next().unwrap().len(), 13,
+        "next write violates edge HLC_RE: {stamp}");
+    // No stamp the edge accepts sorts after the greatest one (same ms and
+    // counter, and "dev-a" < "peer"), so it isn't adopted: the write is on
+    // the wire, and so is the clock that's saved and every write after it.
+    assert!(parse_hlc(stamp).is_some(), "edge would reject {stamp}");
+    // Adopted, it would leave the clock nowhere to go: every later write
+    // would repeat one stamp and lose to the first.
+    assert!((doc.clock.last_ms, doc.clock.counter) < (MAX_HLC_MS, MAX_HLC_COUNTER));
+    let first = stamp.clone();
+    doc.rename_chat("unrelated", "renamed").unwrap();
+    let second = doc.take_pushable().last().unwrap().ops[0].hlc.clone();
+    assert!(second > first, "{second} must order after {first}");
+    let mut loaded = RegistryDoc::from_bytes(&doc.to_bytes().unwrap(), "dev-a").unwrap();
+    assert!(loaded.clock.last_ms <= MAX_HLC_MS);
+    loaded.rename_chat("unrelated", "again").unwrap();
+    let batches = loaded.take_pushable();
+    let stamp = &batches.last().unwrap().ops[0].hlc;
+    assert!(parse_hlc(stamp).is_some(), "edge would reject {stamp}");
+}
+
+#[test]
+fn a_stamp_the_edge_rejects_doesnt_move_the_clock() {
+    let ahead = RegistryDoc::now_ms() + 60_000;
+    for remote in [
+        format!("{ahead:013}-4294967295-peer"),
+        format!("{ahead:013}-1000000-peer"),
+        format!("{ahead:013}-000001-dev.a"),
+        format!("{ahead:013}-000001-"),
+        format!("{ahead}-1-peer").replace(&ahead.to_string(), &format!("{ahead:014}")),
+    ] {
+        let mut doc = RegistryDoc::new("dev-a");
+        let before = (doc.clock.last_ms, doc.clock.counter);
+        let mut row = applied(None, &upsert(&[("title", json!("peer"))], 1000));
+        row.clocks.insert("title".into(), remote.clone());
+        assert!(doc.apply_rows(1, vec![row]));
+        assert_eq!((doc.clock.last_ms, doc.clock.counter), before, "{remote}");
+    }
+}
+
+#[test]
+fn the_last_stamp_below_the_top_is_observed_and_writes_after_it_stay_on_the_wire() {
+    let mut doc = RegistryDoc::new("dev-a");
+    let remote = encode_hlc(MAX_HLC_MS, MAX_HLC_COUNTER - 1, "peer");
+    let mut row = applied(None, &upsert(&[("title", json!("peer"))], 1000));
+    row.clocks.insert("title".into(), remote.clone());
+    assert!(doc.apply_rows(1, vec![row]));
+    doc.upsert_chat(&chat("one", "dev-a")).unwrap();
+    doc.upsert_chat(&chat("two", "dev-a")).unwrap();
+    let batches = doc.take_pushable();
+    let first = &batches[0].ops[0].hlc;
+    assert!(first > &remote, "{first} must order after {remote}");
+    for batch in &batches {
+        for op in &batch.ops {
+            assert!(parse_hlc(&op.hlc).is_some(), "edge would reject {}", op.hlc);
+        }
+    }
+}
+
+#[test]
+fn an_out_of_range_saved_clock_is_dropped_on_load() {
+    let mut doc = RegistryDoc::new("dev-a");
+    doc.upsert_chat(&chat("c", "dev-a")).unwrap();
+    doc.clock = HlcClock { last_ms: MAX_HLC_MS + 1, counter: 0 };
+    let mut loaded = RegistryDoc::from_bytes(&doc.to_bytes().unwrap(), "dev-a").unwrap();
+    let held = loaded.overlay_row(KIND_CHATS, "c").unwrap();
+    loaded.rename_chat("c", "renamed").unwrap();
+    let batches = loaded.take_pushable();
+    let op = batches.iter().flat_map(|b| &b.ops).find(|op| op.id == "c").unwrap();
+    let stamp = op.clock_for("title");
+    assert!(parse_hlc(stamp).is_some(), "edge would reject {stamp}");
+    // It still orders after the stamps the replica holds (the rename
+    // coalesced into the pending upsert: its own clock is the title's).
+    let held: Vec<_> = held.clocks.iter().filter(|(k, _)| *k != "title").collect();
+    assert!(held.iter().all(|(_, c)| stamp > c.as_str()), "{stamp} vs {held:?}");
+}
+
+/// Same answers as `HLC_RE` in edge/src/registry-core.ts (checked with Node).
+#[test]
+fn parse_hlc_accepts_exactly_what_the_edge_accepts() {
+    let device_128 = "d".repeat(128);
+    let device_129 = "d".repeat(129);
+    let cases = [
+        ("1700000000000-000000-dev-a", true),
+        ("9999999999999-999999-peer", true),
+        ("0000000000000-000000-a", true),
+        ("1700000000000-000000-a_b-C9", true),
+        (&*format!("1700000000000-000001-{device_128}"), true),
+        (&*format!("1700000000000-000001-{device_129}"), false),
+        ("10000000000000-000000-dev-a", false),
+        ("1700000000000-4294967295-peer", false),
+        ("1700000000000-00000-peer", false),
+        ("1700000000000-000000-", false),
+        ("1700000000000-000000-dev.a", false),
+        ("1700000000000-000000-dév", false),
+        ("+700000000000-000000-peer", false),
+        ("170000000000a-000000-peer", false),
+        ("invalid", false),
+        ("", false),
+    ];
+    for (stamp, ok) in cases {
+        assert_eq!(parse_hlc(stamp).is_some(), ok, "{stamp}");
+    }
+}
+
+#[test]
+fn a_received_clock_survives_a_snapshot_and_a_delta() {
+    for incremental in [false, true] {
+        let mut source = RegistryDoc::new("dev-z");
+        pin_clock_ahead(&mut source);
+        source.upsert_chat(&chat("c", "dev-z")).unwrap();
+        source.rename_chat("c", "peer").unwrap();
+        let mut server = HashMap::new();
+        let mut seq = 0;
+        server_round(&mut server, &mut seq, &mut [&mut source]);
+        let mut receiver = RegistryDoc::new("dev-a");
+        let base = receiver.to_bytes().unwrap();
+        receiver.mark_saved();
+        let _ = receiver.apply_state(seq, false, 0, server.values().cloned().collect());
+        let mut loaded = if incremental {
+            let delta = receiver.delta_bytes().unwrap().unwrap();
+            RegistryDoc::from_saved(&base, &[delta], &[], "dev-a").unwrap().0
+        } else {
+            RegistryDoc::from_bytes(&receiver.to_bytes().unwrap(), "dev-a").unwrap()
+        };
+        loaded.rename_chat("c", "later").unwrap();
+        server_round(&mut server, &mut seq, &mut [&mut loaded]);
+        assert_eq!(loaded.chat("c").unwrap().unwrap().title.as_deref(), Some("later"));
+    }
+}
+
+#[test]
+fn a_malformed_clock_doesnt_hide_the_valid_ones_on_a_row() {
+    let mut source = RegistryDoc::new("dev-z");
+    pin_clock_ahead(&mut source);
+    source.upsert_chat(&chat("c", "dev-z")).unwrap();
+    source.rename_chat("c", "peer").unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut source]);
+    let row = server.get_mut(&(KIND_CHATS.to_owned(), "c".to_owned())).unwrap();
+    row.clocks.insert("unused".into(), "invalid".into());
+    let mut receiver = RegistryDoc::new("dev-a");
+    assert!(receiver.apply_rows(seq, server.values().cloned().collect()));
+    receiver.rename_chat("c", "later").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut receiver]);
+    assert_eq!(receiver.chat("c").unwrap().unwrap().title.as_deref(), Some("later"));
+}
+
+#[test]
+fn a_write_after_recovering_pending_writes_wins_over_them() {
+    let mut source = RegistryDoc::new("dev-z");
+    let mut receiver = RegistryDoc::new("dev-a");
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    source.upsert_chat(&chat("c", "dev-z")).unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut source, &mut receiver]);
+    let base = receiver.to_bytes().unwrap();
+    receiver.mark_saved();
+    pin_clock_ahead(&mut source);
+    source.rename_chat("c", "remote").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut source, &mut receiver]);
+    receiver.rename_chat("c", "earlier recovered edit").unwrap();
+    let delta = receiver.delta_bytes().unwrap().unwrap();
+    let (mut loaded, clean) =
+        RegistryDoc::from_saved(&base, &[b"broken".to_vec(), delta], &[], "dev-a").unwrap();
+    assert!(!clean);
+    assert_eq!(loaded.chat("c").unwrap().unwrap().title.as_deref(), Some("earlier recovered edit"));
+    loaded.rename_chat("c", "later edit").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut loaded]);
+    assert_eq!(loaded.chat("c").unwrap().unwrap().title.as_deref(), Some("later edit"));
+}
+
 /// Device a's clock stands ahead of b's wall clock: a higher counter in the
 /// same millisecond, or a wall clock running ahead. Pinned, so the test
 /// doesn't depend on when the millisecond turns over.

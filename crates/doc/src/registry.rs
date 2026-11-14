@@ -70,8 +70,36 @@ fn hlc_newer(a: &str, b: Option<&str>) -> bool {
     }
 }
 
+/// The greatest millisecond and counter the wire format holds (13 and 6
+/// digits: `HLC_RE` in edge/src/registry-core.ts).
+const MAX_HLC_MS: i64 = 9_999_999_999_999;
+const MAX_HLC_COUNTER: u32 = 999_999;
+
+/// A stamp's millisecond and counter, when the whole stamp is one the edge
+/// accepts (`^\d{13}-\d{6}-[A-Za-z0-9_-]{1,128}$`); `None` otherwise.
+fn parse_hlc(hlc: &str) -> Option<(i64, u32)> {
+    let b = hlc.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    let device = b.get(21..)?;
+    if b.len() < 22
+        || b[13] != b'-'
+        || b[20] != b'-'
+        || !digits(0..13)
+        || !digits(14..20)
+        || device.len() > 128
+        || !device
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
+    {
+        return None;
+    }
+    Some((hlc[..13].parse().ok()?, hlc[14..20].parse().ok()?))
+}
+
 /// Monotonic HLC source: never emits the same or an earlier clock twice, even
-/// across a wall-clock regression or restart (state persists with the doc).
+/// across a wall-clock regression or restart (state persists with the doc),
+/// and every clock it emits is one the edge accepts. Only at the very top of
+/// the range, where no later stamp exists, does it repeat the greatest one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HlcClock {
     last_ms: i64,
@@ -80,30 +108,58 @@ pub struct HlcClock {
 
 impl HlcClock {
     fn next(&mut self, now_ms: i64, device: &str) -> String {
+        let now_ms = now_ms.clamp(0, MAX_HLC_MS);
         if now_ms > self.last_ms {
             self.last_ms = now_ms;
             self.counter = 0;
-        } else {
+        } else if self.counter < MAX_HLC_COUNTER {
             self.counter += 1;
-            if self.counter > 999_999 {
-                self.last_ms += 1;
-                self.counter = 0;
-            }
+        } else if self.last_ms < MAX_HLC_MS {
+            self.last_ms += 1;
+            self.counter = 0;
         }
         encode_hlc(self.last_ms, self.counter, device)
     }
 
     /// Move past a clock already seen (any device's), so the next one is
-    /// newer than it even when that device's wall clock runs ahead.
+    /// newer than it even when that device's wall clock runs ahead. Ignores
+    /// a stamp the edge wouldn't accept, and one at the top of the range,
+    /// whose successor the wire format can't hold: adopting it would leave
+    /// every later write unencodable.
     fn observe(&mut self, hlc: &str) {
-        let mut parts = hlc.splitn(3, '-');
-        let ms = parts.next().and_then(|s| s.parse::<i64>().ok());
-        let counter = parts.next().and_then(|s| s.parse::<u32>().ok());
-        if let (Some(ms), Some(counter)) = (ms, counter)
+        if let Some((ms, counter)) = parse_hlc(hlc)
+            && (ms, counter) < (MAX_HLC_MS, MAX_HLC_COUNTER)
             && (ms, counter) > (self.last_ms, self.counter)
         {
             self.last_ms = ms;
             self.counter = counter;
+        }
+    }
+
+    /// Every stamp on a row, each on its own: one malformed clock can't hide
+    /// the valid ones.
+    fn observe_row(&mut self, row: &RegistryRow) {
+        for hlc in row.clocks.values().chain(&row.del_hlc) {
+            self.observe(hlc);
+        }
+    }
+
+    /// Every stamp an op carries.
+    fn observe_op(&mut self, op: &RowOp) {
+        self.observe(&op.hlc);
+        for hlc in op.clocks.iter().flat_map(|c| c.values()) {
+            self.observe(hlc);
+        }
+    }
+
+    /// A saved clock, taken only when it's one this clock could have
+    /// reached (a corrupt or out-of-range one is dropped; the retained
+    /// stamps are observed after a load anyway). Never moves backwards.
+    fn restore(&mut self, saved: HlcClock) {
+        let in_range = (0..=MAX_HLC_MS).contains(&saved.last_ms)
+            && saved.counter <= MAX_HLC_COUNTER;
+        if in_range && (saved.last_ms, saved.counter) > (self.last_ms, self.counter) {
+            *self = saved;
         }
     }
 }
@@ -760,6 +816,7 @@ impl RegistryDoc {
                 }
             }
         }
+        doc.observe_retained();
         doc.coalesce_loaded();
         doc.unsaved = Some(HashSet::new());
         Ok((doc, clean))
@@ -772,7 +829,7 @@ impl RegistryDoc {
             delta.server_seq
         };
         self.gc_floor = delta.gc_floor;
-        self.clock = delta.clock;
+        self.clock.restore(delta.clock);
         self.local_writes = delta.local_writes;
         self.pending = delta.pending;
         for row in delta.rows {
@@ -784,8 +841,23 @@ impl RegistryDoc {
     pub fn from_bytes(bytes: &[u8], device_id: &str) -> Result<Self, DocError> {
         let state: PersistedState = serde_json::from_slice(bytes)?;
         let mut doc = Self::from_state(state, device_id)?;
+        doc.observe_retained();
         doc.coalesce_loaded();
         Ok(doc)
+    }
+
+    /// After a load: the clock moves past every stamp the replica holds,
+    /// authoritative and pending (pending salvaged after a broken delta
+    /// chain too). A replica saved before received clocks were observed, or
+    /// one whose saved clock trails what it recovered, still writes after
+    /// everything it has seen.
+    fn observe_retained(&mut self) {
+        for row in self.authoritative.values().flat_map(HashMap::values) {
+            self.clock.observe_row(row);
+        }
+        for op in self.pending.iter().flat_map(|b| &b.ops) {
+            self.clock.observe_op(op);
+        }
     }
 
     fn from_state(state: PersistedState, device_id: &str) -> Result<Self, DocError> {
@@ -808,7 +880,7 @@ impl RegistryDoc {
             doc.server_seq = state.server_seq;
         }
         doc.gc_floor = state.gc_floor;
-        doc.clock = state.clock;
+        doc.clock.restore(state.clock);
         doc.local_writes = state.local_writes;
         doc.pending = state.pending;
         for row in state.rows {
@@ -981,9 +1053,7 @@ impl RegistryDoc {
     /// a peer whose wall clock runs ahead, lost to it.
     fn observe_received(&mut self, rows: &[RegistryRow]) {
         for row in rows {
-            if let Some(hlc) = row.max_clock() {
-                self.clock.observe(hlc);
-            }
+            self.clock.observe_row(row);
         }
     }
 
