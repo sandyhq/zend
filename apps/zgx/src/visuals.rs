@@ -44,7 +44,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde_json::json;
 use zend_visual as zv;
@@ -1258,6 +1258,9 @@ enum Job {
     Release {
         key: String,
     },
+    /// (For tests: work of a test's own, done there as a frame's is.)
+    #[cfg(test)]
+    Probe(Box<dyn FnOnce() + Send>),
 }
 
 /// A frame as the window shows it: straight RGBA, top row first.
@@ -1271,33 +1274,158 @@ fn surface_key(id: &str, path: &str) -> String {
     format!("visual/{id}/{path}")
 }
 
-/// The GPU's thread: one for every visual, as the shipping app's one
-/// device. Each surface's state (its targets, a shader's feedback
-/// buffers) stays there between frames.
-fn gpu_send(job: Job) {
-    static SENDER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
-    let sender = SENDER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<Job>();
-        let _ = std::thread::Builder::new().name("zend-visual-gpu".into()).spawn(move || gpu_thread(rx));
-        Mutex::new(tx)
-    });
-    if let Ok(sender) = sender.lock() {
-        let _ = sender.send(job);
+/// The GPU's thread, while a thread that sends it jobs lives.
+struct GpuThread {
+    jobs: mpsc::Sender<Job>,
+    /// Set to have it leave after the job it's on.
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Closes once it has let go of everything it held on the GPU.
+    gone: mpsc::Receiver<()>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+/// The GPU's thread and how many threads use it (each window's thread; in
+/// a test, the test's).
+struct GpuThreads {
+    thread: Option<GpuThread>,
+    users: usize,
+}
+
+static GPU_THREAD: Mutex<GpuThreads> = Mutex::new(GpuThreads { thread: None, users: 0 });
+
+/// The longest a thread waits, as it ends, for the GPU's thread to finish
+/// the job it's on (a first frame makes the device: a second or two on a
+/// busy machine).
+const GPU_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A thread's use of the GPU's thread, from its first job until it ends
+/// (or [`stop_gpu`]). The last one to go stops the GPU's thread and waits
+/// for it.
+///
+/// The process must not exit under the GPU's thread. `exit` runs the
+/// destructors of every library loaded (on Linux: the Vulkan driver's, the
+/// validation layer's in a debug build, LLVM's) and unloads them while
+/// other threads still run, so a frame still rendering then reads freed
+/// state: a SIGSEGV, an abort in malloc, or a deadlock on a lock `exit`
+/// holds, now and then as a test's process (or the app) ends. A thread's
+/// locals are dropped before any of that, so this is where it waits.
+///
+/// (Not on Windows, where a thread's locals are dropped under the loader's
+/// lock, which the GPU's thread needs to load the driver and to end: there
+/// only [`stop_gpu`] waits, and a process exiting ends its other threads
+/// before it unloads anything.)
+struct GpuUser {
+    using: std::cell::Cell<bool>,
+}
+
+thread_local! {
+    static GPU_USER: GpuUser = const { GpuUser { using: std::cell::Cell::new(false) } };
+}
+
+impl GpuUser {
+    /// This thread's use over: the GPU's thread stopped if it was the last,
+    /// and waited for if `wait`.
+    fn release(&self, wait: bool) {
+        if !self.using.replace(false) {
+            return;
+        }
+        let thread = {
+            let Ok(mut gpu) = GPU_THREAD.lock() else { return };
+            gpu.users = gpu.users.saturating_sub(1);
+            if gpu.users > 0 {
+                return;
+            }
+            gpu.thread.take()
+        };
+        let Some(GpuThread { jobs, stop, gone, handle }) = thread else { return };
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        drop(jobs);
+        if !wait {
+            return;
+        }
+        match gone.recv_timeout(GPU_STOP_WAIT) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!("zend-zgx: the visuals' GPU thread is still on a frame: not waiting for it any longer");
+            }
+            _ => {
+                let _ = handle.join();
+            }
+        }
     }
 }
 
-fn gpu_thread(jobs: mpsc::Receiver<Job>) {
+impl Drop for GpuUser {
+    fn drop(&mut self) {
+        self.release(cfg!(unix));
+    }
+}
+
+/// This thread is done with the GPU's thread (the app quitting, after its
+/// windows closed): once no other thread uses it, it finishes the job it's
+/// on and ends, and this returns then. A later frame starts it again.
+pub fn stop_gpu() {
+    let _ = GPU_USER.try_with(|user| user.release(true));
+}
+
+/// The GPU's thread: one for every visual, as the shipping app's one
+/// device. Each surface's state (its targets, a shader's feedback
+/// buffers) stays there between frames. It runs while a thread that sent
+/// it a job lives ([`GpuUser`]).
+fn gpu_send(job: Job) {
+    // (A thread on its way out, its locals already gone, has no frame to show.)
+    let Ok(new) = GPU_USER.try_with(|user| !user.using.replace(true)) else { return };
+    let Ok(mut gpu) = GPU_THREAD.lock() else { return };
+    if new {
+        gpu.users += 1;
+    }
+    let thread = match &mut gpu.thread {
+        Some(thread) => thread,
+        none => {
+            let (jobs, rx) = mpsc::channel::<Job>();
+            let (left, gone) = mpsc::channel::<()>();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopped = stop.clone();
+            let spawned = std::thread::Builder::new().name("zend-visual-gpu".into()).spawn(move || gpu_thread(rx, &stopped, left));
+            let Ok(handle) = spawned else { return };
+            none.insert(GpuThread { jobs, stop, gone, handle })
+        }
+    };
+    let _ = thread.jobs.send(job);
+}
+
+/// (For tests: `work` done on the GPU's thread, as a frame is.)
+#[cfg(test)]
+pub fn gpu_probe(work: impl FnOnce() + Send + 'static) {
+    gpu_send(Job::Probe(Box::new(work)));
+}
+
+/// (For tests: whether the GPU's thread runs.)
+#[cfg(test)]
+pub fn gpu_thread_runs() -> bool {
+    GPU_THREAD.lock().is_ok_and(|gpu| gpu.thread.is_some())
+}
+
+fn gpu_thread(jobs: mpsc::Receiver<Job>, stop: &std::sync::atomic::AtomicBool, left: mpsc::Sender<()>) {
+    // (Dropped last, after the surfaces: what waits for it then finds the
+    // GPU let go of.)
+    let _left = left;
     let mut scenes: HashMap<String, Option<zend_visual_gpu::SceneState>> = HashMap::new();
     let mut shaders: HashMap<String, Option<zend_visual_gpu::ShaderState>> = HashMap::new();
     while let Ok(job) = jobs.recv() {
+        // (Its last user gone: nothing waits for the frames still asked for.)
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
         let start = std::time::Instant::now();
         let cpu = thread_cpu_ns();
-        let frame = !matches!(job, Job::Release { .. });
+        let frame = matches!(job, Job::Scene { .. } | Job::Shader { .. });
         match job {
             Job::Release { key } => {
                 scenes.remove(&key);
                 shaders.remove(&key);
             }
+            #[cfg(test)]
+            Job::Probe(work) => work(),
             Job::Scene { key, scene, camera, size, scale, palette, reply } => {
                 let rgba = move |c: zv::Color| palette.color(c);
                 let state = scenes.entry(key).or_default();

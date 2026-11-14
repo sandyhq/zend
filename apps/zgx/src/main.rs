@@ -365,6 +365,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             links::open(url);
         }
     })?;
+    // Quitting: no frame of a visual is still on the GPU as the process
+    // exits (src/visuals.rs `GpuUser`).
+    visuals::stop_gpu();
     // Quitting: an update downloaded and never restarted for installs now,
     // so the next launch is on it (src/about.rs).
     about::install_on_quit();

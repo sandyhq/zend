@@ -142,6 +142,60 @@ fn scenes_and_shaders_render_on_the_gpu_thread() {
     assert!(!has(&mut app, "#visual-scene >> .visual-error"), "{}", app.tree());
 }
 
+/// What the three tests above died of now and then on Linux (SIGSEGV, an
+/// abort in malloc, a hang in `exit`): the test over, its process exited
+/// with the GPU's thread still on a frame, and `exit` took the Vulkan
+/// libraries' state from under it. A thread that used the GPU's thread
+/// waits for it as it ends, so nothing is on the GPU by then. (Not on
+/// Windows, where a process exiting ends its other threads first and only
+/// `stop_gpu` waits.)
+#[cfg(unix)]
+#[test]
+fn a_thread_that_used_the_gpu_s_thread_ends_only_once_its_frame_has() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::{Arc, mpsc};
+    let done = Arc::new(AtomicBool::new(false));
+    let frame = done.clone();
+    let user = std::thread::spawn(move || {
+        let (started, on_it) = mpsc::channel();
+        crate::visuals::gpu_probe(move || {
+            let _ = started.send(());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            frame.store(true, SeqCst);
+        });
+        // The GPU's thread is on the frame as this thread (a test's, the
+        // app's) ends.
+        on_it.recv().expect("the GPU's thread took the frame");
+    });
+    user.join().expect("the thread ended");
+    assert!(done.load(SeqCst), "the thread ended with the GPU's thread still on its frame");
+}
+
+/// (The GPU's thread is the process's one: this counts on a process of its
+/// own, as nextest gives each test.)
+#[test]
+fn the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next() {
+    use std::sync::mpsc;
+    let probe = || {
+        let (did, done) = mpsc::channel();
+        crate::visuals::gpu_probe(move || {
+            let _ = did.send(std::thread::current().id());
+        });
+        done.recv_timeout(std::time::Duration::from_secs(5)).expect("the GPU's thread did the work")
+    };
+    // This thread uses it; another comes and goes.
+    let first = probe();
+    std::thread::spawn(probe).join().expect("the other thread ended");
+    assert!(crate::visuals::gpu_thread_runs(), "one thread ending stopped the GPU's thread under another");
+    assert_eq!(probe(), first, "the same thread, its surfaces kept");
+    // This one done with it (as the app is when it quits): it ends, and
+    // starts again when next needed.
+    crate::visuals::stop_gpu();
+    assert!(!crate::visuals::gpu_thread_runs());
+    assert_ne!(probe(), first, "a new thread for the next frame");
+    crate::visuals::stop_gpu();
+}
+
 const COUNTER: &str = r#"
 local count = 0
 local scale = math.random(1, 1000000)
