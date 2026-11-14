@@ -30,7 +30,8 @@ were removed. `release.yml` (tags only) is unchanged.
 | Voice (audio stack, Windows media runtime) | nightly or `ci:full` only, and only for its own files | nightly or manual run only |
 
 The zgx paths come from the Cargo graph: every crate `apps/zgx` builds
-against. Its zgx CLI is built from `third_party/zgx`.
+against. Its zgx CLI is built from [sandyhq/zengx](https://github.com/sandyhq/zengx)
+at the commit `zgx-tests.yml` pins (`ZENGX_REV`).
 
 `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` changes run everything
 except a version bump: one that only changes `version = "..."` lines (the

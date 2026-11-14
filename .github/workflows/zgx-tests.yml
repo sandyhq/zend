@@ -5,7 +5,7 @@ name: zgx tests
 #
 #   apps/zgx's unit tests (`cargo test --bin zend-zgx`: src/plugins/*_tests.rs
 #   among them) and its Luau UI tests (`zgx test ui`, the zgx CLI built from
-#   third_party/zgx), on macOS and Linux, the known failures let
+#   sandyhq/zengx at ZENGX_REV), on macOS and Linux, the known failures let
 #   through (scripts/ci/test-zgx.sh, scripts/ci/zgx-known-failures.txt);
 #   and on macOS the engine's plugin tests (its lib's `plugins::` tests and
 #   tests/plugin_services.rs), which core-tests runs on Linux.
@@ -24,6 +24,9 @@ permissions:
   contents: read
 
 env:
+  # The sandyhq/zengx commit the zgx CLI is built from. Move it on purpose: a
+  # new CLI can change what the UI tests see.
+  ZENGX_REV: 758a12c701da35c7a84dd7364905b4548984fedb
   NEXTEST_PROFILE: ${{ github.event_name == 'schedule' && 'default' || 'ci' }}
   CARGO_PROFILE_DEV_DEBUG: 0
   # The zgx CLI without Luau's asserts (they slow scripts by about a fifth).
@@ -68,18 +71,16 @@ jobs:
           mkdir -p "$bin"
           tar -xzf "$RUNNER_TEMP/nextest.tar.gz" -C "$bin" cargo-nextest
           echo "$bin" >> "$GITHUB_PATH"
-      # zgx is vendored in third_party/zgx (apps/zgx's path dependencies): the
-      # CLI is built from that copy, cached on its sources.
       - id: zgx-cli
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/zgx-cli
-          key: zgx-cli-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/zgx/Cargo.lock', 'third_party/zgx/crates/**') }}
-      - name: zgx CLI
+          key: zgx-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.ZENGX_REV }}
+      - name: zgx CLI (sandyhq/zengx)
         if: steps.zgx-cli.outputs.cache-hit != 'true'
         run: |
           CARGO_TARGET_DIR="$RUNNER_TEMP/zgx-cli-target" cargo install --locked \
-            --path third_party/zgx/crates/zgx-script --bin zgx --features inspect --root ~/zgx-cli
+            --git https://github.com/sandyhq/zengx --rev "$ZENGX_REV" zgx-script --bin zgx --features inspect --root ~/zgx-cli
       - name: apps/zgx unit tests
         run: scripts/ci/test-zgx.sh rust
       - name: apps/zgx Luau UI tests
@@ -121,18 +122,16 @@ jobs:
           workspaces: apps/zgx -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      # zgx is vendored in third_party/zgx (apps/zgx's path dependencies): the
-      # CLI is built from that copy, cached on its sources.
       - id: zgx-cli
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/zgx-cli
-          key: zgx-cli-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/zgx/Cargo.lock', 'third_party/zgx/crates/**') }}
-      - name: zgx CLI
+          key: zgx-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.ZENGX_REV }}
+      - name: zgx CLI (sandyhq/zengx)
         if: steps.zgx-cli.outputs.cache-hit != 'true'
         run: |
           CARGO_TARGET_DIR="$RUNNER_TEMP/zgx-cli-target" cargo install --locked \
-            --path third_party/zgx/crates/zgx-script --bin zgx --features inspect --root ~/zgx-cli
+            --git https://github.com/sandyhq/zengx --rev "$ZENGX_REV" zgx-script --bin zgx --features inspect --root ~/zgx-cli
       - name: apps/zgx unit tests
         run: scripts/ci/test-zgx.sh rust
       - name: apps/zgx Luau UI tests
