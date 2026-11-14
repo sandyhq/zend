@@ -30,6 +30,7 @@ pub(super) const IMPORT_TEMPLATE: &str = "import_template";
 pub(super) const DESCRIBE_ELEMENTS: &str = "describe_elements";
 pub(super) const PLUGIN_STATUS: &str = "plugin_status";
 pub(super) const PLUGIN_LOGS: &str = "plugin_logs";
+pub(super) const CHECK_PLUGIN: &str = "check_plugin";
 pub(super) const INSTALL_PLUGIN: &str = "install_plugin";
 pub(super) const UPDATE_PLUGIN: &str = "update_plugin";
 pub(super) const EXPORT_PLUGIN: &str = "export_plugin";
@@ -205,6 +206,18 @@ pub(super) fn catalog() -> Vec<ToolDef> {
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many, the newest (default 100)." }
                 },
                 "required": ["id"]
+            }),
+        },
+        ToolDef {
+            name: CHECK_PLUGIN,
+            description: "Check a Zend plugin's Luau before it runs, as `zend plugin check` does: each .luau file's syntax, and its types with luau-lsp against Zend's window API, its own zend.luau helpers and the @ds modules. A file is checked strictly when it starts with --!strict (a new plugin's init.luau does: a helper given the wrong kind of value, like zend.place { at = 5 }, is an error), else in Luau's default mode, which reports only what's wrong for sure. `strict` checks every file strictly. Each finding has file (relative to the plugin), line, column, severity (error or warning), code (SyntaxError, TypeError, or a lint's name) and message; `ok` is false when one is an error. Only the plugin's own files count (not @ds, not its zend.luau). Without luau-lsp on this device, only the syntax is checked: `types_checked` false, `types_note` says why. Zend also checks an own plugin as you save it and writes its errors to plugin_logs (source check).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The plugin's id, from list_plugins." },
+                    "path": { "type": "string", "description": "Or a plugin folder's full path." },
+                    "strict": { "type": "boolean", "description": "Check every file strictly, not only those starting with --!strict." }
+                }
             }),
         },
         ToolDef {
@@ -485,12 +498,16 @@ impl Tools {
                 "Edit {dir}/init.luau; Zend re-signs and reloads it as you save. Use {dir}/zend.luau's helpers."
             ),
         });
+        // Its first check (check_plugin's), when the engine gave one.
+        if let Some(check) = item.get("check") {
+            reply["check"] = check.clone();
+        }
         // The authoring guide, written on this device: read it first.
         if let Some(guide) = item.get("guide").and_then(Value::as_str) {
             reply["guide"] = json!(guide);
             reply["guide_summary"] = item.get("guide_summary").cloned().unwrap_or(Value::Null);
             reply["hint"] = json!(format!(
-                "Read {guide} first (how to write a plugin, with examples). Then edit {dir}/init.luau; Zend re-signs and reloads it as you save. Check it with plugin_status (snapshot: true)."
+                "Read {guide} first (how to write a plugin, with examples). Then edit {dir}/init.luau; Zend re-signs and reloads it as you save. Check its Luau with check_plugin (file:line for each error), then where it shows with plugin_status (snapshot: true)."
             ));
         }
         Ok(reply)
@@ -629,6 +646,25 @@ impl Tools {
             )
             .await
             .map_err(plain)
+    }
+
+    /// `check_plugin`: the engine's `CheckPlugin`, as it answers.
+    pub(super) async fn check_plugin(&self, args: Value) -> Result<Value, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: Option<String>,
+            path: Option<String>,
+            strict: Option<bool>,
+        }
+        let args: Args = parse(args)?;
+        let given = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let mut params = match (given(args.id), given(args.path)) {
+            (Some(id), None) => json!({ "id": id }),
+            (None, Some(path)) => json!({ "path": path }),
+            _ => return Err("Give one of `id` (from list_plugins) or `path` (a plugin folder's full path).".into()),
+        };
+        params["strict"] = json!(args.strict.unwrap_or(false));
+        self.zend.call_rpc(methods::CHECK_PLUGIN, params).await.map_err(plain)
     }
 
     /// `install_plugin`: the engine's `InstallPlugin`. Allowing someone
@@ -1253,7 +1289,7 @@ mod tests {
         );
         assert_eq!(
             created["hint"],
-            "Read /nowhere/docs/plugins.md first (how to write a plugin, with examples). Then edit /nowhere/plugins/focus/init.luau; Zend re-signs and reloads it as you save. Check it with plugin_status (snapshot: true)."
+            "Read /nowhere/docs/plugins.md first (how to write a plugin, with examples). Then edit /nowhere/plugins/focus/init.luau; Zend re-signs and reloads it as you save. Check its Luau with check_plugin (file:line for each error), then where it shows with plugin_status (snapshot: true)."
         );
         assert_eq!(created["guide"], "/nowhere/docs/plugins.md");
         {

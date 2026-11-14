@@ -142,6 +142,20 @@ pub enum PluginCommand {
     Sign { target: String },
     /// Check a plugin folder's signature and who made it.
     Verify { path: String },
+    /// Check a plugin's Luau before Zend runs it: its syntax, and its
+    /// types with luau-lsp (each file in the mode it asks for, `--!strict`
+    /// or Luau's default). Each problem is said as file:line:column; exits
+    /// 1 when there's an error. Runs here, without Zend open.
+    Check {
+        /// An id in the plugins folder, or a folder's path.
+        target: String,
+        /// Check every file strictly, not only those that ask.
+        #[arg(long)]
+        strict: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the plugins Zend knows.
     List,
     /// Save a plugin as one signed .zend-plugin file to share (attach it

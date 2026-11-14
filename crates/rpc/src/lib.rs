@@ -504,6 +504,11 @@ pub mod methods {
     pub const SIGN_PLUGIN: &str = "SignPlugin";
     /// `{path}` → `{author, status, hash, error?}`.
     pub const VERIFY_PLUGIN: &str = "VerifyPlugin";
+    /// `{id} | {path}, strict?` → `{dir, files, findings: [{file, line,
+    /// column, severity: "error" | "warning", code, message}], errors,
+    /// warnings, ok, summary, types_checked, types_note?}`: a plugin's Luau
+    /// checked (syntax, and its types with luau-lsp), its own files only.
+    pub const CHECK_PLUGIN: &str = "CheckPlugin";
     /// `{}` → `{device: {id, name}, tools: [..]}`.
     pub const LIST_PLUGIN_TOOLS: &str = "ListPluginTools";
     /// `{}` → stream of `ListPluginTools`' reply.
@@ -704,6 +709,7 @@ pub fn local_only(method: &str) -> bool {
             | methods::NEW_PLUGIN
             | methods::SIGN_PLUGIN
             | methods::VERIFY_PLUGIN
+            | methods::CHECK_PLUGIN
             | methods::LIST_PLUGIN_TOOLS
             | methods::WATCH_PLUGIN_TOOLS
             | methods::CALL_PLUGIN_TOOL
@@ -813,6 +819,7 @@ pub fn agent_allowed(method: &str) -> bool {
             | methods::LIST_PLUGINS
             | methods::PLUGIN_STATUS
             | methods::PLUGIN_LOGS
+            | methods::CHECK_PLUGIN
             | methods::NEW_PLUGIN
             | methods::INSTALL_PLUGIN
             | methods::CHECK_PLUGIN_UPDATES

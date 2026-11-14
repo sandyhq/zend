@@ -84,9 +84,12 @@ async fn plugins_new_plugin_scaffolds_signs_and_is_on() {
     let dir = f.plugins.plugins_dir().join("hello");
     let init = std::fs::read_to_string(dir.join("init.luau")).unwrap();
     assert!(
-        init.starts_with("local zend = require(\"./zend\")(\"hello\")"),
+        init.starts_with("--!strict\nlocal zend = require(\"./zend\")(\"hello\")"),
         "{init}"
     );
+    // Checked as it's made: a new plugin is clean.
+    assert_eq!(made["check"]["ok"], true, "{}", made["check"]);
+    assert_eq!(made["check"]["errors"], 0);
     assert_eq!(
         std::fs::read_to_string(dir.join("zend.luau")).unwrap(),
         scaffold::SDK

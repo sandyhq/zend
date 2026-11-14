@@ -891,6 +891,7 @@ impl Tools {
             plugins::DESCRIBE_ELEMENTS => return self.describe_elements().await,
             plugins::PLUGIN_STATUS => return self.plugin_status(args).await,
             plugins::PLUGIN_LOGS => return self.plugin_logs(args).await,
+            plugins::CHECK_PLUGIN => return self.check_plugin(args).await,
             plugins::INSTALL_PLUGIN => return self.install_plugin(args).await,
             plugins::UPDATE_PLUGIN => return self.update_plugin(args).await,
             plugins::EXPORT_PLUGIN => return self.export_plugin(args).await,
