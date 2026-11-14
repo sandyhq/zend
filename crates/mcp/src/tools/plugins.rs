@@ -184,12 +184,16 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: PLUGIN_STATUS,
-            description: "Where a Zend plugin's UI landed, to check your work without a person: its status (on, off, pending review, tampered, broken, and why), what it was allowed, and, from Zend's window on this device, each zend.place it made (its selector, how, how many elements it matched and their boxes in the window), what its row in Settings says (a node that needs what its place doesn't give, places this template doesn't have, an error that stopped it) and its pages. With snapshot: true, also a PNG of the window cut to around its nodes (the whole window when none shows): read the file at `snapshot` to look. Edit the plugin, save, and ask again.",
+            description: "Where a Zend plugin's UI landed, to check your work without a person: its status (on, off, pending review, tampered, broken, and why), what it was allowed, and, from Zend's window on this device, each zend.place it made (its selector, how, how many elements it matched and their boxes in the window), what its row in Settings says (a node that needs what its place doesn't give, places this template doesn't have, an error that stopped it) and its pages. With snapshot: true, also a PNG of the window cut to around its nodes: read the file at `snapshot` to look. With `page` too, the picture is of that page of the plugin's own instead (an id from `pages`), built apart from the window for the picture alone, so it needn't be open, nor the window in front: `width` and `height` are the page's size in points, and `state` stands in for what the plugin keeps (zend.store) as the page builds, nothing kept changing. Edit the plugin, save, and ask again.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "The plugin's id, from list_plugins." },
-                    "snapshot": { "type": "boolean", "description": "Also save a picture of where it shows." }
+                    "snapshot": { "type": "boolean", "description": "Also save a picture of where it shows." },
+                    "page": { "type": "string", "description": "With snapshot: picture this page of the plugin's own (its id, as in `pages`), whether or not it's open." },
+                    "width": { "type": "number", "description": "With page: the page's width in points (default 1000, 240 to 2400)." },
+                    "height": { "type": "number", "description": "With page: the page's height in points (default 760, 160 to 4000)." },
+                    "state": { "type": "object", "description": "With page: values standing in for what the plugin keeps, by zend.store key (e.g. {\"tab\": \"usage\"}), read as the page builds. What it keeps doesn't change." }
                 },
                 "required": ["id"]
             }),
@@ -602,10 +606,37 @@ impl Tools {
             id: String,
             #[serde(default)]
             snapshot: bool,
+            #[serde(default)]
+            page: Option<String>,
+            #[serde(default)]
+            width: Option<f64>,
+            #[serde(default)]
+            height: Option<f64>,
+            #[serde(default)]
+            state: Option<serde_json::Map<String, Value>>,
         }
         let args: Args = parse(args)?;
+        if !args.snapshot && (args.page.is_some() || args.width.is_some() || args.height.is_some() || args.state.is_some()) {
+            return Err("page, width, height and state are for a picture: pass snapshot: true".into());
+        }
+        if args.page.is_none() && (args.width.is_some() || args.height.is_some() || args.state.is_some()) {
+            return Err("width, height and state are for a page's picture: pass page".into());
+        }
+        let mut params = json!({ "id": args.id, "snapshot": args.snapshot });
+        if let Some(page) = args.page {
+            params["page"] = json!(page);
+        }
+        if let Some(width) = args.width {
+            params["width"] = json!(width);
+        }
+        if let Some(height) = args.height {
+            params["height"] = json!(height);
+        }
+        if let Some(state) = args.state {
+            params["state"] = Value::Object(state);
+        }
         self.zend
-            .call_rpc(methods::PLUGIN_STATUS, json!({ "id": args.id, "snapshot": args.snapshot }))
+            .call_rpc(methods::PLUGIN_STATUS, params)
             .await
             .map_err(plain)
     }
@@ -1283,6 +1314,15 @@ mod tests {
             last_call(&engine),
             (methods::PLUGIN_STATUS.to_owned(), json!({ "id": "focus", "snapshot": true }))
         );
+        // A page of its own to picture: what's asked goes on as asked, and
+        // only with what it belongs to.
+        let asked = json!({ "id": "focus", "snapshot": true, "page": "notes", "width": 800.0, "state": { "tab": "all" } });
+        tools.call(PLUGIN_STATUS, asked.clone()).await.unwrap();
+        assert_eq!(last_call(&engine), (methods::PLUGIN_STATUS.to_owned(), asked));
+        let unpictured = tools.call(PLUGIN_STATUS, json!({ "id": "focus", "page": "notes" })).await.unwrap_err();
+        assert!(unpictured.contains("snapshot: true"), "{unpictured}");
+        let pageless = tools.call(PLUGIN_STATUS, json!({ "id": "focus", "snapshot": true, "width": 800 })).await.unwrap_err();
+        assert!(pageless.contains("pass page"), "{pageless}");
         let map = tools.call(DESCRIBE_ELEMENTS, json!({})).await.unwrap();
         assert_eq!(map["elements"][0]["selector"], ".session-row");
         assert_eq!(

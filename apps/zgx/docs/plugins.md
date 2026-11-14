@@ -596,7 +596,8 @@ zend.toast(zend.s("timer.done"))
    - its status (on, off, pending review, tampered, broken, and why) and what it was allowed;
    - each place it made: its selector, how many elements it matched and their boxes;
    - what its Settings row says (a need its place doesn't give, places this template lacks, an error);
-   - with `snapshot`, a PNG of the window around its nodes. Read the file at `snapshot`;
+   - with `snapshot`, a PNG of the window around its nodes. Read the file at `snapshot`. The window need not be in front: it's drawn for the picture;
+   - with `snapshot` and `page` (an id from `pages`), a PNG of that page of yours instead, built apart from the window for the picture: `plugin_status { id, snapshot = true, page = "board", width = 900, height = 700, state = { tab = "usage" } }`. The page need not be open. `width` and `height` are its size in points (1000 × 760 if left out). `state` stands in for what `zend.store` holds, by key, wherever the page's build reads it (`:get()` or `:peek()` in the page's build or a component's, as in `ui.use_state(tab:peek())`); what the window shows doesn't see it, and nothing kept changes. Only your plugin's own pages can be pictured;
    - `logs`: its last 20 log lines (see below).
 4. **Read its log**: `plugin_logs { id, since? }` (MCP) or `zend plugin logs <id> [--follow]`. It holds what the plugin printed and what failed, from its window part and its service.luau, oldest first. An error comes whole, with its traceback (file, line, function), not only the first line the toast shows.
 5. **Fix and save**, then ask again. Matched 0? Check the selector against `describe_elements`. A need? Place it inside something that provides it.

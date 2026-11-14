@@ -22,6 +22,7 @@ local sessions = require("@account/sessions")
 local appearance = require("@app/screens/shell/appearance")
 local art = require("@app/screens/shell/art")
 local boundary = require("@app/screens/shell/boundary")
+local PluginStage = require("@app/screens/plugins/stage")
 
 export type Props = {
 	files: State<boolean>,
@@ -357,6 +358,9 @@ return function(props: Props): Node
 			}
 		)
 	)
+	-- A plugin's page built for a picture (an agent's `plugin_status` with
+	-- `page`): past the window's edge, there only while it's pictured.
+	table.insert(pane, PluginStage())
 
 	-- The title bar's strip over the page moves the window (a double click
 	-- zooms it): over all of the page (the composer's room, the wallpaper),

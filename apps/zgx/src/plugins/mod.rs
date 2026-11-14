@@ -39,6 +39,7 @@ pub mod grants;
 pub mod live;
 pub mod records;
 pub mod surfaces;
+pub mod stage;
 pub mod github;
 pub mod store;
 pub mod commands;
@@ -269,6 +270,12 @@ pub struct Bridge {
     /// the sidebar draws (`plugins.pages`).
     pages: RefCell<BTreeMap<String, Vec<Json>>>,
     pages_shared: Shared,
+    /// A page built apart from the window for a picture (`stage`): what
+    /// the shell builds (`plugins.stage`), whose it is and the keys of what
+    /// it keeps that the picture stands in for, and how many there were.
+    stage_shared: Shared,
+    staged: RefCell<Option<(String, Vec<String>)>>,
+    stages: Cell<u64>,
     /// The main window's view, for zgx's report of what's in it.
     view: RefCell<Option<zgx::compose::ViewHandle>>,
     /// Each plugin's GitHub ("github", lent by proxy): what it hears of the
@@ -509,6 +516,9 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         problems: RefCell::default(),
         pages: RefCell::default(),
         pages_shared: host.shared("plugins.pages", vlist(Vec::new())),
+        stage_shared: host.shared("plugins.stage", Value::Nil),
+        staged: RefCell::default(),
+        stages: Cell::new(0),
         view: RefCell::default(),
         gh: RefCell::default(),
         stores: RefCell::default(),
@@ -1948,7 +1958,7 @@ impl Bridge {
         }
         // An agent asking where the plugin's nodes are (`plugin_status`).
         if let Some(tool @ ("@status" | "@snapshot")) = call["tool"].as_str() {
-            self.status_call(&plugin, id, tool == "@snapshot");
+            self.status_call(&plugin, id, tool == "@snapshot", &call["args"]);
             return;
         }
         let loaded = self.loaded.borrow().iter().any(|p| p.name == plugin && plugin != "templates");
@@ -2490,6 +2500,11 @@ impl Bridge {
     /// `store::MAX_BYTES` in all; `null` lets it go.
     fn store_set(&self, plugin: &str, asked: &Json) {
         let Some(key) = asked["key"].as_str().filter(|k| !k.is_empty() && k.len() <= 200).map(str::to_string) else { return };
+        // (A picture stands in for this key now (`stage`): what the page
+        // built for it writes back is the picture's, not yours to keep.)
+        if self.staged.borrow().as_ref().is_some_and(|(whose, keys)| whose == plugin && keys.contains(&key)) {
+            return;
+        }
         let publish = {
             let mut stores = self.stores.borrow_mut();
             let Some((shared, held)) = stores.get_mut(plugin) else { return };
@@ -2833,12 +2848,21 @@ impl Bridge {
     /// once if the plugin isn't running here, else the plugin's own account
     /// of where its nodes are (its SDK's, a "where" call), finished in
     /// `result`.
-    fn status_call(&self, plugin: &str, id: String, snapshot: bool) {
+    fn status_call(&self, plugin: &str, id: String, snapshot: bool, args: &Json) {
+        // A page of its own to picture instead of the window (`stage`).
+        let page = match snapshot.then(|| stage::asked(args)).transpose() {
+            Ok(page) => page.flatten(),
+            Err(why) => return answer_tool(id, false, Json::Null, why),
+        };
         if !self.loaded.borrow().iter().any(|p| p.name == plugin) {
             answer_tool(id, true, self.host_status(plugin), String::new());
             return;
         }
-        self.push_call(plugin, id, "where", vec![("snapshot", Value::from(snapshot))]);
+        let mut fields = vec![("snapshot", Value::from(snapshot))];
+        if let Some(page) = &page {
+            fields.push(("stage", page.to_call()));
+        }
+        self.push_call(plugin, id, "where", fields);
     }
 
     /// The plugin's account of where it is, with the host's, and a picture
@@ -2852,12 +2876,18 @@ impl Bridge {
             answer_tool(id, true, out, String::new());
             return;
         }
-        // (A picture after this turn, as the window last drew it.)
+        // (A picture after this turn: the window as it is, or the page
+        // asked for, built for the picture.)
         let me = Rc::downgrade(&self.me());
         let plugin = plugin.to_string();
+        let page = call.field("stage").map(value_json).and_then(|asked| stage::Asked::from_call(&asked));
         self.tasks.spawn(async move {
             let Some(b) = me.upgrade() else { return };
-            match b.picture(&plugin, &out["placements"]) {
+            let pictured = match page {
+                Some(page) => b.page_picture(&plugin, page).await,
+                None => b.picture(&plugin, &out["placements"]),
+            };
+            match pictured {
                 Ok(said) => {
                     for (k, v) in said.as_object().into_iter().flatten() {
                         out[k] = v.clone();
@@ -2878,7 +2908,14 @@ impl Bridge {
     fn picture(&self, plugin: &str, placements: &Json) -> Result<Json, String> {
         let ui = self.ui.upgrade().ok_or("The window is closed")?;
         let root = ui.root();
-        let image = ui.snapshot(root, SNAPSHOT_WIDTH).ok_or("The window isn't showing")?;
+        // What the window last showed where the host can read that back
+        // (macOS), else the window drawn now, apart from its surface: no
+        // other host keeps a frame to read, and a window on another
+        // workspace shows none.
+        let image = ui
+            .snapshot(root, SNAPSHOT_WIDTH)
+            .or_else(|| ui.draw(root, SNAPSHOT_WIDTH))
+            .ok_or("The window couldn't be drawn (it has no renderer yet, or isn't laid out)")?;
         let bounds = ui.scene.borrow().bounds(root);
         if bounds.width <= 0. {
             return Err("The window isn't laid out".into());
@@ -2896,6 +2933,82 @@ impl Bridge {
             "snapshot_region": { "x": region.x, "y": region.y, "w": region.w, "h": region.h },
             "snapshot_note": "The window around where its nodes show.",
         }))
+    }
+
+    /// A page of `plugin`'s own, built apart from the window and drawn alone
+    /// (`stage`), saved for the agent to look at: the page need not be
+    /// open, nor the window show. One at a time; only a page the plugin
+    /// listed, so never another plugin's, nor anything of Zend's.
+    async fn page_picture(&self, plugin: &str, asked: stage::Asked) -> Result<Json, String> {
+        let name = self.item(plugin).map(|i| i.name().to_string()).unwrap_or_else(|| plugin.to_string());
+        let pages = self.pages.borrow().get(plugin).cloned().unwrap_or_default();
+        let Some(listed) = pages.iter().find(|p| p["id"] == asked.page.as_str()) else {
+            return Err(stage::unlisted(&name, &asked.page, &pages));
+        };
+        let title = listed["title"].as_str().unwrap_or(&name).to_string();
+        let ui = self.ui.upgrade().ok_or("The window is closed")?;
+        // (One picture at a time: the shell has one stage.)
+        let asked_at = Instant::now();
+        while self.staged.borrow().is_some() {
+            if asked_at.elapsed() > STAGE_BUSY {
+                return Err("Another picture was being taken; ask again".into());
+            }
+            zgx::timer::sleep(Duration::from_millis(40)).await;
+        }
+        let n = self.stages.get() + 1;
+        self.stages.set(n);
+        *self.staged.borrow_mut() = Some((plugin.to_string(), asked.state.keys().cloned().collect()));
+        // (Taken down however this ends, a reload dropping the task too.)
+        let _unstage = Unstage(Rc::downgrade(&self.me()), plugin.to_string());
+        let lent = self.host.shared(&format!("plugin.{plugin}.stage"), Value::Nil);
+        lent.set(asked.lent());
+        self.stage_shared.set(asked.shown(plugin, &title, n));
+        // The shell mounts it on its next turn; a template whose shell
+        // predates the stage never does.
+        let node = loop {
+            zgx::timer::sleep(Duration::from_millis(30)).await;
+            let found = self.view.borrow().as_ref().and_then(|view| view.find(stage::ID));
+            if let Some(node) = found {
+                break node;
+            }
+            if asked_at.elapsed() > STAGE_BUSY + STAGE_MOUNTS {
+                return Err("This template's shell has nowhere to build a page that isn't open (it predates plugin pictures): open the page and ask without `page`, or use Zend's own interface".into());
+            }
+        };
+        // Drawn until it stands still (what it loads has arrived, what it
+        // animates in has ended), or as it is once that's taken too long.
+        let began = Instant::now();
+        let (mut last, mut same, mut settled) = (None::<std::sync::Arc<zgx::image::ImageData>>, 0, true);
+        let image = loop {
+            zgx::timer::sleep(STAGE_LOOK).await;
+            let image = ui.draw(node, SNAPSHOT_WIDTH).ok_or("The page couldn't be drawn (the window has no renderer yet)")?;
+            let still = last.as_ref().is_some_and(|l| l.width() == image.width() && l.height() == image.height() && l.pixels() == image.pixels());
+            same = if still { same + 1 } else { 0 };
+            if same >= STAGE_STILL {
+                break image;
+            }
+            if began.elapsed() > STAGE_SETTLES {
+                settled = false;
+                break image;
+            }
+            last = Some(image);
+        };
+        let dir = engine::data_dir().ok_or("Zend's data folder isn't known")?.join("plugins").join(".snapshots");
+        let path = dir.join(format!("{plugin}.png"));
+        surfaces::save_png(&path, image.width(), image.height(), image.pixels())?;
+        let mut note = format!("{name}'s page {:?}, built for this picture at {} × {} points: not what the window shows.", asked.page, asked.width, asked.height);
+        if !settled {
+            note.push_str(" It was still changing when pictured (something loading, or moving).");
+        }
+        let mut out = json!({
+            "snapshot": path.display().to_string(),
+            "snapshot_page": { "id": asked.page, "width": asked.width, "height": asked.height },
+            "snapshot_note": note,
+        });
+        if !asked.state.is_empty() {
+            out["snapshot_page"]["state"] = Json::Object(asked.state);
+        }
+        Ok(out)
     }
 
     fn set_menus(&self, plugin: &str, list: &Value) {
@@ -3418,6 +3531,27 @@ const MAX_WATCHED: usize = 200;
 const MAX_KEPT_PRS: usize = 512;
 /// A status picture's width at most, in pixels.
 const SNAPSHOT_WIDTH: u32 = 2400;
+/// A page built for a picture (`Bridge::page_picture`): how long one waits
+/// for another's to end, how long the shell has to mount it, how often it's
+/// looked at, how many looks alike say it stands still, and how long that
+/// may take before it's pictured as it is.
+const STAGE_BUSY: Duration = Duration::from_secs(4);
+const STAGE_MOUNTS: Duration = Duration::from_secs(2);
+const STAGE_LOOK: Duration = Duration::from_millis(120);
+const STAGE_STILL: u32 = 2;
+const STAGE_SETTLES: Duration = Duration::from_secs(5);
+
+/// Takes a page's stage down (`Bridge::page_picture`) as it's dropped.
+struct Unstage(Weak<Bridge>, String);
+
+impl Drop for Unstage {
+    fn drop(&mut self) {
+        let Some(b) = self.0.upgrade() else { return };
+        *b.staged.borrow_mut() = None;
+        b.stage_shared.set(Value::Nil);
+        b.host.shared(&format!("plugin.{}.stage", self.1), Value::Nil).set(Value::Nil);
+    }
+}
 
 fn answer_tool(id: String, ok: bool, value: Json, error: String) {
     engine::get().spawn(async move {

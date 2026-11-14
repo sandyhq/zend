@@ -188,6 +188,9 @@ const STATUS_LOG_LINES: usize = 20;
 
 /// How long `PluginStatus` waits for the window's account.
 const STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// With a page to picture: the window builds it for the picture and waits
+/// for it to stand still (apps/zgx/src/plugins/stage.rs).
+const PAGE_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The map of where plugins can go, as the main window wrote it
 /// (`DescribeElements`).
@@ -2275,6 +2278,17 @@ impl Plugins {
                     id: String,
                     #[serde(default)]
                     snapshot: bool,
+                    /// A page of its own to picture, open or not, and how:
+                    /// the page's size in points, and values standing in
+                    /// for what it keeps (`zend.store`).
+                    #[serde(default)]
+                    page: Option<String>,
+                    #[serde(default)]
+                    width: Option<f64>,
+                    #[serde(default)]
+                    height: Option<f64>,
+                    #[serde(default)]
+                    state: Option<serde_json::Map<String, serde_json::Value>>,
                 }
                 let p: StatusParams = parse_params(params)?;
                 self.rescan().await;
@@ -2305,10 +2319,24 @@ impl Plugins {
                 // The window's account: where the plugin's nodes are, and
                 // what its row says (the app answers this call itself).
                 let tool = if p.snapshot { "@snapshot" } else { "@status" };
+                let mut asked = serde_json::Map::new();
+                if p.snapshot {
+                    if let Some(page) = &p.page {
+                        asked.insert("page".into(), serde_json::json!(page));
+                    }
+                    for (key, value) in [("width", p.width), ("height", p.height)] {
+                        if let Some(value) = value {
+                            asked.insert(key.into(), serde_json::json!(value));
+                        }
+                    }
+                    if let Some(state) = p.state {
+                        asked.insert("state".into(), serde_json::Value::Object(state));
+                    }
+                }
                 match self
                     .inner
                     .tools
-                    .call(&entry.item.id, tool, serde_json::json!({}), None, STATUS_TIMEOUT)
+                    .call(&entry.item.id, tool, serde_json::Value::Object(asked), None, if p.page.is_some() { PAGE_STATUS_TIMEOUT } else { STATUS_TIMEOUT })
                     .await
                 {
                     Ok(window) => {

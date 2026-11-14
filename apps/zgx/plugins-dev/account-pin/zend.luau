@@ -753,13 +753,39 @@ return function(id: string): any
 	--   local seen = zend.store("seen", {})
 	--   seen:get()      (followed where it's read)   seen:set(value)
 	local kept = ui.shared(`{prefix}.store`, {} :: any)
+	-- (An agent picturing a page of yours (`plugin_status` with `page` and
+	-- `state`) has it built apart from the window, with `state`'s values
+	-- standing in for what's kept: read by what builds for that picture
+	-- (`get` and `peek` in a page's, component's or row's build), never by
+	-- what the window shows. Nothing kept changes: a `set` of such a key
+	-- is dropped while the picture's taken.)
+	local pictured = ui.shared(`{prefix}.stage`, nil :: any)
+	local function stood_in(key: string): any
+		local now = pictured:peek()
+		local state = if type(now) == "table" then now.state else nil
+		if type(state) ~= "table" or state[key] == nil then
+			return nil
+		end
+		-- (Only the picture's nodes are given `stage`; outside a build
+		-- nothing is given, and this is the window's.)
+		local ok, there = pcall(ui.use_context, "stage", nil)
+		return if ok and there ~= nil then state[key] else nil
+	end
 	function M.store(key: string, default: any): any
 		local box = {}
 		function box.get(_self: any): any
 			local v = (kept:get() or {})[key]
+			local instead = stood_in(key)
+			if instead ~= nil then
+				return instead
+			end
 			return if v == nil then default else v
 		end
 		function box.peek(_self: any): any
+			local instead = stood_in(key)
+			if instead ~= nil then
+				return instead
+			end
 			local v = (kept:peek() or {})[key]
 			return if v == nil then default else v
 		end

@@ -23,6 +23,7 @@ local sessions = require("@account/sessions")
 local appearance = require("@app/screens/shell/appearance")
 local art = require("@app/screens/shell/art")
 local boundary = require("@app/screens/shell/boundary")
+local PluginStage = require("@app/screens/plugins/stage")
 local updates = require("@app/screens/shell/updates")
 local splits = require("@app/screens/shell/split")
 local session_tabs = require("@app/screens/shell/session_tabs")
@@ -637,6 +638,9 @@ return function(props: Props): Node
 			}
 		)
 	)
+	-- A plugin's page built for a picture (an agent's `plugin_status` with
+	-- `page`): past the window's edge, there only while it's pictured.
+	table.insert(pane, PluginStage())
 
 	-- A session's files, beside it: its card growing in from the window's
 	-- edge as the toggle opens them, what's in it standing still at its own width as the card's edge
