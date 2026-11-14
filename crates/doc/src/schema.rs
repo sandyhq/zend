@@ -36,6 +36,10 @@ pub enum DocError {
     Schema(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// The sync clock has handed out the greatest stamp the wire format
+    /// holds; no later write can be ordered after it.
+    #[error("sync clock exhausted: no later stamp fits the wire format")]
+    ClockExhausted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
