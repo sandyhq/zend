@@ -377,6 +377,10 @@ pub enum ChildKind {
     Side,
     /// Delegated work: shown under the parent's subagents.
     Subagent,
+    /// A child session: a full chat of its own (its own sidebar row and
+    /// page), started and told about by its parent but kept when the parent
+    /// is archived or deleted, and with no transcript of the parent's.
+    Session,
 }
 
 impl ChildKind {
@@ -384,6 +388,7 @@ impl ChildKind {
         match self {
             ChildKind::Side => "side",
             ChildKind::Subagent => "subagent",
+            ChildKind::Session => "session",
         }
     }
 
@@ -392,6 +397,7 @@ impl ChildKind {
         match value {
             "side" => Some(ChildKind::Side),
             "subagent" => Some(ChildKind::Subagent),
+            "session" => Some(ChildKind::Session),
             _ => None,
         }
     }
@@ -409,9 +415,11 @@ where
 
 impl Chat {
     /// A session the user sees in chat lists: neither another chat's worker
-    /// (`parent_chat_id`) nor a hidden voice orchestrator.
+    /// (`parent_chat_id`, unless a child session) nor a hidden voice
+    /// orchestrator.
     pub fn is_top_level(&self) -> bool {
-        self.parent_chat_id.is_none() && !crate::voice::is_orchestrator_chat(&self.id)
+        (self.parent_chat_id.is_none() || self.child_kind == Some(ChildKind::Session))
+            && !crate::voice::is_orchestrator_chat(&self.id)
     }
 
     /// True when this chat syncs over the chat2 dumb relay.
@@ -2601,6 +2609,9 @@ mod child_kind_tests {
         assert_eq!(serde_json::to_value(&chat).unwrap()["childKind"], "subagent");
         let side: Chat = serde_json::from_value(row(serde_json::json!({ "childKind": "side" }))).unwrap();
         assert_eq!(side.child_kind, Some(ChildKind::Side));
+        let session: Chat = serde_json::from_value(row(serde_json::json!({ "childKind": "session" }))).unwrap();
+        assert_eq!(session.child_kind, Some(ChildKind::Session));
+        assert_eq!(serde_json::to_value(&session).unwrap()["childKind"], "session");
         // A newer peer's kind, or none at all: the row stays, the kind is None.
         for extra in [serde_json::json!({ "childKind": "orbit" }), serde_json::json!({ "childKind": 3 }), serde_json::json!({})] {
             let chat: Chat = serde_json::from_value(row(extra)).unwrap();

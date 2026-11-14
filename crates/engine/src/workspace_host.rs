@@ -1492,6 +1492,12 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.set_chat_archived(chat_id, archived))?)
     }
 
+    /// Clear a child's parent link, making it top-level (see
+    /// `RegistryDoc::detach_chat`).
+    pub fn detach_chat(&self, chat_id: &str) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.detach_chat(chat_id))?)
+    }
+
     /// LWW full-config replace on the chat row (zend `SetChatConfig` — the
     /// composer's mid-session model/reasoning/options changes). Returns false
     /// when the chat doesn't exist.

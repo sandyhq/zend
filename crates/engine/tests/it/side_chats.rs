@@ -651,6 +651,59 @@ async fn native_commands_and_empty_side_chats_skip_the_history_wrapper() {
     core.shutdown().await;
 }
 
+/// A child session is a chat of its own: nothing of its parent's is copied,
+/// and its doc is never replayed as owed fork history. Control: a side chat
+/// with the same entries is.
+#[tokio::test]
+async fn a_child_session_inherits_no_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    let here = core.device_id.clone();
+    for (id, kind) in [
+        ("main", None),
+        ("worker", Some(zend_proto::ChildKind::Session)),
+        ("aside", Some(zend_proto::ChildKind::Side)),
+    ] {
+        core.workspace
+            .create_chat_hosted(
+                id,
+                None,
+                Some(&here),
+                Some(&here),
+                None,
+                Some("/tmp".into()),
+                kind.map(|_| "main".to_owned()),
+                kind,
+            )
+            .unwrap();
+    }
+    let main = core.doc_host.open("main").unwrap();
+    main.doc()
+        .push_message(&message("m1", MessageRole::User, "Remember PINEAPPLE", MessageStatus::Complete))
+        .unwrap();
+    assert!(core.doc_host.open("worker").unwrap().doc().read_entries().unwrap().is_empty());
+    // The same earlier turns in each, then a fresh provider session.
+    for chat in ["worker", "aside"] {
+        let doc = core.doc_host.open(chat).unwrap();
+        for (id, role, text) in [
+            ("u1", MessageRole::User, "Remember MANGO"),
+            ("a1", MessageRole::Assistant, "I remember MANGO"),
+        ] {
+            doc.doc()
+                .push_message(&message(id, role, text, MessageStatus::Complete))
+                .unwrap();
+        }
+    }
+    let request = side_turn(&core, &requests, "aside", "What should I remember?", "s1").await;
+    assert!(request.prompt.contains("MANGO"), "{}", request.prompt);
+    let request = side_turn(&core, &requests, "worker", "What should I remember?", "w1").await;
+    assert_eq!(request.prompt, "What should I remember?");
+    core.shutdown().await;
+}
+
 /// A provider runtime that stays alive between turns: later sends arrive
 /// through the steering mailbox (the engine's warm dispatch), not new runs.
 /// Each record: (prompt, resumed session, arrived through the mailbox).

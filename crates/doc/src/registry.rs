@@ -1725,6 +1725,22 @@ impl RegistryDoc {
         Ok(true)
     }
 
+    /// Make a child top-level: its parent link (`parentChatId`,
+    /// `childKind`) cleared, nothing else on its row touched. A child
+    /// session's parent being deleted does this.
+    pub fn detach_chat(&mut self, chat_id: &str) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("parentChatId", Value::Null), ("childKind", Value::Null)]),
+        );
+        Ok(true)
+    }
+
     /// The chat's activity times, and nothing else on its row.
     pub fn set_chat_activity(
         &mut self,

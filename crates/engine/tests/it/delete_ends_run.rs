@@ -379,3 +379,43 @@ async fn deleting_a_parent_deletes_its_local_children_and_ends_their_runs() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(alive(stranger) && rig.core.sessions.has_run("stranger"), "and keeps its run");
 }
+
+/// A child session is a chat of its own: deleting its parent detaches it
+/// (top-level now, its run kept) while the parent's subagent still goes.
+#[tokio::test]
+async fn deleting_a_parent_detaches_its_child_sessions() {
+    let rig = rig();
+    create_chat(&rig.core, "worker", Some((CHAT, ChildKind::Session)));
+    create_chat(&rig.core, "subagent", Some((CHAT, ChildKind::Subagent)));
+    let parent = start(&rig, "parent work", SessionStatus::Idle).await;
+    let worker = start_in(&rig, "worker", "worker work", SessionStatus::Idle).await;
+    delete_chat(&rig).await;
+    assert_ended_in(&rig, CHAT, parent).await;
+    assert!(rig.core.workspace.chat("subagent").unwrap().is_none(), "the subagent still goes");
+    let kept = rig.core.workspace.chat("worker").unwrap().expect("the child session stays");
+    assert_eq!(kept.parent_chat_id, None);
+    assert_eq!(kept.child_kind, None);
+    assert!(kept.is_top_level());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(alive(worker) && rig.core.sessions.has_run("worker"), "and keeps its run");
+}
+
+/// Archiving a parent leaves its child sessions open and still its children.
+#[tokio::test]
+async fn archiving_a_parent_leaves_its_child_sessions_open() {
+    let rig = rig();
+    create_chat(&rig.core, "worker", Some((CHAT, ChildKind::Session)));
+    let client = memory_client(rig.core.rpc_service());
+    let _: serde_json::Value = client
+        .call_as(
+            methods::MUTATE,
+            serde_json::json!({ "op": "setChatArchived", "chatId": CHAT, "archived": true }),
+        )
+        .await
+        .unwrap();
+    assert!(rig.core.workspace.chat(CHAT).unwrap().unwrap().archived);
+    let worker = rig.core.workspace.chat("worker").unwrap().unwrap();
+    assert!(!worker.archived);
+    assert_eq!(worker.parent_chat_id.as_deref(), Some(CHAT));
+    assert_eq!(worker.child_kind, Some(ChildKind::Session));
+}

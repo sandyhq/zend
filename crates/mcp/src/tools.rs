@@ -133,11 +133,11 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a child of your chat to delegate work to (kind subagent, the default when you speak from a chat or pass parent: listed under that chat's Subagents and in its transcript's subagent block), a side chat (kind side: only when the person should treat it as a side conversation of their own), or a standalone session (kind chat, no parent). Any connected provider works (see list_harnesses), whichever provider you run on. Delegation is one level deep: a chat that has a parent cannot create chats. With cloud, the chat runs on a Cloud machine of its own (Codex or Claude Code), from a Cloud chat or a project with a GitHub repository. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt, then end your turn: when the child's turn settles, Zend sends you a [Zend event: …] message with its outcome and last reply (notify_parent). For parallel delegation use create_chats.",
+            description: "Create a child of your chat to delegate work to (kind subagent, the default when you speak from a chat or pass parent: listed under that chat's Subagents and in its transcript's subagent block), a side chat (kind side: only when the person should treat it as a side conversation of their own), a child session (kind session: a chat of its own under yours, with its own sidebar row and page, no copy of your transcript, kept when your chat is archived or deleted), or a standalone session (kind chat, no parent). Any connected provider works (see list_harnesses), whichever provider you run on. Delegation is one level deep: a chat that has a parent cannot create chats. With cloud, the chat runs on a Cloud machine of its own (Codex or Claude Code), from a Cloud chat or a project with a GitHub repository. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt, then end your turn: when the child's turn settles, Zend sends you a [Zend event: …] message with its outcome and last reply (notify_parent). For parallel delegation use create_chats.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "kind": { "type": "string", "enum": ["subagent", "side", "chat"], "description": "subagent (default with a parent or origin chat): delegated work, listed under the parent's Subagents. side: a side conversation for the person, needs a parent or origin. chat: standalone, no parent allowed. Omitted: subagent with a parent/origin, chat otherwise." },
+                    "kind": { "type": "string", "enum": ["subagent", "side", "session", "chat"], "description": "subagent (default with a parent or origin chat): delegated work, listed under the parent's Subagents. side: a side conversation for the person, needs a parent or origin. session: a child session, a chat of its own under the parent (own sidebar row and page, kept when the parent is archived or deleted), needs a parent or origin. chat: standalone, no parent allowed. Omitted: subagent with a parent/origin, chat otherwise." },
                     "project": { "type": "string", "description": "Project id, path, or name. Belongs to a specific device; when device is supplied, search only there. Optional." },
                     "device": { "type": "string", "description": "Host device (id or name). With project, it must own that project. Without either, use the local engine." },
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
@@ -152,7 +152,7 @@ fn catalog() -> Vec<ToolDef> {
                     "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
                     "cloud": { "type": "boolean", "default": false, "description": "Run on a Cloud machine of its own (cloning the project's GitHub repository) instead of the project's device. From a Cloud chat, the child clones the same repository; without cloud it shares this machine." },
                     "prompt": { "type": "string", "description": "First message to send right away." },
-                    "notify_parent": { "type": "boolean", "description": "Send the parent a [Zend event: …] message each time this chat settles a turn (completed, errored, interrupted, or waiting for input). Default true for kind subagent, false for side and chat." },
+                    "notify_parent": { "type": "boolean", "description": "Send the parent a [Zend event: …] message each time this chat settles a turn (completed, errored, interrupted, or waiting for input). Default true for kind subagent and session, false for side and chat." },
                     "wait": { "type": "boolean", "default": false, "description": "Discouraged: end your turn and take the [Zend event: …] message instead. With prompt: block until the first turn finishes and return the reply (that turn then sends no event)." },
                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
                 }
@@ -220,7 +220,7 @@ fn catalog() -> Vec<ToolDef> {
         (
             "create_chats",
             "create_chat",
-            "Create multiple chats concurrently: subagents of your chat by default, or side/standalone chats (kind per request, as create_chat). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false: end your turn after launching, and each child's settled turn reaches you as a [Zend event: …] message. Results preserve request order and include per-request errors; successful requests are not rolled back.",
+            "Create multiple chats concurrently: subagents of your chat by default, or side chats, child sessions or standalone chats (kind per request, as create_chat). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false: end your turn after launching, and each child's settled turn reaches you as a [Zend event: …] message. Results preserve request order and include per-request errors; successful requests are not rolled back.",
         ),
         (
             "send_messages",
@@ -617,6 +617,7 @@ enum ChatKind {
     Chat,
     Side,
     Subagent,
+    Session,
 }
 
 #[derive(Deserialize, Default)]
@@ -1166,15 +1167,21 @@ impl Tools {
             .filter(|parent| !zend_proto::voice::is_orchestrator_chat(parent))
         };
         anyhow::ensure!(
-            !matches!(args.kind, Some(ChatKind::Side | ChatKind::Subagent)) || parent_chat_id.is_some(),
+            !matches!(args.kind, Some(ChatKind::Side | ChatKind::Subagent | ChatKind::Session))
+                || parent_chat_id.is_some(),
             "kind {} requires a parent or origin chat",
-            if args.kind == Some(ChatKind::Side) { "side" } else { "subagent" }
+            match args.kind {
+                Some(ChatKind::Side) => "side",
+                Some(ChatKind::Session) => "session",
+                _ => "subagent",
+            }
         );
         // A child is a subagent unless asked for as a side chat: delegated
         // work lists under its parent's Subagents, not its side chats.
         let kind = match (args.kind, parent_chat_id.is_some()) {
             (_, false) => ChatKind::Chat,
             (Some(ChatKind::Side), true) => ChatKind::Side,
+            (Some(ChatKind::Session), true) => ChatKind::Session,
             (_, true) => ChatKind::Subagent,
         };
 
@@ -1310,6 +1317,7 @@ impl Tools {
             mutate["parentChatId"] = json!(parent);
             mutate["childKind"] = json!(match kind {
                 ChatKind::Side => zend_proto::ChildKind::Side,
+                ChatKind::Session => zend_proto::ChildKind::Session,
                 _ => zend_proto::ChildKind::Subagent,
             });
             if let Some(notify) = args.notify_parent {
@@ -1424,6 +1432,7 @@ impl Tools {
                 child_kind: match kind {
                     ChatKind::Side => Some(zend_proto::ChildKind::Side),
                     ChatKind::Subagent => Some(zend_proto::ChildKind::Subagent),
+                    ChatKind::Session => Some(zend_proto::ChildKind::Session),
                     ChatKind::Chat => None,
                 },
                 space_id: space.as_ref().map(|s| s.id.clone()),
@@ -2885,9 +2894,17 @@ mod tests {
 
     #[tokio::test]
     async fn delegation_is_one_level_deep() {
+        // A child session of Alpha: a chat of its own, yet still a child.
+        let worker = json!({
+            "id": "chat-worker-5", "deviceId": "dev-local", "title": "Worker",
+            "parentChatId": "chat-alpha-1", "childKind": "session",
+            "archived": false, "spaceId": "space-1",
+            "createdAt": "2026-09-05T00:00:00Z"
+        });
         let world = Arc::new(World {
             beta_parent: Some("chat-alpha-1".into()),
             deep: true,
+            extra_chats: vec![worker],
             ..Default::default()
         });
         // A top-level chat delegates.
@@ -2903,6 +2920,9 @@ mod tests {
             ("chat-beta-2", json!({"kind":"chat"})),
             ("chat-beta-2", json!({"parent":"Alpha"})),
             ("chat-delta-4", json!({})),
+            ("chat-worker-5", json!({})),
+            ("chat-worker-5", json!({"kind":"session"})),
+            ("chat-worker-5", json!({"kind":"chat"})),
         ] {
             let refused = tools(world.clone(), origin(from))
                 .call("create_chat", args)
@@ -3100,6 +3120,7 @@ mod tests {
         for args in [
             json!({"kind":"side"}),
             json!({"kind":"subagent"}),
+            json!({"kind":"session"}),
             json!({"kind":"unknown"}),
             json!({"kind":"chat", "parent":"Alpha", "title":"must not write"}),
         ] {
@@ -3119,6 +3140,8 @@ mod tests {
             (json!({"kind":"chat", "parent":"  "}), "chat", Value::Null),
             (json!({"kind":"side"}), "side", json!("chat-alpha-1")),
             (json!({"kind":"subagent"}), "subagent", json!("chat-alpha-1")),
+            (json!({"kind":"session"}), "session", json!("chat-alpha-1")),
+            (json!({"kind":"session", "parent":"Beta"}), "session", json!("chat-beta-2")),
             // A child of your own chat, kind omitted: a subagent.
             (json!({}), "subagent", json!("chat-alpha-1")),
             (json!({"parent":"Beta"}), "subagent", json!("chat-beta-2")),
@@ -3327,7 +3350,8 @@ mod tests {
                     {"kind":"chat", "device":"Worker", "project":"comet"},
                     {"kind":"chat", "parent":"Alpha"},
                     {"kind":"side", "project":"space-1"},
-                    {"kind":"bogus"}
+                    {"kind":"bogus"},
+                    {"kind":"session", "project":"space-1"}
                 ]}),
             )
             .await
@@ -3339,10 +3363,14 @@ mod tests {
         assert_eq!(results[2]["result"]["kind"], "side");
         assert_eq!(results[2]["result"]["parentChatId"], "chat-alpha-1");
         assert_eq!(results[3]["isError"], true);
-        for i in 0..4 {
+        assert_eq!(results[4]["result"]["kind"], "session");
+        assert_eq!(results[4]["result"]["parentChatId"], "chat-alpha-1");
+        for i in 0..5 {
             assert_eq!(results[i]["index"], i);
         }
-        assert_eq!(world.writes.lock().unwrap().len(), 2);
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes.len(), 3);
+        assert_eq!(writes[2].1["childKind"], "session");
     }
 
     /// Sessions and transcripts are independently delivered. The command reply

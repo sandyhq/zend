@@ -1887,6 +1887,35 @@ fn a_child_kind_syncs_and_survives_updates_and_restart() {
     );
 }
 
+#[test]
+fn a_child_session_syncs_and_detaches_everywhere() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    let mut worker = chat("worker", "dev-a");
+    worker.parent_chat_id = Some("main".into());
+    worker.child_kind = Some(zend_proto::ChildKind::Session);
+    a.upsert_chat(&worker).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(b.chat("worker").unwrap(), Some(worker.clone()));
+    let restored = RegistryDoc::from_bytes(&a.to_bytes().unwrap(), "dev-a").unwrap();
+    assert_eq!(
+        restored.chat("worker").unwrap().unwrap().child_kind,
+        Some(zend_proto::ChildKind::Session)
+    );
+    // Its parent deleted: top-level on both devices, the rest kept.
+    a.rename_chat("worker", "Build the thing").unwrap();
+    assert!(a.detach_chat("worker").unwrap());
+    assert!(!a.detach_chat("nobody").unwrap());
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        let row = doc.chat("worker").unwrap().unwrap();
+        assert_eq!((row.parent_chat_id, row.child_kind), (None, None));
+        assert_eq!(row.title.as_deref(), Some("Build the thing"));
+    }
+}
+
 // ── bounded pending: local-only folding and tail coalescing ─────────────────
 
 /// Deterministic xorshift — random op shapes without a rand dependency.

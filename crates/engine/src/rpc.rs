@@ -747,14 +747,14 @@ enum MutateParams {
         /// on the row as `parentChatId` for orchestration trees.
         #[serde(default)]
         parent_chat_id: Option<String>,
-        /// What the child is to its parent (`childKind`: `side` | `subagent`,
-        /// the Zend MCP's `kind`): kept on the row only with a parent. An
+        /// What the child is to its parent (`childKind`: `side` | `subagent` |
+        /// `session`, the Zend MCP's `kind`): kept on the row only with a parent. An
         /// unknown kind reads as none (a side chat).
         #[serde(default, deserialize_with = "zend_proto::lenient_child_kind")]
         child_kind: Option<zend_proto::ChildKind>,
         /// Whether its settled turns are told to its parent (Zend MCP's
-        /// `notify_parent`; `child_events`). Unsaid: on for a subagent,
-        /// off for a side chat. Kept beside its transcript.
+        /// `notify_parent`; `child_events`). Unsaid: on for a subagent or
+        /// child session, off for a side chat. Kept beside its transcript.
         #[serde(default)]
         notify_parent: Option<bool>,
         /// Run on Cloud (the checkout picker's Cloud): the chat gets its own
@@ -2194,11 +2194,8 @@ impl EngineRpc {
                 // can't be reached, yet keeps its doc and maybe a live run.
                 // (Their runs end with their rows: see
                 // `SessionsEngine::follow_chat_deletions`.)
-                let children = chat_descendants(
-                    &self.workspace.read_chats().unwrap_or_default(),
-                    &chat_id,
-                    on_cloud,
-                );
+                let chats = self.workspace.read_chats().unwrap_or_default();
+                let children = chat_descendants(&chats, &chat_id, on_cloud);
                 let cloud_children: Vec<String> = children
                     .iter()
                     .filter(|(_, cloud)| *cloud)
@@ -2214,6 +2211,16 @@ impl EngineRpc {
                         tracing::warn!(chat = %child, error = %err, "deleting a deleted chat's child failed");
                     }
                     self.doc_host.purge_chat(child);
+                }
+                // Its child sessions stay, top-level now: chats of their own,
+                // with work the person may still want.
+                for child in chats.iter().filter(|c| {
+                    c.parent_chat_id.as_deref() == Some(chat_id.as_str())
+                        && c.child_kind == Some(zend_proto::ChildKind::Session)
+                }) {
+                    if let Err(err) = self.workspace.detach_chat(&child.id) {
+                        tracing::warn!(chat = %child.id, error = %err, "detaching a deleted chat's child session failed");
+                    }
                 }
                 if on_cloud {
                     self.delete_cloud_machines(std::iter::once(chat_id).chain(cloud_children).collect());
@@ -2283,7 +2290,8 @@ impl EngineRpc {
 /// The chats that go when `root` is deleted, each with whether it is on
 /// Cloud: its children on computers (subagents, side chats) and theirs in
 /// turn, plus — when the parent is itself on Cloud — its children on Cloud.
-/// (A computer's chat keeps its Cloud delegates, as before.)
+/// (A computer's chat keeps its Cloud delegates, as before.) Child sessions
+/// never go: deleting their parent detaches them.
 fn chat_descendants(
     chats: &[zend_proto::Chat],
     root: &str,
@@ -2294,7 +2302,9 @@ fn chat_descendants(
     let mut frontier: Vec<(&str, bool)> = vec![(root, root_on_cloud)];
     while let Some((parent, parent_on_cloud)) = frontier.pop() {
         for chat in chats {
-            if chat.parent_chat_id.as_deref() != Some(parent) {
+            if chat.parent_chat_id.as_deref() != Some(parent)
+                || chat.child_kind == Some(zend_proto::ChildKind::Session)
+            {
                 continue;
             }
             let on_cloud = zend_proto::is_cloud_device(&chat.device_id, "");
@@ -5986,6 +5996,7 @@ mod tests {
         for (chat, parent, kind, expected) in [
             ("sub", Some("main"), Some("subagent"), Some(ChildKind::Subagent)),
             ("side", Some("main"), Some("side"), Some(ChildKind::Side)),
+            ("session", Some("main"), Some("session"), Some(ChildKind::Session)),
             // A person's side chat names none; a newer peer's kind reads as none.
             ("plain-side", Some("main"), None, None),
             ("future", Some("main"), Some("orbit"), None),
