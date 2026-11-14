@@ -3339,14 +3339,64 @@ fn a_detach_keeps_a_concurrent_title_edit() {
     let mut seq = 0;
     server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
     a.delete_chat("parent").unwrap();
-    // A later millisecond: b's clock doesn't observe a's, so a rename in the
-    // same millisecond as a's writes would lose to them, detach or not.
-    std::thread::sleep(std::time::Duration::from_millis(5));
     b.rename_chat("worker", "A concurrent title").unwrap();
     server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
     for doc in [&a, &b] {
         let kept = doc.chat("worker").unwrap().unwrap();
         assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
         assert_eq!(kept.title.as_deref(), Some("A concurrent title"));
+    }
+}
+
+/// Device a's clock stands ahead of b's wall clock: a higher counter in the
+/// same millisecond, or a wall clock running ahead. Pinned, so the test
+/// doesn't depend on when the millisecond turns over.
+fn pin_clock_ahead(doc: &mut RegistryDoc) {
+    doc.clock = HlcClock {
+        last_ms: RegistryDoc::now_ms() + 60_000,
+        counter: 7,
+    };
+}
+
+#[test]
+fn a_write_after_a_received_broadcast_wins_over_it() {
+    let mut a = RegistryDoc::new("dev-z");
+    let mut b = RegistryDoc::new("dev-a");
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    a.upsert_chat(&chat("c", "dev-z")).unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    pin_clock_ahead(&mut a);
+    a.rename_chat("c", "from a").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(b.chat("c").unwrap().unwrap().title.as_deref(), Some("from a"));
+    // b saw a's rename (apply_rows), then renames: b's is the later write.
+    b.rename_chat("c", "from b, later").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        let title = doc.chat("c").unwrap().unwrap().title;
+        assert_eq!(title.as_deref(), Some("from b, later"));
+    }
+}
+
+#[test]
+fn a_write_after_a_received_hello_state_wins_over_it() {
+    let mut a = RegistryDoc::new("dev-z");
+    let mut b = RegistryDoc::new("dev-a");
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    a.upsert_chat(&chat("c", "dev-z")).unwrap();
+    pin_clock_ahead(&mut a);
+    a.rename_chat("c", "from a").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a]);
+    // b connects and takes the whole state from hello (apply_state).
+    let rows: Vec<RegistryRow> = server.values().cloned().collect();
+    let _ = b.apply_state(seq, true, 0, rows);
+    assert_eq!(b.chat("c").unwrap().unwrap().title.as_deref(), Some("from a"));
+    b.rename_chat("c", "from b, later").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    for doc in [&a, &b] {
+        let title = doc.chat("c").unwrap().unwrap().title;
+        assert_eq!(title.as_deref(), Some("from b, later"));
     }
 }

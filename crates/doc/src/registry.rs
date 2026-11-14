@@ -846,6 +846,7 @@ impl RegistryDoc {
         rows: Vec<RegistryRow>,
     ) -> StateOutcome {
         self.generation += 1;
+        self.observe_received(&rows);
         if !full {
             for row in rows {
                 self.put_authoritative(row);
@@ -912,6 +913,7 @@ impl RegistryDoc {
     #[must_use]
     pub fn apply_rows(&mut self, seq: u64, rows: Vec<RegistryRow>) -> bool {
         self.generation += 1;
+        self.observe_received(&rows);
         for row in rows {
             self.put_authoritative(row);
         }
@@ -970,6 +972,18 @@ impl RegistryDoc {
     pub fn mark_disconnected(&mut self) {
         for batch in &mut self.pending {
             batch.in_flight = false;
+        }
+    }
+
+    /// The clock moves past every clock on rows received from the server, so
+    /// a write after them orders after them (standard HLC receive). Without
+    /// it, a write made in the same millisecond as a received one, or behind
+    /// a peer whose wall clock runs ahead, lost to it.
+    fn observe_received(&mut self, rows: &[RegistryRow]) {
+        for row in rows {
+            if let Some(hlc) = row.max_clock() {
+                self.clock.observe(hlc);
+            }
         }
     }
 
