@@ -303,7 +303,10 @@ local function service(id: string): any
 	-- A `run.preparing` listener's return value is its answer: `{ account }`
 	-- pins the chat about to run for the first time to that saved account
 	-- (it has `prepare_wait`, 3 s, to say; "accounts.pin"). Say nothing and
-	-- the chat runs on the active account. Every other event ignores it.
+	-- the chat runs on the active account. `{ instructions = "…" }`
+	-- ("session.instructions") is told that chat's agent, in its system
+	-- prompt, from then on; with "sessions.read" the data has its `chat`,
+	-- `project` and `parent`. Every other event ignores the return value.
 	function M.on(event: string, fn: (any, string) -> any, opts: { [string]: any }?)
 		assert(type(event) == "string" and event ~= "", "zend.on(event, fn)")
 		assert(type(fn) == "function", "zend.on(event, fn)")
@@ -359,6 +362,23 @@ local function service(id: string): any
 	-- account, since, chat? } } (`chat` with "sessions.read").
 	function M.pins(opts: { provider: string? }?): any
 		return agents("pins", opts)
+	end
+
+	-- Tell your chats' agents instructions ("session.instructions"): `text`
+	-- goes whole into the system prompt of every chat's agent (Pi), child
+	-- sessions and subagents too, from its next turn, and stays there
+	-- through compaction. `chat` or `project` narrows it (a child session
+	-- hears its parent chat's); `key` (default "default") names the entry,
+	-- the nearest of one key wins. No `text` takes it away. At most 8 KB a
+	-- chat. A promise of { key, set, changed, chat?, project? }.
+	function M.set_instructions(s: { text: string?, key: string?, chat: string?, project: string? }): any
+		return agents("set_instructions", s)
+	end
+
+	-- Your entries ("session.instructions"): { { key, text, since, chat?,
+	-- project? } }.
+	function M.instructions(): any
+		return agents("instructions", {})
 	end
 
 	-- A harness's models ("models.read"): { { id, label, efforts, options } }.

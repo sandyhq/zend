@@ -1184,7 +1184,8 @@ return function(id: string): any
 	-- ── Agents: usage, accounts, models, and their events ─────────────────
 	-- Each asks the engine, which checks what this device (or `device`,
 	-- another of yours) allowed this plugin: "usage.read", "accounts.read",
-	-- "accounts.switch", "accounts.pin", "models.read", "models.set". Each is a promise; a
+	-- "accounts.switch", "accounts.pin", "models.read", "models.set",
+	-- "session.instructions". Each is a promise; a
 	-- refusal fails it with "<reason>: <words>" (`zend.reason(err)`:
 	-- not_allowed, paced, already, loop, not_found, offline, …).
 	local function agents(op: string, args: any?, device: string?): any
@@ -1234,6 +1235,23 @@ return function(id: string): any
 	function M.pins(opts: { provider: string?, device: string? }?): any
 		local o = opts or {}
 		return agents("pins", { provider = o.provider }, o.device)
+	end
+
+	-- Tell your chats' agents instructions ("session.instructions"), on this
+	-- device or `device`: `text` goes whole into the system prompt of every
+	-- chat's agent (Pi), child sessions and subagents too, from its next
+	-- turn, and stays there through compaction. `chat` or `project` narrows
+	-- it (a child session hears its parent chat's); `key` (default
+	-- "default") names the entry, the nearest of one key wins. No `text`
+	-- takes it away. At most 8 KB a chat. { key, set, changed, chat?, project? }.
+	function M.set_instructions(s: { text: string?, key: string?, chat: string?, project: string?, device: string? }): any
+		return agents("set_instructions", { text = s.text, key = s.key, chat = s.chat, project = s.project }, s.device)
+	end
+
+	-- Your entries ("session.instructions"): { { key, text, since, chat?,
+	-- project? } }.
+	function M.instructions(opts: { device: string? }?): any
+		return agents("instructions", {}, (opts or {}).device)
 	end
 
 	-- A harness's models ("models.read"): { { id, label, efforts, options } }.

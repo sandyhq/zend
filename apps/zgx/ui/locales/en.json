@@ -3447,6 +3447,10 @@
           "title": "Run chats on other saved accounts",
           "detail": "It can run a chat on a saved account instead of the active one, and decide the account a new chat starts on. The active account stays as it is. It can't sign in or remove an account."
         },
+        "session_instructions": {
+          "title": "Give your agents instructions",
+          "detail": "Text it writes goes into the system prompt of your chats' agents, child sessions and subagents too, and they follow it. Pi chats only for now."
+        },
         "models_read": {
           "title": "See your agents' models",
           "detail": "The models, efforts and options each offers, and what a chat uses."

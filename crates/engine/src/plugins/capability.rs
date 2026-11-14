@@ -54,6 +54,9 @@ pub const OUTSIDE_SANDBOX: &[&str] = &[
     "models.set",
     // Sending messages as you, to your agents: what they then do is theirs.
     "messages.send",
+    // Telling every agent instructions, in its system prompt: what they
+    // then do is theirs.
+    "session.instructions",
 ];
 
 /// The hosts of a plugin with "network" that names none: any public one.
