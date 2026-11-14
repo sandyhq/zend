@@ -44,7 +44,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde_json::json;
 use zend_visual as zv;
@@ -1258,6 +1258,12 @@ enum Job {
     Release {
         key: String,
     },
+    /// Its last user has gone: it leaves, unless a thread has sent it a job
+    /// since.
+    Leave,
+    /// (For tests: work of a test's own, done there as a frame's is.)
+    #[cfg(test)]
+    Probe(Box<dyn FnOnce() + Send>),
 }
 
 /// A frame as the window shows it: straight RGBA, top row first.
@@ -1271,33 +1277,330 @@ fn surface_key(id: &str, path: &str) -> String {
     format!("visual/{id}/{path}")
 }
 
-/// The GPU's thread: one for every visual, as the shipping app's one
-/// device. Each surface's state (its targets, a shader's feedback
-/// buffers) stays there between frames.
-fn gpu_send(job: Job) {
-    static SENDER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
-    let sender = SENDER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<Job>();
-        let _ = std::thread::Builder::new().name("zend-visual-gpu".into()).spawn(move || gpu_thread(rx));
-        Mutex::new(tx)
-    });
-    if let Ok(sender) = sender.lock() {
-        let _ = sender.send(job);
+/// The GPU's thread, from the first job sent it until it has left.
+struct GpuThread {
+    /// Which one it is: what it says of itself as it ends is said of this
+    /// one, never of the one started after it.
+    id: u64,
+    jobs: mpsc::Sender<Job>,
+    /// Its last user gone: it leaves after the job it's on, unless a thread
+    /// sends it a job first (it stays then, for that thread).
+    leaving: bool,
+    /// Past its last job, with nothing held on the GPU any more: only the
+    /// thread's own end is left.
+    left: bool,
+    /// (Taken by the one that waits for the thread's end.)
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// The GPU's thread and how many threads use it (the app's own thread; in
+/// a test, each test's). The GPU's thread stays here until it has left, so
+/// a frame sent as it leaves goes to it: no second one is ever started
+/// beside one still on a frame.
+struct GpuThreads {
+    thread: Option<GpuThread>,
+    users: usize,
+    /// How many were started.
+    started: u64,
+}
+
+static GPU_THREAD: Mutex<GpuThreads> = Mutex::new(GpuThreads { thread: None, users: 0, started: 0 });
+
+/// Told when the GPU's thread has left, and when a thread takes it up
+/// again as it was leaving.
+static GPU_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// (What's kept there is whole at each unlock: a panic under the lock
+/// spoils nothing.)
+fn gpu_threads() -> std::sync::MutexGuard<'static, GpuThreads> {
+    GPU_THREAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The longest quitting waits for the GPU's thread to finish the job it's
+/// on (a first frame makes the device: a second or two on a busy machine).
+const GPU_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A thread's use of the GPU's thread, from its first job until it ends
+/// (or [`stop_gpu`]). The last one to go tells the GPU's thread to leave,
+/// and waits until it has.
+///
+/// The process must not exit under the GPU's thread. `exit` runs the
+/// destructors of every library loaded (on Linux: the Vulkan driver's, the
+/// validation layer's in a debug build, LLVM's) and unloads them while
+/// other threads still run, so a frame still rendering then reads freed
+/// state: a SIGSEGV, an abort in malloc, or a deadlock on a lock `exit`
+/// holds, now and then as a test's process (or the app) ends. A thread's
+/// locals are dropped before any of that, so this is where it waits: for
+/// as long as the frame takes, so a thread that used the GPU's thread
+/// never ends, and a test's process never exits, under its frame. (A
+/// frame that never ends is a thread that never does: a test that hangs,
+/// not one that dies as its process exits. The app's own end has a limit:
+/// quitting, [`stop_gpu`], and a panic out of `main`,
+/// [`StopGpuOnPanic`]. Both end the process without `exit` then.)
+///
+/// (Not on Windows, where a thread's locals are dropped under the loader's
+/// lock, which the GPU's thread needs to load the driver and to end: there
+/// only [`stop_gpu`] waits, and a process exiting ends its other threads
+/// before it unloads anything. For the same reason nothing here waits for
+/// a thread's end with [`GPU_THREAD`] locked: a thread ending takes that
+/// lock under the loader's.)
+struct GpuUser {
+    using: std::cell::Cell<bool>,
+}
+
+thread_local! {
+    static GPU_USER: GpuUser = const { GpuUser { using: std::cell::Cell::new(false) } };
+}
+
+impl GpuUser {
+    /// This thread's use over: the GPU's thread told to leave, if it was
+    /// the last.
+    fn release(&self) {
+        if !self.using.replace(false) {
+            return;
+        }
+        let mut gpu = gpu_threads();
+        gpu.users = gpu.users.saturating_sub(1);
+        if gpu.users == 0
+            && let Some(thread) = &mut gpu.thread
+            && !thread.leaving
+            && !thread.left
+        {
+            thread.leaving = true;
+            // (Wakes it. It looks at `leaving` again once it gets there.)
+            let _ = thread.jobs.send(Job::Leave);
+        }
     }
 }
 
-fn gpu_thread(jobs: mpsc::Receiver<Job>) {
+impl Drop for GpuUser {
+    fn drop(&mut self) {
+        self.release();
+        if cfg!(unix) {
+            gpu_left(None);
+        }
+    }
+}
+
+/// Waits for the GPU's thread to have left, `at_most` so long (`None`: as
+/// long as it takes), and says whether it has: `true` once the process has
+/// no GPU's thread. `false` at once while a thread uses it: it's that
+/// thread's to wait for.
+fn gpu_left(at_most: Option<std::time::Duration>) -> bool {
+    let limit = at_most.map(|wait| std::time::Instant::now() + wait);
+    let mut gpu = gpu_threads();
+    loop {
+        let Some(thread) = &mut gpu.thread else { return true };
+        if thread.left {
+            if let Some(handle) = thread.handle.take() {
+                let id = thread.id;
+                // (Its end, a moment more, not waited for under the lock:
+                // see `GpuUser`.)
+                drop(gpu);
+                let _ = handle.join();
+                let mut gpu = gpu_threads();
+                if gpu.thread.as_ref().is_some_and(|thread| thread.id == id) {
+                    gpu.thread = None;
+                }
+                drop(gpu);
+                GPU_CHANGED.notify_all();
+                return true;
+            }
+            // (Another thread is waiting out its end, and tells.)
+        } else if !thread.leaving {
+            return false;
+        }
+        gpu = match limit {
+            None => GPU_CHANGED.wait(gpu).unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some(limit) => {
+                let now = std::time::Instant::now();
+                if now >= limit {
+                    return false;
+                }
+                GPU_CHANGED.wait_timeout(gpu, limit - now).unwrap_or_else(std::sync::PoisonError::into_inner).0
+            }
+        };
+    }
+}
+
+/// This thread is done with the GPU's thread (the app quitting, after its
+/// windows closed). Once no thread uses it, it finishes the job it's on and
+/// leaves; this waits for that, [`GPU_STOP_WAIT`] at most, and says whether
+/// it has left. A later frame starts it again.
+///
+/// `false`: it's still on a frame (or another thread's), and stays known
+/// here, so a later call waits for it again. The process must not go
+/// through `exit` under it ([`GpuUser`]): quitting ends with
+/// [`exit_under_gpu`] then.
+#[must_use = "false: the GPU's thread still runs, and the process must not exit under it (exit_under_gpu)"]
+pub fn stop_gpu() -> bool {
+    stop_gpu_within(GPU_STOP_WAIT)
+}
+
+/// [`stop_gpu`], waiting `at_most` so long.
+#[must_use]
+pub fn stop_gpu_within(at_most: std::time::Duration) -> bool {
+    // (A thread on its way out, its locals gone, has let go of it already.)
+    let _ = GPU_USER.try_with(GpuUser::release);
+    gpu_left(Some(at_most))
+}
+
+/// The end of quitting when [`stop_gpu`] said the GPU's thread still runs:
+/// the process ends here with `status`, not through `exit`, whose
+/// destructors would run under the frame it's on ([`GpuUser`]). What the
+/// process still had to write to its output is written first; nothing else
+/// that runs at `exit` does.
+pub fn exit_under_gpu(status: i32) -> ! {
+    use std::io::Write;
+    eprintln!("zend-zgx: the visuals' GPU thread is still on a frame: the process ends without waiting for it any longer");
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: `_exit` takes a status and ends the process at once; nothing
+    // of this process runs after it.
+    unsafe { libc::_exit(status) }
+}
+
+/// Held by `main` as the app runs, for a panic that unwinds out of it.
+/// The process ends through `exit` then too, where this thread's
+/// [`GpuUser`] waits for the frame without limit: a frame that never ends
+/// would keep a crashed app from ever ending. Dropped by a panic, this
+/// waits for the GPU's thread only as long as quitting does
+/// ([`GPU_STOP_WAIT`]), and ends the process as quitting does, with a
+/// panic's exit status.
+pub struct StopGpuOnPanic {
+    at_most: std::time::Duration,
+}
+
+impl StopGpuOnPanic {
+    pub fn new() -> Self {
+        Self::within(GPU_STOP_WAIT)
+    }
+
+    /// (Waiting `at_most` so long.)
+    pub fn within(at_most: std::time::Duration) -> Self {
+        Self { at_most }
+    }
+}
+
+impl Drop for StopGpuOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() && !stop_gpu_within(self.at_most) {
+            exit_under_gpu(101);
+        }
+    }
+}
+
+/// The GPU's thread: one for every visual, as the shipping app's one
+/// device. Each surface's state (its targets, a shader's feedback
+/// buffers) stays there between frames. It runs while a thread that sent
+/// it a job lives ([`GpuUser`]).
+fn gpu_send(job: Job) {
+    // (A thread on its way out, its locals already gone, has no frame to show.)
+    let Ok(new) = GPU_USER.try_with(|user| !user.using.replace(true)) else { return };
+    let mut gpu = gpu_threads();
+    let gpu = &mut *gpu;
+    if new {
+        gpu.users += 1;
+    }
+    // One that has left is done with the GPU: the next starts in its place.
+    // (Its end isn't waited for here, which may be in a thread's own end:
+    // see `GpuUser`.)
+    if gpu.thread.as_ref().is_some_and(|thread| thread.left) {
+        gpu.thread = None;
+    }
+    let thread = match &mut gpu.thread {
+        Some(thread) => {
+            // Leaving, perhaps still on a departed thread's frame: it stays
+            // and takes this one after it. Never a second one beside it.
+            if std::mem::take(&mut thread.leaving) {
+                GPU_CHANGED.notify_all();
+            }
+            thread
+        }
+        none => {
+            gpu.started += 1;
+            let id = gpu.started;
+            let (jobs, rx) = mpsc::channel::<Job>();
+            let spawned = std::thread::Builder::new().name("zend-visual-gpu".into()).spawn(move || gpu_thread(id, rx));
+            let Ok(handle) = spawned else { return };
+            none.insert(GpuThread { id, jobs, leaving: false, left: false, handle: Some(handle) })
+        }
+    };
+    let _ = thread.jobs.send(job);
+}
+
+/// (For tests: `work` done on the GPU's thread, as a frame is.)
+#[cfg(test)]
+pub fn gpu_probe(work: impl FnOnce() + Send + 'static) {
+    gpu_send(Job::Probe(Box::new(work)));
+}
+
+/// (For tests: whether the GPU's thread runs.)
+#[cfg(test)]
+pub fn gpu_thread_runs() -> bool {
+    gpu_threads().thread.as_ref().is_some_and(|thread| !thread.left)
+}
+
+/// (For tests: how many threads use the GPU's thread.)
+#[cfg(test)]
+pub fn gpu_thread_users() -> usize {
+    gpu_threads().users
+}
+
+fn gpu_thread(id: u64, jobs: mpsc::Receiver<Job>) {
+    /// Says this one has left, however it ends. (Dropped last, after the
+    /// surfaces: what waits for it then finds the GPU let go of.)
+    struct Left(u64);
+    impl Drop for Left {
+        fn drop(&mut self) {
+            if let Some(thread) = &mut gpu_threads().thread
+                && thread.id == self.0
+            {
+                thread.left = true;
+            }
+            GPU_CHANGED.notify_all();
+        }
+    }
+    let _left = Left(id);
+    // Whether its last user has gone, and no thread has sent it a job since.
+    let leaving = || gpu_threads().thread.as_ref().is_some_and(|thread| thread.id == id && thread.leaving);
     let mut scenes: HashMap<String, Option<zend_visual_gpu::SceneState>> = HashMap::new();
     let mut shaders: HashMap<String, Option<zend_visual_gpu::ShaderState>> = HashMap::new();
     while let Ok(job) = jobs.recv() {
+        if leaving() {
+            // (Its last user gone: nothing waits for the frames still asked for.)
+            if !matches!(job, Job::Leave) {
+                continue;
+            }
+            // What it holds on the GPU goes first, so that it has left only
+            // with the GPU let go of.
+            scenes.clear();
+            shaders.clear();
+            let mut gpu = gpu_threads();
+            if let Some(thread) = &mut gpu.thread
+                && thread.id == id
+                && thread.leaving
+            {
+                thread.left = true;
+                drop(gpu);
+                GPU_CHANGED.notify_all();
+                return;
+            }
+            // (A thread sent it a job meanwhile: it stays, for that thread.)
+            continue;
+        }
         let start = std::time::Instant::now();
         let cpu = thread_cpu_ns();
-        let frame = !matches!(job, Job::Release { .. });
+        let frame = matches!(job, Job::Scene { .. } | Job::Shader { .. });
         match job {
             Job::Release { key } => {
                 scenes.remove(&key);
                 shaders.remove(&key);
             }
+            // (Taken up again by a thread since it was told to leave.)
+            Job::Leave => {}
+            #[cfg(test)]
+            Job::Probe(work) => work(),
             Job::Scene { key, scene, camera, size, scale, palette, reply } => {
                 let rgba = move |c: zv::Color| palette.color(c);
                 let state = scenes.entry(key).or_default();
