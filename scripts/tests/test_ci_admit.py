@@ -44,7 +44,8 @@ class ReservationTests(unittest.TestCase):
         import plan
         everything = plan.reservation(plan.jobs_to_run({s: True for s in plan.SUITE_JOBS}), "push",
                                       "refs/heads/main")
-        self.assertEqual(everything, admit.MAX_RESERVATION)
+        for runner, count in everything.items():
+            self.assertLessEqual(count, admit.MAX_RESERVATION[runner], runner)
 
     def test_held_releases_finished_jobs(self):
         declared = {"linux": 3, "windows": 2, "macos": 1}

@@ -10,37 +10,27 @@ Pull requests, `main` and the merge queue all go through one workflow,
 2. **admit** ([`scripts/ci/admit.py`](../../scripts/ci/admit.py)) waits until
    all of those runners are free.
 3. **The suites** all start together. Each is a reusable workflow:
-   `ui-tests.yml` (Linux), `windows.yml`, `macos.yml` (macOS and iOS),
-   `voice-tests.yml`, `android.yml`, `preview-tests.yml`,
-   `linux-installer.yml` and `cursor-compatibility.yml`.
+   `ui-tests.yml` (Linux core and UI), `linux-installer.yml`,
+   `voice-tests.yml` and `zgx-tests.yml` (this fork's interface, on Linux
+   and macOS).
 4. **CI result** passes when no suite failed or was cancelled. This is the
    check to require in the ruleset and the merge queue.
+
+This fork tests only what it ships: the Linux desktop build and zgx. The
+upstream Windows, macOS app, iOS, Android, edge and Cursor suites, and the
+Cloudflare, TestFlight, Google Play, zgx beta and Cursor SDK update workflows,
+were removed. `release.yml` (tags only) is unchanged.
 
 ## Which suites run
 
 | | Pull request (fast tier) | `main`, merge queue, manual run (full tier) |
 |---|---|---|
-| Linux core and UI, Cursor, edge, installer | when their files change | when their files change |
-| iOS core (Linux) | app or mobile core changed | app or mobile core changed |
-| iOS simulator | the app, `crates/mobile` or `crates/client` changed | with iOS core |
-| Windows tests, macOS | only when the change looks platform specific | when their files change |
-| Windows packaging (`app`) | `apps/zend`, `dist/windows`, packaging scripts, `crates/update` | with Windows tests |
-| macOS browser / preview fixtures | browser, preview or edge code changed | always |
+| Linux core and UI, installer, zgx | when their files change | when their files change |
 | Linux browser fixture | nightly or `ci:full` only | nightly or manual run only |
-| Android APK | the Android app or `crates/mobile` changed | when its files change |
-| Voice (audio stack, Windows media runtime) | nightly or `ci:full` only | nightly or manual run only |
-| GPUI frame-source | the pinned GPUI revision moved | the same |
+| Voice (audio stack, Windows media runtime) | nightly or `ci:full` only, and only for its own files | nightly or manual run only |
 
-The `iOS core` paths come from the Cargo graph: every crate `zend-mobile`
-depends on.
-
-On the fast tier, a change counts as platform specific when it touches:
-
-- the platform's own files: packaging, scripts, `apps/zend`, `crates/update`,
-  and the voice crates or the mobile core for voice and Android;
-- a file under `crates/` whose name says so, such as `browser/macos.rs`;
-- changed code (not comments) with a platform conditional or platform API:
-  `target_os`, `cfg(unix)`, `cfg(windows)`, `objc`, WebKit, `HWND`, ...
+The zgx paths come from the Cargo graph: every crate `apps/zgx` builds
+against. Its zgx CLI is built from `third_party/zgx`.
 
 `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml` changes run everything
 except a version bump: one that only changes `version = "..."` lines (the
@@ -56,7 +46,7 @@ everything.
   voice jobs left after the move to `core-tests` never failed, and the Linux
   browser fixture's failures were window-timing flakes and package downloads.
   The rest of voice (protocol, transport, MCP, voice-media) runs in
-  `core-tests`, `ios-core` and the Windows tests.
+  `core-tests`.
 - **Nightly** (`release-profile-tests.yml`): core and UI in the release profile.
 - **Weekly** (`weekly-tests.yml`): the tests no other workflow runs. That is
   every `zend-engine` integration binary, plus the crates whose own tests have
@@ -117,7 +107,7 @@ tree is the merge with the current `main`. The inputs are:
 
 When a job passes, its last step saves a tiny Actions cache entry named after
 the suite's hash and the job. `plan` skips a suite when all its jobs have such
-an entry. A single Windows or voice job can be skipped while the suite's other
+an entry. A single voice job can be skipped while the suite's other
 jobs run. Skipped suites reserve no runners and count as passed in `CI result`.
 The plan summary shows what was reused.
 

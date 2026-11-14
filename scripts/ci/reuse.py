@@ -62,24 +62,14 @@ SUITE_INPUTS: dict[str, list[str]] = {
     "core": [".github/workflows/ui-tests.yml", "scripts/ci/test-core.sh"] + LINUX_SETUP + NEXTEST,
     "ui": [".github/workflows/ui-tests.yml", "scripts/test-linux-browser.sh", "scripts/test-browser-storage.py"]
           + LINUX_SETUP + NEXTEST,
-    "cursor": [".github/workflows/cursor-compatibility.yml", "scripts/*cursor-sdk*", "crates/harness/src/cursor/**"],
-    "edge": [".github/workflows/preview-tests.yml", "edge/**"],
     "installer": [".github/workflows/linux-installer.yml", "edge/src/install.sh", "scripts/package-linux.sh",
                   "scripts/test-linux-desktop-entry.sh", "dist/zend.desktop", "dist/zend.png",
                   "scripts/ci/apt-install.sh"],
     "voice": [".github/workflows/voice-tests.yml", "dist/voice/**", "scripts/package-voice-runtime.py",
               "scripts/codex-voice-remote-smoke.py", "scripts/tests/*voice*"] + LINUX_SETUP + NEXTEST,
-    "windows": [".github/workflows/windows.yml", "dist/windows/**", "scripts/test-windows-*.ps1",
-                "scripts/package-windows.ps1", ".github/actions/windows-ci-setup/**"] + NEXTEST,
-    "macos": [".github/workflows/macos.yml", "edge/**", "scripts/run-macos-browser-fixture.sh",
-              "scripts/test-browser-storage.py", "dist/macos/**", "scripts/ci/run-macos-fixture.sh"] + NEXTEST,
-    "frame_source": [".github/workflows/macos.yml"],
-    "ios": [".github/workflows/macos.yml", "apps/ios/**", "scripts/ios/**"],
-    "android": [".github/workflows/android.yml", "apps/android/**", "scripts/android/**",
-                "apps/ios/Zend/Fonts/**", "apps/ios/Zend/Assets.xcassets/**"],
     # apps/zgx is a workspace of its own: all of it (sources, lockfile, Luau UI
     # and tests, plugins, SDK) is an input; its path dependencies are in SUITE_PACKAGES.
-    "zgx": [".github/workflows/zgx-tests.yml", "apps/zgx/**"] + NEXTEST,
+    "zgx": [".github/workflows/zgx-tests.yml", "apps/zgx/**", "third_party/zgx/**"] + NEXTEST,
 }
 
 # The workspace packages each suite builds and tests (their dependencies are added).
@@ -89,11 +79,6 @@ SUITE_PACKAGES: dict[str, list[str]] = {
              "zend-cli", "zend-launch", "zend-notify"],
     "ui": ["zend-ui"],
     "voice": ["zend-audio", "zend-voice-media"],
-    "windows": ["zend-ui", "zend-harness", "zend", "zend-update", "zend-proto", "zend-engine",
-                "zend-voice-media"],
-    "macos": ["zend-update", "zend-preview", "zend-ui", "zend-text", "zend"],
-    "ios": ["zend-mobile", "zend-text", "zend-markdown", "zend-client"],
-    "android": ["zend-mobile"],
     # zend-engine's plugin tests, and the root crates apps/zgx builds against.
     "zgx": ["zend-engine", "zatex", "zend-theme", "zend-preview-label", "zend-cli", "zend-launch",
             "zend-notify", "zend-proto", "zend-update", "zend-visual", "zend-plugin-guard",
