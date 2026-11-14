@@ -91,13 +91,13 @@ class PlanTests(unittest.TestCase):
     def test_reservation(self):
         suites = plan.plan(files("Cargo.lock"), "full", nightly=True)
         counts = plan.reservation(plan.jobs_to_run(suites), "pull_request", "refs/pull/1/merge")
-        # result + core + ui + voice offline + zgx-linux; voice runtime; zgx-macos
-        self.assertEqual(counts, {"linux": 5, "windows": 1, "macos": 1})
+        # result + core + ui + voice offline + zgx-linux; voice runtime
+        self.assertEqual(counts, {"linux": 5, "windows": 1, "macos": 0})
         self.assertEqual(plan.reservation(plan.jobs_to_run(suites), "push", "refs/heads/main"), counts)
-        self.assertEqual(plan.format_reservation(counts), "linux=5 windows=1 macos=1")
+        self.assertEqual(plan.format_reservation(counts), "linux=5 windows=1 macos=0")
         daytime = plan.reservation(plan.jobs_to_run(plan.plan(files("Cargo.lock"), "full")), "push",
                                    "refs/heads/main")
-        self.assertEqual(daytime, {"linux": 4, "windows": 0, "macos": 1})  # no voice
+        self.assertEqual(daytime, {"linux": 4, "windows": 0, "macos": 0})  # no voice
         self.assertEqual(plan.reservation(plan.jobs_to_run({s: False for s in plan.SUITE_JOBS}), "push",
                                           "refs/heads/main"),
                          {"linux": 1, "windows": 0, "macos": 0})
@@ -112,7 +112,7 @@ class WorkflowConsistencyTests(unittest.TestCase):
         "ui": ("ui-tests.yml", ["ui-tests"]),
         "installer": ("linux-installer.yml", ["desktop-entry"]),
         "voice": ("voice-tests.yml", ["offline-linux", "windows-runtime"]),
-        "zgx": ("zgx-tests.yml", ["zgx-macos", "zgx-linux"]),
+        "zgx": ("zgx-tests.yml", ["zgx-linux"]),
     }
 
     def test_job_runners_match(self):

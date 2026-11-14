@@ -11,12 +11,11 @@ Pull requests, `main` and the merge queue all go through one workflow,
    all of those runners are free.
 3. **The suites** all start together. Each is a reusable workflow:
    `ui-tests.yml` (Linux core and UI), `linux-installer.yml`,
-   `voice-tests.yml` and `zgx-tests.yml` (this fork's interface, on Linux
-   and macOS).
+   `voice-tests.yml` and `zgx-tests.yml` (this fork's interface, on Linux).
 4. **CI result** passes when no suite failed or was cancelled. This is the
    check to require in the ruleset and the merge queue.
 
-This fork tests only what it ships: the Linux desktop build and zgx. The
+This fork tests only what it ships: the Linux desktop build and zgx, on Linux. The
 upstream Windows, macOS app, iOS, Android, edge and Cursor suites, and the
 Cloudflare, TestFlight, Google Play, zgx beta and Cursor SDK update workflows,
 were removed. `release.yml` (tags only) is unchanged.

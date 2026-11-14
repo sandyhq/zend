@@ -175,6 +175,17 @@ fn a_thread_that_used_the_gpu_s_thread_ends_only_once_its_frame_has() {
 /// own, as nextest gives each test.)
 #[test]
 fn the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next() {
+    // (In a process of its own: it needs the GPU's thread to itself, and
+    // the other tests in this binary use it in parallel.)
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next_alone");
+    assert_eq!(status, Some(0), "{out}\n{err}");
+    assert!(out.contains("1 passed"), "{out}\n{err}");
+}
+
+/// (Run by the test above, in a process of its own.)
+#[test]
+#[ignore = "needs the GPU's thread to itself: run by the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next"]
+fn the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next_alone() {
     use std::sync::mpsc;
     let probe = || {
         let (did, done) = mpsc::channel();
@@ -201,6 +212,17 @@ fn the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_n
 /// it's on. A second GPU's thread is never started beside it.
 #[test]
 fn a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on() {
+    // (In a process of its own: it needs the GPU's thread to itself, and
+    // the other tests in this binary use it in parallel.)
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on_alone");
+    assert_eq!(status, Some(0), "{out}\n{err}");
+    assert!(out.contains("1 passed"), "{out}\n{err}");
+}
+
+/// (Run by the test above, in a process of its own.)
+#[test]
+#[ignore = "needs the GPU's thread to itself: run by a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on"]
+fn a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on_alone() {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
     let (started, on_frame) = mpsc::channel();
@@ -250,6 +272,17 @@ fn a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_
 /// thread stays known: a later wait is for that frame, not for nothing.
 #[test]
 fn stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it() {
+    // (In a process of its own: it needs the GPU's thread to itself, and
+    // the other tests in this binary use it in parallel.)
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it_alone");
+    assert_eq!(status, Some(0), "{out}\n{err}");
+    assert!(out.contains("1 passed"), "{out}\n{err}");
+}
+
+/// (Run by the test above, in a process of its own.)
+#[test]
+#[ignore = "needs the GPU's thread to itself: run by stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it"]
+fn stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it_alone() {
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
@@ -291,8 +324,8 @@ fn quitting_with_the_gpu_s_thread_still_on_a_frame_ends_the_process_without_exit
     assert!(err.contains("still on a frame"), "{err}");
 }
 
-/// One of the tests below, which end their process, run in a process of
-/// its own: its exit status, and what it wrote to stdout and stderr. (Each
+/// A test run in a process of its own (one that ends its process, or needs
+/// the GPU's thread to itself): its exit status, and what it wrote to stdout and stderr. (Each
 /// holds a frame 30 s: a process that waits it out is stopped at 20 s.)
 fn in_a_process_of_its_own(test: &str) -> (Option<i32>, String, String) {
     use std::process::{Command, Stdio};

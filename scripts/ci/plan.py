@@ -56,7 +56,7 @@ SUITE_JOBS: dict[str, list[tuple[str, str]]] = {
     "ui": [("ui-tests", "linux")],  # ui-tests.yml (UI + Linux browser)
     "installer": [("desktop-entry", "linux")],  # linux-installer.yml
     "voice": [("offline-linux", "linux"), ("windows-runtime", "windows")],  # voice-tests.yml
-    "zgx": [("zgx-macos", "macos"), ("zgx-linux", "linux")],  # zgx-tests.yml
+    "zgx": [("zgx-linux", "linux")],  # zgx-tests.yml
 }
 # Run only nightly, manually or with `ci:full` (see the module docstring): voice
 # (the AEC3 audio stack and the packaged Windows media runtime; no failures of

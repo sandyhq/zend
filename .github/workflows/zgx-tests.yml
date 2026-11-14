@@ -5,13 +5,12 @@ name: zgx tests
 #
 #   apps/zgx's unit tests (`cargo test --bin zend-zgx`: src/plugins/*_tests.rs
 #   among them) and its Luau UI tests (`zgx test ui`, the zgx CLI built from
-#   sandyhq/zengx at ZENGX_REV), on macOS and Linux, the known failures let
-#   through (scripts/ci/test-zgx.sh, scripts/ci/zgx-known-failures.txt);
-#   and on macOS the engine's plugin tests (its lib's `plugins::` tests and
-#   tests/plugin_services.rs), which core-tests runs on Linux.
+#   sandyhq/zengx at ZENGX_REV), on Linux, the known failures let through
+#   (scripts/ci/test-zgx.sh, scripts/ci/zgx-known-failures.txt). The engine's
+#   plugin tests run in core-tests.
 #
-# Not on Windows yet: zgx-build.yml builds apps/zgx there, but its tests have
-# never been run on Windows, so there's no known-failures list for it.
+# Linux only: this fork ships the Linux build. (The macOS job was dropped with
+# the other macOS suites; it had never got past installing the zgx CLI.)
 on:
   workflow_call:
     inputs:
@@ -33,72 +32,6 @@ env:
   LUAU_CXXFLAGS: -DNDEBUG
 
 jobs:
-  zgx-macos:
-    runs-on: macos-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Rust toolchain
-        run: |
-          rustup update stable --no-self-update
-          rustup show active-toolchain || rustup toolchain install
-      # zgx's terminals are Ghostty's on macOS, built with Zig 0.16 (zgx-ghostty-sys).
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.16.0
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/Library/Caches/zgx-ghostty
-          key: zgx-ghostty-${{ hashFiles('apps/zgx/Cargo.lock') }}
-          restore-keys: zgx-ghostty-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: zgx-tests
-          workspaces: |
-            . -> target
-            apps/zgx -> target
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
-      - name: Install cargo-nextest
-        run: |
-          # pinned release, verified against a checksum.
-          version=0.9.146
-          sha256=39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8
-          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$RUNNER_TEMP/nextest.tar.gz" \
-            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$version/cargo-nextest-$version-universal-apple-darwin.tar.gz"
-          echo "$sha256  $RUNNER_TEMP/nextest.tar.gz" | shasum -a 256 -c -
-          bin="$RUNNER_TEMP/nextest-bin"
-          mkdir -p "$bin"
-          tar -xzf "$RUNNER_TEMP/nextest.tar.gz" -C "$bin" cargo-nextest
-          echo "$bin" >> "$GITHUB_PATH"
-      - id: zgx-cli
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/zgx-cli
-          key: zgx-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.ZENGX_REV }}
-      - name: zgx CLI (sandyhq/zengx)
-        if: steps.zgx-cli.outputs.cache-hit != 'true'
-        run: |
-          CARGO_TARGET_DIR="$RUNNER_TEMP/zgx-cli-target" cargo install --locked \
-            --git https://github.com/sandyhq/zengx --rev "$ZENGX_REV" zgx-script --bin zgx --features inspect --root ~/zgx-cli
-      - name: apps/zgx unit tests
-        run: scripts/ci/test-zgx.sh rust
-      - name: apps/zgx Luau UI tests
-        if: ${{ !cancelled() }}
-        run: scripts/ci/test-zgx.sh ui ~/zgx-cli/bin/zgx
-      - name: Engine plugin tests
-        if: ${{ !cancelled() }}
-        run: |
-          cargo nextest run --config-file .config/nextest.toml --locked --no-fail-fast \
-            -p zend-engine --lib --test it \
-            -E '(binary_id(zend-engine::it) & test(/^plugin_services::/)) | test(/plugins::/)'
-      - name: Record the pass (CI skips this job while its inputs stay the same)
-        if: inputs.pass-key != ''
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: rust-toolchain.toml
-          key: ${{ inputs.pass-key }}-zgx-macos
-
   zgx-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 120

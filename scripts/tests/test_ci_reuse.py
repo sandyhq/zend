@@ -212,11 +212,11 @@ class LookupTests(unittest.TestCase):
 class ReusePlanTests(unittest.TestCase):
     def test_whole_suites(self):
         suites = {s: s in ("core", "zgx") for s in plan.SUITE_JOBS}
-        skip = plan.reused_jobs(suites, {"core": {"core-tests"}, "zgx": {"zgx-linux"}})
-        self.assertEqual(skip, {"core": ["core-tests"]})  # zgx: the macOS job never passed
+        skip = plan.reused_jobs(suites, {"core": {"core-tests"}})
+        self.assertEqual(skip, {"core": ["core-tests"]})  # zgx never passed
         running = plan.jobs_to_run(suites, skip)
         self.assertEqual(running["core"], [])
-        self.assertEqual([j for j, _ in running["zgx"]], ["zgx-macos", "zgx-linux"])
+        self.assertEqual([j for j, _ in running["zgx"]], ["zgx-linux"])
 
     def test_single_jobs_of_splittable_suites(self):
         suites = {s: s == "voice" for s in plan.SUITE_JOBS}
