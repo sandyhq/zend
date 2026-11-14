@@ -1283,7 +1283,7 @@ impl Tools {
         if let Some(info) = harnesses.iter().find(|h| h.id == harness).filter(|_| !args.cloud) {
             let modes = &info.access_modes;
             anyhow::ensure!(
-                access.is_full_access() || modes.contains(&access),
+                access.offered_by(modes),
                 "{harness:?} on device {device_id} cannot run {} (accessModes: {})",
                 access.label(),
                 modes.iter().map(|m| m.label()).collect::<Vec<_>>().join(", ")

@@ -392,6 +392,18 @@ impl ChildKind {
         }
     }
 
+    /// The kind of a side chat or fork made from a chat of kind `source`: it
+    /// is a side chat of its own whatever its source was. A subagent's or a
+    /// child session's kind is never copied (a copied subagent kind would
+    /// list the copy as delegated work, a copied session kind as a chat of
+    /// its own); a top-level source (`None`) keeps none.
+    pub fn of_a_copy(source: Option<ChildKind>) -> Option<ChildKind> {
+        match source {
+            Some(ChildKind::Session | ChildKind::Subagent) => Some(ChildKind::Side),
+            other => other,
+        }
+    }
+
     /// The kind a stored value names; `None` for one this build doesn't know.
     pub fn parse(value: &str) -> Option<Self> {
         match value {

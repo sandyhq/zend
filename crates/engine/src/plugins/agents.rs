@@ -186,6 +186,12 @@ pub trait AgentHost: Send + Sync + 'static {
     fn deliver(&self, _chat: &str, _text: &str, _attachments: Vec<String>, _how: Delivery) -> Result<String, String> {
         Err("Sending messages isn't available on this device".into())
     }
+    /// The access modes `harness` offers on `device` (this device when
+    /// none), as `list_harnesses` lists them; `None` when this host can't
+    /// say (another device's harnesses, or no registry), which checks nothing.
+    fn access_modes(&self, _harness: HarnessId, _device: Option<&str>) -> Option<Vec<zend_proto::AccessMode>> {
+        None
+    }
     /// `Mutate createChat`, hosted where `new` says.
     fn create_chat(&self, _new: &NewChat) -> Result<(), String> {
         Err("Starting chats isn't available on this device".into())
@@ -1160,7 +1166,9 @@ impl Agents {
     /// makes one, and its first message. Its id. With `parent`, a child of
     /// that top-level chat: `kind` "session" (a child session), "subagent"
     /// (the default, as the Zend MCP's) or "side". `access` is the owner's to
-    /// pick (a plugin acts with their authority): no parent caps it.
+    /// pick (a plugin acts with their authority): no parent caps it. One the
+    /// harness doesn't offer is refused, as the Zend MCP's create_chat
+    /// refuses it; none asked is today's default.
     async fn new_chat(&self, by: &By, args: &Json) -> Result<Json, Refused> {
         let prompt = args.get("prompt").and_then(Json::as_str).unwrap_or_default().trim().to_owned();
         if prompt.is_empty() {
@@ -1206,6 +1214,19 @@ impl Agents {
                 )
             })?,
         };
+        if let Some(modes) = host.access_modes(harness, text("device").as_deref()) {
+            if !access.offered_by(&modes) {
+                return Err(Refused::new(
+                    reason::BAD_CALL,
+                    format!(
+                        "{} cannot run {} (accessModes: {})",
+                        harness.as_str(),
+                        access.label(),
+                        modes.iter().map(|m| m.label()).collect::<Vec<_>>().join(", ")
+                    ),
+                ));
+            }
+        }
         let parent = match (strict("parent", "a top-level chat's id")?, strict("kind", "\"session\", \"subagent\" or \"side\"")?) {
             (None, None) => None,
             (None, Some(_)) => return Err(Refused::new(reason::BAD_CALL, "A kind of child needs its parent (parent)")),

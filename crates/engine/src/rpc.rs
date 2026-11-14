@@ -3573,12 +3573,11 @@ impl RpcService for EngineRpc {
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
                 chat.parent_chat_id = Some(parent_chat_id);
-                // A fork is a side chat, a child session's too: kept as a
-                // session it would never hand its copied history to its
+                // A fork is a side chat, a child session's or a subagent's too:
+                // the source's kind isn't copied. Kept as a session or a
+                // subagent it would never hand its copied history to its
                 // provider (`fork_history_prompt`).
-                if chat.child_kind == Some(zend_proto::ChildKind::Session) {
-                    chat.child_kind = Some(zend_proto::ChildKind::Side);
-                }
+                chat.child_kind = zend_proto::ChildKind::of_a_copy(chat.child_kind);
                 chat.title = None; // First side-chat turn receives its own generated title.
                 chat.archived = false;
                 chat.created_at = chrono::Utc::now();

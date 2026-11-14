@@ -153,6 +153,15 @@ impl AgentHost for Host {
         Ok(format!("m{}", delivered.len()))
     }
 
+    fn access_modes(&self, harness: HarnessId, _device: Option<&str>) -> Option<Vec<zend_proto::AccessMode>> {
+        // Claude Code offers every mode; Codex here, full access only.
+        match harness {
+            HarnessId::ClaudeCode => Some(zend_proto::AccessMode::ALL.to_vec()),
+            HarnessId::Codex => Some(vec![zend_proto::AccessMode::FullAccess]),
+            _ => None,
+        }
+    }
+
     fn create_chat(&self, new: &NewChat) -> Result<(), String> {
         let mut made = chat(&new.chat_id, new.config.model.as_deref().unwrap_or("opus"));
         made.config = Some(new.config.clone());
@@ -885,6 +894,33 @@ async fn messages_a_new_chat_is_made_and_sent_its_first_message() {
     ] {
         assert_eq!(f.op("p", args.clone()).await.unwrap_err().reason, why, "{args}");
     }
+}
+
+#[tokio::test]
+async fn messages_a_new_chat_with_an_access_its_harness_doesn_t_offer_is_refused() {
+    let f = Fixture::new();
+    f.grant("p", &[MESSAGES_SEND]);
+    let refused = f
+        .op("p", json!({ "op": "new_chat", "prompt": "x", "harness": "codex", "access": "supervised" }))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.reason, reason::BAD_CALL, "{}", refused.message);
+    assert!(refused.message.contains("accessModes: Full access"), "{}", refused.message);
+    assert!(lock(&f.host.created).is_empty() && f.delivered().is_empty(), "a refused call makes and sends nothing");
+    // What it offers goes through; so does none asked (today's default), and
+    // a harness offering every mode.
+    f.op("p", json!({ "op": "new_chat", "prompt": "x", "harness": "codex", "access": "full-access" })).await.unwrap();
+    f.op("p", json!({ "op": "new_chat", "prompt": "x", "harness": "codex" })).await.unwrap();
+    f.op("p", json!({ "op": "new_chat", "prompt": "x", "access": "auto-accept-edits" })).await.unwrap();
+    let made: Vec<_> = lock(&f.host.created).iter().map(|n| (n.config.harness, n.config.access)).collect();
+    assert_eq!(
+        made,
+        [
+            (HarnessId::Codex, zend_proto::AccessMode::FullAccess),
+            (HarnessId::Codex, zend_proto::AccessMode::FullAccess),
+            (HarnessId::ClaudeCode, zend_proto::AccessMode::AutoAcceptEdits),
+        ]
+    );
 }
 
 #[tokio::test]
