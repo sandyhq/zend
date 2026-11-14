@@ -1268,10 +1268,12 @@ return function(id: string): any
 
 	-- A new chat, sent its first message ("messages.send"): `device`,
 	-- `project` (a project's id), `harness`, `model`, `effort`, `cwd` as you'd
-	-- pick them; `parent` (a top-level chat's id) and `kind` ("session",
-	-- "subagent" or "side") make it that chat's child; `title` names it.
+	-- pick them; `access` ("supervised", "auto-accept-edits" or
+	-- "full-access", the default) what it may do without asking; `parent`
+	-- (a top-level chat's id) and `kind` ("session", "subagent" or "side")
+	-- make it that chat's child; `title` names it.
 	-- A promise of { status, chat, id }, `chat` the new chat's id.
-	function M.new_chat(s: { prompt: string, device: string?, project: string?, harness: string?, model: string?, effort: string?, cwd: string?, parent: string?, kind: string?, title: string? }): any
+	function M.new_chat(s: { prompt: string, device: string?, project: string?, harness: string?, model: string?, effort: string?, cwd: string?, access: string?, parent: string?, kind: string?, title: string? }): any
 		return agents("new_chat", {
 			prompt = s.prompt,
 			device = s.device,
@@ -1280,6 +1282,7 @@ return function(id: string): any
 			model = s.model,
 			effort = s.effort,
 			cwd = s.cwd,
+			access = s.access,
 			parent = s.parent,
 			kind = s.kind,
 			title = s.title,
