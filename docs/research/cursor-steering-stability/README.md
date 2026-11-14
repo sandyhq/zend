@@ -86,11 +86,11 @@ consume provider quota. Always set a fresh isolated state directory.
 
 ```sh
 cargo test -p zend-doc
-cargo test -p zend-engine --test message_queue
+cargo test -p zend-engine --test it message_queue::
 cargo test -p zend-harness
 
 ZEND_CURSOR_STATE_DIR=$(mktemp -d) ZEND_CURSOR_EARLY_ROUNDS=10 \
-  cargo test -p zend-engine --test cursor_live -- --ignored --nocapture --test-threads=1
+  cargo test -p zend-engine --test it cursor_live:: -- --ignored --nocapture --test-threads=1
 
 ZEND_CURSOR_STATE_DIR=$(mktemp -d) ZEND_CURSOR_TEST_MODEL=muse-spark-1.3 \
   cargo run -p zend-harness --example cursor_stability_probe -- history 40

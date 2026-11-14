@@ -7,6 +7,7 @@
 //! Tests run one at a time: the OS network path and the registry's "this process
 //! runs the layer" flag are process-wide.
 
+#[path = "it/support/mod.rs"]
 mod support;
 
 use std::path::Path;

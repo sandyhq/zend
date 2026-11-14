@@ -24,15 +24,16 @@ impl RegistryDoc {
     }
 
     /// Readiness survives restarts even when the list is empty. No data import.
-    pub(super) fn initialize_sidebar_pins(&mut self) {
+    pub(super) fn initialize_sidebar_pins(&mut self) -> Result<(), DocError> {
         if !self.sidebar_pins_initialized() {
             self.write(
                 KIND_PREFERENCES,
                 SIDEBAR_PINS_STATE_ID,
                 OpKind::Upsert,
                 fields([("initialized", json!(true))]),
-            );
+            )?;
         }
+        Ok(())
     }
 
     pub fn change_sidebar_pin(&mut self, change: &SidebarPinChange) -> Result<(), DocError> {
@@ -63,34 +64,23 @@ impl RegistryDoc {
         {
             return Err(DocError::Schema("Session no longer exists".into()));
         }
-        self.initialize_sidebar_pins();
+        self.initialize_sidebar_pins()?;
         self.observe_sidebar_row("sidebarLocations", id);
         // Observe this pin's field clocks before a causally subsequent edit,
         // including clocks from a device whose wall clock runs ahead of ours.
         if let Some(row) = self.overlay_row(KIND_SIDEBAR_PINS, id) {
-            if let Some(clock) = row.max_clock() {
-                let mut parts = clock.splitn(3, '-');
-                if let (Some(ms), Some(counter)) = (
-                    parts.next().and_then(|v| v.parse::<i64>().ok()),
-                    parts.next().and_then(|v| v.parse::<u32>().ok()),
-                ) {
-                    if (ms, counter) > (self.clock.last_ms, self.clock.counter) {
-                        self.clock.last_ms = ms;
-                        self.clock.counter = counter;
-                    }
-                }
-            }
+            self.clock.observe_row(&row, &self.device_id);
         }
         if matches!(change, SidebarPinChange::Unpin { .. }) {
             if current.iter().any(|v| v == id) {
-                self.write_sidebar_location(id, "");
+                self.write_sidebar_location(id, "")?;
             }
             self.write(
                 KIND_SIDEBAR_PINS,
                 id,
                 OpKind::Upsert,
                 fields([("pinned", json!(false))]),
-            );
+            )?;
             return Ok(());
         }
         if matches!(change, SidebarPinChange::Move { .. }) && !current.iter().any(|v| v == id) {
@@ -110,13 +100,13 @@ impl RegistryDoc {
             .and_then(|i| next.get(i))
             .and_then(key_for);
         let upper = next.get(index + 1).and_then(key_for);
-        let hlc = self.next_hlc();
+        let hlc = self.next_hlc()?;
         let key =
             pin_order_key_between(lower, upper, &hlc).map_err(|e| DocError::Schema(e.into()))?;
         let mut set = fields([("orderKey", json!(key))]);
         if matches!(change, SidebarPinChange::Pin { .. }) {
             set.insert("pinned".into(), json!(true));
-            self.write_sidebar_location(id, "pinned");
+            self.write_sidebar_location(id, "pinned")?;
         }
         self.enqueue_ops(vec![RowOp {
             kind: KIND_SIDEBAR_PINS.into(),
@@ -125,7 +115,7 @@ impl RegistryDoc {
             set: Some(set),
             hlc,
             clocks: None,
-        }]);
+        }])?;
         Ok(())
     }
 }

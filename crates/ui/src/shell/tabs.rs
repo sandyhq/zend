@@ -453,6 +453,7 @@ impl Shell {
                     .iter()
                     .filter(|side| {
                         !side.archived
+                            && side.is_worker_child()
                             && side.parent_chat_id.as_deref() == Some(chat)
                             && state.display_status_for(side, now)
                                 == zend_proto::ChatIndicator::Working

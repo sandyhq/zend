@@ -11,20 +11,8 @@ const LOCATIONS: &str = "sidebarLocations";
 
 impl RegistryDoc {
     pub(super) fn observe_sidebar_row(&mut self, kind: &str, id: &str) {
-        if let Some(clock) = self
-            .overlay_row(kind, id)
-            .and_then(|r| r.max_clock().map(str::to_owned))
-        {
-            let mut parts = clock.splitn(3, '-');
-            if let (Some(ms), Some(counter)) = (
-                parts.next().and_then(|v| v.parse::<i64>().ok()),
-                parts.next().and_then(|v| v.parse::<u32>().ok()),
-            ) {
-                if (ms, counter) > (self.clock.last_ms, self.clock.counter) {
-                    self.clock.last_ms = ms;
-                    self.clock.counter = counter;
-                }
-            }
+        if let Some(row) = self.overlay_row(kind, id) {
+            self.clock.observe_row(&row, &self.device_id);
         }
     }
 
@@ -59,7 +47,7 @@ impl RegistryDoc {
         self.sidebar_location(id, Some(pin)) == "pinned"
     }
 
-    pub(super) fn write_sidebar_location(&mut self, id: &str, location: &str) {
+    pub(super) fn write_sidebar_location(&mut self, id: &str, location: &str) -> Result<(), DocError> {
         self.observe_sidebar_row(LOCATIONS, id);
         self.observe_sidebar_row(KIND_SIDEBAR_PINS, id);
         self.write(
@@ -67,7 +55,7 @@ impl RegistryDoc {
             id,
             OpKind::Upsert,
             fields([("location", json!(location))]),
-        );
+        )
     }
 
     /// Live sections in their placed order, each with its order key. Sections
@@ -197,7 +185,7 @@ impl RegistryDoc {
                     continue;
                 }
                 self.observe_sidebar_row(kind, id);
-                let hlc = self.next_hlc();
+                let hlc = self.next_hlc()?;
                 let next = pin_order_key_between(lower.as_deref(), None, &hlc)
                     .map_err(|e| DocError::Schema(e.into()))?;
                 self.enqueue_ops(vec![RowOp {
@@ -207,7 +195,7 @@ impl RegistryDoc {
                     set: Some(fields([("orderKey", json!(next))])),
                     hlc,
                     clocks: None,
-                }]);
+                }])?;
                 *key = Some(next.clone());
                 lower = Some(next);
             }
@@ -219,7 +207,7 @@ impl RegistryDoc {
             .and_then(|i| members.get(i))
             .and_then(|(_, key)| key.as_deref());
         let upper = members.get(index).and_then(|(_, key)| key.as_deref());
-        let hlc = self.next_hlc();
+        let hlc = self.next_hlc()?;
         let key =
             pin_order_key_between(lower, upper, &hlc).map_err(|e| DocError::Schema(e.into()))?;
         Ok((key, hlc))
@@ -247,7 +235,7 @@ impl RegistryDoc {
             ])),
             hlc,
             clocks: None,
-        }]);
+        }])?;
         Ok(())
     }
 
@@ -313,12 +301,12 @@ impl RegistryDoc {
             }
             _ => {}
         }
-        self.initialize_sidebar_pins();
+        self.initialize_sidebar_pins()?;
         match change {
             Create { id, name } => {
                 // Existing IDs, including deleted sections, are never resurrected.
                 if self.overlay_row(SECTIONS, id).is_none() {
-                    let created = self.next_hlc();
+                    let created = self.next_hlc()?;
                     self.write(
                         SECTIONS,
                         id,
@@ -329,7 +317,7 @@ impl RegistryDoc {
                             ("deleted", json!(false)),
                             ("createdAt", json!(created)),
                         ]),
-                    );
+                    )?;
                 }
             }
             Rename { id, name } => {
@@ -340,7 +328,7 @@ impl RegistryDoc {
                         id,
                         OpKind::Upsert,
                         fields([("name", json!(name))]),
-                    );
+                    )?;
                 }
             }
             Collapse { id, collapsed } => {
@@ -351,7 +339,7 @@ impl RegistryDoc {
                         id,
                         OpKind::Upsert,
                         fields([("collapsed", json!(collapsed))]),
-                    );
+                    )?;
                 }
             }
             Delete { id } => {
@@ -361,7 +349,7 @@ impl RegistryDoc {
                     id,
                     OpKind::Upsert,
                     fields([("deleted", json!(true))]),
-                );
+                )?;
             }
             Assign {
                 session_id,
@@ -385,10 +373,10 @@ impl RegistryDoc {
                     session_id,
                     OpKind::Upsert,
                     fields([("pinned", json!(false))]),
-                );
+                )?;
                 match section_id {
                     Some(id) => self.write_sidebar_placement(session_id, id, after, before)?,
-                    None => self.write_sidebar_location(session_id, ""),
+                    None => self.write_sidebar_location(session_id, "")?,
                 }
                 if let Some(id) = section_id {
                     self.change_sidebar_section(&Collapse {
@@ -440,7 +428,7 @@ impl RegistryDoc {
                         set: Some(fields([("orderKey", json!(key))])),
                         hlc,
                         clocks: None,
-                    }]);
+                    }])?;
                 }
             }
         }

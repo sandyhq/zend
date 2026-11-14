@@ -25,7 +25,7 @@ jobs:
         with:
           rust-cache: core # saved by core-tests (ci.yml); same dependency graph
       - name: Every zend-engine test binary
-        run: cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast -p zend-engine --tests
+        run: cargo nextest run --config-file .config/nextest.toml --locked --no-fail-fast -p zend-engine --tests
 
   crates:
     runs-on: ubuntu-24.04
@@ -42,6 +42,6 @@ jobs:
             pkg-config cmake
       - name: Crates without a runner
         run: >-
-          cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast
+          cargo nextest run --config-file .config/nextest.toml --locked --no-fail-fast
           -p zend-term -p zend-syntax -p zend-theme -p zend-veil -p zend-visual
           -p zend-visual-gpu -p zatex -p zend-notify --lib --tests

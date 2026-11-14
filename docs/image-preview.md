@@ -53,7 +53,7 @@ Validation commands:
 
 ```sh
 cargo test --release --locked -p zend-ui --lib -- --test-threads=1
-cargo test --release --locked -p zend-engine --lib --test workspace_files --test device_routing
+cargo nextest run --release --locked -p zend-engine -E 'kind(lib) | (binary_id(zend-engine::it) & (test(/^workspace_files::/) | test(/^device_routing::/)))'
 ```
 
 Automated results recorded on 2026-09-12 (Linux):

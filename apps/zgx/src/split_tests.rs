@@ -544,6 +544,34 @@ fn zend_v2_is_installed_as_zend_s_and_runs_one_page() {
     assert!(near(app.bounds("shell-page").y, 42.));
 }
 
+/// Zend v2 has its own sidebar (ui/templates/zend-v2/ds/sidebar.luau): child
+/// sessions nest in it as in the default's, by the same tests
+/// (ui/tests/sidebar_children.test.luau), run on `.live` composed for v2 as a
+/// switch composes it. (`zgx test ui` runs the default's only.)
+#[test]
+fn zend_v2_nests_child_sessions_like_the_default() {
+    let root = scratch("v2-children");
+    let t = root.join("templates");
+    live::sync_zend(&ui(), &t).unwrap();
+    let at = compose(&t, "zend-v2");
+    let v2 = std::fs::read_to_string(ui().join("templates/zend-v2/ds/sidebar.luau")).unwrap();
+    assert_eq!(std::fs::read_to_string(at.join("ds/sidebar.luau")).unwrap(), v2, "the sidebar run is v2's own");
+    let tests = at.join("tests");
+    std::fs::create_dir_all(&tests).unwrap();
+    let file = ui().join("tests/sidebar_children.test.luau");
+    std::fs::copy(&file, tests.join("sidebar_children.test.luau")).unwrap();
+    let want = std::fs::read_to_string(&file).unwrap().lines().filter(|l| l.starts_with("test(")).count();
+    assert!(want > 0);
+    let report = zgx_script::test_runner::run(&at, None, |outcome| {
+        if let Some(failure) = &outcome.failure {
+            eprintln!("{}: {failure}", outcome.name);
+        }
+    })
+    .expect("the child session tests load");
+    assert_eq!(report.outcomes.len(), want, "{report:?}");
+    assert_eq!(report.failed(), 0, "{report:?}");
+}
+
 // ── Drop indicators stand over the composers ────────────────────────────────
 
 /// Whether `over` is in front of `under` at `(x, y)`: both under the point,

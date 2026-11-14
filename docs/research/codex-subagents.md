@@ -40,7 +40,7 @@ resumed child's output to the original document.
 
 ```sh
 cargo test --locked -p zend-harness -p zend-doc -p zend-proto
-cargo test --locked -p zend-engine --lib --test e2e --test misc
+cargo nextest run --locked -p zend-engine -E 'kind(lib) | (binary_id(zend-engine::it) & (test(/^e2e::/) | test(/^misc::/)))'
 ```
 
 ## Live validation
@@ -92,8 +92,8 @@ overrides; the test does not edit the user's Codex config.
 CODEX_SUBAGENT_TEST_MODE=v1 \
 CODEX_SUBAGENT_TEST_MODEL=gpt-5.6-luna \
 CODEX_SUBAGENT_TEST_EXECUTABLE=/absolute/path/to/v1-wrapper \
-cargo test --locked -p zend-harness --test codex \
-  live_subagent_spawn_and_followup_keep_one_transcript -- --ignored --nocapture
+cargo test --locked -p zend-harness --test it \
+  codex::live_subagent_spawn_and_followup_keep_one_transcript -- --ignored --nocapture
 ```
 
 Repeat with mode `v2`, model `gpt-5.6-sol` and the v2 wrapper. Optionally set

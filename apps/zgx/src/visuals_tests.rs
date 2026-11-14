@@ -142,6 +142,272 @@ fn scenes_and_shaders_render_on_the_gpu_thread() {
     assert!(!has(&mut app, "#visual-scene >> .visual-error"), "{}", app.tree());
 }
 
+/// What the three tests above died of now and then on Linux (SIGSEGV, an
+/// abort in malloc, a hang in `exit`): the test over, its process exited
+/// with the GPU's thread still on a frame, and `exit` took the Vulkan
+/// libraries' state from under it. A thread that used the GPU's thread
+/// waits for it as it ends, as long as the frame takes, so nothing is on
+/// the GPU by then. (Not on Windows, where a process exiting ends its other
+/// threads first and only `stop_gpu` waits.)
+#[cfg(unix)]
+#[test]
+fn a_thread_that_used_the_gpu_s_thread_ends_only_once_its_frame_has() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::{Arc, mpsc};
+    let done = Arc::new(AtomicBool::new(false));
+    let frame = done.clone();
+    let user = std::thread::spawn(move || {
+        let (started, on_it) = mpsc::channel();
+        crate::visuals::gpu_probe(move || {
+            let _ = started.send(());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            frame.store(true, SeqCst);
+        });
+        // The GPU's thread is on the frame as this thread (a test's, the
+        // app's) ends.
+        on_it.recv().expect("the GPU's thread took the frame");
+    });
+    user.join().expect("the thread ended");
+    assert!(done.load(SeqCst), "the thread ended with the GPU's thread still on its frame");
+}
+
+/// (The GPU's thread is the process's one: this counts on a process of its
+/// own, as nextest gives each test.)
+#[test]
+fn the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next() {
+    // (In a process of its own: it needs the GPU's thread to itself, and
+    // the other tests in this binary use it in parallel.)
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next_alone");
+    assert_eq!(status, Some(0), "{out}\n{err}");
+    assert!(out.contains("1 passed"), "{out}\n{err}");
+}
+
+/// (Run by the test above, in a process of its own.)
+#[test]
+#[ignore = "needs the GPU's thread to itself: run by the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next"]
+fn the_gpu_s_thread_stays_for_a_thread_still_using_it_and_starts_again_for_the_next_alone() {
+    use std::sync::mpsc;
+    let probe = || {
+        let (did, done) = mpsc::channel();
+        crate::visuals::gpu_probe(move || {
+            let _ = did.send(std::thread::current().id());
+        });
+        done.recv_timeout(std::time::Duration::from_secs(5)).expect("the GPU's thread did the work")
+    };
+    // This thread uses it; another comes and goes.
+    let first = probe();
+    std::thread::spawn(probe).join().expect("the other thread ended");
+    assert!(crate::visuals::gpu_thread_runs(), "one thread ending stopped the GPU's thread under another");
+    assert_eq!(probe(), first, "the same thread, its surfaces kept");
+    // This one done with it (as the app is when it quits): it ends, and
+    // starts again when next needed.
+    assert!(crate::visuals::stop_gpu(), "its last user done with it, and it hasn't left");
+    assert!(!crate::visuals::gpu_thread_runs());
+    assert_ne!(probe(), first, "a new thread for the next frame");
+    assert!(crate::visuals::stop_gpu());
+}
+
+/// A frame sent as the GPU's thread leaves (its last user gone, the frame
+/// that user asked for still on it) goes to that thread, after the frame
+/// it's on. A second GPU's thread is never started beside it.
+#[test]
+fn a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on() {
+    // (In a process of its own: it needs the GPU's thread to itself, and
+    // the other tests in this binary use it in parallel.)
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on_alone");
+    assert_eq!(status, Some(0), "{out}\n{err}");
+    assert!(out.contains("1 passed"), "{out}\n{err}");
+}
+
+/// (Run by the test above, in a process of its own.)
+#[test]
+#[ignore = "needs the GPU's thread to itself: run by a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on"]
+fn a_frame_sent_as_the_gpu_s_thread_leaves_is_drawn_by_it_after_the_frame_it_is_on_alone() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let (started, on_frame) = mpsc::channel();
+    let (finish, may_finish) = mpsc::channel::<()>();
+    let (go, may_go) = mpsc::channel::<()>();
+    // One thread's frame, held, and that thread done with the GPU's thread
+    // once the frame is on it.
+    let first_user = std::thread::spawn(move || {
+        crate::visuals::gpu_probe(move || {
+            let _ = started.send(std::thread::current().id());
+            let _ = may_finish.recv_timeout(Duration::from_secs(8));
+        });
+        let _ = may_go.recv_timeout(Duration::from_secs(5));
+        crate::visuals::stop_gpu()
+    });
+    let first = on_frame.recv_timeout(Duration::from_secs(5)).expect("the GPU's thread took the frame");
+    let _ = go.send(());
+    let limit = Instant::now() + Duration::from_secs(5);
+    while crate::visuals::gpu_thread_users() > 0 {
+        assert!(Instant::now() < limit, "the first thread never let go of the GPU's thread");
+        std::thread::yield_now();
+    }
+    // Another thread's frame now.
+    let (drew, drawn) = mpsc::channel();
+    let (leave, may_leave) = mpsc::channel::<()>();
+    let next_user = std::thread::spawn(move || {
+        crate::visuals::gpu_probe(move || {
+            let _ = drew.send(std::thread::current().id());
+        });
+        let _ = may_leave.recv_timeout(Duration::from_secs(10));
+        crate::visuals::stop_gpu()
+    });
+    let beside = drawn.recv_timeout(Duration::from_millis(500)).ok();
+    let _ = finish.send(());
+    let second = beside.or_else(|| drawn.recv_timeout(Duration::from_secs(5)).ok());
+    let first_left = first_user.join().expect("the first thread ended");
+    let _ = leave.send(());
+    let next_left = next_user.join().expect("the next thread ended");
+    assert_eq!(beside, None, "a second GPU's thread drew beside the one still on a frame");
+    assert_eq!(second, Some(first), "the frame sent as it left wasn't drawn by it");
+    assert!(!first_left, "stop_gpu said the GPU's thread had left, with another thread's frame on it");
+    assert!(next_left, "the GPU's thread didn't leave once its last user had");
+}
+
+/// Quitting waits only so long for a frame. `stop_gpu` then says the GPU's
+/// thread still runs (the process must not `exit` under it), and the GPU's
+/// thread stays known: a later wait is for that frame, not for nothing.
+#[test]
+fn stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it() {
+    // (In a process of its own: it needs the GPU's thread to itself, and
+    // the other tests in this binary use it in parallel.)
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it_alone");
+    assert_eq!(status, Some(0), "{out}\n{err}");
+    assert!(out.contains("1 passed"), "{out}\n{err}");
+}
+
+/// (Run by the test above, in a process of its own.)
+#[test]
+#[ignore = "needs the GPU's thread to itself: run by stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it"]
+fn stop_gpu_says_the_gpu_s_thread_is_still_on_a_frame_and_a_later_one_waits_for_it_alone() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let done = Arc::new(AtomicBool::new(false));
+    let frame = done.clone();
+    let (started, on_frame) = mpsc::channel();
+    let (finish, may_finish) = mpsc::channel::<()>();
+    crate::visuals::gpu_probe(move || {
+        let _ = started.send(());
+        let _ = may_finish.recv_timeout(Duration::from_secs(20));
+        std::thread::sleep(Duration::from_millis(200));
+        frame.store(true, SeqCst);
+    });
+    on_frame.recv_timeout(Duration::from_secs(5)).expect("the GPU's thread took the frame");
+    let left = crate::visuals::stop_gpu_within(Duration::from_millis(300));
+    assert!(!left, "stop_gpu said the GPU's thread had left, with its frame still running");
+    assert!(crate::visuals::gpu_thread_runs(), "the GPU's thread, still on a frame, was forgotten");
+    let _ = finish.send(());
+    let left = crate::visuals::stop_gpu_within(Duration::from_secs(10));
+    assert!(left, "a later stop_gpu didn't wait for the frame");
+    assert!(done.load(SeqCst), "stop_gpu said the GPU's thread had left before its frame ended");
+    assert!(!crate::visuals::gpu_thread_runs());
+}
+
+/// What an `exit` under a frame would have run (a library's destructors
+/// run there), said on stderr.
+const EXIT_RAN: &str = "exit ran under the frame";
+
+/// The app quitting with a frame that outlasts the wait: the process ends
+/// without `exit`, whose destructors would run under that frame, and with
+/// what it had written flushed. (In a process of its own, since it ends
+/// it: the test below, run by this one.)
+#[test]
+fn quitting_with_the_gpu_s_thread_still_on_a_frame_ends_the_process_without_exit() {
+    let (status, out, err) = in_a_process_of_its_own("visuals_tests::quits_with_the_gpu_s_thread_still_on_a_frame");
+    assert!(!err.contains(EXIT_RAN), "the process went through exit under the frame:\n{err}");
+    assert_eq!(status, Some(0), "{err}");
+    assert!(out.contains("quitting under a frame"), "what it had written wasn't flushed: {out:?}");
+    assert!(err.contains("still on a frame"), "{err}");
+}
+
+/// A test run in a process of its own (one that ends its process, or needs
+/// the GPU's thread to itself): its exit status, and what it wrote to stdout and stderr. (Each
+/// holds a frame 30 s: a process that waits it out is stopped at 20 s.)
+fn in_a_process_of_its_own(test: &str) -> (Option<i32>, String, String) {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let exe = std::env::current_exe().expect("this test's binary");
+    let mut process = Command::new(exe)
+        .args(["--exact", test, "--ignored", "--nocapture"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the process started");
+    let limit = Instant::now() + Duration::from_secs(20);
+    while process.try_wait().expect("the process").is_none() {
+        if Instant::now() >= limit {
+            let _ = process.kill();
+            panic!("the process was still waiting for the frame after 20 s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = process.wait_with_output().expect("the process's output");
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    (output.status.code(), text(&output.stdout), text(&output.stderr))
+}
+
+/// What an `exit` would run, as a library's destructors are, says so.
+fn say_if_exit_runs() {
+    extern "C" fn at_exit() {
+        eprintln!("{EXIT_RAN}");
+    }
+    // SAFETY: `at_exit` is a plain function that lives as long as the process.
+    unsafe { libc::atexit(at_exit) };
+}
+
+/// The GPU's thread on a frame that outlasts every wait here.
+fn hold_a_frame() {
+    let (started, on_frame) = std::sync::mpsc::channel();
+    crate::visuals::gpu_probe(move || {
+        let _ = started.send(());
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    });
+    on_frame.recv_timeout(std::time::Duration::from_secs(5)).expect("the GPU's thread took the frame");
+}
+
+/// A panic out of `main` with a frame that outlasts the wait: the process
+/// ends as it does quitting, without `exit` and without waiting the frame
+/// out, with a panic's exit status.
+#[test]
+fn a_panic_with_the_gpu_s_thread_still_on_a_frame_ends_the_process_without_exit() {
+    let (status, _, err) = in_a_process_of_its_own("visuals_tests::panics_with_the_gpu_s_thread_still_on_a_frame");
+    assert!(!err.contains(EXIT_RAN), "the process went through exit under the frame:\n{err}");
+    assert_eq!(status, Some(101), "{err}");
+    assert!(err.contains("a panic out of main"), "{err}");
+    assert!(err.contains("still on a frame"), "{err}");
+}
+
+/// (Run by the test above, in a process of its own: it ends the process.)
+#[test]
+#[ignore = "ends its process: run by a_panic_with_the_gpu_s_thread_still_on_a_frame_ends_the_process_without_exit"]
+fn panics_with_the_gpu_s_thread_still_on_a_frame() {
+    say_if_exit_runs();
+    // As `main` holds it (src/main.rs).
+    let _stop_gpu = crate::visuals::StopGpuOnPanic::within(std::time::Duration::from_millis(300));
+    hold_a_frame();
+    panic!("a panic out of main");
+}
+
+/// (Run by the test above, in a process of its own: it ends the process.)
+#[test]
+#[ignore = "ends its process: run by quitting_with_the_gpu_s_thread_still_on_a_frame_ends_the_process_without_exit"]
+fn quits_with_the_gpu_s_thread_still_on_a_frame() {
+    use std::time::Duration;
+    say_if_exit_runs();
+    hold_a_frame();
+    // (No new line: written out only if the process's end flushes it.)
+    print!("quitting under a frame");
+    // As `main` quits (src/main.rs).
+    if !crate::visuals::stop_gpu_within(Duration::from_millis(300)) {
+        crate::visuals::exit_under_gpu(0);
+    }
+}
+
 const COUNTER: &str = r#"
 local count = 0
 local scale = math.random(1, 1000000)

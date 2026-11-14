@@ -7,7 +7,7 @@
 //!
 //! | grant | what it adds |
 //! |---|---|
-//! | `sessions.read` | each session's title, status, project, device, times, its git branch and whether it's in a worktree of its own; each project's name, device and chosen icon (`{ emoji?, image?, hue? }`) |
+//! | `sessions.read` | each session's title, status, project, device, times, its git branch, whether it's in a worktree of its own, and a child session's parent and child kind; each project's name, device and chosen icon (`{ emoji?, image?, hue? }`) |
 //! | `messages.read` | each message's role and text, in the open chat |
 //! | `profile.read` | your id, name, username and avatar |
 //! | `account.email` | your email, unless you hide email addresses |
@@ -78,7 +78,7 @@ pub fn session_records(permissions: &[String], list: &Value) -> (Value, Value) {
     let mut sessions: Vec<(Rc<str>, Value)> = Vec::new();
     for chat in items("chats") {
         let Some(id) = text(chat.field("id")) else { continue };
-        let mut fields = pick(&chat, &["title", "status", "project", "device", "updated", "created", "branch", "source_branch"]);
+        let mut fields = pick(&chat, &["title", "status", "project", "device", "updated", "created", "branch", "source_branch", "parent", "child_kind"]);
         let cwd = text(chat.field("cwd"));
         // Each project's folder: a session elsewhere is in a worktree of its
         // own (said as yes or no; the path is files.read's).
@@ -251,6 +251,16 @@ mod tests {
         assert_eq!(r["profile"], json!({ "id": "u1", "name": "Ada", "username": "ada" }));
         let r = records(&p(&["files.read"]), &sources(false));
         assert_eq!(r["files_read"], true);
+    }
+
+    #[test]
+    fn a_child_session_s_record_names_its_parent_and_kind() {
+        let mut s = sources(false);
+        s.sessions["chats"].as_array_mut().unwrap().push(json!({ "id": "s2", "title": "Worker", "parent": "s1", "child_kind": "session" }));
+        let r = records(&p(&["sessions.read"]), &s);
+        assert_eq!(r["sessions"]["s2"], json!({ "title": "Worker", "parent": "s1", "child_kind": "session" }));
+        assert!(r["sessions"]["s1"].get("parent").is_none() && r["sessions"]["s1"].get("child_kind").is_none(), "absent on a top-level session");
+        assert!(records(&[], &s).get("sessions").is_none());
     }
 
     #[test]

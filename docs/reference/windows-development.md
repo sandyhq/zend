@@ -108,8 +108,8 @@ on Linux and macOS. To run the engine and harness checks locally:
 
 ```powershell
 cargo test --locked -p zend-engine -p zend-harness --lib
-cargo test --locked -p zend-harness --features native-fixture --test codex_availability --test windows_native
-cargo test --locked -p zend-engine --test codex_catalog --test codex_login_resolution --test auth
+cargo test --locked -p zend-harness --features native-fixture --test it -- codex_availability:: windows_native::
+cargo test --locked -p zend-engine --test it -- codex_catalog:: codex_login_resolution:: auth::
 ```
 
 Fixtures use synthetic agents, so these tests do not establish authenticated

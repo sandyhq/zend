@@ -122,4 +122,4 @@ attachments, not the repository.
 The opt-in `coordinator` integration test connects two authenticated clients to a
 local Worker, advertises a service, pairs over SDP/ICE, then transfers a 4 MiB
 HTTP response through the remote hostname. Run it with
-`ZEND_PREVIEW_TEST_EDGE=http://127.0.0.1:27641 cargo test -p zend-preview --test coordinator -- --ignored`.
+`ZEND_PREVIEW_TEST_EDGE=http://127.0.0.1:27641 cargo test -p zend-preview --test it coordinator:: -- --ignored`.

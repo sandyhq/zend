@@ -39,7 +39,7 @@ validation pass.
 | `cargo test -p zend-ui --lib pickers::` | 29 passed, 0 ignored, 0 failed; 1125 filtered out |
 | `cargo clippy -p zend-harness -p zend-engine -p zend-ui --all-targets --message-format=json` | Exit 0; no diagnostics intersect added lines. Existing unrelated warnings remain. |
 | `git diff --check` | Clean |
-| `cargo test -p zend-harness --test cursor_shim repeated_startup_failures_retain_all_user_messages_without_nesting_or_duplicates -- --exact` | 1 passed; also passed in the final full suite (all 11 Cursor shim tests passed) |
+| `cargo test -p zend-harness --test it cursor_shim::repeated_startup_failures_retain_all_user_messages_without_nesting_or_duplicates -- --exact` | 1 passed; also passed in the final full suite (all 11 Cursor shim tests passed) |
 
 The isolated Cursor failure from the disk-constrained run did not reproduce. The
 solo run completed in 2.67 seconds, below its five-second timeout, and subsequent

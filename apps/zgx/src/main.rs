@@ -352,7 +352,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Screen::Main => main_window(),
         Screen::Gallery | Screen::Fixture(_) => gallery_window(),
     };
-    application.window(options).run(move |cx| {
+    // (A panic out of here ends the process as quitting below does.)
+    let _stop_gpu = visuals::StopGpuOnPanic::new();
+    let ran = application.window(options).run(move |cx| {
         match &screen {
             Screen::Intro => intro(cx, inspect),
             Screen::Onboarding => open(cx, "app.luau", inspect),
@@ -364,13 +366,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(url) = &open_url {
             links::open(url);
         }
-    })?;
-    // Quitting: an update downloaded and never restarted for installs now,
-    // so the next launch is on it (src/about.rs).
-    about::install_on_quit();
-    // Reload Zend: the windows closed, a fresh launch in this one's place.
-    relaunch::after_quit();
-    Ok(())
+    });
+    // Quitting: no frame of a visual is still on the GPU as the process
+    // exits (src/visuals.rs `GpuUser`).
+    let gpu_left = visuals::stop_gpu();
+    if ran.is_ok() {
+        // Quitting: an update downloaded and never restarted for installs
+        // now, so the next launch is on it (src/about.rs).
+        about::install_on_quit();
+        // Reload Zend: the windows closed, a fresh launch in this one's place.
+        relaunch::after_quit();
+    }
+    if !gpu_left {
+        // A frame that outlasted the wait: quitting is done, and the process
+        // ends here, not through `exit` under that frame.
+        // (As `main` returning does: the error, exit status 1.)
+        let status = match &ran {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("Error: {error:?}");
+                1
+            }
+        };
+        visuals::exit_under_gpu(status);
+    }
+    ran
 }
 
 /// Whether `args` are a development launch's own words (a screen, a

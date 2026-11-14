@@ -20,7 +20,8 @@
 //! - Not told: a turn whose sender awaits it (Zend MCP's `wait: true`, which
 //!   returns the reply itself: [`zend_doc::SessionDoc::awaited_sends`]), an
 //!   archived child, an archived or missing parent, a child whose
-//!   `notifyParent` is off (unsaid: on for subagents, off for side chats),
+//!   `notifyParent` is off (unsaid: on for subagents and child sessions,
+//!   off for side chats),
 //!   and a turn an event itself started, so an event never makes another.
 
 use std::collections::{HashMap, HashSet};
@@ -178,7 +179,7 @@ impl ChildEvents {
         let doc = handle.doc();
         let notify = doc
             .notify_parent()
-            .unwrap_or(chat.child_kind == Some(ChildKind::Subagent));
+            .unwrap_or(matches!(chat.child_kind, Some(ChildKind::Subagent | ChildKind::Session)));
         if !notify {
             return;
         }

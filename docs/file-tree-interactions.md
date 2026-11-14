@@ -123,8 +123,8 @@ Commands from the repository root:
 cargo test --release --locked -p zend-proto --lib
 cargo test --release --locked -p zend-engine --lib workspace_files::
 cargo test --release --locked -p zend-engine --lib rpc::
-cargo test --release --locked -p zend-engine --test workspace_files
-cargo test --release --locked -p zend-engine --test device_routing workspace_entry_mutations_are_forwarded
+cargo test --release --locked -p zend-engine --test it workspace_files::
+cargo test --release --locked -p zend-engine --test it device_routing::workspace_entry_mutations_are_forwarded
 cargo test --release --locked -p zend-ui --lib -- --test-threads=1
 cargo check --release --locked -p zend
 ```

@@ -23,7 +23,7 @@ unicode-segmentation.workspace = true
 name = "layout"
 harness = false
 
-# CoreText ground-truth harness (tests/coretext.rs): same font bytes, CTFramesetter line breaks.
+# CoreText ground-truth harness (tests/it/coretext.rs): same font bytes, CTFramesetter line breaks.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 core-text = "21"
 core-foundation = "0.10"

@@ -186,7 +186,7 @@ Regression checks:
 
 ```sh
 cargo test -p zend-harness
-cargo test -p zend-engine --test acp_lifecycle
+cargo test -p zend-engine --test it acp_lifecycle::
 ```
 
 The stateful Python peer rejects overlapping prompts. Coverage includes quiet
@@ -207,7 +207,7 @@ results or synthesize an ACP completion. Then run:
 PI_CODING_AGENT_DIR=/path/to/isolated/pi-agent \
 PI_EXECUTABLE=/path/to/pi \
 ACP_TEST_RUNS=3 \
-cargo test -p zend-harness --test real_acp_lifecycle -- --ignored --nocapture
+cargo test -p zend-harness --test it real_acp_lifecycle:: -- --ignored --nocapture
 ```
 
 These tests require successful real calls; missing authentication or an unloaded

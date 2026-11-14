@@ -88,8 +88,8 @@ sends.
 
 ```sh
 cargo test --locked -p zend-harness background      # BackgroundWork, Claude roster joins
-cargo test --locked -p zend-harness --test claude background_shells
-cargo test --locked -p zend-harness --test codex background
+cargo test --locked -p zend-harness --test it claude::background_shells
+cargo test --locked -p zend-harness --test it codex::background
 cargo test --locked -p zend-doc background_processes
 cargo test --locked -p zend-ui --lib background_tray -- --test-threads=1
 ```

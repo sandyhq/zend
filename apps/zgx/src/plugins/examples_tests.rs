@@ -4119,7 +4119,7 @@ local zend = require("./zend")("sender")
 zend.send_message({ chat = "c1", text = "hello", mode = "steer" }):after(function(r)
 	zend.toast(`sent {r.delivery}`)
 end)
-zend.new_chat({ prompt = "Fix the build", harness = "claude-code", effort = "high" }):after(function(r)
+zend.new_chat({ prompt = "Fix the build", harness = "claude-code", effort = "high", access = "supervised", parent = "c1", kind = "session", title = "Worker" }):after(function(r)
 	zend.toast(`started {r.chat}`)
 end)
 zend.answer({ chat = "c1", answers = { q1 = "Yes" } }):after(nil, function(err)
@@ -4140,6 +4140,9 @@ end)
     assert_eq!((send["args"]["chat"].as_str(), send["args"]["text"].as_str(), send["args"]["mode"].as_str()), (Some("c1"), Some("hello"), Some("steer")));
     let start = asked.iter().find(|a| a["op"] == "new_chat").expect("it started a chat");
     assert_eq!((start["args"]["prompt"].as_str(), start["args"]["effort"].as_str()), (Some("Fix the build"), Some("high")));
+    let child = (start["args"]["parent"].as_str(), start["args"]["kind"].as_str(), start["args"]["title"].as_str());
+    assert_eq!(child, (Some("c1"), Some("session"), Some("Worker")), "a child session's link, as asked");
+    assert_eq!(start["args"]["access"].as_str(), Some("supervised"), "its access, as asked");
     assert!(asked.iter().any(|a| a["op"] == "answer" && a["args"]["answers"]["q1"] == "Yes"), "{asked:?}");
     let toasts = said(&heard, "plugin.sender.toast");
     for want in ["sent steer", "started c9", "answer not_found"] {

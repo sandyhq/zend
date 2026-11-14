@@ -80,7 +80,7 @@ emits its Vitest shutdown-state diagnostic; the focused checkpoint run is clean.
 
 ```sh
 cargo test -p zend-sync -p zend-rpc --features zend-sync/mock-server
-cargo test -p zend-engine --lib --test session_publication --test restart_resume --test misc
+cargo nextest run -p zend-engine -E 'kind(lib) | (binary_id(zend-engine::it) & (test(/^session_publication::/) | test(/^restart_resume::/) | test(/^misc::/)))'
 cargo test -p zend-update
 cargo test -p zend-ui --lib -- --test-threads=1
 npm --prefix edge run typecheck

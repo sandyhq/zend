@@ -134,7 +134,7 @@ To demonstrate the old persistent active-run failure with the same fixture:
 ```sh
 git show 4368e926:crates/harness/src/cursor/shim.mjs > /tmp/cursor-before-stability.mjs
 ZEND_CURSOR_TEST_SHIM=/tmp/cursor-before-stability.mjs \
-cargo test -p zend-harness --test cursor_shim stress_100_interrupted_sessions -- --nocapture
+cargo test -p zend-harness --test it cursor_shim::stress_100_interrupted_sessions -- --nocapture
 # Expected failure on the first recovery. Without the override, all 100 pass.
 ```
 

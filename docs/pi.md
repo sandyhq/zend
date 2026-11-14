@@ -60,8 +60,8 @@ Validation:
 
 ```sh
 cargo test -p zend-harness --features native-fixture
-cargo test -p zend-engine --lib --test misc --test acp_lifecycle --test message_queue --test e2e
-cargo test -p zend-harness --test pi_live -- --ignored --nocapture
+cargo nextest run -p zend-engine -E 'kind(lib) | (binary_id(zend-engine::it) & (test(/^misc::/) | test(/^acp_lifecycle::/) | test(/^message_queue::/) | test(/^e2e::/)))'
+cargo test -p zend-harness --test it pi_live:: -- --ignored --nocapture
 cargo check -p zend-ui --tests
 cargo build -p zend-mobile --features bindgen
 ```

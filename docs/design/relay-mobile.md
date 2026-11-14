@@ -187,7 +187,7 @@ that engines share.
 **1. Shared tests: nothing to do.** They're already green on the code you link.
 
 ```sh
-cargo test -p zend-client --test relay
+cargo test -p zend-client --test it relay::
 ```
 
 **2. The rig.** An emulator reaches the host as `10.0.2.2`. Everything else matches what iOS uses. Clear the app's

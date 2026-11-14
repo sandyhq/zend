@@ -433,6 +433,14 @@ impl AccessMode {
         *self == AccessMode::FullAccess
     }
 
+    /// Whether a harness listing `modes` as its access modes can run this
+    /// one. Full access always can: an engine predating modes lists none
+    /// and runs everything with full access. The one rule behind the Zend
+    /// MCP's `create_chat` and a plugin's `zend.new_chat`.
+    pub fn offered_by(self, modes: &[AccessMode]) -> bool {
+        self.is_full_access() || modes.contains(&self)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             AccessMode::Supervised => "Supervised",
