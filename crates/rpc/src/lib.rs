@@ -633,6 +633,20 @@ pub mod methods {
     /// landed in the window, for an agent to check its work (and, with
     /// `snapshot`, a picture of the window cut to them).
     pub const PLUGIN_STATUS: &str = "PluginStatus";
+    /// `{id, lines: [{level: "print" | "error", text}]}` → `{kept}`: what
+    /// plugin `id` printed and the errors (with their tracebacks) it hit in
+    /// this device's window, for its log (`PluginLogs`). The app's own: not
+    /// an agent's, never from another device.
+    pub const PLUGIN_LOG: &str = "PluginLog";
+    /// `{id, since?, limit?}` → `{id, lines: [{seq, at, source: "window" |
+    /// "service", level: "print" | "error" | "info", text}], file}`: a
+    /// plugin's last log lines on this device (its window's prints and
+    /// errors, its service's), oldest first; `since` a `seq` seen before
+    /// (only newer lines). Kept here only, never synced.
+    pub const PLUGIN_LOGS: &str = "PluginLogs";
+    /// `{id}` → stream of `{line}` (as in `PluginLogs`), each as it's
+    /// logged: `zend plugin logs --follow`.
+    pub const WATCH_PLUGIN_LOGS: &str = "WatchPluginLogs";
     /// `{dir}` → the list: the app's folder of Zend's own plugins, scanned
     /// with yours (allowed what they ask, on unless turned off, never
     /// removed).
@@ -798,6 +812,7 @@ pub fn agent_allowed(method: &str) -> bool {
             // tools.
             | methods::LIST_PLUGINS
             | methods::PLUGIN_STATUS
+            | methods::PLUGIN_LOGS
             | methods::NEW_PLUGIN
             | methods::INSTALL_PLUGIN
             | methods::CHECK_PLUGIN_UPDATES

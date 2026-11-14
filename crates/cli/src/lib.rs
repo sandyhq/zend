@@ -155,6 +155,18 @@ pub enum PluginCommand {
         #[arg(long, value_name = "PATH", value_parser = absolute_path)]
         to: Option<std::path::PathBuf>,
     },
+    /// Show a plugin's log here: what its window part and its service
+    /// printed, and what failed, with the traceback.
+    Logs {
+        /// The plugin's id (`zend plugin list` names them).
+        id: String,
+        /// Keep showing new lines as they come (Ctrl-C stops).
+        #[arg(long, short)]
+        follow: bool,
+        /// How many of the last lines to show first.
+        #[arg(long, short = 'n', default_value_t = 100)]
+        lines: usize,
+    },
 }
 
 /// A path as given, made absolute against the current folder (the engine

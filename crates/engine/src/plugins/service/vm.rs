@@ -114,6 +114,12 @@ pub trait Ops: Send + Sync + 'static {
     fn emit(&self, event: &str, data: Json);
     /// `print`, and what failed with nobody to tell.
     fn log(&self, line: &str);
+    /// What failed, with where (its traceback): a handler's, a task's, the
+    /// service's as it loaded. Logged like `log` unless the host keeps
+    /// errors apart.
+    fn error(&self, text: &str) {
+        self.log(text);
+    }
     /// `zend.watch`: changes under `folders` (each all the way down) told
     /// to `heard` as they happen, from any thread, until the handle drops.
     /// A refusal is `Err(why)`.
@@ -417,10 +423,14 @@ fn run(
     };
     let chunk_name = format!("@{}", spec.entry);
     if let Err(error) = enter(&|| lua.load(source.as_str()).set_name(chunk_name.as_str()).set_mode(ChunkMode::Text).exec()) {
+        ops.error(&format!("didn't load: {}", lua_traceback(&error)));
         let _ = loaded.send(Err(lua_message(&error)));
         return;
     }
-    let described = match entry.describe.call::<Table>(()).map_err(|e| lua_message(&e)).and_then(|t| describe(&t)) {
+    let described = match entry.describe.call::<Table>(()).map_err(|e| {
+        ops.error(&format!("didn't load: {}", lua_traceback(&e)));
+        lua_message(&e)
+    }).and_then(|t| describe(&t)) {
         Ok(described) => described,
         Err(error) => {
             let _ = loaded.send(Err(error));
@@ -480,6 +490,7 @@ fn run(
                 if let Err(error) = result
                     && !state.dead.get()
                 {
+                    ops.error(&format!("{kind:?} {name} failed: {}", lua_traceback(&error)));
                     state.answer(id, Err(Failure::Error(lua_message(&error))));
                 }
             }
@@ -561,8 +572,10 @@ fn setup(
     deadline: &Rc<Cell<Option<Instant>>>,
 ) -> Result<(Lua, Entry), String> {
     let fail = |e: mlua::Error| lua_message(&e);
+    // (`debug` only for its traceback, which the prelude keeps: a failed
+    // task's log line says where. The service itself never sees `debug`.)
     let lua = Lua::new_with(
-        StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::BIT | StdLib::COROUTINE | StdLib::OS,
+        StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::BIT | StdLib::COROUTINE | StdLib::OS | StdLib::DEBUG,
         LuaOptions::default(),
     )
     .map_err(fail)?;
@@ -588,7 +601,8 @@ fn setup(
 
     let globals = lua.globals();
     // Nothing that reads files or compiles code from text.
-    for name in ["loadstring", "require"] {
+    let traceback: Function = globals.get::<Table>("debug").and_then(|debug| debug.get("traceback")).map_err(fail)?;
+    for name in ["loadstring", "require", "debug"] {
         globals.raw_set(name, Value::Nil).map_err(fail)?;
     }
     let log_ops = ops.clone();
@@ -606,6 +620,7 @@ fn setup(
     install_require(&lua, &spec.dir).map_err(fail)?;
 
     let host = natives(&lua, spec, ops, tx, state).map_err(fail)?;
+    host.set("traceback", traceback).map_err(fail)?;
     let (service, dispatch, describe, done, stopping, heard): (Function, Function, Function, Function, Function, Function) =
         lua.load(PRELUDE).set_name("=zend").set_mode(ChunkMode::Text).call(host).map_err(fail)?;
     globals.raw_set("zend_service", service).map_err(fail)?;
@@ -657,6 +672,14 @@ fn natives(
         "log",
         lua.create_function(move |_, line: String| {
             log_ops.log(&line);
+            Ok(())
+        })?,
+    )?;
+    let error_ops = ops.clone();
+    host.set(
+        "error",
+        lua.create_function(move |_, text: String| {
+            error_ops.error(&text);
             Ok(())
         })?,
     )?;
@@ -927,6 +950,30 @@ fn describe(table: &Table) -> Result<Described, String> {
 }
 
 /// An error as the plugin's author should read it.
+/// `error`'s message with its traceback (Rust's frames left out): for the
+/// plugin's log, where the author looks for where it failed.
+pub fn lua_traceback(error: &mlua::Error) -> String {
+    let message = match error {
+        mlua::Error::CallbackError { cause, traceback } => {
+            let inner = lua_traceback(cause);
+            if inner.contains("stack traceback:") || traceback.is_empty() {
+                inner
+            } else {
+                format!("{inner}\n{traceback}")
+            }
+        }
+        mlua::Error::MemoryError(_) => OUT_OF_MEMORY.to_owned(),
+        mlua::Error::SyntaxError { message, .. } => message.clone(),
+        mlua::Error::RuntimeError(message) => message.clone(),
+        other => other.to_string(),
+    };
+    message
+        .lines()
+        .filter(|line| !matches!(line.trim(), "[C]: in ?" | "[C]: in function 'error'"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn lua_message(error: &mlua::Error) -> String {
     let message = match error {
         mlua::Error::CallbackError { cause, .. } => lua_message(cause),

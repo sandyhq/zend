@@ -22,10 +22,12 @@ local function task(fn: (...any) -> any, finish: ((boolean, any) -> ())?, ...: a
 		local ok, value = coroutine.resume(co, ...)
 		if coroutine.status(co) == "dead" then
 			tasks[co] = nil
+			if not ok then
+				-- For the log, with where it failed (the task's own stack).
+				host.error(`a task failed: {tostring(value)}\nstack traceback:\n{host.traceback(co)}`)
+			end
 			if finish then
 				finish(ok, value)
-			elseif not ok then
-				report("a task failed", value)
 			end
 		end
 	end

@@ -277,6 +277,7 @@ impl Plugins {
         if replaced.is_none() && !keep_storage {
             // New here: nothing a plugin once under this id kept is its.
             super::forget_storage(&self.inner.plugins_dir, &id);
+            self.inner.logs.forget(&id);
         }
         self.update_state(|state| match &replaced {
             None => {

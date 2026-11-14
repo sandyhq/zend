@@ -386,7 +386,7 @@ Handlers, tools, timers and `:after` callbacks each run as a task, so `:await()`
 
 The one exception: when the service stops during a call (it ran out of memory, or crashed), a method marked `safe = true` runs once more on a fresh start. Mark only what can run twice: reading, not posting.
 
-**When it runs.** A service starts on its first call, tool call or timer, and stops after 5 minutes with nothing to do. An update loads the new version beside the old one, which answers until the new one has loaded and finishes the calls it has. Each call or resumed task has 2 seconds of work before it fails (await between parts: waiting costs nothing), and the service has 64 MB. `plugin_status` shows the service on this device: running or not, what it serves, its last log lines (`print`) and why it didn't load.
+**When it runs.** A service starts on its first call, tool call or timer, and stops after 5 minutes with nothing to do. An update loads the new version beside the old one, which answers until the new one has loaded and finishes the calls it has. Each call or resumed task has 2 seconds of work before it fails (await between parts: waiting costs nothing), and the service has 64 MB. `plugin_status` shows the service on this device: running or not, what it serves, its last log lines (`print`) and why it didn't load. Its prints and errors are in the plugin's log too, with tracebacks (see [Logs](#logs)).
 
 A service has `zend.on(event, fn, opts)` and the agent calls of [Your agents](#your-agents-usage-accounts-and-models) too: register listeners at the top level, in the same order each time (they're known by their place, as timers are), and Zend starts the service to tell it, with no window open.
 
@@ -596,8 +596,19 @@ zend.toast(zend.s("timer.done"))
    - its status (on, off, pending review, tampered, broken, and why) and what it was allowed;
    - each place it made: its selector, how many elements it matched and their boxes;
    - what its Settings row says (a need its place doesn't give, places this template lacks, an error);
-   - with `snapshot`, a PNG of the window around its nodes. Read the file at `snapshot`.
-4. **Fix and save**, then ask again. Matched 0? Check the selector against `describe_elements`. A need? Place it inside something that provides it.
+   - with `snapshot`, a PNG of the window around its nodes. Read the file at `snapshot`;
+   - `logs`: its last 20 log lines (see below).
+4. **Read its log**: `plugin_logs { id, since? }` (MCP) or `zend plugin logs <id> [--follow]`. It holds what the plugin printed and what failed, from its window part and its service.luau, oldest first. An error comes whole, with its traceback (file, line, function), not only the first line the toast shows.
+5. **Fix and save**, then ask again. Matched 0? Check the selector against `describe_elements`. A need? Place it inside something that provides it.
+
+### Logs
+
+Each line has `seq`, `at` (RFC 3339, this device's time), `source` (`window` or `service`), `level` (`print`, `error`, or `info` for Zend's own word: a service started, stopped, didn't load) and `text`.
+
+- **`print(...)`** in init.luau or service.luau goes to the log (and, from the window, to Zend's stderr as before). Arguments are joined by tabs.
+- **Errors** go there with their traceback: a failed load, an error in a build or handler, a service method, tool, timer or task that failed.
+- **Where it's kept.** Zend holds each plugin's last 500 lines in memory and appends them to `logs/plugins/<id>.log` in its data folder (`~/.zend`), which moves to `<id>.log.old` past 1 MB. A line is cut at 16 KB. The log stays on this device: it's never synced, and only Zend's own window may write to it. Removing the plugin removes its log.
+- **Reading on.** Pass the last `seq` you read as `since` to get only what came after; `zend plugin logs <id> --follow` keeps showing new lines.
 
 `list_plugins` lists them all. Selectors that aren't stable may move; templates may rename elements. `plugin_status` and Settings show "Not shown in this template" when yours aren't there.
 

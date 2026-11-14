@@ -29,6 +29,7 @@ pub(super) const EXPORT_TEMPLATE: &str = "export_template";
 pub(super) const IMPORT_TEMPLATE: &str = "import_template";
 pub(super) const DESCRIBE_ELEMENTS: &str = "describe_elements";
 pub(super) const PLUGIN_STATUS: &str = "plugin_status";
+pub(super) const PLUGIN_LOGS: &str = "plugin_logs";
 pub(super) const INSTALL_PLUGIN: &str = "install_plugin";
 pub(super) const UPDATE_PLUGIN: &str = "update_plugin";
 pub(super) const EXPORT_PLUGIN: &str = "export_plugin";
@@ -189,6 +190,19 @@ pub(super) fn catalog() -> Vec<ToolDef> {
                 "properties": {
                     "id": { "type": "string", "description": "The plugin's id, from list_plugins." },
                     "snapshot": { "type": "boolean", "description": "Also save a picture of where it shows." }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolDef {
+            name: PLUGIN_LOGS,
+            description: "A Zend plugin's log on this device, oldest first: what it printed (print) and what failed (error, with the Luau traceback: file, line and function), from its window part (source window) and its service.luau (source service), plus Zend's own notes on it (info, e.g. its service started or didn't load). Each line has seq, at (RFC 3339), source, level and text. Zend keeps its last 500 lines here and writes them to the file at `file`. Pass since (the last seq you saw) to read only what came after. plugin_status carries its last 20 too.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The plugin's id, from list_plugins." },
+                    "since": { "type": "integer", "minimum": 0, "description": "Only lines after this seq." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many, the newest (default 100)." }
                 },
                 "required": ["id"]
             }),
@@ -596,6 +610,27 @@ impl Tools {
             .map_err(plain)
     }
 
+    /// `plugin_logs`: the engine's `PluginLogs`.
+    pub(super) async fn plugin_logs(&self, args: Value) -> Result<Value, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: Option<String>,
+            since: Option<u64>,
+            limit: Option<u64>,
+        }
+        let args: Args = parse(args)?;
+        let Some(id) = args.id.filter(|id| !id.trim().is_empty()) else {
+            return Err("Say which plugin: `id`, from list_plugins.".into());
+        };
+        self.zend
+            .call_rpc(
+                methods::PLUGIN_LOGS,
+                json!({ "id": id.trim(), "since": args.since, "limit": args.limit.map(|n| n.clamp(1, 500)) }),
+            )
+            .await
+            .map_err(plain)
+    }
+
     /// `install_plugin`: the engine's `InstallPlugin`. Allowing someone
     /// else's is the person's, in Zend's window.
     pub(super) async fn install_plugin(&self, args: Value) -> Result<Value, String> {
@@ -864,6 +899,18 @@ mod tests {
                     "id": params["id"], "status": "on", "open": true,
                     "placements": [{ "at": ".session-row", "how": "after", "count": 3 }],
                 })),
+                methods::PLUGIN_LOGS => match params["id"].as_str() {
+                    Some("nope") => return Err(RpcError::Failed("There's no plugin nope".into())),
+                    _ => RpcReply::Value(json!({
+                        "id": params["id"],
+                        "file": "/d/logs/plugins/focus.log",
+                        "lines": [
+                            { "seq": 1, "at": "2026-11-14T17:00:00Z", "source": "window", "level": "print", "text": "hallo" },
+                            { "seq": 2, "at": "2026-11-14T17:00:00Z", "source": "window", "level": "error",
+                              "text": "focus: init.luau:2: kaputt\nstack traceback:\ninit.luau:2 function boom" },
+                        ],
+                    })),
+                },
                 methods::DESCRIBE_ELEMENTS => RpcReply::Value(json!({
                     "elements": [{ "selector": ".session-row", "place": "a sidebar row", "provides": ["session"], "present": true }],
                 })),
@@ -1308,6 +1355,31 @@ mod tests {
         assert_eq!(def.input_schema["required"], json!(["id"]));
         assert!(def.input_schema["properties"].get("to").is_none());
         assert!(def.description.contains(".zend-plugin"));
+    }
+
+    #[tokio::test]
+    async fn plugin_logs_forwards_and_needs_an_id() {
+        let engine = Arc::new(Engine::default());
+        let tools = tools_for(engine.clone(), None);
+        let logs = tools.call(PLUGIN_LOGS, json!({ "id": " focus ", "since": 0, "limit": 9000 })).await.unwrap();
+        assert_eq!(
+            last_call(&engine),
+            (methods::PLUGIN_LOGS.to_owned(), json!({ "id": "focus", "since": 0, "limit": 500 }))
+        );
+        let lines = logs["lines"].as_array().unwrap();
+        assert_eq!(lines[0]["text"], "hallo");
+        assert!(lines[1]["text"].as_str().unwrap().contains("stack traceback:"));
+        assert_eq!(
+            tools.call(PLUGIN_LOGS, json!({ "id": "nope" })).await.unwrap_err(),
+            "There's no plugin nope"
+        );
+        let before = engine.calls.lock().unwrap().len();
+        assert!(tools.call(PLUGIN_LOGS, json!({})).await.unwrap_err().contains("`id`"));
+        assert_eq!(engine.calls.lock().unwrap().len(), before);
+        let catalog = super::super::catalog();
+        let def = catalog.iter().find(|d| d.name == PLUGIN_LOGS).unwrap();
+        assert_eq!(def.input_schema["required"], json!(["id"]));
+        assert!(def.description.contains("traceback"));
     }
 
     #[tokio::test]

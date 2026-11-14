@@ -298,3 +298,100 @@ async fn the_checkout_status_example_answers_from_git() {
     assert_eq!(refused["reason"], reason::FAILED, "{refused}");
     assert!(refused["message"].as_str().unwrap().starts_with("git:"), "{refused}");
 }
+
+
+const LOUD: &str = r#"
+local zend = require("./zend")("svc")
+print("hallo", 1)
+local function kaputt()
+	error("kaputt")
+end
+zend.serve("boom", function()
+	kaputt()
+end)
+zend.serve("fine", function()
+	return true
+end)
+"#;
+
+/// The log's lines for `svc`: (source, level, text).
+async fn log_lines(plugins: &Plugins) -> Vec<(String, String, String)> {
+    let logs = call(plugins, methods::PLUGIN_LOGS, json!({ "id": "svc" })).await;
+    logs["lines"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{logs}"))
+        .iter()
+        .map(|l| (l["source"].as_str().unwrap().to_owned(), l["level"].as_str().unwrap().to_owned(), l["text"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_services_prints_and_errors_reach_its_log_with_where() {
+    let f = fixture();
+    write(&f.plugins, "1.0.0", json!({ "permissions": ["service"], "service": "service.luau" }), Some(LOUD)).await;
+    allow(&f.plugins).await;
+    let failed = ask(&f.plugins, "boom", json!({})).await;
+    assert_eq!(failed["ok"], false, "{failed}");
+    let lines = log_lines(&f.plugins).await;
+    assert!(lines.contains(&("service".into(), "print".into(), "hallo\t1".into())), "{lines:#?}");
+    let error = lines.iter().find(|(_, level, _)| level == "error").unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(error.0, "service");
+    assert!(error.2.contains("kaputt"), "{}", error.2);
+    // Where: the traceback, through the function that raised it.
+    assert!(error.2.contains("stack traceback:") || error.2.contains("traceback"), "{}", error.2);
+    assert!(error.2.contains("service.luau:5"), "{}", error.2);
+    assert!(error.2.contains("kaputt") && error.2.lines().count() > 1, "{}", error.2);
+    // One error, said once.
+    assert_eq!(lines.iter().filter(|(_, level, _)| level == "error").count(), 1, "{lines:#?}");
+    // In the status too, and in its file.
+    let status = call(&f.plugins, methods::PLUGIN_STATUS, json!({ "id": "svc" })).await;
+    let logs = status["logs"].as_array().unwrap_or_else(|| panic!("{status}"));
+    assert!(logs.iter().any(|l| l["text"] == "hallo\t1"), "{status}");
+    let file = std::fs::read_to_string(status["logs_file"].as_str().unwrap()).unwrap();
+    assert!(file.contains("service print hallo\t1\n") && file.contains("    stack traceback:"), "{file}");
+    // Reading on from the last seq: only what came after.
+    let last = status["logs"].as_array().unwrap().last().unwrap()["seq"].as_u64().unwrap();
+    let after = call(&f.plugins, methods::PLUGIN_LOGS, json!({ "id": "svc", "since": last })).await;
+    assert_eq!(after["lines"], json!([]), "{after}");
+}
+
+#[tokio::test]
+async fn a_service_that_doesnt_load_logs_where() {
+    let f = fixture();
+    let broken = "local zend = require(\"./zend\")(\"svc\")\nlocal function f()\n\terror(\"kaputt beim Laden\")\nend\nf()\n";
+    write(&f.plugins, "1.0.0", json!({ "permissions": ["service"], "service": "service.luau" }), Some(broken)).await;
+    allow(&f.plugins).await;
+    let refused = ask(&f.plugins, "fine", json!({})).await;
+    assert_eq!(refused["reason"], reason::NOT_LOADED, "{refused}");
+    let lines = log_lines(&f.plugins).await;
+    let error = lines.iter().find(|(_, level, _)| level == "error").unwrap_or_else(|| panic!("{lines:#?}"));
+    assert!(error.2.starts_with("didn't load:") && error.2.contains("kaputt beim Laden"), "{}", error.2);
+    assert!(error.2.contains("service.luau:3"), "{}", error.2);
+}
+
+#[tokio::test]
+async fn the_window_writes_its_plugins_log_and_agents_only_read_it() {
+    let f = fixture();
+    write(&f.plugins, "1.0.0", json!({}), None).await;
+    let traceback = "svc: init.luau:2: kaputt\nstack traceback:\ninit.luau:2 function boom\ninit.luau:5";
+    let kept = call(&f.plugins, methods::PLUGIN_LOG, json!({ "id": "svc", "lines": [
+        { "level": "print", "text": "hallo" },
+        { "level": "error", "text": traceback },
+    ] }))
+    .await;
+    assert_eq!(kept["kept"], 2, "{kept}");
+    let lines = log_lines(&f.plugins).await;
+    assert_eq!(
+        lines,
+        [("window".into(), "print".into(), "hallo".into()), ("window".into(), "error".into(), traceback.into())]
+    );
+    // An agent reads it, and can't write it.
+    let agent = zend_rpc::Caller::Agent { chat: Some("chat-1".into()) };
+    let wrote = zend_rpc::with_caller(agent.clone(), f.plugins.dispatch(methods::PLUGIN_LOG, json!({ "id": "svc", "lines": [{ "text": "fake" }] }))).await;
+    assert!(wrote.is_err(), "{:?}", wrote.ok().map(|_| ()));
+    assert!(zend_rpc::agent_allowed(methods::PLUGIN_LOGS) && !zend_rpc::agent_allowed(methods::PLUGIN_LOG));
+    // A plugin that isn't there says so.
+    let none = call(&f.plugins, methods::PLUGIN_LOGS, json!({ "id": "nope" })).await;
+    assert!(none["rpc_error"].as_str().unwrap_or_default().contains("no plugin nope"), "{none}");
+}
+

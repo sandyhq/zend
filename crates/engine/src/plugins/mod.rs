@@ -22,6 +22,7 @@ pub mod guides;
 pub mod install;
 pub mod keys;
 mod lifecycle;
+pub mod logs;
 pub mod manifest;
 pub mod package;
 pub mod reviews;
@@ -174,10 +175,16 @@ pub fn handles(method: &str) -> bool {
             | methods::DESCRIBE_APP
             | methods::DESCRIBE_ELEMENTS
             | methods::PLUGIN_STATUS
+            | methods::PLUGIN_LOG
+            | methods::PLUGIN_LOGS
+            | methods::WATCH_PLUGIN_LOGS
             | methods::WATCH_THEMES
     ) || lifecycle::handles(method)
         || themes::handles(method)
 }
+
+/// The log lines `PluginStatus` carries (`PluginLogs` reads more).
+const STATUS_LOG_LINES: usize = 20;
 
 /// How long `PluginStatus` waits for the window's account.
 const STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
@@ -253,6 +260,8 @@ struct Inner {
     builtin_watch: Mutex<Option<crate::fs_watch::FsWatch>>,
     /// Plugins' services (plugins/service).
     services: Services,
+    /// Each plugin's log: its window's prints and errors, its service's.
+    logs: logs::Logs,
     /// The agents' usage, accounts and models, as plugins reach them
     /// (plugins/agents), and their events.
     agents: agents::Agents,
@@ -535,6 +544,7 @@ impl Plugins {
                 builtin_dir: Mutex::new(None),
                 builtin_watch: Mutex::new(None),
                 services: Services::new(&storage, config),
+                logs: logs::Logs::new(data_dir),
                 agents: agents::Agents::default(),
                 watchers: Mutex::new(HashMap::new()),
                 watching: Mutex::new(HashSet::new()),
@@ -1825,6 +1835,7 @@ impl Plugins {
                 // What it kept (`zend.store`, its settings, its database)
                 // goes with it.
                 forget_storage(&self.inner.plugins_dir, &p.id);
+                self.inner.logs.forget(&p.id);
                 install::forget_found(&self.inner.plugins_dir, &p.id);
                 self.rescan().await;
                 RpcReply::value(&serde_json::json!({}))
@@ -2282,6 +2293,9 @@ impl Plugins {
                     let status = self.inner.services.status(&entry.item.id);
                     out["service"] = if status.is_null() { serde_json::json!({ "running": false }) } else { status };
                 }
+                // Its last log lines here: what it printed, what failed and where.
+                out["logs"] = serde_json::json!(self.inner.logs.lines(&entry.item.id, None, STATUS_LOG_LINES));
+                out["logs_file"] = serde_json::json!(self.inner.logs.file(&entry.item.id).display().to_string());
                 // What it did to your agents' accounts and models here, and
                 // what its row says (a listener failing, a loop stopped).
                 let agents = self.inner.agents.status(&entry.item.id);
@@ -2317,6 +2331,79 @@ impl Plugins {
                     }
                 }
                 RpcReply::value(&out)
+            }
+            methods::PLUGIN_LOG => {
+                #[derive(serde::Deserialize)]
+                struct LogLine {
+                    #[serde(default)]
+                    level: String,
+                    text: String,
+                }
+                #[derive(serde::Deserialize)]
+                struct LogParams {
+                    id: String,
+                    #[serde(default)]
+                    lines: Vec<LogLine>,
+                }
+                // This device's window, for its plugins: never an agent's,
+                // never another device's word.
+                if !zend_rpc::caller().is_local() {
+                    return Err(failed("Only Zend's window here writes to a plugin's log"));
+                }
+                let p: LogParams = parse_params(params)?;
+                let given = p.lines.len();
+                let mut kept = 0;
+                for line in p.lines.into_iter().take(logs::BATCH_MAX) {
+                    if self.inner.logs.push(&p.id, "window", &line.level, &line.text).is_some() {
+                        kept += 1;
+                    }
+                }
+                if given > logs::BATCH_MAX {
+                    let dropped = given - logs::BATCH_MAX;
+                    self.inner.logs.push(&p.id, "window", "info", &format!("{dropped} more lines dropped (too many at once)"));
+                }
+                RpcReply::value(&serde_json::json!({ "kept": kept }))
+            }
+            methods::PLUGIN_LOGS => {
+                #[derive(serde::Deserialize)]
+                struct LogsParams {
+                    id: String,
+                    since: Option<u64>,
+                    limit: Option<usize>,
+                }
+                let p: LogsParams = parse_params(params)?;
+                let limit = p.limit.unwrap_or(100).clamp(1, logs::KEEP);
+                let lines = self.inner.logs.lines(&p.id, p.since, limit);
+                if lines.is_empty() && self.entry(&p.id).is_none() {
+                    self.rescan().await;
+                    if self.entry(&p.id).is_none() {
+                        return Err(failed(format!("There's no plugin {}", p.id)));
+                    }
+                }
+                RpcReply::value(&serde_json::json!({
+                    "id": p.id,
+                    "lines": lines,
+                    "file": self.inner.logs.file(&p.id).display().to_string(),
+                }))
+            }
+            methods::WATCH_PLUGIN_LOGS => {
+                let p: IdParams = parse_params(params)?;
+                let rx = self.inner.logs.subscribe();
+                let stream = futures::stream::unfold((rx, p.id), |(mut rx, id)| async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok((plugin, line)) if plugin == id => {
+                                return Some((serde_json::json!({ "line": line }), (rx, id)));
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                                return Some((serde_json::json!({ "missed": missed }), (rx, id)));
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                        }
+                    }
+                });
+                Ok(RpcReply::Stream(stream.boxed()))
             }
             methods::DESCRIBE_ELEMENTS => {
                 let path = self.inner.plugins_dir.join(ELEMENTS_FILE);
@@ -2723,6 +2810,12 @@ impl service::Hooks for ServiceHooks {
     fn listeners(&self, plugin: &str, listeners: &[(String, String, serde_json::Value)]) {
         if let Some(inner) = self.inner.upgrade() {
             inner.agents.listen(plugin, agents::Target::Service, listeners);
+        }
+    }
+
+    fn log(&self, plugin: &str, level: &str, text: &str) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.logs.push(plugin, "service", level, text);
         }
     }
 

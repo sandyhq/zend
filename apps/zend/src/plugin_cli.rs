@@ -232,8 +232,63 @@ pub async fn run(
             );
             println!("Share that file: anyone installs it from the file or a link to it.");
         }
+        PluginCommand::Logs { id, follow, lines } => {
+            let reply = call(methods::PLUGIN_LOGS, json!({ "id": id, "limit": lines.clamp(1, 500) })).await?;
+            let shown = reply["lines"].as_array().cloned().unwrap_or_default();
+            if shown.is_empty() && !follow {
+                println!("{id} hasn't logged anything since Zend started.");
+            }
+            let mut last = 0;
+            for item in &shown {
+                print!("{}", log_line(item));
+                last = last.max(item["seq"].as_u64().unwrap_or(0));
+            }
+            if !follow {
+                if let Some(file) = reply["file"].as_str().filter(|_| !shown.is_empty()) {
+                    println!("(Earlier lines: {file})");
+                }
+                return Ok(());
+            }
+            let mut stream = client
+                .subscribe_checked(methods::WATCH_PLUGIN_LOGS, json!({ "id": id }))
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", plain(e)))?;
+            // Lines between the read and the watch: once more, after `last`.
+            let caught = call(methods::PLUGIN_LOGS, json!({ "id": id, "since": last, "limit": 500 })).await?;
+            for item in caught["lines"].as_array().cloned().unwrap_or_default() {
+                print!("{}", log_line(&item));
+                last = last.max(item["seq"].as_u64().unwrap_or(0));
+            }
+            while let Some(item) = stream.recv().await {
+                if let Some(missed) = item["missed"].as_u64() {
+                    println!("({missed} lines missed: too many at once)");
+                    continue;
+                }
+                let line = &item["line"];
+                if line["seq"].as_u64().unwrap_or(0) > last {
+                    print!("{}", log_line(line));
+                    last = line["seq"].as_u64().unwrap_or(last);
+                }
+            }
+            anyhow::bail!("Zend stopped.");
+        }
     }
     Ok(())
+}
+
+/// `17:04:00 window error kaputt`, a traceback's lines indented under it.
+fn log_line(item: &Value) -> String {
+    let at = str_of(item, "at");
+    // The time of day (the engine's is this device's zone):
+    // `2026-11-14T17:04:00.123+01:00` → `17:04:00`.
+    let time = at.split_once('T').and_then(|(_, t)| t.get(..8)).unwrap_or(at);
+    let mut out = format!("{time} {} {}", str_of(item, "source"), str_of(item, "level"));
+    for (i, part) in str_of(item, "text").lines().enumerate() {
+        out.push_str(if i == 0 { " " } else { "\n    " });
+        out.push_str(part);
+    }
+    out.push('\n');
+    out
 }
 
 /// `512 bytes`, `12.3 KB`, `4.1 MB`.
@@ -309,7 +364,18 @@ fn plain(error: zend_rpc::RpcError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::size;
+    use super::{log_line, size};
+
+    #[test]
+    fn a_log_line_indents_its_traceback() {
+        let item = serde_json::json!({
+            "seq": 2, "at": "2026-11-14T17:04:00.123Z", "source": "window", "level": "error",
+            "text": "focus: init.luau:2: kaputt\nstack traceback:\ninit.luau:2 function boom",
+        });
+        let line = log_line(&item);
+        assert!(line.starts_with("17:04:00 window error focus"), "{line}");
+        assert!(line.contains(" window error focus: init.luau:2: kaputt\n    stack traceback:\n    init.luau:2 function boom\n"), "{line}");
+    }
 
     #[test]
     fn sizes_read_in_plain_words() {

@@ -57,6 +57,7 @@ pub mod host_bar;
 pub mod locales;
 pub mod network;
 pub mod plugin_menus;
+pub(crate) mod plugin_log;
 
 use std::{
     cell::{Cell, RefCell},
@@ -549,10 +550,22 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         }
     });
 
+    // What a plugin prints, for its log (the app's own scripts' prints
+    // stay on stderr only).
+    let weak = Rc::downgrade(&bridge);
+    host.on_print(move |owner, line| {
+        let Some(b) = weak.upgrade() else { return };
+        let ours = b.loaded.try_borrow().is_ok_and(|loaded| loaded.iter().any(|p| p.name == owner));
+        if ours {
+            plugin_log::print(owner, line);
+        }
+    });
+
     let weak = Rc::downgrade(&bridge);
     engine::get().on_connect(move |rpc| {
         let Some(b) = weak.upgrade() else { return };
         connect(&b, rpc);
+        plugin_log::connected();
     });
 
     // Your templates, looked at as they change: as the kernel says they
@@ -1403,6 +1416,8 @@ impl Bridge {
         }
         let loaded = self.loaded.borrow().clone();
         if let Some(id) = recovery::blame(error, &loaded) {
+            // Its log has each error whole, with where (withdrawn or not).
+            plugin_log::error(&id, error);
             self.plugin_failed(&id, error);
             return;
         }

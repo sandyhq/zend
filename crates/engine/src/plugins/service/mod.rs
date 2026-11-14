@@ -140,6 +140,8 @@ pub trait Hooks: Send + Sync + 'static {
     /// The `zend.on` listeners `plugin`'s service registered, as it loaded:
     /// the engine tells each its events (`Kind::Event`).
     fn listeners(&self, _plugin: &str, _listeners: &[(String, String, Json)]) {}
+    /// A line for `plugin`'s log (`level`: `print`, `error`, `info`).
+    fn log(&self, _plugin: &str, _level: &str, _text: &str) {}
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +201,8 @@ struct Slot {
     /// One start at a time.
     start: tokio::sync::Mutex<()>,
     log: Mutex<VecDeque<String>>,
+    /// Where its lines go too (the plugin's log).
+    hooks: Option<Arc<dyn Hooks>>,
 }
 
 #[derive(Default)]
@@ -231,7 +235,20 @@ struct Timer {
 }
 
 impl Slot {
+    /// Zend's own word about the service (started, stopped, didn't load).
     fn note(&self, line: String) {
+        self.note_as("info", line);
+    }
+
+    fn note_as(&self, level: &str, line: String) {
+        if let Some(hooks) = &self.hooks {
+            hooks.log(&self.plugin, level, &line);
+        }
+        // (The status keeps a traceback's first line.)
+        let line = match line.split_once('\n') {
+            Some((head, _)) => head.to_owned(),
+            None => line,
+        };
         let mut log = lock(&self.log);
         if log.len() >= LOG_LINES {
             log.pop_front();
@@ -276,6 +293,7 @@ impl Services {
                     state: Mutex::new(SlotState::default()),
                     start: tokio::sync::Mutex::new(()),
                     log: Mutex::new(VecDeque::new()),
+                    hooks: self.hooks(),
                 })
             })
             .clone()
@@ -829,7 +847,14 @@ impl Ops for PluginOps {
     fn log(&self, line: &str) {
         tracing::info!(plugin = %self.plan.plugin, "plugins: service: {line}");
         if let Some(slot) = self.slot.upgrade() {
-            slot.note(line.to_owned());
+            slot.note_as("print", line.to_owned());
+        }
+    }
+
+    fn error(&self, text: &str) {
+        tracing::info!(plugin = %self.plan.plugin, "plugins: service: {}", text.lines().next().unwrap_or(""));
+        if let Some(slot) = self.slot.upgrade() {
+            slot.note_as("error", text.to_owned());
         }
     }
 }
