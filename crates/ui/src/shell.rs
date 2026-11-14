@@ -6237,7 +6237,7 @@ impl Shell {
             .map(|c| {
                 (
                     c.title.clone().unwrap_or_default(),
-                    c.parent_chat_id.clone(),
+                    c.parent_chat_id.clone().filter(|_| c.is_worker_child()),
                     c.archived,
                 )
             })
@@ -11294,7 +11294,7 @@ impl Shell {
                     .read(cx)
                     .chats
                     .iter()
-                    .any(|chat| chat.id == chat_id && chat.parent_chat_id.is_some());
+                    .any(|chat| chat.id == chat_id && chat.is_worker_child());
             let is_pinned = self.active_sidebar_pins(cx).contains(&chat_id);
             let rename_id = chat_id.clone();
             let pin_id = chat_id.clone();

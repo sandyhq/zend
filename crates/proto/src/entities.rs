@@ -418,8 +418,14 @@ impl Chat {
     /// (`parent_chat_id`, unless a child session) nor a hidden voice
     /// orchestrator.
     pub fn is_top_level(&self) -> bool {
-        (self.parent_chat_id.is_none() || self.child_kind == Some(ChildKind::Session))
-            && !crate::voice::is_orchestrator_chat(&self.id)
+        !self.is_worker_child() && !crate::voice::is_orchestrator_chat(&self.id)
+    }
+
+    /// A subagent or side chat: another chat's worker, shown in the
+    /// parent's lanes or side chats. A child session has a parent too but is
+    /// a session of its own, so it is not one.
+    pub fn is_worker_child(&self) -> bool {
+        self.parent_chat_id.is_some() && self.child_kind != Some(ChildKind::Session)
     }
 
     /// True when this chat syncs over the chat2 dumb relay.
@@ -2055,6 +2061,27 @@ pub struct ChatConnectivity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_subagents_and_side_chats_are_worker_children() {
+        let mut chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": "c", "deviceId": "d", "archived": false,
+            "createdAt": "2025-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert!(!chat.is_worker_child());
+        chat.parent_chat_id = Some("p".into());
+        for (kind, worker) in [
+            (None, true),
+            (Some(ChildKind::Side), true),
+            (Some(ChildKind::Subagent), true),
+            (Some(ChildKind::Session), false),
+        ] {
+            chat.child_kind = kind;
+            assert_eq!(chat.is_worker_child(), worker, "{kind:?}");
+            assert_eq!(chat.is_top_level(), !worker, "{kind:?}");
+        }
+    }
+
     use super::*;
     use chrono::TimeZone;
 
