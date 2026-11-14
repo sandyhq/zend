@@ -139,6 +139,14 @@ impl AgentHost for EngineAgentHost {
         Ok(())
     }
 
+    fn access_modes(&self, harness: HarnessId, device: Option<&str>) -> Option<Vec<zend_proto::AccessMode>> {
+        // The registry here speaks for this device only.
+        if device.is_some_and(|d| d != self.workspace.device_id()) {
+            return None;
+        }
+        self.registry.descriptors().into_iter().find(|d| d.id == harness).map(|d| d.access_modes)
+    }
+
     fn create_chat(&self, new: &NewChat) -> Result<(), String> {
         if new.device.as_deref().is_some_and(|d| zend_proto::is_cloud_device(d, "")) {
             return Err("A Cloud chat is started from the composer".into());

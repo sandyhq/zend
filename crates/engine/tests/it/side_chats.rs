@@ -1204,6 +1204,26 @@ async fn a_side_chat_keeps_its_subagent_tools_when_native_subagents_are_off() {
 }
 
 #[tokio::test]
+async fn a_subagent_s_fork_is_a_side_chat_not_a_subagent() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = EngineCore::assemble(dir.path(), Arc::new(HarnessRegistry::new()), HarnessId::Mock, None).unwrap();
+    core.workspace.create_chat_hosted("helper", None, Some(&core.device_id), Some(&core.device_id),
+        None, Some("/tmp".into()), Some("main".into()), Some(zend_proto::ChildKind::Subagent)).unwrap();
+    let source = core.doc_host.open("helper").unwrap();
+    source.doc().push_message(&message("u1", MessageRole::User, "Look it up", MessageStatus::Complete)).unwrap();
+    source.doc().push_message(&message("a1", MessageRole::Assistant, "Found it", MessageStatus::Complete)).unwrap();
+    let client = zend_rpc::memory_client(core.rpc_service());
+    let fork: zend_proto::Chat = client.call_as(methods::FORK_SIDE_CHAT,
+        serde_json::json!({"chatId":"fork-of-helper", "sourceChatId":"helper", "parentChatId":"main"})).await.unwrap();
+    let stored = core.workspace.chat("fork-of-helper").unwrap().unwrap();
+    core.shutdown().await;
+    // Hung where the caller said; only the kind is the fork's own.
+    assert_eq!(fork.parent_chat_id.as_deref(), Some("main"));
+    assert_eq!(fork.child_kind, Some(zend_proto::ChildKind::Side), "a fork of a subagent is not a subagent");
+    assert_eq!(stored.child_kind, Some(zend_proto::ChildKind::Side));
+}
+
+#[tokio::test]
 async fn a_child_session_s_fork_is_a_side_chat_and_gets_its_history() {
     let dir = tempfile::tempdir().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));

@@ -48,6 +48,11 @@ impl Harness for Scripted {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[]
     }
+    /// Every mode: `a_plugin_s_child_runs_with_the_access_it_asks` asks for
+    /// one, and a plugin's `new_chat` refuses a mode its harness doesn't offer.
+    fn access_modes(&self) -> &[zend_proto::AccessMode] {
+        &zend_proto::AccessMode::ALL
+    }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
     }

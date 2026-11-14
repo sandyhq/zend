@@ -1005,9 +1005,7 @@ impl Client {
         let mut chat = parent;
         chat.id = crate::new_id();
         chat.parent_chat_id = Some(root);
-        if chat.child_kind == Some(zend_proto::ChildKind::Session) {
-            chat.child_kind = Some(zend_proto::ChildKind::Side);
-        }
+        chat.child_kind = zend_proto::ChildKind::of_a_copy(chat.child_kind);
         chat.title = None;
         chat.archived = false;
         chat.created_at = Utc::now();
@@ -2162,6 +2160,25 @@ mod child_session_tests {
         let side = client.create_side_chat("session-worker").unwrap();
         let side = client.inner.workspace.chat(&side).unwrap();
         assert_eq!(side.parent_chat_id.as_deref(), Some("session-worker"));
+        assert_eq!(side.child_kind, Some(zend_proto::ChildKind::Side));
+    }
+
+    #[test]
+    fn a_subagent_s_side_chat_is_a_side_chat_not_a_subagent() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(Default::default()), Arc::new(crate::events::NullListener)).unwrap();
+        let mut worker = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        let root = worker.id.clone();
+        worker.parent_chat_id = Some(root.clone());
+        worker.id = "subagent-worker".into();
+        worker.child_kind = Some(zend_proto::ChildKind::Subagent);
+        client.inner.registry_write(|doc| doc.upsert_chat(&worker)).unwrap();
+        let side = client.create_side_chat("subagent-worker").unwrap();
+        let side = client.inner.workspace.chat(&side).unwrap();
+        // As before: a sibling under the subagent's parent. Only the kind changes.
+        assert_eq!(side.parent_chat_id.as_deref(), Some(root.as_str()));
         assert_eq!(side.child_kind, Some(zend_proto::ChildKind::Side));
     }
 
