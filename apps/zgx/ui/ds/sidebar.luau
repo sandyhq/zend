@@ -695,16 +695,34 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	local placed_for: Places? = nil
 	local placed_map: { [string]: string } = {}
 	local function nested(s: Session): boolean
-		if s.parent == nil or s.parent_here ~= true or not nest_children:get() or act_now() then
+		if s.parent == nil or not nest_children:get() then
 			return false
 		end
-		-- (Put by hand, in Pinned or a section, either leaves the list it
-		-- would nest in.)
+		-- (Both in the list: an archived child, or one whose parent is
+		-- filtered out, stands on its own.)
+		local by_id = index:get().by_id
+		local par = by_id[s.parent :: string]
+		if par == nil or by_id[s.id] == nil then
+			return false
+		end
 		local p = places:get()
 		if p ~= placed_for then
 			placed_for, placed_map = p, placed_in(p)
 		end
-		return placed_map[s.id] == nil and placed_map[s.parent :: string] == nil
+		local a, b = placed_map[s.id], placed_map[s.parent :: string]
+		-- (Pinned never nests.)
+		if a == "pinned" or b == "pinned" then
+			return false
+		end
+		-- Activity: one list, its shelves; the sections aren't there.
+		if act_now() then
+			return s.shelf == par.shelf
+		end
+		-- Put by hand with its parent in one section, or both in a group.
+		if a ~= b then
+			return false
+		end
+		return a ~= nil or s.parent_here == true
 	end
 	-- A child session not nested: the line naming its parent.
 	local function parent_line(s: Session): string?
@@ -723,7 +741,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	end
 	-- A session's height: regular, two lines while it has a second to show.
 	local function session_h(s: Session, by: Organize): number
-		if compact:get() or detail(s, by) == "" then
+		-- (A child session's parent line shows in compact too.)
+		if (compact:get() and parent_line(s) == nil) or detail(s, by) == "" then
 			return SLOT
 		end
 		return TALL
@@ -1280,7 +1299,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		-- The session as it stands: what the row shows of it follows it.
 		local cur = now_of(s)
 		local function second_line(): boolean
-			return not compact:get() and detail(cur(), by) ~= ""
+			return (not compact:get() or parent_line(cur()) ~= nil) and detail(cur(), by) ~= ""
 		end
 		-- Regular's second line: where it runs, and on what (its branch's
 		-- glyph leading while the branch shows).
@@ -2469,8 +2488,11 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		local f = folded:get()
 		for key, fold in folds_by do
 			local id = string.match(key, "^sec:(.*)$")
+			local kid = string.match(key, "^kids:(.*)$")
 			if id and (fold.h.to == 1) == (f[id] == true) then
 				fold_set(fold, not f[id])
+			elseif kid and (fold.h.to == 1) == (f[key] == true) then
+				fold_set(fold, not f[key])
 			elseif key == "empties" and (fold.h.to == 1) ~= (f[EMPTIES] == true) then
 				fold_set(fold, f[EMPTIES] == true)
 			end
@@ -2949,7 +2971,10 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			local lf = activity_fold()
 			add({ kind = "title", key = "title:activity", place = "regular", chain = {}, title = "ds.sidebar.activity", n = #list, fold = activity_fold, open = activity_open, base = title_h })
 			if lf.present then
-				sessions_rows("activity", ranked(list), "none", { lf }, "regular")
+				local all, nest = nesting(ranked(list))
+				sessions_rows("activity", all, "none", { lf }, "regular", nil, kids_chain(nest, function(): { Fold }?
+					return { lf }
+				end), false, nest)
 			end
 			local shelves = {
 				{ key = "working", title = "ds.sidebar.working", sessions = ranked(shelved.working) },
@@ -2971,7 +2996,10 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 						return shelf_fold(key)
 					end, open = shelf_open(key), base = title_h })
 					if f.present then
-						sessions_rows(key, one.sessions, "none", { f }, "regular")
+						local all, nest = nesting(one.sessions)
+						sessions_rows(key, all, "none", { f }, "regular", nil, kids_chain(nest, function(): { Fold }?
+							return { f }
+						end), false, nest)
 					end
 				end
 			end
@@ -3005,7 +3033,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			local for_drag = narrow and #own == 0
 			local f = section_fold(sec.id)
 			add({ kind = "own", key = `own:{sec.id}`, place = sec.id, chain = zoned({}, for_drag), sec = sec, n = #own, base = title_h })
-			sessions_rows(sec.id, own, "none", { f }, sec.id, nil, folding({}, f))
+			local all, nest = nesting(own)
+			sessions_rows(sec.id, all, "none", { f }, sec.id, nil, kids_chain(nest, folding({}, f)), false, nest)
 			if f.present then
 				if #own == 0 then
 					drop_row(zoned({ f }, for_drag), sec.id, "ds.sidebar.drop_sessions")
@@ -5075,7 +5104,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 			local show_rows: { Node } = { heading = locale.s("ds.sidebar.view.show") } :: any
 			-- (Activity keeps its own: the Archived shelf always, folded; no
 			-- groups to fold or empty projects to list.)
-			local ACTIVITY_OWNS: { [string]: boolean } = { keep_active = true, nest_children = true, empty_projects = true, archived = true }
+			local ACTIVITY_OWNS: { [string]: boolean } = { keep_active = true, empty_projects = true, archived = true }
 			for _, d in SHOW do
 				local st = (details :: any)[d.key] :: State<boolean>
 				local owned = act and ACTIVITY_OWNS[d.key] == true

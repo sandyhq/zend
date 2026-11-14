@@ -136,3 +136,136 @@ test("a child session whose parent is archived stands flat, naming it, nested or
 	expect(second(app, "Revive the experiment")).to_be("Child of Old experiment")
 	expect(lead(app, "Revive the experiment")).to_be(lead(app, "Fix the build"))
 end)
+
+-- A change to the sessions as the engine would make it.
+local function change(app: any, f: (any) -> ())
+	local function copy(v: any): any
+		if type(v) ~= "table" then
+			return v
+		end
+		local out = {}
+		for k, value in v do
+			out[k] = copy(value)
+		end
+		return out
+	end
+	local now = copy(app:state("sessions"))
+	f(now)
+	app:set_state("sessions", now)
+	app:frames(50)
+end
+
+test("a flat child names its parent in compact density too, on a row tall enough", function()
+	local app = open()
+	app:set_state(K .. "shell_sidebar_compact", true)
+	app:set_state(K .. "shell_sidebar_nest_children", false)
+	app:frames(40)
+	expect(second(app, "Chase the flake")).to_be("Child of Fix the build")
+	local tree = app:tree(SIDE .. ' >> role:button "Chase the flake"')
+	local h = tree:match("button \"Chase the flake\" %-?%d+,%-?%d+ %d+x(%d+)")
+	expect(tonumber(h) :: number > 30).to_be(true)
+	-- (A session of no parent stays one line.)
+	local plain = app:tree(SIDE .. ' >> role:button "Fix the build"')
+	expect(tonumber(plain:match("button \"Fix the build\" %-?%d+,%-?%d+ %d+x(%d+)")) :: number <= 30).to_be(true)
+end)
+
+test("a child's fold changed from outside moves its rows, not only the arrow", function()
+	local app = open()
+	app:set_state(K .. "shell_sidebar_keep_active", false)
+	app:set_state(K .. "shell_sidebar_folded", { ["kids:a1"] = true })
+	app:frames(60)
+	expect(order(app)).to_be("a1,a2,a3,b1,b2")
+	app:set_state(K .. "shell_sidebar_folded", {})
+	app:frames(60)
+	expect(order(app)).to_be("a1,c2,c1,a2,a3,b1,b2")
+end)
+
+test("a parent put by hand in Pinned or a section lists its children flat, once each", function()
+	local app = open()
+	change(app, function(now)
+		now.places.pinned = { "a1" }
+	end)
+	expect(order(app)).to_be("a1,c2,a2,a3,c1,b1,b2")
+	expect(second(app, "Chase the flake")).to_be("Child of Fix the build")
+	change(app, function(now)
+		now.places.pinned = {}
+		now.places.sections = { { id = "sec1", name = "Work", sessions = { "a1" } } }
+	end)
+	expect(order(app)).to_be("a1,c2,a2,a3,c1,b1,b2")
+end)
+
+test("clicking a nested child opens its own page and panel", function()
+	local app = open()
+	app:click(SIDE .. ' >> role:button "Chase the flake"')
+	app:frames(30)
+	expect(app:state("shell_selected")).to_be("c1")
+	expect(app:state("fixture_open_chat")).to_be("c1")
+	app:click('#titlebar >> role:button "Panel"')
+	app:frames(50)
+	expect(((app:state("shell_panel_open") :: any) or {}).c1).to_be(true)
+	expect(((app:state("shell_panel_open") :: any) or {}).a1).to_be_nil()
+	expect(app:error()).to_be_nil()
+end)
+
+-- Activity: one list; the children's parent and they quiet, so on it together.
+local function activity(app: any)
+	app:set_state("screens/shell/activity.luau::shell_sidebar_activity", true)
+	change(app, function(now)
+		for _, c in now.chats do
+			if c.id == "a1" or c.id == "c2" then
+				c.status = nil
+			end
+		end
+	end)
+	app:frames(40)
+end
+
+test("Activity nests a child under its parent while Nest child sessions is on, and lists it flat when off", function()
+	local app = open()
+	activity(app)
+	expect(shows(app, "Fold child sessions")).to_be(true)
+	expect(lead(app, "Chase the flake") > lead(app, "Fix the build")).to_be(true)
+	expect(second(app, "Chase the flake")).to_be("Atlas · MacBook Pro")
+	app:set_state(K .. "shell_sidebar_nest_children", false)
+	app:frames(40)
+	expect(shows(app, "Fold child sessions")).to_be(false)
+	expect(second(app, "Chase the flake")).to_be("Child of Fix the build")
+	expect(lead(app, "Chase the flake")).to_be(lead(app, "Fix the build"))
+end)
+
+test("a parent and its child in the same section nest there, with the fold button", function()
+	local app = open()
+	change(app, function(now)
+		now.places.sections = { { id = "sec1", name = "Work", sessions = { "a1", "c1" } } }
+	end)
+	expect(shows(app, "Fold child sessions")).to_be(true)
+	expect(lead(app, "Chase the flake") > lead(app, "Fix the build")).to_be(true)
+	app:click(SIDE .. ' >> role:button "Fold child sessions"')
+	app:frames(60)
+	expect(shows(app, "Chase the flake")).to_be(false)
+	app:set_state(K .. "shell_sidebar_nest_children", false)
+	app:frames(40)
+	expect(second(app, "Chase the flake")).to_be("Child of Fix the build")
+end)
+
+test("a child put in another section than its parent stands flat, naming it", function()
+	local app = open()
+	change(app, function(now)
+		now.places.sections = {
+			{ id = "sec1", name = "Work", sessions = { "a1" } },
+			{ id = "sec2", name = "Later", sessions = { "c1" } },
+		}
+	end)
+	expect(second(app, "Chase the flake")).to_be("Child of Fix the build")
+	expect(shows(app, "Fold child sessions")).to_be(false)
+end)
+
+test("a pinned parent and child stay unnested with the toggle on", function()
+	local app = open()
+	change(app, function(now)
+		now.places.pinned = { "a1", "c1" }
+	end)
+	expect(shows(app, "Fold child sessions")).to_be(false)
+	expect(second(app, "Chase the flake")).to_be("Child of Fix the build")
+	expect(lead(app, "Chase the flake")).to_be(lead(app, "Fix the build"))
+end)
