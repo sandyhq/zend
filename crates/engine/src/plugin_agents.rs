@@ -143,18 +143,25 @@ impl AgentHost for EngineAgentHost {
         if new.device.as_deref().is_some_and(|d| zend_proto::is_cloud_device(d, "")) {
             return Err("A Cloud chat is started from the composer".into());
         }
+        // Neither device nor project: this device, as the Zend MCP's
+        // create_chat does (a projectless chat gets its scratch folder).
+        let device = new.device.as_deref().or(new.project.is_none().then(|| self.workspace.device_id()));
         self.workspace
             .create_chat_hosted(
                 &new.chat_id,
                 new.project.as_deref(),
-                new.device.as_deref(),
+                device,
                 None,
                 Some(new.config.clone()),
                 new.cwd.clone(),
-                None,
-                None,
+                new.parent.as_ref().map(|(parent, _)| parent.clone()),
+                new.parent.as_ref().map(|(_, kind)| *kind),
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if let Some(title) = &new.title {
+            self.workspace.rename_chat(&new.chat_id, title).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn pending_input(&self, chat: &str) -> Result<Option<String>, String> {

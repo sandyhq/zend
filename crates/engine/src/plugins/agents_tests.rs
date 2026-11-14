@@ -888,6 +888,53 @@ async fn messages_a_new_chat_is_made_and_sent_its_first_message() {
 }
 
 #[tokio::test]
+async fn messages_a_new_chat_can_be_a_child_session_of_a_top_level_chat() {
+    let f = Fixture::new();
+    f.grant("p", &[MESSAGES_SEND]);
+    let mut kid = chat("kid", "opus");
+    kid.parent_chat_id = Some("c1".into());
+    lock(&f.host.chats).push(kid);
+    let mut cloud = chat("on-cloud", "opus");
+    cloud.device_id = "cloud-machine".into();
+    lock(&f.host.chats).push(cloud);
+    let made = f
+        .op("p", json!({ "op": "new_chat", "prompt": "Build it", "device": "dev-1", "parent": "c1", "kind": "session", "title": " Worker ", "access": "supervised" }))
+        .await
+        .unwrap();
+    let new = lock(&f.host.created)[0].clone();
+    assert_eq!(made["chat"], new.chat_id);
+    assert_eq!(new.parent, Some(("c1".to_owned(), zend_proto::ChildKind::Session)));
+    assert_eq!(new.title.as_deref(), Some("Worker"));
+    assert_eq!(new.config.access, zend_proto::AccessMode::Supervised);
+    // A parent without a kind: a subagent, as the Zend MCP's create_chat.
+    f.op("p", json!({ "op": "new_chat", "prompt": "x", "parent": "c1" })).await.unwrap();
+    f.op("p", json!({ "op": "new_chat", "prompt": "x", "parent": "c1", "kind": "side" })).await.unwrap();
+    let kinds: Vec<_> = lock(&f.host.created).iter().map(|n| n.parent.as_ref().map(|p| p.1)).collect();
+    assert_eq!(kinds, [Some(zend_proto::ChildKind::Session), Some(zend_proto::ChildKind::Subagent), Some(zend_proto::ChildKind::Side)]);
+    // And none: a top-level chat, untitled.
+    f.op("p", json!({ "op": "new_chat", "prompt": "x" })).await.unwrap();
+    let plain = lock(&f.host.created).last().cloned().unwrap();
+    assert!(plain.parent.is_none() && plain.title.is_none());
+    assert_eq!(plain.config.access, zend_proto::AccessMode::FullAccess, "no access asked: today's default");
+    for (args, why) in [
+        (json!({ "op": "new_chat", "prompt": "x", "parent": "c1", "kind": "child" }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "kind": "session" }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "parent": "nope", "kind": "session" }), reason::NOT_FOUND),
+        (json!({ "op": "new_chat", "prompt": "x", "parent": "kid", "kind": "session" }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "parent": "on-cloud", "kind": "session" }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "parent": "c1", "kind": 42 }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "parent": "c1", "kind": " " }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "parent": 42 }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "access": "everything" }), reason::BAD_CALL),
+        (json!({ "op": "new_chat", "prompt": "x", "access": true }), reason::BAD_CALL),
+    ] {
+        let refused = f.op("p", args.clone()).await.unwrap_err();
+        assert_eq!(refused.reason, why, "{args}: {}", refused.message);
+    }
+    assert_eq!(lock(&f.host.created).len(), 4, "a refused call makes nothing");
+}
+
+#[tokio::test]
 async fn messages_a_question_is_answered_as_respond_to_input_answers_it() {
     let f = Fixture::new();
     f.grant("p", &[MESSAGES_SEND]);

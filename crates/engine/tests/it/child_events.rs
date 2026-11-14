@@ -338,6 +338,207 @@ async fn a_child_session_tells_its_parent_by_default() {
     rig.core.shutdown().await;
 }
 
+/// A plugin allowed "messages.send" here, and no more.
+struct Allowed;
+
+impl zend_engine::plugins::agents::Sink for Allowed {
+    fn grants(&self, _plugin: &str) -> Option<zend_engine::plugins::agents::Grant> {
+        Some(zend_engine::plugins::agents::Grant { name: "Automation".into(), allowed: vec!["messages.send".into()] })
+    }
+    fn to_window(&self, _: &str, _: &str, _: &str, _: serde_json::Value) {}
+    fn to_service(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+    ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A plugin's `zend.new_chat { parent, kind = "session", title }` makes a
+/// child session as the Zend MCP's create_chat does: linked on its row,
+/// titled, and its settled turn told to its parent. A parent that is itself a
+/// child, or none, is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_child_session_is_linked_and_tells_its_parent() {
+    let rig = Rig::new().await;
+    let agents = rig.core.plugins.agents();
+    agents.set_sink(Arc::new(Allowed));
+    let new_chat = |extra: serde_json::Value| {
+        let mut args = serde_json::json!({
+            "op": "new_chat", "prompt": "worker work", "device": rig.core.device_id, "cwd": "/tmp/worker",
+        });
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        agents.call("automation", args)
+    };
+    let made = new_chat(serde_json::json!({ "parent": "parent", "kind": "session", "title": "Worker" }))
+        .await
+        .expect("a child session");
+    let id = made["chat"].as_str().unwrap().to_owned();
+    let row = rig.core.workspace.read_chats().unwrap().into_iter().find(|c| c.id == id).expect("its row");
+    assert_eq!(row.parent_chat_id.as_deref(), Some("parent"));
+    assert_eq!(row.child_kind, Some(zend_proto::ChildKind::Session));
+    assert_eq!(row.title.as_deref(), Some("Worker"));
+    rig.until("the child session's event", |r| !r.events().is_empty()).await;
+    let event = &rig.events()[0];
+    assert!(event.contains(&format!("chat Worker ({}) completed.", &id[..8])), "{event}");
+    assert!(event.ends_with(&format!("read_chat {id}.]")), "{event}");
+    for (extra, why) in [
+        (serde_json::json!({ "parent": id, "kind": "session" }), "itself a child chat"),
+        (serde_json::json!({ "parent": "nobody", "kind": "session" }), "There's no chat nobody"),
+        (serde_json::json!({ "parent": "parent", "kind": "orphan" }), "isn't a kind"),
+    ] {
+        let refused = new_chat(extra.clone()).await.unwrap_err();
+        assert!(refused.message.contains(why), "{extra}: {refused:?}");
+    }
+    rig.core.shutdown().await;
+}
+
+/// The rig's engine, with the plugin "automation" allowed `messages.send`.
+fn allowed_agents(rig: &Rig) -> &zend_engine::plugins::agents::Agents {
+    let agents = rig.core.plugins.agents();
+    agents.set_sink(Arc::new(Allowed));
+    agents
+}
+
+/// With neither device nor project, a plugin's child runs on this device in
+/// a scratch folder of its own, as the Zend MCP's create_chat makes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_child_without_device_or_project_runs_here() {
+    let rig = Rig::new().await;
+    let agents = allowed_agents(&rig);
+    let result = agents.call("automation", serde_json::json!({
+        "op": "new_chat", "prompt": "work", "parent": "parent", "kind": "session", "title": "Worker"
+    })).await;
+    println!("minimal child result = {result:?}");
+    let made = result.expect("documented optional device/project must allow a local child");
+    let row = rig.core.workspace.chat(made["chat"].as_str().unwrap()).unwrap().unwrap();
+    rig.core.shutdown().await;
+    assert_eq!(row.device_id, rig.core.device_id);
+    assert_eq!(row.space_id, None);
+    assert!(zend_proto::projectless::is_scratch_cwd(row.cwd.as_deref().unwrap_or_default()), "{:?}", row.cwd);
+}
+
+/// `access` reaches the child's config and the run its harness starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_child_runs_with_the_access_it_asks() {
+    let rig = Rig::new().await;
+    let agents = allowed_agents(&rig);
+    let result = agents.call("automation", serde_json::json!({
+        "op": "new_chat", "prompt": "work", "device": rig.core.device_id, "cwd": "/tmp/worker",
+        "parent": "parent", "kind": "session", "title": "Worker", "access": "supervised"
+    })).await.unwrap();
+    let id = result["chat"].as_str().unwrap();
+    let config = rig.core.workspace.chat(id).unwrap().unwrap().config.unwrap();
+    println!("requested supervised, persisted config = {config:?}");
+    rig.until("child run", |r| r.runs.lock().unwrap().iter().any(|run| run.prompt == "work")).await;
+    let access = rig.runs.lock().unwrap().iter().find(|r| r.prompt == "work").unwrap().access;
+    println!("actual harness run access = {access:?}");
+    rig.core.shutdown().await;
+    assert_eq!(config.access, zend_proto::AccessMode::Supervised);
+    assert_eq!(access, zend_proto::AccessMode::Supervised);
+}
+
+/// A link field or access that is there but says nothing is refused, as the
+/// Zend MCP's create_chat refuses it, and makes no chat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_malformed_link_fields_are_refused_like_mcp() {
+    let rig = Rig::new().await;
+    let agents = allowed_agents(&rig);
+    let tools = zend_mcp::Tools::new(Arc::new(zend_mcp::Zend::with_client(
+        zend_rpc::memory_client(rig.core.rpc_service()), zend_mcp::Origin::default(),
+    )));
+    let before = rig.core.workspace.read_chats().unwrap().len();
+    let mut accepted = Vec::new();
+    for extra in [
+        serde_json::json!({"parent": "parent", "kind": 42}),
+        serde_json::json!({"parent": "parent", "kind": false}),
+        serde_json::json!({"parent": "parent", "kind": {}}),
+        serde_json::json!({"parent": "parent", "kind": ""}),
+        serde_json::json!({"parent": "parent", "kind": "  "}),
+        serde_json::json!({"parent": 42}),
+        serde_json::json!({"parent": "parent", "kind": "session", "access": "everything"}),
+        serde_json::json!({"parent": "parent", "kind": "session", "access": 1}),
+    ] {
+        let mut args = serde_json::json!({"op": "new_chat", "prompt": "work", "device": rig.core.device_id, "title": "Worker"});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let mcp = tools.call("create_chat", args.clone()).await;
+        assert!(mcp.is_err(), "MCP refuses malformed fields: {extra}");
+        let plugin = agents.call("automation", args).await;
+        println!("fields={extra}: MCP={mcp:?}, plugin={plugin:?}");
+        match plugin {
+            Ok(made) => {
+                let row = rig.core.workspace.chat(made["chat"].as_str().unwrap()).unwrap().unwrap();
+                accepted.push(format!("{extra} -> parent={:?}, kind={:?}", row.parent_chat_id, row.child_kind));
+            }
+            Err(refused) => assert_eq!(refused.reason, "bad_call", "{extra}: {refused:?}"),
+        }
+    }
+    let after = rig.core.workspace.read_chats().unwrap().len();
+    rig.core.shutdown().await;
+    assert!(accepted.is_empty(), "malformed link fields created chats:\n{}", accepted.join("\n"));
+    assert_eq!(after, before, "a refused call makes nothing");
+}
+
+/// A Cloud chat's children start from Cloud: a plugin naming one as parent
+/// is refused, and nothing is made (Cloud child sessions are out of scope).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_cannot_start_a_cloud_chat_s_child() {
+    let rig = Rig::new().await;
+    let agents = allowed_agents(&rig);
+    rig.core.workspace.create_chat_hosted(
+        "cloud-parent", None, Some("cloud-parent-machine"), Some("cloud-parent-machine"),
+        None, Some("/home/user/app".into()), None, None,
+    ).unwrap();
+    let before = rig.core.workspace.read_chats().unwrap().len();
+    let mut refusals = Vec::new();
+    for kind in ["session", "subagent", "side"] {
+        refusals.push(agents.call("automation", serde_json::json!({
+            "op": "new_chat", "prompt": "work", "device": rig.core.device_id,
+            "parent": "cloud-parent", "kind": kind, "title": "Worker",
+        })).await);
+    }
+    let after = rig.core.workspace.read_chats().unwrap().len();
+    rig.core.shutdown().await;
+    for refused in refusals {
+        let refused = refused.expect_err("a Cloud parent is refused");
+        assert_eq!(refused.reason, "bad_call");
+        assert!(refused.message.contains("start from Cloud"), "{refused:?}");
+    }
+    assert_eq!(after, before, "a refused call makes nothing");
+}
+
+/// An archived parent still takes children; a blank title leaves the child
+/// untitled; a deleted parent and the voice orchestrator are no parents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_child_takes_an_archived_parent_and_ignores_a_blank_title() {
+    let rig = Rig::new().await;
+    let agents = allowed_agents(&rig);
+    rig.core.workspace.set_chat_archived("parent", true).unwrap();
+    for title in ["", "   "] {
+        let result = agents.call("automation", serde_json::json!({
+            "op": "new_chat", "prompt": "work", "device": rig.core.device_id,
+            "parent": "parent", "kind": "session", "title": title,
+        })).await.unwrap();
+        let row = rig.core.workspace.chat(result["chat"].as_str().unwrap()).unwrap().unwrap();
+        assert!(row.title.is_none());
+        assert_eq!(row.parent_chat_id.as_deref(), Some("parent"));
+    }
+    rig.core.workspace.delete_chat("parent").unwrap();
+    let result = agents.call("automation", serde_json::json!({
+        "op": "new_chat", "prompt": "work", "device": rig.core.device_id, "parent": "parent", "kind": "session"
+    })).await;
+    assert_eq!(result.unwrap_err().reason, "not_found");
+    rig.chat("voice-orchestrator-review", "/tmp/voice", serde_json::json!({})).await;
+    let result = agents.call("automation", serde_json::json!({
+        "op": "new_chat", "prompt": "work", "device": rig.core.device_id, "parent": "voice-orchestrator-review", "kind": "session"
+    })).await;
+    assert_eq!(result.unwrap_err().reason, "not_found");
+    rig.core.shutdown().await;
+}
+
 /// A child that asks tells its parent the question and the request to answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_child_awaiting_input_tells_its_parent_the_question() {

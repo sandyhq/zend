@@ -260,6 +260,10 @@ pub struct NewChat {
     pub project: Option<String>,
     pub config: ChatConfig,
     pub cwd: Option<String>,
+    /// The chat it's a child of (`parentChatId`), with what it is to it
+    /// (`childKind`), as the Zend MCP's create_chat records them.
+    pub parent: Option<(String, zend_proto::ChildKind)>,
+    pub title: Option<String>,
 }
 
 /// What a plugin was allowed on this device, while it's on.
@@ -1152,8 +1156,11 @@ impl Agents {
     }
 
     /// `zend.new_chat { prompt, device?, project?, harness?, model?, effort?,
-    /// cwd? }`: a chat made as the composer makes one, and its first
-    /// message. Its id.
+    /// cwd?, access?, parent?, kind?, title? }`: a chat made as the composer
+    /// makes one, and its first message. Its id. With `parent`, a child of
+    /// that top-level chat: `kind` "session" (a child session), "subagent"
+    /// (the default, as the Zend MCP's) or "side". `access` is the owner's to
+    /// pick (a plugin acts with their authority): no parent caps it.
     async fn new_chat(&self, by: &By, args: &Json) -> Result<Json, Refused> {
         let prompt = args.get("prompt").and_then(Json::as_str).unwrap_or_default().trim().to_owned();
         if prompt.is_empty() {
@@ -1183,6 +1190,55 @@ impl Agents {
             (None, None)
         };
         let text = |key: &str| args.get(key).and_then(Json::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
+        // Supplied, these must say something, as the Zend MCP's create_chat
+        // parses them: a malformed one is refused, never taken as absent.
+        let strict = |key: &str, what: &str| match args.get(key) {
+            None | Some(Json::Null) => Ok(None),
+            Some(Json::String(s)) if !s.trim().is_empty() => Ok(Some(s.trim().to_owned())),
+            Some(other) => Err(Refused::new(reason::BAD_CALL, format!("`{key}` is {what}, not {other}"))),
+        };
+        let access = match strict("access", "\"supervised\", \"auto-accept-edits\" or \"full-access\"")? {
+            None => zend_proto::AccessMode::default(),
+            Some(a) => serde_json::from_value(json!(a)).map_err(|_| {
+                Refused::new(
+                    reason::BAD_CALL,
+                    format!("\"{a}\" isn't an access: \"supervised\", \"auto-accept-edits\" or \"full-access\""),
+                )
+            })?,
+        };
+        let parent = match (strict("parent", "a top-level chat's id")?, strict("kind", "\"session\", \"subagent\" or \"side\"")?) {
+            (None, None) => None,
+            (None, Some(_)) => return Err(Refused::new(reason::BAD_CALL, "A kind of child needs its parent (parent)")),
+            (Some(parent), kind) => {
+                let kind = match kind.as_deref() {
+                    None => zend_proto::ChildKind::Subagent,
+                    Some(k) => zend_proto::ChildKind::parse(k).ok_or_else(|| {
+                        Refused::new(reason::BAD_CALL, format!("\"{k}\" isn't a kind: \"session\", \"subagent\" or \"side\""))
+                    })?,
+                };
+                let found = host
+                    .chats()
+                    .into_iter()
+                    .find(|c| c.id == parent && !zend_proto::voice::is_orchestrator_chat(&c.id))
+                    .ok_or_else(|| Refused::new(reason::NOT_FOUND, format!("There's no chat {parent}")))?;
+                // One level deep, as the Zend MCP's delegation.
+                if found.parent_chat_id.is_some() {
+                    return Err(Refused::new(
+                        reason::BAD_CALL,
+                        format!("{parent} is itself a child chat: only top-level chats have children"),
+                    ));
+                }
+                // A Cloud chat's children run on Cloud machines, which a
+                // plugin doesn't start.
+                if zend_proto::is_cloud_device(&found.device_id, "") {
+                    return Err(Refused::new(
+                        reason::BAD_CALL,
+                        format!("{parent} runs on Cloud: child chats of a Cloud chat start from Cloud"),
+                    ));
+                }
+                Some((parent, kind))
+            }
+        };
         let new = NewChat {
             chat_id: crate::new_id(),
             device: text("device"),
@@ -1193,10 +1249,12 @@ impl Agents {
                 reasoning,
                 model_options: Map::new(),
                 sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
-                access: Default::default(),
+                access,
                 plan: false,
             },
             cwd: text("cwd"),
+            parent,
+            title: text("title").map(|t| t.trim().to_owned()),
         };
         self.loop_guard(by)?;
         host.create_chat(&new).map_err(|why| Refused::new(reason::FAILED, why))?;
