@@ -1,0 +1,9 @@
+# cargo-nextest settings for zgx, its own workspace (nextest reads the
+# workspace root's .config/nextest.toml, so the repository's doesn't apply here).
+#
+# A test whose GPU frame never ends now hangs rather than exiting under it
+# (the visuals' GPU thread is waited for with no limit when a test thread
+# ends): end such a test after 5 minutes instead of hanging the run. The
+# whole suite takes about 70 s on an 8-core machine.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
