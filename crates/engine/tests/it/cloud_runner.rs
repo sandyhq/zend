@@ -1107,6 +1107,7 @@ async fn github_grant_sets_env_git_store_helper_and_gh_hosts() {
             "credential.https://github.com.helper",
         ])
         .env("HOME", &rig.home)
+        .env("XDG_CONFIG_HOME", rig.home.join(".config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
@@ -1174,6 +1175,7 @@ async fn runs_commit_as_the_signed_in_github_user() {
         let out = std::process::Command::new("git")
             .args(["config", "--global", key])
             .env("HOME", &rig.home)
+            .env("XDG_CONFIG_HOME", rig.home.join(".config"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
