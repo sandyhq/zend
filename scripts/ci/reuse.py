@@ -56,7 +56,7 @@ COMMON = [
 # which suites run and when, not whether their tests pass, so they are no input
 # (a change to what a fingerprint means bumps VERSION instead).
 LINUX_SETUP = [".github/actions/linux-ci/**", "scripts/ci/apt-install.sh", "scripts/ci/install-nextest.sh"]
-NEXTEST = ["scripts/ci/nextest.toml"]
+NEXTEST = [".config/nextest.toml"]
 
 SUITE_INPUTS: dict[str, list[str]] = {
     "core": [".github/workflows/ui-tests.yml", "scripts/ci/test-core.sh"] + LINUX_SETUP + NEXTEST,

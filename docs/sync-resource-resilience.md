@@ -167,8 +167,8 @@ queued sync or persistence trouble without exposing internal limits.
 Relevant checks:
 
 ```
-cargo test --locked -p zend-engine --test sync_resources -- --nocapture
-cargo test --locked -p zend-engine --lib --test session_publication --test restart_resume --test misc --test born_chat2_race --test message_queue --test transcript_salvage
+cargo test --locked -p zend-engine --test it sync_resources:: -- --nocapture
+cargo nextest run --locked -p zend-engine -E 'kind(lib) | (binary_id(zend-engine::it) & (test(/^session_publication::/) | test(/^restart_resume::/) | test(/^misc::/) | test(/^born_chat2_race::/) | test(/^message_queue::/) | test(/^transcript_salvage::/)))'
 cargo test --locked -p zend-sync --lib
 cargo test --locked -p zend-rpc --test device_room
 cargo check --locked -p zend-ui

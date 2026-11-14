@@ -1,0 +1,67 @@
+//! All of this crate's integration tests in one binary: each top-level
+//! tests/*.rs file would be its own binary, linked against the whole crate
+//! (see docs/reference/testing.md). Add a suite as tests/it/<name>.rs plus
+//! a mod line here. Only a suite that needs a process of its own (process-wide
+//! state that plain `cargo test` would share) stays a top-level tests/<name>.rs.
+
+mod misc;
+mod acp_registry_rpc;
+mod adapter_chaos_live;
+mod auth;
+mod big_remote_chats;
+mod born_chat2_race;
+mod child_events;
+mod cloud_attachments;
+mod cloud_killed_turn;
+mod cloud_rpc;
+mod cloud_runner;
+mod cloud_sleep_quiesce;
+mod cloud_wake_update;
+mod codex_catalog;
+mod codex_login_resolution;
+mod codex_login_resolver;
+mod cursor_live;
+mod delete_ends_run;
+mod device_routing;
+mod diff_sync_churn;
+mod e2e;
+mod local_first;
+mod local_import;
+mod m5_repos_diffs_terminals;
+mod m5c_accounts_uploads_titles;
+mod message_queue;
+mod plugin_services;
+mod previews;
+mod project_action_commands;
+mod projectless;
+mod provider_switch;
+mod provider_switch_live;
+mod queue_attachments;
+mod queue_order_live;
+mod queued_attachments;
+mod registry_login_tunnel;
+mod registry_writes_live;
+mod relay_delivery;
+mod restart_resume;
+mod rich_composer_delivery;
+mod run_recovery;
+mod runtime_survival;
+mod runtime_survival_live;
+mod self_continued_quiesce;
+mod session_publication;
+mod side_chats;
+mod steer_now;
+mod steer_now_live;
+mod steer_tool_live;
+mod steering_live;
+mod subagent_idle_reap;
+mod sync_resources;
+mod terminal_link_p2p;
+mod terminal_query_order;
+mod transcript_salvage;
+mod turn_quiesce;
+mod unarchive_on_send;
+mod voice_runtime;
+mod workspace_files;
+mod workspace_sync;
+mod worktree_on_run;

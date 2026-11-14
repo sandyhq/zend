@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 env:
-  # Pull requests and main leave out slow and soak tests (scripts/ci/nextest.toml `ci` profile).
+  # Pull requests and main leave out slow and soak tests (.config/nextest.toml `ci` profile).
   NEXTEST_PROFILE: ${{ github.event_name == 'schedule' && 'default' || 'ci' }}
   # Tests run on the dev profile (workspace crates at opt-level 0, dependencies at 2 as configured in
   # Cargo.toml) instead of --release: a cold build is several times cheaper. No debug info is needed.
@@ -78,7 +78,7 @@ jobs:
       # feature (and a `cargo check` before that recompiled every dependency).
       - name: Build tests and the application
         run: |
-          cargo nextest run --config-file scripts/ci/nextest.toml --no-run --locked \
+          cargo nextest run --config-file .config/nextest.toml --no-run --locked \
             -p zend-update -p zend-preview -p zend-ui -p zend-text -p zend \
             --features zend-ui/browser-fixture --lib --bins --tests
       - name: Build fixtures
@@ -91,10 +91,10 @@ jobs:
           # zend-text's coretext tests are macOS-only (#![cfg(target_os = "macos")]); its other
           # tests run on Linux in ios-core. The attachment filters cover file staging, chips and
           # external Finder drops, whose paths and file metadata are platform-specific.
-          cargo nextest run --config-file scripts/ci/nextest.toml --no-fail-fast --locked \
+          cargo nextest run --config-file .config/nextest.toml --no-fail-fast --locked \
             -p zend-update -p zend-preview -p zend-ui -p zend-text -p zend \
             --features zend-ui/browser-fixture --lib --bins --tests \
-            -E 'package(zend-update) | package(zend-preview) | binary_id(zend-text::coretext) | binary_id(zend::cli) | (binary_id(zend-ui) & (test(native_diff_font_geometry) | test(/notify::tests::/) | test(/^attachments::tests::/) | test(/composer::attachment_chip_tests::/) | test(/shell::chat_dropzone_tests::/) | test(=queue::tests::queue_rows_label_attachment_chips_and_file_only_sends) | test(=transcript::tests::user_bubbles_project_attachment_chips_in_place_of_the_strip) | test(=transcript::tests::sent_chips_show_upload_progress_until_their_bytes_land)))'
+            -E 'package(zend-update) | package(zend-preview) | (binary_id(zend-text::it) & test(/^coretext::/)) | (binary_id(zend::it) & test(/^cli::/)) | (binary_id(zend-ui) & (test(native_diff_font_geometry) | test(/notify::tests::/) | test(/^attachments::tests::/) | test(/composer::attachment_chip_tests::/) | test(/shell::chat_dropzone_tests::/) | test(=queue::tests::queue_rows_label_attachment_chips_and_file_only_sends) | test(=transcript::tests::user_bubbles_project_attachment_chips_in_place_of_the_strip) | test(=transcript::tests::sent_chips_show_upload_progress_until_their_bytes_land)))'
       - name: Native browser regression and screenshots
         if: inputs.fixtures
         timeout-minutes: 7

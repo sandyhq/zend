@@ -65,7 +65,8 @@ everything.
 
 ### Slow tests
 
-Pull requests and `main` use nextest's `ci` profile (`scripts/ci/nextest.toml`).
+Pull requests and `main` use nextest's `ci` profile (`.config/nextest.toml`;
+for the test layout and local commands see [testing.md](testing.md)).
 It leaves out these slow and soak tests, which the nightly runs keep:
 
 - the doc_host sync tests at 48-chat scale or against the real 30 s quantum;

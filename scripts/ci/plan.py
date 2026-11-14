@@ -76,7 +76,7 @@ NIGHTLY_FLAGS = (("ui", "browser"),)
 # Suites whose jobs are independent, so one can be skipped while another runs.
 SPLITTABLE = ("voice", "windows")
 
-CARGO = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+CARGO = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".config/nextest.toml"]
 CI_SELF = [
     ".github/workflows/ci.yml",
     "scripts/ci/plan.py",
@@ -103,7 +103,7 @@ VOICE_PATHS = ["crates/audio/**", "crates/voice-media/**", "dist/voice/**", "scr
 
 # The zgx suite's own files, and the crates it builds: main() replaces ZGX_CORE
 # with the closure of reuse.SUITE_PACKAGES["zgx"]; this list is the fallback.
-ZGX_PATHS = ["apps/zgx/**", "scripts/ci/nextest.toml", ".github/workflows/zgx-tests.yml"]
+ZGX_PATHS = ["apps/zgx/**", ".config/nextest.toml", ".github/workflows/zgx-tests.yml"]
 ZGX_CORE = [
     "crates/engine/**", "crates/plugin-guard/**", "crates/zatex/**", "crates/theme/**",
     "crates/preview-label/**", "crates/cli/**", "crates/launch/**", "crates/notify/**",

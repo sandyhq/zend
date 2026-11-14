@@ -24,9 +24,9 @@ placeholder and uses the existing 2–15 second retry ladder.
 ```sh
 cargo test -p zend-proto -p zend-doc
 cargo test -p zend-engine generated_image
-cargo test -p zend-engine --test e2e --test device_routing --test workspace_sync
+cargo test -p zend-engine --test it -- e2e:: device_routing:: workspace_sync::
 cargo test -p zend-harness codex
-cargo test -p zend-harness --test codex
+cargo test -p zend-harness --test it codex::
 cargo test -p zend-ui transcript
 cargo test -p zend-ui attachments
 cd edge && npm test
@@ -52,8 +52,8 @@ These tests stay ignored in normal runs. They require an authenticated Codex
 installation and a model/account provisioned for image generation.
 
 ```sh
-cargo test -p zend-harness --test codex real_image_generation_smoke -- --ignored
-cargo test -p zend-engine --test e2e real_image_generation_profile_smoke -- --ignored
+cargo test -p zend-harness --test it codex::real_image_generation_smoke -- --ignored
+cargo test -p zend-engine --test it e2e::real_image_generation_profile_smoke -- --ignored
 ```
 
 The harness smoke checks that the real provider returns an existing saved file;
