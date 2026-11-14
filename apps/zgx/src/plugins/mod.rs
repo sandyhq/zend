@@ -3218,6 +3218,14 @@ impl Bridge {
         if !settled {
             note.push_str(" It was still changing when pictured (something loading, or moving).");
         }
+        if !asked.state.is_empty() {
+            // (Its own copy of the SDK may predate `state`: then say so.)
+            let dir = self.item(plugin).and_then(|i| i.json["snapshot"].as_str().or_else(|| i.json["dir"].as_str()).map(PathBuf::from));
+            let sdk = dir.and_then(|d| std::fs::read_to_string(d.join("zend.luau")).ok());
+            if let Some(old) = stage::sdk_too_old(&name, sdk.as_deref()) {
+                note.push_str(&old);
+            }
+        }
         let mut out = json!({
             "snapshot": path.display().to_string(),
             "snapshot_page": { "id": asked.page, "width": asked.width, "height": asked.height },

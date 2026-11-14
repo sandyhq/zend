@@ -104,6 +104,15 @@ pub fn unlisted(name: &str, page: &str, pages: &[Json]) -> String {
     }
 }
 
+/// What a picture with `state` adds to its note when the plugin's own copy
+/// of the SDK (`zend.luau`, its folder's, read whole) predates `state`: it
+/// reads no stage, so the page shows what's kept instead. Nothing when the
+/// copy knows the stage, or when there's no copy to tell by.
+pub fn sdk_too_old(name: &str, sdk: Option<&str>) -> Option<String> {
+    let sdk = sdk?;
+    (!sdk.contains(".stage`")).then(|| format!(" {name}'s zend.luau is older than `state`: its page shows what's kept, not the values given. A new plugin (create_plugin) gets today's: copy that zend.luau over this one to picture with `state`."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +155,15 @@ mod tests {
         let pages = [json!({ "id": "value", "title": "Value" }), json!({ "id": "log", "title": "Log" })];
         assert_eq!(unlisted("Value", "other", &pages), "Value has no page \"other\"; its pages: value, log");
         assert!(unlisted("Value", "other", &[]).starts_with("Value has no pages"));
+    }
+
+    #[test]
+    fn a_copy_of_the_sdk_older_than_state_is_named() {
+        let now = include_str!("../../plugins-sdk/zend.luau");
+        assert_eq!(sdk_too_old("Value", Some(now)), None, "today's SDK reads the stage");
+        assert_eq!(sdk_too_old("Value", None), None, "no copy, nothing said");
+        let old = now.replace(".stage`", ".nothing`");
+        let said = sdk_too_old("Value", Some(&old)).unwrap();
+        assert!(said.starts_with(" Value's zend.luau is older than `state`"), "{said}");
     }
 }
