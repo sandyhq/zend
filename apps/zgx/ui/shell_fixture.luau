@@ -1404,6 +1404,28 @@ ui.command {
 		publish()
 	end,
 }
+-- Fix the build has two child sessions (their own sessions, started from it:
+-- `parent`, child_kind "session"): one quiet, one working (tests/
+-- sidebar_children).
+ui.command {
+	id = "child_sessions",
+	title = "Fix the build has two child sessions",
+	run = function()
+		table.insert(model.chats, { id = "c1", title = "Chase the flake", project = "atlas", device = "mac", updated = NOW - 2 * HOUR - 60, created = NOW - HOUR, agent = "claude", parent = "a1", child_kind = "session" })
+		table.insert(model.chats, { id = "c2", title = "Profile the build", project = "atlas", device = "mac", status = "working", updated = NOW - 100, created = NOW - HOUR, agent = "claude", parent = "a1", child_kind = "session" })
+		publish()
+	end,
+}
+-- A child session whose parent is archived (Old experiment): its parent
+-- stands in no list of the sessions.
+ui.command {
+	id = "child_of_archived",
+	title = "A child session of an archived session",
+	run = function()
+		table.insert(model.chats, { id = "c3", title = "Revive the experiment", project = "atlas", device = "mac", updated = NOW - 3 * HOUR, created = NOW - HOUR, agent = "claude", parent = "z1", child_kind = "session" })
+		publish()
+	end,
+}
 -- Atlas crowded: six more sessions under its three, older than them
 -- ("Atlas 1" the newest), so it shows its first five and "Show 4 more".
 ui.command {

@@ -468,6 +468,9 @@
       "section_name": "分区名称",
       "project_actions": "项目操作",
       "show_more": "再显示 {n} 项",
+      "child_of": "子会话，属于 {title}",
+      "fold_children": "折叠子会话",
+      "open_children": "显示子会话",
       "new_section": "新建分区",
       "settings": "设置",
       "view": {
@@ -490,6 +493,7 @@
         "compact": "紧凑",
         "create_section": "创建分区",
         "keep_active": "折叠时显示活跃会话",
+        "nest_children": "嵌套子会话",
         "devices_first": "设备优先",
         "projects_first": "项目优先",
         "empty_projects": "空项目",

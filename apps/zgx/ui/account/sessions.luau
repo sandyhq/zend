@@ -71,6 +71,10 @@ export type Chat = {
 	running_subagents: number?,
 	side_chats: number?,
 	working_side_chats: number?,
+	-- A child session (a chat of its own that another started): the chat that
+	-- started it, and its kind, "session". Both nil on every other chat.
+	parent: string?,
+	child_kind: string?,
 	-- What its agent waits on after its turn (status "waiting").
 	waiting: { WaitingOn }?,
 	-- Put to sleep: until when; or, woken and not looked at since, when it

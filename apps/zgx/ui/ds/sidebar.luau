@@ -90,6 +90,13 @@ export type Session = {
 	-- the top).
 	shelf: string?,
 	rank: number?,
+	-- A child session: the chat that started it (`parent`), its title, and
+	-- whether it stands in the same list as that chat (`parent_here`: the
+	-- same group and device), where it nests under it while `nest_children`
+	-- is on. Not nested, its second line names its parent.
+	parent: string?,
+	parent_title: string?,
+	parent_here: boolean?,
 }
 export type PullRequest = { number: number, state: ("open" | "merged" | "closed" | "draft")?, title: string? }
 -- (`src`: its own artwork, a picture chosen for it or its favicon, in place
@@ -134,6 +141,10 @@ export type Details = {
 	-- sessions in a state (working, asking, done unseen: those whose corner
 	-- shows a glyph), each leaving as it settles. On unless the caller says.
 	keep_active: State<boolean>?,
+	-- A child session listed under its parent, indented, its parent's row
+	-- folding them (the default); off, a row of its own among the sessions,
+	-- naming its parent.
+	nest_children: State<boolean>?,
 }
 -- How grouped sessions are ordered (Zend's Sort): the most recently
 -- updated first, or the most recently made. (Pinned and sections keep the
@@ -671,6 +682,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	local expanded = props.expanded or ui.use_state({} :: { [string]: boolean })
 	-- Whether a folded place still lists its sessions in a state.
 	local keep_active: State<boolean> = details.keep_active or ui.use_state(true)
+	-- Whether a child session nests under its parent, or lists on its own.
+	local nest_children: State<boolean> = details.nest_children or ui.use_state(true)
 	-- The first nine sessions the list shows, by id: their jump (⌘1–⌘9).
 	local slots = ui.use_state({} :: { [string]: number })
 	local function hinting(): boolean
@@ -679,7 +692,32 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	-- Regular's second line: where it runs (what its group doesn't say),
 	-- then its branch, as the view shows them (ds/session_row's rule, the
 	-- panel home's lists' too).
+	local placed_for: Places? = nil
+	local placed_map: { [string]: string } = {}
+	local function nested(s: Session): boolean
+		if s.parent == nil or s.parent_here ~= true or not nest_children:get() or act_now() then
+			return false
+		end
+		-- (Put by hand, in Pinned or a section, either leaves the list it
+		-- would nest in.)
+		local p = places:get()
+		if p ~= placed_for then
+			placed_for, placed_map = p, placed_in(p)
+		end
+		return placed_map[s.id] == nil and placed_map[s.parent :: string] == nil
+	end
+	-- A child session not nested: the line naming its parent.
+	local function parent_line(s: Session): string?
+		if s.parent ~= nil and s.parent_title ~= nil and not nested(s) then
+			return locale.s("ds.sidebar.child_of", { title = s.parent_title })
+		end
+		return nil
+	end
 	local function detail(s: Session, by: Organize): string
+		local named = parent_line(s)
+		if named then
+			return named
+		end
 		local p = project_of(s.id)
 		return SessionRow.detail(if p then p.name else nil, s.device, s.branch, by, details.location:get(), details.branch:get())
 	end
@@ -1133,7 +1171,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	-- trunk ending at it.)
 	-- (In the sidebar's list, `list_now` and `tree_of` follow the row as it
 	-- moves between lists, the row staying itself.)
-	type Place = { wide: boolean?, on_pick: (() -> ())?, list: string?, list_now: (() -> string)?, by_now: (() -> Organize)?, at: (() -> number)?, tree: Tree?, tree_of: (() -> Tree?)? }
+	type Place = { kids: (() -> number)?, kids_open: (() -> boolean)?, on_kids: (() -> ())?, wide: boolean?, on_pick: (() -> ())?, list: string?, list_now: (() -> string)?, by_now: (() -> Organize)?, at: (() -> number)?, tree: Tree?, tree_of: (() -> Tree?)? }
 	-- A row under its group's header (`tree_of`: its tree as it stands;
 	-- nil, out of any): a branch off the group's trunk (ds/session_row).
 	local function on_tree(body: Node, now_tree: () -> Tree?): Node
@@ -1249,7 +1287,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		local second = SessionRow.second_line(function(): string
 			return detail(cur(), by)
 		end, function(): boolean
-			return details.branch:get() and cur().branch ~= nil
+			return details.branch:get() and cur().branch ~= nil and parent_line(cur()) == nil
 		end, second_line, fades)
 		local function strong(): boolean
 			return active(s) or selected:get() == s.id or in_split(s.id)
@@ -1402,6 +1440,19 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					subagents_pill(function(): number
 						return cur().subagents or 0
 					end),
+					-- A parent's child sessions: its fold (open, a press folds
+					-- them away; folded, a press shows them).
+					if place and place.kids
+						then ui.show(function(): boolean
+							return (place.kids :: () -> number)() > 0
+						end, ui.row {
+							shrink = 0,
+							ui.show(place.kids_open :: () -> boolean, corner("ds.sidebar.fold_children", "alt-arrow-down", place.on_kids)),
+							ui.show(function(): boolean
+								return not (place.kids_open :: () -> boolean)()
+							end, corner("ds.sidebar.open_children", "alt-arrow-right", place.on_kids)),
+						})
+						else nil,
 					-- Its state (or time) at rest; under the pointer, archive (on
 					-- the shelf, unarchive); ⌘ held alone, its jump's keys.
 					SessionRow.Corner {
@@ -2387,6 +2438,20 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			folded:set(f)
 		end)
 	end
+	-- How far a nested child session stands in from its parent's trunk.
+	local NEST = 14
+	-- A parent's child sessions: shown or folded (kept in `folded`, by the
+	-- parent's id: open until folded).
+	local function kids_fold(id: string): Fold
+		local key = `kids:{id}`
+		return fold_of(key, function(): boolean
+			return not folded:peek()[key]
+		end, function(on: boolean)
+			local f = table.clone(folded:peek())
+			f[key] = if on then nil else true
+			folded:set(f)
+		end)
+	end
 	-- A group's sessions past its first few: shown ("Show N more") or not.
 	local function more_fold(key: string): Fold
 		return fold_of(`more:{key}`, function(): boolean
@@ -2567,7 +2632,16 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		pkey: string?,
 		-- The empty projects' row: the projects (their tiles stack on it).
 		gs: { Group }?,
+		-- A child session nested under its parent (`nest`: one step in, on
+		-- its own trunk; `nest_through`: the group's trunk runs on past
+		-- it), and a parent's count of them (`kids`: its fold button).
+		nest: boolean?,
+		nest_through: boolean?,
+		kids: number?,
 	}
+	-- The child sessions nested in a list: each one's parent, and how many a
+	-- parent has there.
+	type Nest = { parent_of: { [string]: string }, kids: { [string]: number } }
 	type Shape = { items: { Item }, at: { [string]: number }, counts: { [string]: number } }
 	local function build_shape(by: Organize, act: boolean?): Shape
 		shape:get()
@@ -2599,6 +2673,62 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		local function peeks(s: Session): boolean
 			return keep and s.status ~= nil
 		end
+		-- A list's child sessions nested under their parents: each right
+		-- after its parent (its siblings in the list's order); nil: none.
+		local function nesting(all: { Session }): ({ Session }, Nest?)
+			local by_id: { [string]: Session } = {}
+			for _, s in all do
+				by_id[s.id] = s
+			end
+			local nest: Nest = { parent_of = {}, kids = {} }
+			local under: { [string]: { Session } } = {}
+			for _, s in all do
+				local pid = s.parent
+				-- (One level: a parent that is a child itself nests nothing.)
+				if pid and by_id[pid] and by_id[pid].parent == nil and nested(s) then
+					nest.parent_of[s.id] = pid
+					nest.kids[pid] = (nest.kids[pid] or 0) + 1
+					under[pid] = under[pid] or {}
+					table.insert(under[pid], s)
+				end
+			end
+			if next(nest.parent_of) == nil then
+				return all, nil
+			end
+			local out: { Session } = {}
+			for _, s in all do
+				if not nest.parent_of[s.id] then
+					table.insert(out, s)
+					for _, k in under[s.id] or {} do
+						table.insert(out, k)
+					end
+				end
+			end
+			return out, nest
+		end
+		-- A nested child session's folds: its place's, and its parent's fold
+		-- of them. One in a state (with `keep_active`), or the one open, stays
+		-- listed under a folded parent.
+		local function kids_chain(nest: Nest?, chain_of: (s: Session) -> { Fold }?): (s: Session) -> { Fold }?
+			if not nest then
+				return chain_of
+			end
+			local kids = nest :: Nest
+			return function(sess: Session): { Fold }?
+				local c = chain_of(sess)
+				local pid = kids.parent_of[sess.id]
+				if c == nil or pid == nil or peeks(sess) or sess.id == open_id then
+					return c
+				end
+				local kf = kids_fold(pid)
+				if not kf.present then
+					return nil
+				end
+				local with = table.clone(c)
+				table.insert(with, kf)
+				return with
+			end
+		end
 		-- Each session's folds in a place folding at `f` (inside `outer`): its
 		-- own, kept in the list as `f` folds when it peeks; nil, not in the
 		-- list now (folded away).
@@ -2624,7 +2754,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			place: string,
 			trunk: (() -> number)?,
 			chain_of: ((s: Session) -> { Fold }?)?,
-			tail: boolean?
+			tail: boolean?,
+			nest: Nest?
 		)
 			local sessions: { Session } = {}
 			local chains: { [string]: { Fold } } = {}
@@ -2635,11 +2766,27 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					chains[s.id] = c
 				end
 			end
+			-- Nested child sessions: each follows its parent, on a trunk of its
+			-- own; the group's trunk ends at its last session that isn't one.
+			local at_of: { [string]: number } = {}
+			local last_top, last_kid = 0, {} :: { [string]: number }
+			for i, s in sessions do
+				at_of[s.id] = i
+			end
+			for i, s in sessions do
+				local pid = if nest then nest.parent_of[s.id] else nil
+				if pid and at_of[pid] then
+					last_kid[pid] = i
+				else
+					last_top = i
+				end
+			end
 			local j = 0
 			-- (Its own local: the captured one isn't narrowed in here.)
 			local moving = d
 			for i, s in sessions do
 				local dragged = moving ~= nil and moving.id == s.id
+				local kid: string? = if nest and nest.parent_of[s.id] and at_of[nest.parent_of[s.id]] then nest.parent_of[s.id] else nil
 				if not dragged then
 					j += 1
 					gap_rows(list, j, chain, place)
@@ -2655,7 +2802,10 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					by = row_by,
 					list = list,
 					index = if dragged then j + 1 else j,
-					last = i == #sessions and not tail,
+					last = if kid then last_kid[kid] == i else i == last_top and not tail,
+					nest = kid ~= nil,
+					nest_through = kid ~= nil and (at_of[kid :: string] < last_top or tail == true),
+					kids = if nest then nest.kids[s.id] else nil,
 					trunk = trunk,
 					base = function(): number
 						return session_h(s, row_by) + gap_after
@@ -2984,11 +3134,12 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				-- Its first few, then "Show N more" (the rest folded under it,
 				-- `more_fold`); the session open, and those that peek, showing
 				-- past them wherever they stand.
-				local all = listed(g.sessions)
+				local all, nest = nesting(listed(g.sessions))
 				local within: { [string]: boolean } = {}
 				local past = 0
 				for i, sess in all do
-					if i <= GROUP_FIRST or sess.id == open_id or peeks(sess) then
+					local pid = if nest then nest.parent_of[sess.id] else nil
+					if i <= GROUP_FIRST or sess.id == open_id or peeks(sess) or (pid ~= nil and within[pid :: string]) then
 						within[sess.id] = true
 					else
 						past += 1
@@ -2997,7 +3148,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				local xf = if past > 0 then more_fold(g.key) else nil
 				local paged = past > 0 and open_now
 				local shown = folding(base, f)
-				sessions_rows(g.key, all, by, inside, "regular", trunk, function(sess: Session): { Fold }?
+				sessions_rows(g.key, all, by, inside, "regular", trunk, kids_chain(nest, function(sess: Session): { Fold }?
 					local c = shown(sess)
 					-- (Folded away above it: only those in a state.)
 					if only_peeks and not peeks(sess) then
@@ -3016,7 +3167,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 						return more
 					end
 					return nil
-				end, paged)
+				end), paged, nest)
 				if paged then
 					add({ kind = "pager", key = `more:{g.key}`, place = "regular", chain = inside, g = g, n = past, trunk = trunk, last = true, base = function(): number
 						return SLOT + gap_after
@@ -3025,7 +3176,10 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			end
 			for _, g in gs do
 				if by == "none" then
-					sessions_rows(g.key, listed(g.sessions), by, base, "regular")
+					local all, nest = nesting(listed(g.sessions))
+					sessions_rows(g.key, all, by, base, "regular", nil, kids_chain(nest, function(): { Fold }?
+						return base
+					end), false, nest)
 				else
 					emit_group(g, base, false, nil)
 				end
@@ -4024,6 +4178,15 @@ fn layer(input:LayerInput)->vec4<f32> {
 				return function(): Tree?
 					local cur = item_of(key)
 					local trunk = if cur then cur.trunk else nil
+					-- A nested child session: one step in from its group's trunk (a
+					-- list with none, from the edge), its own trunk under its
+					-- parent's mark.
+					if cur and cur.nest then
+						local outer = trunk
+						trunk = function(): number
+							return (if outer then outer() else -SessionRow.BEND) + NEST
+						end
+					end
 					if not trunk then
 						return nil
 					end
@@ -4038,7 +4201,13 @@ fn layer(input:LayerInput)->vec4<f32> {
 						end,
 						through = function(): { number }
 							local c = item_of(key)
-							return if c and c.through then c.through() else {}
+							local out = if c and c.through then table.clone(c.through()) else {}
+							-- (The group's trunk runs on past a nested row: it
+							-- is the group's, not this row's.)
+							if c and c.nest and c.nest_through and c.trunk then
+								table.insert(out, c.trunk())
+							end
+							return out
 						end,
 					}
 				end
@@ -4077,6 +4246,17 @@ fn layer(input:LayerInput)->vec4<f32> {
 					at = at,
 					-- Its trunk while it sits in a group that draws one.
 					tree_of = tree_at(),
+					-- A parent's child sessions: how many, and their fold.
+					kids = function(): number
+						local now = item_of(key)
+						return if now and now.kids then now.kids else 0
+					end,
+					kids_open = function(): boolean
+						return not folded:get()[`kids:{s.id}`]
+					end,
+					on_kids = function()
+						fold_set(kids_fold(s.id), folded:peek()[`kids:{s.id}`] == true)
+					end,
 				})
 			elseif it.kind == "drop" then
 				node = drop_here(it.text :: string)
@@ -4633,6 +4813,9 @@ fn layer(input:LayerInput)->vec4<f32> {
 	if (details :: any).keep_active then
 		table.insert(SHOW, { key = "keep_active", label = "ds.sidebar.view.keep_active", icon = "bell" })
 	end
+	if (details :: any).nest_children then
+		table.insert(SHOW, { key = "nest_children", label = "ds.sidebar.view.nest_children", icon = "list" })
+	end
 	if (details :: any).project_filter then
 		table.insert(SHOW, { key = "project_filter", label = "ds.sidebar.view.project_filter", icon = "folder" })
 	end
@@ -4892,7 +5075,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 			local show_rows: { Node } = { heading = locale.s("ds.sidebar.view.show") } :: any
 			-- (Activity keeps its own: the Archived shelf always, folded; no
 			-- groups to fold or empty projects to list.)
-			local ACTIVITY_OWNS: { [string]: boolean } = { keep_active = true, empty_projects = true, archived = true }
+			local ACTIVITY_OWNS: { [string]: boolean } = { keep_active = true, nest_children = true, empty_projects = true, archived = true }
 			for _, d in SHOW do
 				local st = (details :: any)[d.key] :: State<boolean>
 				local owned = act and ACTIVITY_OWNS[d.key] == true
