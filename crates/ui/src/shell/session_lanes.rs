@@ -186,7 +186,9 @@ pub(super) fn child_chat_rows(
     let mut rows: Vec<ChildChatRow> = state
         .chats
         .iter()
-        .filter(|chat| !chat.archived && chat.parent_chat_id.as_deref() == Some(chat_id))
+        .filter(|chat| !chat.archived
+                && chat.is_worker_child()
+                && chat.parent_chat_id.as_deref() == Some(chat_id))
         .map(|chat| {
             let activity = chat.last_message_at.unwrap_or(chat.created_at);
             ChildChatRow {
@@ -900,6 +902,23 @@ mod tests {
         assert_eq!(rows[0].title.as_ref(), "New side chat");
         assert_eq!(rows[1].title.as_ref(), "Investigate caching");
         assert_eq!(rows[0].status, ChatIndicator::Idle);
+    }
+
+    #[test]
+    fn a_child_session_is_not_a_side_chat_lane() {
+        let mut state = AppState::new();
+        let mut session = chat("worker", Some("main"), 5);
+        session.child_kind = Some(zend_proto::ChildKind::Session);
+        let mut side = chat("side", Some("main"), 6);
+        side.child_kind = Some(zend_proto::ChildKind::Side);
+        state.apply_chats(vec![chat("main", None, 60), session, side]);
+        let rows = child_chat_rows(&state, "main", Utc::now());
+        assert_eq!(
+            rows.iter().map(|r| r.chat_id.as_str()).collect::<Vec<_>>(),
+            ["side"]
+        );
+        // It is listed among the sessions instead.
+        assert!(state.visible_chats().any(|c| c.id == "worker"));
     }
 
     #[test]

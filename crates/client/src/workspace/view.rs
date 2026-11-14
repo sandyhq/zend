@@ -739,7 +739,7 @@ pub(crate) fn derive(
     let mut child_chats: Vec<&Chat> = state
         .chats
         .iter()
-        .filter(|c| c.parent_chat_id.is_some())
+        .filter(|c| c.is_worker_child())
         .collect();
     sort_recency(&mut child_chats);
     for chat in child_chats {

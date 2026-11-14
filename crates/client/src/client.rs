@@ -261,7 +261,7 @@ impl ClientInner {
         let targets = state
             .chats
             .iter()
-            .filter(|c| !c.archived && c.parent_chat_id.is_none())
+            .filter(|c| !c.archived && c.is_top_level())
             .filter_map(|c| {
                 let source = c.source_context.as_ref()?;
                 let branch = source.branch.trim();
