@@ -1535,3 +1535,91 @@ async fn plugins_storage_and_removed_folders_go_with_the_plugin() {
     sweep_removed(f.plugins.plugins_dir());
     assert_eq!(std::fs::read_dir(&removed).unwrap().count(), 0);
 }
+
+/// A changed version of one of your plugins previews in your window
+/// (`in_window`): the list carries it beside the kept version; an agent may
+/// start and revert it but never keep it; one asking more than you allowed
+/// is refused; Revert leaves the kept folder and what it keeps as they
+/// were; Keep (as of the hash the bar showed) takes both.
+#[tokio::test]
+async fn a_preview_in_your_window_reverts_or_keeps() {
+    use zend_rpc::{Caller, with_caller};
+    let f = fixture();
+    call(&f.plugins, methods::NEW_PLUGIN, serde_json::json!({ "id": "hello", "name": "Hello" })).await.unwrap();
+    let kept_dir = f.plugins.plugins_dir().join("hello");
+    let kept_init = std::fs::read_to_string(kept_dir.join("init.luau")).unwrap();
+    let storage = f.plugins.plugins_dir().join(".storage");
+    std::fs::create_dir_all(&storage).unwrap();
+    std::fs::write(storage.join("hello.json"), r#"{"tab":"kept"}"#).unwrap();
+    let dev = f.data.join("hello-dev");
+    super::staging::copy_tree(&kept_dir, &dev).unwrap();
+    std::fs::write(dev.join("init.luau"), "return 2").unwrap();
+    let agent = || Caller::Agent { chat: Some("chat-9".into()) };
+
+    // Its own folder isn't a preview (it runs as you save it).
+    let own = call(&f.plugins, methods::PLUGIN_PREVIEW, serde_json::json!({ "path": kept_dir, "in_window": true })).await;
+    assert!(own.unwrap_err().contains("runs as you save it"));
+
+    let started = with_caller(
+        agent(),
+        call(&f.plugins, methods::PLUGIN_PREVIEW, serde_json::json!({ "path": dev, "in_window": true })),
+    )
+    .await
+    .unwrap();
+    let listed = item(&f.plugins, "hello").await;
+    assert_eq!(listed["preview"]["hash"], started["hash"], "{listed}");
+    assert_ne!(listed["hash"], started["hash"]);
+    assert_eq!(listed["preview"]["by"]["chat"], "chat-9");
+    let snapshot = PathBuf::from(listed["preview"]["snapshot"].as_str().unwrap());
+    assert_eq!(std::fs::read_to_string(snapshot.join("init.luau")).unwrap(), "return 2");
+    let preview_store = PathBuf::from(listed["preview"]["store"].as_str().unwrap());
+    assert_eq!(std::fs::read_to_string(&preview_store).unwrap(), r#"{"tab":"kept"}"#);
+    let status = call(&f.plugins, methods::PLUGIN_STATUS, serde_json::json!({ "id": "hello" })).await.unwrap();
+    assert_eq!(status["window_preview"]["hash"], started["hash"], "{status}");
+
+    // An agent never keeps it.
+    let hash = started["hash"].as_str().unwrap().to_string();
+    let refused = with_caller(
+        agent(),
+        call(&f.plugins, methods::KEEP_PLUGIN_PREVIEW, serde_json::json!({ "id": "hello", "hash": hash })),
+    )
+    .await;
+    assert!(refused.unwrap_err().contains("bar"));
+
+    // Revert: as it was.
+    std::fs::write(&preview_store, r#"{"tab":"preview"}"#).unwrap();
+    let reverted = with_caller(
+        agent(),
+        call(&f.plugins, methods::PLUGIN_PREVIEW, serde_json::json!({ "id": "hello", "in_window": true, "stop": true })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reverted["stopped"], true);
+    assert!(item(&f.plugins, "hello").await.get("preview").is_none());
+    assert_eq!(std::fs::read_to_string(kept_dir.join("init.luau")).unwrap(), kept_init);
+    assert_eq!(std::fs::read_to_string(storage.join("hello.json")).unwrap(), r#"{"tab":"kept"}"#);
+
+    // Asking for more than you allowed: refused, nothing staged.
+    let greedy = f.data.join("hello-greedy");
+    super::staging::copy_tree(&dev, &greedy).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(greedy.join(MANIFEST_FILE)).unwrap()).unwrap();
+    manifest["permissions"] = serde_json::json!(["clipboard"]);
+    std::fs::write(greedy.join(MANIFEST_FILE), signing::pretty(&manifest)).unwrap();
+    let asked = call(&f.plugins, methods::PLUGIN_PREVIEW, serde_json::json!({ "path": greedy, "in_window": true })).await;
+    assert!(asked.unwrap_err().contains("can't preview in your window"));
+    assert!(item(&f.plugins, "hello").await.get("preview").is_none());
+
+    // Keep, from the bar: as of what it showed.
+    call(&f.plugins, methods::PLUGIN_PREVIEW, serde_json::json!({ "path": dev, "in_window": true })).await.unwrap();
+    std::fs::write(&preview_store, r#"{"tab":"preview"}"#).unwrap();
+    let stale = call(&f.plugins, methods::KEEP_PLUGIN_PREVIEW, serde_json::json!({ "id": "hello", "hash": "old" })).await;
+    assert!(stale.unwrap_err().contains("changed"));
+    call(&f.plugins, methods::KEEP_PLUGIN_PREVIEW, serde_json::json!({ "id": "hello", "hash": hash })).await.unwrap();
+    let after = item(&f.plugins, "hello").await;
+    assert_eq!(after["hash"], serde_json::json!(hash), "{after}");
+    assert_eq!(after["status"], "on");
+    assert!(after.get("preview").is_none());
+    assert_eq!(std::fs::read_to_string(kept_dir.join("init.luau")).unwrap(), "return 2");
+    assert_eq!(std::fs::read_to_string(storage.join("hello.json")).unwrap(), r#"{"tab":"preview"}"#);
+    assert!(!super::window_preview::root(&f.data, "hello").exists());
+}

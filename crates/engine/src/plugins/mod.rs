@@ -38,6 +38,7 @@ pub mod template_packages;
 pub mod templates;
 pub mod themes;
 pub mod uploads;
+pub mod window_preview;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -183,6 +184,7 @@ pub fn handles(method: &str) -> bool {
             | methods::CHECK_PLUGIN
             | methods::PLUGIN_PREVIEW
             | methods::PLUGIN_INPUT
+            | methods::KEEP_PLUGIN_PREVIEW
             | methods::WATCH_THEMES
     ) || lifecycle::handles(method)
         || themes::handles(method)
@@ -1262,6 +1264,25 @@ impl Plugins {
         for entry in entries.iter_mut() {
             lifecycle::annotate(&self.inner.plugins_dir, &mut entry.item);
         }
+        // A changed version in your window instead (`window_preview`): one
+        // of yours that's on, while it asks no more than you allowed.
+        for id in window_preview::all(&self.inner.data_dir) {
+            let Some(entry) = entries
+                .iter_mut()
+                .find(|e| e.item.id == id && e.item.own && !e.item.builtin && e.item.status == Status::On)
+            else {
+                if window_preview::end(&self.inner.data_dir, &id) {
+                    self.inner.logs.push(&id, "engine", "info", "Its preview in your window ended: the plugin isn't on");
+                }
+                continue;
+            };
+            match window_preview::item(&self.inner.data_dir, &id, &state) {
+                Ok(preview) => entry.item.preview = preview,
+                Err(why) => {
+                    self.inner.logs.push(&id, "engine", "info", &format!("Its preview in your window ended ({why}): the kept version runs"));
+                }
+            }
+        }
         entries.sort_by(|a, b| {
             (a.item.name.to_lowercase(), &a.item.id).cmp(&(b.item.name.to_lowercase(), &b.item.id))
         });
@@ -1699,6 +1720,76 @@ impl Plugins {
 
     // ── Methods ─────────────────────────────────────────────────────────────
 
+    /// `PluginPreview` with `in_window`: folder `path` staged as your
+    /// plugin's preview in your window (`window_preview`), or with `stop`
+    /// the preview taken away (Revert: anyone who may preview may revert).
+    async fn preview_in_window(&self, path: Option<String>, id: Option<String>, stop: bool) -> Result<RpcReply, RpcError> {
+        let data_dir = self.inner.data_dir.clone();
+        if stop {
+            let id = match (id, &path) {
+                (Some(id), _) => id,
+                (None, Some(path)) => scan::inspect(Path::new(path), false)
+                    .manifest
+                    .map(|m| m.id)
+                    .ok_or_else(|| failed("That folder has no zend-plugin.json"))?,
+                (None, None) => return Err(RpcError::BadParams("id: the plugin whose preview to revert".into())),
+            };
+            let stopped = {
+                let _guard = self.inner.scan_lock.lock().await;
+                window_preview::end(&data_dir, &id)
+            };
+            if stopped {
+                let by = zend_rpc::caller().record().map(|by| format!(" (asked by {by})")).unwrap_or_default();
+                self.inner.logs.push(&id, "engine", "info", &format!("Its preview in your window was reverted{by}: the kept version runs"));
+            }
+            self.rescan().await;
+            return RpcReply::value(&serde_json::json!({ "id": id, "stopped": stopped, "in_window": true }));
+        }
+        let Some(path) = path.map(PathBuf::from) else {
+            return Err(RpcError::BadParams("path: the folder with the changed version (your plugin itself runs as you save it)".into()));
+        };
+        if !path.is_absolute() {
+            return Err(RpcError::BadParams("path: the plugin folder's absolute path".into()));
+        }
+        let id = scan::inspect(&path, false)
+            .manifest
+            .map(|m| m.id)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| failed("That folder has no zend-plugin.json with an id"))?;
+        self.rescan().await;
+        let by = zend_rpc::caller().record();
+        let staged = {
+            let _guard = self.inner.scan_lock.lock().await;
+            let kept = self.entry(&id).ok_or_else(|| failed(format!("There's no plugin {id} of yours to preview a version of: make it first (create_plugin)")))?;
+            if !kept.item.own || kept.item.builtin {
+                return Err(failed(format!("{} isn't one of yours: only your own plugins preview in your window", kept.item.name)));
+            }
+            if kept.item.status != Status::On {
+                return Err(failed(format!("{} isn't on: turn it on first, or preview it on its own (without in_window)", kept.item.name)));
+            }
+            let same = |a: &Path, b: &Path| a.canonicalize().ok().zip(b.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+            if same(&path, Path::new(&kept.item.dir)) {
+                return Err(failed(format!("That's {} itself: it runs as you save it. Preview a changed copy (another folder)", kept.item.name)));
+            }
+            let state = lock(&self.inner.state).clone();
+            let (plugins_dir, source, data) = (self.inner.plugins_dir.clone(), path.clone(), data_dir.clone());
+            tokio::task::spawn_blocking(move || window_preview::stage(&data, &plugins_dir, &source, &kept, &state, by))
+                .await
+                .map_err(|_| failed("Couldn't stage the preview"))?
+                .map_err(failed)?
+        };
+        self.inner.logs.push(&id, "engine", "info", &format!("A preview from {} runs in your window instead of the kept version, until it's kept or reverted", path.display()));
+        self.rescan().await;
+        RpcReply::value(&serde_json::json!({
+            "id": id,
+            "hash": staged.item.hash,
+            "version": staged.item.version,
+            "source": path,
+            "in_window": true,
+            "bar": "Previewing ".to_string() + &staged.item.name + ": Keep is the person's (on the bar), Revert anyone's",
+        }))
+    }
+
     pub async fn dispatch(
         &self,
         method: &str,
@@ -1712,7 +1803,11 @@ impl Plugins {
         // Asked of a plugin's preview (`PluginPreview`): its engine answers.
         if matches!(method, methods::PLUGIN_STATUS | methods::PLUGIN_LOGS | methods::PLUGIN_INPUT)
             && !staging::is_preview(&self.inner.data_dir)
-            && (method == methods::PLUGIN_INPUT || params.get("preview").and_then(serde_json::Value::as_bool) == Some(true))
+            && match params.get("preview").and_then(serde_json::Value::as_bool) {
+                Some(preview) => preview,
+                // Input goes to the preview unless asked otherwise.
+                None => method == methods::PLUGIN_INPUT,
+            }
         {
             if let Some(object) = params.as_object_mut() {
                 object.remove("preview");
@@ -1739,10 +1834,15 @@ impl Plugins {
                     id: Option<String>,
                     #[serde(default)]
                     stop: bool,
+                    #[serde(default)]
+                    in_window: bool,
                 }
                 let p: PreviewParams = parse_params(params)?;
                 if staging::is_preview(&self.inner.data_dir) {
                     return Err(failed("This is a preview's engine: preview from yours"));
+                }
+                if p.in_window {
+                    return self.preview_in_window(p.path, p.id, p.stop).await;
                 }
                 let data_dir = self.inner.data_dir.clone();
                 // The folder: a path, or your plugin's (by id).
@@ -1789,6 +1889,40 @@ impl Plugins {
                     "started": started,
                     "logs": staging::dir(&data_dir, &running.id),
                 }))
+            }
+            methods::KEEP_PLUGIN_PREVIEW => {
+                #[derive(serde::Deserialize)]
+                struct KeepParams {
+                    id: String,
+                    hash: String,
+                }
+                // The bar's Keep, in this device's window: never an agent's
+                // (it isn't `agent_allowed` either), never another device's.
+                if !zend_rpc::caller().is_local() {
+                    return Err(failed("Only the preview's bar in Zend's window keeps it"));
+                }
+                let p: KeepParams = parse_params(params)?;
+                {
+                    let _guard = self.inner.scan_lock.lock().await;
+                    let entry = self.entry(&p.id).ok_or_else(|| failed(format!("There's no plugin {}", p.id)))?;
+                    if !entry.item.own || entry.item.builtin {
+                        return Err(failed("Only your own plugins preview in your window"));
+                    }
+                    let (data_dir, plugins_dir, id, dir, hash) = (
+                        self.inner.data_dir.clone(),
+                        self.inner.plugins_dir.clone(),
+                        p.id.clone(),
+                        PathBuf::from(&entry.item.dir),
+                        p.hash.clone(),
+                    );
+                    tokio::task::spawn_blocking(move || window_preview::keep(&data_dir, &plugins_dir, &id, &dir, &hash))
+                        .await
+                        .map_err(|_| failed("Couldn't keep it"))?
+                        .map_err(failed)?;
+                }
+                self.inner.logs.push(&p.id, "engine", "info", "Its preview was kept: it's the version you keep now");
+                self.rescan().await;
+                RpcReply::value(&serde_json::json!({ "id": p.id, "kept": true }))
             }
             methods::PLUGIN_INPUT => {
                 // Here only in a preview's engine (yours forwards it, above):
@@ -2480,6 +2614,14 @@ impl Plugins {
                     if let Some(v) = item.get(key).filter(|v| !v.is_null()) {
                         out[key] = v.clone();
                     }
+                }
+                // A changed version in the window instead (`in_window`).
+                if let Some(preview) = &entry.item.preview {
+                    let mut said = serde_json::json!({ "kept_hash": entry.item.hash });
+                    for key in ["hash", "version", "source", "by", "at"] {
+                        said[key] = preview[key].clone();
+                    }
+                    out["window_preview"] = said;
                 }
                 // Its service here: running, what it serves, its last log lines.
                 if entry.item.service.is_some() {

@@ -303,6 +303,13 @@ async fn sync(source: &Path, plugin_dir: &Path, engine_dir: &Path) -> Result<(),
     .map_err(|_| "Couldn't copy the folder".to_string())?
 }
 
+/// `from` copied to `to` as a preview copies a plugin's folder (at most
+/// `COPY_MAX`, not `.git`).
+pub(super) fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    let mut budget = COPY_MAX;
+    copy_dir(from, to, &mut budget)
+}
+
 /// `from` copied to `to`: files and folders, not `.git`, nor what links
 /// out (a link is followed only to a file).
 fn copy_dir(from: &Path, to: &Path, budget: &mut u64) -> Result<(), String> {

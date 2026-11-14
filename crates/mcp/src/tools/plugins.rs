@@ -204,13 +204,14 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: PREVIEW_PLUGIN,
-            description: "Run a Zend plugin folder in a preview, to try a change before it reaches the person's window: a Zend of its own beside theirs, its own engine and a window that never shows on the screen and never takes focus, with a copy of the folder, what the plugin keeps copied from theirs, and allowed what they allowed it (a permission they never allowed stays unallowed). Their plugin, its grants and what it keeps stay as they are, whatever fails in the preview. Called again, the folder is copied in again (edit, then call it, then look). Look and act with plugin_status, plugin_logs and plugin_input, each with preview: true (plugin_input acts only in a preview). `stop` ends it; stop it when you're done.",
+            description: "Run a Zend plugin folder in a preview, to try a change before it reaches the person's window: a Zend of its own beside theirs, its own engine and a window that never shows on the screen and never takes focus, with a copy of the folder, what the plugin keeps copied from theirs, and allowed what they allowed it (a permission they never allowed stays unallowed). Their plugin, its grants and what it keeps stay as they are, whatever fails in the preview. Called again, the folder is copied in again (edit, then call it, then look). Look and act with plugin_status, plugin_logs and plugin_input, each with preview: true (plugin_input acts only in a preview). `stop` ends it; stop it when you're done. With in_window: true instead, `path` (a changed copy of one of the person's own plugins that's on, with the same id) runs in their own window in place of the version they keep, as a preview with a bar: \"Previewing <name>\", Revert and Keep. Keeping is theirs alone, on the bar: you can't keep it for them; ask them to look. If it fails there, the kept version runs again and its log says so. A version that asks for more than they allowed is refused (preview it on its own). Called again, the folder is copied in again; `stop` with in_window reverts it (the kept version, its grants and what it keeps come back as they were).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "The plugin folder's full path." },
                     "id": { "type": "string", "description": "Or an installed plugin's id (from list_plugins): its folder." },
-                    "stop": { "type": "boolean", "description": "End the preview of this plugin." }
+                    "stop": { "type": "boolean", "description": "End the preview of this plugin (with in_window: revert it in the person's window)." },
+                    "in_window": { "type": "boolean", "description": "Run it in the person's own window, as a preview they keep or revert on its bar." }
                 }
             }),
         },
@@ -225,7 +226,8 @@ pub(super) fn catalog() -> Vec<ToolDef> {
                     "at": { "type": "string", "description": "click, hover: a selector." },
                     "x": { "type": "number", "description": "click, hover: points from the node's left (with at), else the window's." },
                     "y": { "type": "number", "description": "click, hover: points from the node's top (with at), else the window's." },
-                    "state": { "type": "object", "description": "set_state: zend.store key → value, e.g. {\"tab\": \"models\"}." }
+                    "state": { "type": "object", "description": "set_state: zend.store key → value, e.g. {\"tab\": \"models\"}." },
+                    "preview": { "type": "boolean", "description": "false: Zend's own window instead, which takes input only when it never shows (a stand-in run offscreen, ZGX_OFFSCREEN), never the window someone works in. Default true." }
                 },
                 "required": ["id", "action"]
             }),
@@ -724,6 +726,8 @@ impl Tools {
             path: Option<String>,
             #[serde(default)]
             stop: bool,
+            #[serde(default)]
+            in_window: bool,
         }
         let args: Args = parse(args)?;
         let given = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
@@ -734,6 +738,9 @@ impl Tools {
         };
         if args.stop {
             params["stop"] = json!(true);
+        }
+        if args.in_window {
+            params["in_window"] = json!(true);
         }
         self.zend.call_rpc(methods::PLUGIN_PREVIEW, params).await.map_err(plain)
     }
@@ -748,6 +755,7 @@ impl Tools {
             x: Option<f64>,
             y: Option<f64>,
             state: Option<serde_json::Map<String, Value>>,
+            preview: Option<bool>,
         }
         let args: Args = parse(args)?;
         let Some(id) = args.id.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) else {
@@ -772,6 +780,9 @@ impl Tools {
         }
         if let Some(state) = args.state {
             params["state"] = Value::Object(state);
+        }
+        if let Some(preview) = args.preview {
+            params["preview"] = json!(preview);
         }
         self.zend.call_rpc(methods::PLUGIN_INPUT, params).await.map_err(plain)
     }

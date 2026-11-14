@@ -54,6 +54,7 @@ pub mod tokens;
 pub mod looks;
 pub mod template_consent;
 pub mod preview;
+pub mod plugin_preview;
 pub mod host_bar;
 pub mod locales;
 pub mod network;
@@ -257,6 +258,13 @@ pub struct Bridge {
     templates_page: Shared,
     /// Plugins that failed, kept out until they change.
     failed_plugins: RefCell<recovery::Failures>,
+    /// The list as the engine sent it: each plugin's preview in this
+    /// window (`preview`) beside the version you keep. `items` is what
+    /// runs (`effective`).
+    raw_items: RefCell<Vec<Item>>,
+    /// Previews in this window that failed: the kept version runs again,
+    /// until the preview changes.
+    failed_previews: RefCell<recovery::Failures>,
     ui: zgx::widgets::WeakUi,
     /// Templates' theme files, read once a change (their previews).
     looks: looks::Cache,
@@ -509,6 +517,8 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         fallbacks: RefCell::default(),
         templates_page: host.shared("templates", Value::record([("state", Value::from("loading"))])),
         failed_plugins: RefCell::default(),
+        raw_items: RefCell::default(),
+        failed_previews: RefCell::default(),
         ui: cx.ui.downgrade(),
         looks: looks::Cache::default(),
         records: RefCell::default(),
@@ -759,6 +769,32 @@ pub fn host_command(id: &str) {
         }
         other => eprintln!("zend-zgx: no host command {other}"),
     }
+}
+
+/// A plugin's preview bar's Revert (`keep` none) or Keep (as of `keep`,
+/// the preview's hash it showed): the engine's `PluginPreview` with
+/// `in_window` and `stop`, or `KeepPluginPreview`. The list follows.
+pub fn plugin_preview_action(id: &str, keep: Option<&str>) {
+    #[cfg(test)]
+    {
+        HOST_COMMANDS_RAN.with(|r| r.borrow_mut().push(format!("plugin-preview:{id}:{}", keep.map_or("revert", |_| "keep"))));
+        return;
+    }
+    #[allow(unreachable_code)]
+    let Some(b) = BRIDGE.with(|b| b.borrow().upgrade()) else { return };
+    let (method, params) = match keep {
+        Some(hash) => ("KeepPluginPreview", json!({ "id": id, "hash": hash })),
+        None => ("PluginPreview", json!({ "id": id, "in_window": true, "stop": true })),
+    };
+    eprintln!("zend-zgx: plugins: {id}'s preview: {} from its bar", if keep.is_some() { "kept" } else { "reverted" });
+    let (me, id) = (Rc::downgrade(&b), id.to_string());
+    b.tasks.spawn(async move {
+        if let Err(why) = call(method, params).await
+            && let Some(b) = me.upgrade()
+        {
+            b.toast(&id, &why);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1245,6 +1281,8 @@ impl Bridge {
         // One removed, or put back from elsewhere under the same id, starts
         // afresh: nothing it left (its queues, what it set, its saved state)
         // reaches what's installed now.
+        *self.raw_items.borrow_mut() = list.clone();
+        let list = self.effective(list);
         let gone = gone(&self.items.borrow(), &list);
         *self.items.borrow_mut() = list;
         for (id, old) in &gone {
@@ -1309,6 +1347,65 @@ impl Bridge {
             self.host.shared("sidebar.filter", Value::Nil).set(Value::Nil);
         }
         forget_state(&self.host, id);
+    }
+
+    /// What runs, from the list as the engine sent it: a plugin with a
+    /// preview in this window runs the preview (its snapshot, hash, entry,
+    /// what it asks), marked `previewing`, unless that failed here; what it
+    /// keeps is the preview's own copy meanwhile (`store::previewing`). The
+    /// bar hears which preview (`plugin_preview`).
+    fn effective(&self, raw: Vec<Item>) -> Vec<Item> {
+        const TAKEN: [&str; 9] = ["snapshot", "hash", "name", "version", "entry", "ui", "permissions", "network_hosts", "tools"];
+        let mut shown = Vec::new();
+        let mut moved = Vec::new();
+        let out: Vec<Item> = raw
+            .into_iter()
+            .map(|item| {
+                let id = item.id().to_string();
+                let preview = &item.json["preview"];
+                let hash = preview["hash"].as_str().filter(|_| preview["snapshot"].is_string()).map(str::to_string);
+                let Some(hash) = hash else {
+                    if store::previewing(&id, false) {
+                        moved.push(id);
+                    }
+                    return item;
+                };
+                let failed = {
+                    let mut f = self.failed_previews.borrow_mut();
+                    f.holds(&id, &hash).then(|| f.why(&id).unwrap_or_default().to_string())
+                };
+                let name = preview["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(item.name()).to_string();
+                shown.push(plugin_preview::Shown { id: id.clone(), name, hash, failed: failed.clone() });
+                if failed.is_some() {
+                    if store::previewing(&id, false) {
+                        moved.push(id);
+                    }
+                    return item;
+                }
+                let mut json = item.json.clone();
+                for key in TAKEN {
+                    if !preview[key].is_null() {
+                        json[key] = preview[key].clone();
+                    }
+                }
+                json["previewing"] = json!(true);
+                json["kept_hash"] = item.json["hash"].clone();
+                if store::previewing(&id, true) {
+                    moved.push(id);
+                }
+                Item { json }
+            })
+            .collect();
+        plugin_preview::set(shown);
+        // What it keeps, from where it keeps it now.
+        for id in moved {
+            let mut stores = self.stores.borrow_mut();
+            if let Some((shared, held)) = stores.get_mut(&id) {
+                *held = store::load(&id);
+                shared.set(json_value(&Json::Object(held.clone())));
+            }
+        }
+        out
     }
 
     /// What zgx should load, from the list and your templates: set and
@@ -1448,6 +1545,21 @@ impl Bridge {
     /// new version or an edit of it arrives.
     pub(crate) fn plugin_failed(&self, id: &str, error: &str) {
         let Some(item) = self.item(id) else { return };
+        // A preview in the window: withdrawn, the version you keep runs
+        // again (its bar says it failed, Revert alone).
+        if item.json["previewing"] == true {
+            if !self.failed_previews.borrow_mut().fail(id, item.hash(), &recovery::reason(error)) {
+                return;
+            }
+            let why = self.failed_previews.borrow().why(id).unwrap_or_default().to_string();
+            eprintln!("zend-zgx: plugin {id}'s preview failed, the kept version runs: {why}");
+            plugin_log::info(id, &format!("Its preview failed in the window ({why}): the version you keep runs again. Fix it and preview again, or revert."));
+            let raw = self.raw_items.borrow().clone();
+            let list = self.effective(raw);
+            *self.items.borrow_mut() = list;
+            self.apply();
+            return;
+        }
         if !self.failed_plugins.borrow_mut().fail(id, item.hash(), &recovery::reason(error)) {
             return;
         }
@@ -2823,6 +2935,15 @@ impl Bridge {
         let page = value_json(&self.page.signal().with_untracked(Value::clone));
         let row = page["list"].as_array().into_iter().flatten().find(|i| i["id"] == plugin).cloned().unwrap_or(Json::Null);
         let mut out = json!({ "on_in_window": on });
+        // A preview in this window instead of the kept version.
+        if let Some(p) = plugin_preview::current().into_iter().find(|p| p.id == plugin) {
+            out["window_preview"] = json!({
+                "running": p.failed.is_none(),
+                "hash": p.hash,
+                "failed": p.failed,
+                "bar": format!("#{}", plugin_preview::bar_id(plugin)),
+            });
+        }
         for key in ["failed", "problem", "hidden"] {
             if !row[key].is_null() {
                 out[key] = row[key].clone();
@@ -3003,7 +3124,14 @@ impl Bridge {
             return Err("The window isn't laid out".into());
         }
         let scale = image.width() as f32 / bounds.width;
-        let found = surfaces::regions(placements);
+        let mut found = surfaces::regions(placements);
+        // Its preview's bar too, while it previews here.
+        if plugin_preview::current().iter().any(|p| p.id == plugin)
+            && let Some(view) = self.view.borrow().clone()
+            && let Ok((_, bar)) = zgx_script::driver::reach(&ui, &view, &format!("#{}", plugin_preview::bar_id(plugin)))
+        {
+            found.push(surfaces::Region { x: bar.x, y: bar.y, w: bar.width, h: bar.height });
+        }
         let around = surfaces::around(&found, 24., bounds.width, bounds.height);
         // In a preview (it never shows), the whole window when none of it
         // does: where to click to bring it up. Never of the window someone

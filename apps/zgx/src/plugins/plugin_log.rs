@@ -42,6 +42,11 @@ pub(crate) fn print(id: &str, line: &str) {
     push(id, "print", line);
 }
 
+/// A note on plugin `id` from the window itself (its preview withdrawn).
+pub(crate) fn info(id: &str, line: &str) {
+    push(id, "info", line);
+}
+
 /// Plugin `id` failed: `error`, its traceback with it.
 pub(crate) fn error(id: &str, error: &str) {
     push(id, "error", error);

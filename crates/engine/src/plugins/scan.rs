@@ -188,6 +188,11 @@ pub struct PluginItem {
     /// (`capability::Diff`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest_diff: Option<serde_json::Value>,
+    /// A changed version of it running in your window instead, until you
+    /// keep it or revert (`window_preview`): its snapshot and what the
+    /// window needs to load it, with who asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
 }
 
 /// The SVG a manifest names as its icon (`"icon": "icon.svg"`), read
@@ -297,6 +302,7 @@ pub fn entry(inspected: Inspected, author: Author, state: &State) -> Entry {
         icon_svg: manifest.and_then(|m| icon_svg(&inspected.dir, &m.raw)),
         digest: capability::digest(&record),
         digest_diff: verdict.diff.clone(),
+        preview: None,
     };
     Entry {
         item,

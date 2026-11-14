@@ -237,7 +237,7 @@ pub async fn run(
             );
             println!("Share that file: anyone installs it from the file or a link to it.");
         }
-        PluginCommand::Preview { target, stop } => {
+        PluginCommand::Preview { target, stop, in_window } => {
             let path = std::path::Path::new(&target);
             let mut params = if target.contains('/') || path.is_dir() && !looks_like_id(&target) {
                 let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -245,11 +245,20 @@ pub async fn run(
             } else {
                 json!({ "id": target })
             };
+            if in_window {
+                params["in_window"] = json!(true);
+            }
             if stop {
                 params["stop"] = json!(true);
                 let reply = call(methods::PLUGIN_PREVIEW, params).await?;
                 let id = str_of(&reply, "id");
-                if reply["stopped"] == true {
+                if in_window {
+                    if reply["stopped"] == true {
+                        println!("Reverted the preview of {id}: the version you keep runs again.");
+                    } else {
+                        println!("No preview of {id} ran in your window.");
+                    }
+                } else if reply["stopped"] == true {
                     println!("Stopped the preview of {id}.");
                 } else {
                     println!("No preview of {id} ran.");
@@ -258,6 +267,11 @@ pub async fn run(
             }
             let reply = call(methods::PLUGIN_PREVIEW, params).await?;
             let id = str_of(&reply, "id");
+            if in_window {
+                println!("Previewing {id} {} from {} in your window, instead of the version you keep.", str_of(&reply, "version"), str_of(&reply, "source"));
+                println!("Keep or Revert it on its bar in Zend. Revert from here: `zend plugin preview {id} --in-window --stop`.");
+                return Ok(());
+            }
             if reply["started"] == true {
                 println!("Previewing {id} from {} (its own engine on port {}, a window that never shows).", str_of(&reply, "source"), reply["port"]);
             } else {

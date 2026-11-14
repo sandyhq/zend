@@ -1,7 +1,13 @@
 //! Each plugin's storage (`zend.store`): what it keeps between runs, for
 //! it alone, in `<data>/plugins/.storage/<id>.json` (removing the plugin
 //! removes it, the engine's `RemovePlugin`). At most [`MAX_BYTES`] a plugin.
+//! While a preview of it runs in the window (`plugin_preview`), what it
+//! keeps is the preview's own copy, `<data>/plugin-preview/<id>/window/
+//! storage/<id>.json` (the engine's `window_preview`): reverting leaves
+//! yours as it was, keeping it takes the copy's.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde_json::{Map, Value as Json};
@@ -9,9 +15,24 @@ use serde_json::{Map, Value as Json};
 /// A plugin's storage at most, as written.
 pub const MAX_BYTES: usize = 1024 * 1024;
 
+thread_local! {
+    /// The plugins whose preview runs in the window now.
+    static PREVIEWING: RefCell<HashSet<String>> = RefCell::default();
+}
+
+/// Whether plugin `id`'s preview runs in the window (`on`): its storage the
+/// preview's while it does. Whether that changed.
+pub fn previewing(id: &str, on: bool) -> bool {
+    PREVIEWING.with(|p| if on { p.borrow_mut().insert(id.to_string()) } else { p.borrow_mut().remove(id) })
+}
+
 fn path(id: &str) -> Option<PathBuf> {
     let safe = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    safe.then(crate::engine::data_dir)?.map(|d| d.join("plugins").join(".storage").join(format!("{id}.json")))
+    let data = safe.then(crate::engine::data_dir)??;
+    if PREVIEWING.with(|p| p.borrow().contains(id)) {
+        return Some(data.join("plugin-preview").join(id).join("window").join("storage").join(format!("{id}.json")));
+    }
+    Some(data.join("plugins").join(".storage").join(format!("{id}.json")))
 }
 
 /// What plugin `id` keeps (nothing, if it kept nothing or it can't be read).

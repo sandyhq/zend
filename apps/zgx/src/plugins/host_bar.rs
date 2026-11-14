@@ -6,6 +6,10 @@
 //!   keep sheet) and Revert (the default interface, in safe mode). It stays
 //!   while the preview lasts; its minimise button folds it to a pill that
 //!   opens it again;
+//! - while one of your plugins runs a preview here (`plugin_preview`), a
+//!   toast of its own, as the template's: "Previewing <name>", a line,
+//!   Revert and Keep. One that failed says so (the kept version runs
+//!   again), with Revert alone;
 //! - notices, toasts that go by themselves (`notice`): the template
 //!   changed without you choosing it here (an agent's `use_template`, an
 //!   update, a file written by hand), the account's signing keys (one added
@@ -48,7 +52,7 @@ use zgx::svg::SvgData;
 use zgx::text_layout::FontFamily;
 use zgx_desktop::WindowContext;
 
-use super::preview;
+use super::{plugin_preview, preview};
 
 /// How a toast reads: plain, or one to look at (amber).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,6 +316,8 @@ const PILL_H: f32 = 28.;
 
 const PREVIEW_LINE: &str = "A preview runs this template's code. Only preview templates you trust.";
 const PREVIEW_LINE_ZH: &str = "预览会运行这个模板的代码。只预览你信任的模板。";
+/// A plugin's preview's line: what runs, and what Revert gives back.
+const PLUGIN_PREVIEW_LINE: &str = "A changed version runs here instead of the one you keep. Revert brings back yours and what it keeps.";
 
 const INFO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" d="M12 17v-6"/><path stroke-linecap="round" d="M12 7.5h.01"/></g></svg>"#;
 const WARNING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none"><path stroke="currentColor" stroke-width="1.5" d="M5.312 10.762C8.23 5.587 9.689 3 12 3s3.77 2.587 6.688 7.762l.364.644c2.425 4.3 3.638 6.45 2.542 8.022S17.786 21 12.364 21h-.728c-5.422 0-8.134 0-9.23-1.572s.117-3.722 2.542-8.022z"/><path stroke="currentColor" stroke-linecap="round" stroke-width="1.5" d="M12 8v5"/><circle cx="12" cy="16" r="1" fill="currentColor"/></g></svg>"#;
@@ -459,6 +465,13 @@ fn toasts(runtime: &zgx::reactive::Runtime, locale: zgx::reactive::Signal<zgx_sc
             now.set(p.cloned());
         });
     }
+    let plugins_previewing = runtime.signal(plugin_preview::current());
+    {
+        let previewing = plugins_previewing.clone();
+        plugin_preview::on_change(move |list| {
+            previewing.set(list.to_vec());
+        });
+    }
     let notices = runtime.signal(Vec::<Shown>::new());
     NOTICES.with(|n| *n.borrow_mut() = Some(notices.clone()));
     if let Some(reason) = preview::take_safe_at_launch() {
@@ -471,9 +484,9 @@ fn toasts(runtime: &zgx::reactive::Runtime, locale: zgx::reactive::Signal<zgx_sc
     let stack = switch(
         move || {
             themes.current();
-            (now.get(), heard.get(), folded.get(), themes.kind().is_dark(), matches!(locale.get(), zgx_script::Value::Str(l) if l.starts_with("zh")))
+            (now.get(), heard.get(), folded.get(), themes.kind().is_dark(), matches!(locale.get(), zgx_script::Value::Str(l) if l.starts_with("zh")), plugins_previewing.get())
         },
-        move |(preview, list, mini, dark, chinese), _| {
+        move |(preview, list, mini, dark, chinese, plugins), _| {
             CHINESE.with(|c| c.set(chinese));
             let ink = if dark { DARK } else { LIGHT };
             let mut out = column().items_end().gap(GAP);
@@ -494,6 +507,29 @@ fn toasts(runtime: &zgx::reactive::Runtime, locale: zgx::reactive::Signal<zgx_sc
                     .into_iter()
                     .collect();
                 out = out.child(card(&format!("host-notice-{id}"), &n.title, &n.body, n.tone, ink, close, actions));
+            }
+            for p in plugins {
+                let (id, hash) = (p.id.clone(), p.hash.clone());
+                let revert = action("Revert", ink, {
+                    let id = id.clone();
+                    move || super::plugin_preview_action(&id, None)
+                });
+                let (title, body, tone, actions) = match &p.failed {
+                    None => (
+                        format!("Previewing {}", p.name),
+                        PLUGIN_PREVIEW_LINE.to_string(),
+                        Tone::Neutral,
+                        vec![revert, action("Keep", ink, move || super::plugin_preview_action(&id, Some(&hash)))],
+                    ),
+                    Some(why) => (
+                        format!("{}'s preview failed", p.name),
+                        format!("{why}{} The version you keep runs again.", if why.ends_with(['.', '!', '?']) { "" } else { "." }),
+                        Tone::Warning,
+                        vec![revert],
+                    ),
+                };
+                // (No corner button: it lasts until kept or reverted.)
+                out = out.child(card(&plugin_preview::bar_id(&p.id), &title, &body, tone, ink, column().size(22., 22.).shrink_0(), actions));
             }
             if let Some(p) = preview {
                 let title = format!("Previewing {}", p.name);
@@ -999,5 +1035,45 @@ return ui.column {
         assert!(app.find("#host-preview-pill").is_some(), "the host's minimise took its click too");
         preview::set(None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One of your plugins previewing in the window: a toast of its own,
+    /// "Previewing <name>", its line, Revert then Keep (Keep as of the
+    /// preview's hash); failed, it says so and offers Revert alone; gone
+    /// with the preview.
+    #[test]
+    fn a_plugins_preview_shows_a_bar_with_revert_and_keep() {
+        preview::set(None);
+        plugin_preview::set(Vec::new());
+        let mut app = mount();
+        app.ui.scene.borrow_mut().resize(1240., 820.);
+        app.frames(4);
+        assert!(app.find("#host-plugin-preview-value").is_none(), "no preview, no bar");
+        let shown = plugin_preview::Shown { id: "value".into(), name: "Value".into(), hash: "abc".into(), failed: None };
+        plugin_preview::set(vec![shown.clone()]);
+        app.frames(6);
+        let card = bounds(&mut app, "#host-plugin-preview-value");
+        assert_eq!((card.x + card.width, card.width), (1240. - OFF_CORNER, WIDTH), "{card:?}");
+        let texts = app.texts().join("|");
+        assert!(texts.contains("Previewing Value") && texts.contains(PLUGIN_PREVIEW_LINE), "{texts}");
+        let revert = bounds(&mut app, "#host-plugin-preview-value >> role:button \"Revert\"");
+        let keep = bounds(&mut app, "#host-plugin-preview-value >> role:button \"Keep\"");
+        assert!(revert.x < keep.x && (revert.y - keep.y).abs() < 0.5, "Revert then Keep: {revert:?} {keep:?}");
+        super::super::HOST_COMMANDS_RAN.with(|r| r.borrow_mut().clear());
+        app.click("#host-plugin-preview-value >> role:button \"Keep\"");
+        app.click("#host-plugin-preview-value >> role:button \"Revert\"");
+        app.frames(4);
+        let ran = super::super::HOST_COMMANDS_RAN.with(|r| r.borrow().clone());
+        assert_eq!(ran, vec!["plugin-preview:value:keep".to_owned(), "plugin-preview:value:revert".to_owned()]);
+
+        plugin_preview::set(vec![plugin_preview::Shown { failed: Some("value:137: thrown".into()), ..shown }]);
+        app.frames(6);
+        let texts = app.texts().join("|");
+        assert!(texts.contains("Value's preview failed") && texts.contains("value:137: thrown. The version you keep runs again."), "{texts}");
+        assert!(app.find("#host-plugin-preview-value >> role:button \"Revert\"").is_some());
+        assert!(app.find("#host-plugin-preview-value >> role:button \"Keep\"").is_none(), "a failed preview isn't kept");
+        plugin_preview::set(Vec::new());
+        app.frames(6);
+        assert!(app.find("#host-plugin-preview-value").is_none(), "gone with the preview");
     }
 }

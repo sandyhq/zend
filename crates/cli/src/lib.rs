@@ -189,13 +189,18 @@ pub enum PluginCommand {
     /// folder, what it keeps copied, allowed what you allowed it. Agents
     /// try a change there (MCP `plugin_input`, `plugin_status` with
     /// `preview`); yours stays as it is, whatever fails there. Run it
-    /// again to copy the folder in again.
+    /// again to copy the folder in again. With --in-window, a changed copy
+    /// of one of your plugins runs in your own window instead of the one
+    /// you keep, with a bar to Keep or Revert it.
     Preview {
         /// A plugin folder's path, or an id in the plugins folder.
         target: String,
-        /// End the preview.
+        /// End the preview (with --in-window: revert it).
         #[arg(long)]
         stop: bool,
+        /// In your own window, as a preview you keep or revert on its bar.
+        #[arg(long)]
+        in_window: bool,
     },
 }
 

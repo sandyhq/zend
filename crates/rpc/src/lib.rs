@@ -659,16 +659,27 @@ pub mod methods {
     /// folder, what it keeps copied, allowed what you allowed it. Asked
     /// again, the folder is copied in again; `stop` ends it. Yours stays
     /// as it is. `PluginStatus`, `PluginLogs` and `PluginInput` with
-    /// `preview: true` ask the preview. This device's alone.
+    /// `preview: true` ask the preview. With `in_window: true` (`{path,
+    /// in_window}` → `{id, hash, source, in_window}`), folder `path`, a
+    /// changed version of one of your plugins that's on, runs in your own
+    /// window instead of the version you keep, with a bar to Keep or
+    /// Revert it (`KeepPluginPreview` is the bar's alone); `{id, in_window,
+    /// stop}` reverts it. This device's alone.
     pub const PLUGIN_PREVIEW: &str = "PluginPreview";
     /// `{id, action: "click" | "hover" | "set_state", at?, x?, y?, state?}`
     /// → `{id, action, done, ...}`: input in plugin `id`'s preview window
-    /// (`PluginPreview`), never in yours: click or hover what selector
+    /// (`PluginPreview`; with `preview: false`, this engine's own window,
+    /// which takes it only when it runs offscreen), never in yours: click or hover what selector
     /// `at` finds (as `zend.place` and `DescribeElements` name it; `x`,
     /// `y` a point inside it, else its middle, or alone a point in the
     /// window), or set what it keeps (`state`: key → value, as
     /// `zend.store`). This device's alone.
     pub const PLUGIN_INPUT: &str = "PluginInput";
+    /// `{id, hash}` → `{id, kept}`: plugin `id`'s preview in the window
+    /// (`PluginPreview` with `in_window`) kept, as of `hash` (what its bar
+    /// showed): its copy over your plugin's folder, what it kept over what
+    /// yours kept. The window's alone (its bar's Keep): never an agent's.
+    pub const KEEP_PLUGIN_PREVIEW: &str = "KeepPluginPreview";
     /// `{dir}` → the list: the app's folder of Zend's own plugins, scanned
     /// with yours (allowed what they ask, on unless turned off, never
     /// removed).
@@ -729,6 +740,7 @@ pub fn local_only(method: &str) -> bool {
             | methods::CHECK_PLUGIN
             | methods::PLUGIN_PREVIEW
             | methods::PLUGIN_INPUT
+            | methods::KEEP_PLUGIN_PREVIEW
             | methods::LIST_PLUGIN_TOOLS
             | methods::WATCH_PLUGIN_TOOLS
             | methods::CALL_PLUGIN_TOOL
@@ -1098,6 +1110,8 @@ mod tests {
         ] {
             assert!(local_only(method), "{method}");
         }
+        // Keeping a plugin's preview in the window: its bar's, never an agent's.
+        assert!(local_only(methods::KEEP_PLUGIN_PREVIEW) && !agent_allowed(methods::KEEP_PLUGIN_PREVIEW));
         assert!(!local_only(methods::PLUGIN_DELIVER));
         assert!(!local_only(methods::SERVE_PLUGIN_CALL));
         assert!(local_only(methods::PLUGIN_AGENTS));
