@@ -387,8 +387,9 @@ local function service(id: string): any
 	end
 
 	-- A new chat, sent its first message ("messages.send"): a promise of
-	-- { status, chat, id }, `chat` the new chat's id.
-	function M.new_chat(s: { prompt: string, device: string?, project: string?, harness: string?, model: string?, effort: string?, cwd: string? }): any
+	-- { status, chat, id }, `chat` the new chat's id. `parent` and `kind`
+	-- ("session", "subagent" or "side") make it a top-level chat's child.
+	function M.new_chat(s: { prompt: string, device: string?, project: string?, harness: string?, model: string?, effort: string?, cwd: string?, parent: string?, kind: string?, title: string? }): any
 		return agents("new_chat", s)
 	end
 

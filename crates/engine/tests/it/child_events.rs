@@ -338,6 +338,64 @@ async fn a_child_session_tells_its_parent_by_default() {
     rig.core.shutdown().await;
 }
 
+/// A plugin allowed "messages.send" here, and no more.
+struct Allowed;
+
+impl zend_engine::plugins::agents::Sink for Allowed {
+    fn grants(&self, _plugin: &str) -> Option<zend_engine::plugins::agents::Grant> {
+        Some(zend_engine::plugins::agents::Grant { name: "Automation".into(), allowed: vec!["messages.send".into()] })
+    }
+    fn to_window(&self, _: &str, _: &str, _: &str, _: serde_json::Value) {}
+    fn to_service(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+    ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A plugin's `zend.new_chat { parent, kind = "session", title }` makes a
+/// child session as the Zend MCP's create_chat does: linked on its row,
+/// titled, and its settled turn told to its parent. A parent that is itself a
+/// child, or none, is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_child_session_is_linked_and_tells_its_parent() {
+    let rig = Rig::new().await;
+    let agents = rig.core.plugins.agents();
+    agents.set_sink(Arc::new(Allowed));
+    let new_chat = |extra: serde_json::Value| {
+        let mut args = serde_json::json!({
+            "op": "new_chat", "prompt": "worker work", "device": rig.core.device_id, "cwd": "/tmp/worker",
+        });
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        agents.call("automation", args)
+    };
+    let made = new_chat(serde_json::json!({ "parent": "parent", "kind": "session", "title": "Worker" }))
+        .await
+        .expect("a child session");
+    let id = made["chat"].as_str().unwrap().to_owned();
+    let row = rig.core.workspace.read_chats().unwrap().into_iter().find(|c| c.id == id).expect("its row");
+    assert_eq!(row.parent_chat_id.as_deref(), Some("parent"));
+    assert_eq!(row.child_kind, Some(zend_proto::ChildKind::Session));
+    assert_eq!(row.title.as_deref(), Some("Worker"));
+    rig.until("the child session's event", |r| !r.events().is_empty()).await;
+    let event = &rig.events()[0];
+    assert!(event.contains(&format!("chat Worker ({}) completed.", &id[..8])), "{event}");
+    assert!(event.ends_with(&format!("read_chat {id}.]")), "{event}");
+    for (extra, why) in [
+        (serde_json::json!({ "parent": id, "kind": "session" }), "itself a child chat"),
+        (serde_json::json!({ "parent": "nobody", "kind": "session" }), "There's no chat nobody"),
+        (serde_json::json!({ "parent": "parent", "kind": "orphan" }), "isn't a kind"),
+    ] {
+        let refused = new_chat(extra.clone()).await.unwrap_err();
+        assert!(refused.message.contains(why), "{extra}: {refused:?}");
+    }
+    rig.core.shutdown().await;
+}
+
 /// A child that asks tells its parent the question and the request to answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_child_awaiting_input_tells_its_parent_the_question() {

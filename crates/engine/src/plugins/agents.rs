@@ -260,6 +260,10 @@ pub struct NewChat {
     pub project: Option<String>,
     pub config: ChatConfig,
     pub cwd: Option<String>,
+    /// The chat it's a child of (`parentChatId`), with what it is to it
+    /// (`childKind`), as the Zend MCP's create_chat records them.
+    pub parent: Option<(String, zend_proto::ChildKind)>,
+    pub title: Option<String>,
 }
 
 /// What a plugin was allowed on this device, while it's on.
@@ -1152,8 +1156,10 @@ impl Agents {
     }
 
     /// `zend.new_chat { prompt, device?, project?, harness?, model?, effort?,
-    /// cwd? }`: a chat made as the composer makes one, and its first
-    /// message. Its id.
+    /// cwd?, parent?, kind?, title? }`: a chat made as the composer makes
+    /// one, and its first message. Its id. With `parent`, a child of that
+    /// top-level chat: `kind` "session" (a child session), "subagent" (the
+    /// default, as the Zend MCP's) or "side".
     async fn new_chat(&self, by: &By, args: &Json) -> Result<Json, Refused> {
         let prompt = args.get("prompt").and_then(Json::as_str).unwrap_or_default().trim().to_owned();
         if prompt.is_empty() {
@@ -1183,6 +1189,31 @@ impl Agents {
             (None, None)
         };
         let text = |key: &str| args.get(key).and_then(Json::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
+        let parent = match (text("parent"), text("kind")) {
+            (None, None) => None,
+            (None, Some(_)) => return Err(Refused::new(reason::BAD_CALL, "A kind of child needs its parent (parent)")),
+            (Some(parent), kind) => {
+                let kind = match kind.as_deref() {
+                    None => zend_proto::ChildKind::Subagent,
+                    Some(k) => zend_proto::ChildKind::parse(k).ok_or_else(|| {
+                        Refused::new(reason::BAD_CALL, format!("\"{k}\" isn't a kind: \"session\", \"subagent\" or \"side\""))
+                    })?,
+                };
+                let found = host
+                    .chats()
+                    .into_iter()
+                    .find(|c| c.id == parent && !zend_proto::voice::is_orchestrator_chat(&c.id))
+                    .ok_or_else(|| Refused::new(reason::NOT_FOUND, format!("There's no chat {parent}")))?;
+                // One level deep, as the Zend MCP's delegation.
+                if found.parent_chat_id.is_some() {
+                    return Err(Refused::new(
+                        reason::BAD_CALL,
+                        format!("{parent} is itself a child chat: only top-level chats have children"),
+                    ));
+                }
+                Some((parent, kind))
+            }
+        };
         let new = NewChat {
             chat_id: crate::new_id(),
             device: text("device"),
@@ -1197,6 +1228,8 @@ impl Agents {
                 plan: false,
             },
             cwd: text("cwd"),
+            parent,
+            title: text("title").map(|t| t.trim().to_owned()),
         };
         self.loop_guard(by)?;
         host.create_chat(&new).map_err(|why| Refused::new(reason::FAILED, why))?;

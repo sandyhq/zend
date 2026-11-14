@@ -151,10 +151,14 @@ impl AgentHost for EngineAgentHost {
                 None,
                 Some(new.config.clone()),
                 new.cwd.clone(),
-                None,
-                None,
+                new.parent.as_ref().map(|(parent, _)| parent.clone()),
+                new.parent.as_ref().map(|(_, kind)| *kind),
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if let Some(title) = &new.title {
+            self.workspace.rename_chat(&new.chat_id, title).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn pending_input(&self, chat: &str) -> Result<Option<String>, String> {

@@ -42,7 +42,7 @@ Your own plugins are signed as yours, and re-signed and reloaded each time you s
 | `ui.add` | place nodes before or after Zend's elements (`zend.place`), add menu items |
 | `ui.change` | replace the elements listed in `ui.change` |
 | `ui.replace` | replace the screens listed in `ui.replace` |
-| `sessions.read` | read sessions' title, status, project, device, times, branch, worktree |
+| `sessions.read` | read sessions' title, status, project, device, times, branch, worktree, and a child session's parent |
 | `messages.read` | read the open chat's messages (role, text) |
 | `profile.read` | read your id, name, username, avatar |
 | `account.email` | read your email (unless you hide email addresses) |
@@ -186,7 +186,7 @@ Records hold only what you were allowed. A field you weren't allowed is absent, 
 
 | name | value |
 |---|---|
-| `session` | `{ id }` + `title, status, project, device, updated, created, branch, worktree` with `sessions.read` |
+| `session` | `{ id }` + `title, status, project, device, updated, created, branch, worktree` with `sessions.read`; a child session also has `parent` (the id of the chat that started it) and `child_kind` (`"session"`), absent on any other |
 | `message` | `{ id }` + `role, text` with `messages.read` |
 | `project` | `{ id }` + `name, device, icon` (`{ emoji?, image?, hue? }`, as its people chose it) with `sessions.read` |
 | `profile` | `{}` + `id, name, username, avatar` with `profile.read`, `email` with `account.email` |
@@ -490,14 +490,15 @@ With `messages.send`, a plugin talks to your agents as you do: it sends a chat a
 | call | what | needs |
 |---|---|---|
 | `zend.send_message { chat, text, attachments?, mode? }` | a message into `chat`: a turn of its own when nothing runs; while a turn runs, queued for its end (`mode = "queue"`, the default) or steering it (`"steer"`). A promise of `{ status = "sent", chat, delivery = "run" \| "queue" \| "steer", id }` | `messages.send`; `attachments` (files' paths on the chat's device) also `files.read` |
-| `zend.new_chat { prompt, device?, project?, harness?, model?, effort?, cwd? }` | a new chat, sent `prompt` as its first message: on `device` or in `project` (a project's id), with `harness` (else this device's default) and `model` and `effort` from its catalog. A promise of `{ status, chat, id }`: `chat` is the new chat's id | `messages.send` |
+| `zend.new_chat { prompt, device?, project?, harness?, model?, effort?, cwd?, parent?, kind?, title? }` | a new chat, sent `prompt` as its first message: on `device` or in `project` (a project's id), with `harness` (else this device's default) and `model` and `effort` from its catalog, named `title`. With `parent` (a top-level chat's id), it's that chat's child, as an agent's `create_chat` makes one: `kind = "session"` a child session (its own row and page, kept when the parent goes), `"subagent"` (the default) or `"side"`. Its settled turns are told to the parent, unless it's a side chat. A promise of `{ status, chat, id }`: `chat` is the new chat's id | `messages.send` |
 | `zend.answer { chat, answers, request? }` | the question (or approval) `chat` waits on, answered as you would: `answers = { [question] = label }` (or `{ labels }`, or a list of `{ question, labels }`); `request` names one, else the latest. A promise of `{ status = "answered", chat, request }` | `messages.send` |
 
 - **What it sends is yours.** Your agents read it as your message, and do what it says, so `messages.send` is always asked, even for your own plugins, and the consent sheet says so plainly.
 - **Who sent it is kept.** Each message a plugin sends is recorded as its (`{ plugin, name }`) beside the chat's transcript, synced with the chat, and in `plugin_status` (`agents.actions`). The transcript shows it as any message.
 - **Its turns say so.** The turn your message sets off (or, queued, the next one) is told with your `by`: `turn.started`, `chat.awaiting_input`, `turn.finished`, `turn.errored`.
 - **A loop is stopped**, as with switches: sending on your own message's `turn.finished`, 16 times in a row, has the next send refused (`loop`), and your row in Settings → Plugins says so. A send on something else (your own turn ending, say) starts the count over. How often you send never counts.
-- **Refusals.** `not_allowed` (the permission, or `files.read` for files), `not_found` (no such chat, model, effort or question waiting), `bad_call` (no text; `"steer"` while a chat waits for an answer: answer it, or queue), `loop`.
+- **Refusals.** `not_allowed` (the permission, or `files.read` for files), `not_found` (no such chat, model, effort or question waiting, or no such `parent`), `bad_call` (no text; `"steer"` while a chat waits for an answer: answer it, or queue; a `kind` that isn't one, or without a `parent`; a `parent` that is itself a child: children are one level deep), `loop`.
+- **A child is no new power.** `parent` links the new chat to one you could already send messages to: its settled turns reach the parent as messages, which `messages.send` already lets you send, and it inherits nothing of the parent's transcript.
 
 ```lua
 -- service.luau ("service", "sessions.read", "messages.read", "messages.send")
