@@ -959,7 +959,7 @@ impl WorkspaceHost {
             Some(cwd) => (Some(cwd.to_string()), Some(self.space_for_path(cwd)?)),
             None => (None, None),
         };
-        self.mutate(|doc| doc.claim_chat(chat_id, cwd.as_deref(), space_id.as_deref(), now));
+        self.mutate(|doc| doc.claim_chat(chat_id, cwd.as_deref(), space_id.as_deref(), now))?;
         lock(&self.inner.claimed).insert(chat_id.to_owned());
         Ok(())
     }

@@ -70,8 +70,36 @@ fn hlc_newer(a: &str, b: Option<&str>) -> bool {
     }
 }
 
+/// The greatest millisecond and counter the wire format holds (13 and 6
+/// digits: `HLC_RE` in edge/src/registry-core.ts).
+const MAX_HLC_MS: i64 = 9_999_999_999_999;
+const MAX_HLC_COUNTER: u32 = 999_999;
+
+/// A stamp's millisecond and counter, when the whole stamp is one the edge
+/// accepts (`^\d{13}-\d{6}-[A-Za-z0-9_-]{1,128}$`); `None` otherwise.
+fn parse_hlc(hlc: &str) -> Option<(i64, u32)> {
+    let b = hlc.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    let device = b.get(21..)?;
+    if b.len() < 22
+        || b[13] != b'-'
+        || b[20] != b'-'
+        || !digits(0..13)
+        || !digits(14..20)
+        || device.len() > 128
+        || !device
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
+    {
+        return None;
+    }
+    Some((hlc[..13].parse().ok()?, hlc[14..20].parse().ok()?))
+}
+
 /// Monotonic HLC source: never emits the same or an earlier clock twice, even
-/// across a wall-clock regression or restart (state persists with the doc).
+/// across a wall-clock regression or restart (state persists with the doc),
+/// and every clock it emits is one the edge accepts. Past the greatest stamp
+/// the format holds it emits none (`next` is `None`) rather than repeat one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HlcClock {
     last_ms: i64,
@@ -79,31 +107,64 @@ pub struct HlcClock {
 }
 
 impl HlcClock {
-    fn next(&mut self, now_ms: i64, device: &str) -> String {
+    fn next(&mut self, now_ms: i64, device: &str) -> Option<String> {
+        let now_ms = now_ms.clamp(0, MAX_HLC_MS);
         if now_ms > self.last_ms {
             self.last_ms = now_ms;
             self.counter = 0;
-        } else {
+        } else if self.counter < MAX_HLC_COUNTER {
             self.counter += 1;
-            if self.counter > 999_999 {
-                self.last_ms += 1;
-                self.counter = 0;
-            }
+        } else if self.last_ms < MAX_HLC_MS {
+            self.last_ms += 1;
+            self.counter = 0;
+        } else {
+            return None;
         }
-        encode_hlc(self.last_ms, self.counter, device)
+        Some(encode_hlc(self.last_ms, self.counter, device))
     }
 
     /// Move past a clock already seen (any device's), so the next one is
-    /// newer than it even when that device's wall clock runs ahead.
-    fn observe(&mut self, hlc: &str) {
-        let mut parts = hlc.splitn(3, '-');
-        let ms = parts.next().and_then(|s| s.parse::<i64>().ok());
-        let counter = parts.next().and_then(|s| s.parse::<u32>().ok());
-        if let (Some(ms), Some(counter)) = (ms, counter)
+    /// newer than it even when that device's wall clock runs ahead. Ignores
+    /// a stamp the edge wouldn't accept. Another device's stamp counts only
+    /// below the last millisecond the format holds, so after it this device
+    /// can still roll over into that millisecond and mint a million more:
+    /// one received stamp can't use up its clock. A stamp `own` (this
+    /// device) minted always counts, wherever it is: the clock has been
+    /// there already, and must not hand it out again.
+    fn observe(&mut self, hlc: &str, own: &str) {
+        if let Some((ms, counter)) = parse_hlc(hlc)
+            && (ms < MAX_HLC_MS || &hlc[21..] == own)
             && (ms, counter) > (self.last_ms, self.counter)
         {
             self.last_ms = ms;
             self.counter = counter;
+        }
+    }
+
+    /// Every stamp on a row, each on its own: one malformed clock can't hide
+    /// the valid ones.
+    fn observe_row(&mut self, row: &RegistryRow, own: &str) {
+        for hlc in row.clocks.values().chain(&row.del_hlc) {
+            self.observe(hlc, own);
+        }
+    }
+
+    /// Every stamp an op carries.
+    fn observe_op(&mut self, op: &RowOp, own: &str) {
+        self.observe(&op.hlc, own);
+        for hlc in op.clocks.iter().flat_map(|c| c.values()) {
+            self.observe(hlc, own);
+        }
+    }
+
+    /// A saved clock, taken only when it's one this clock could have
+    /// reached (a corrupt or out-of-range one is dropped; the retained
+    /// stamps are observed after a load anyway). Never moves backwards.
+    fn restore(&mut self, saved: HlcClock) {
+        let in_range = (0..=MAX_HLC_MS).contains(&saved.last_ms)
+            && saved.counter <= MAX_HLC_COUNTER;
+        if in_range && (saved.last_ms, saved.counter) > (self.last_ms, self.counter) {
+            *self = saved;
         }
     }
 }
@@ -641,14 +702,17 @@ impl RegistryDoc {
                 }
             }
         } else if self.local_writes {
-            self.local_writes = false;
             let seed: Vec<RowOp> = self
                 .authoritative
                 .values()
                 .flat_map(|m| m.values())
                 .map(row_to_seed_op)
                 .collect();
-            self.enqueue_ops(seed);
+            // Kept for the next try when the clock has no batch id left.
+            match self.enqueue_ops(seed) {
+                Ok(()) => self.local_writes = false,
+                Err(err) => tracing::error!(%err, "registry: could not queue the local-only rows"),
+            }
         }
     }
 
@@ -760,6 +824,7 @@ impl RegistryDoc {
                 }
             }
         }
+        doc.observe_retained();
         doc.coalesce_loaded();
         doc.unsaved = Some(HashSet::new());
         Ok((doc, clean))
@@ -772,7 +837,7 @@ impl RegistryDoc {
             delta.server_seq
         };
         self.gc_floor = delta.gc_floor;
-        self.clock = delta.clock;
+        self.clock.restore(delta.clock);
         self.local_writes = delta.local_writes;
         self.pending = delta.pending;
         for row in delta.rows {
@@ -784,8 +849,31 @@ impl RegistryDoc {
     pub fn from_bytes(bytes: &[u8], device_id: &str) -> Result<Self, DocError> {
         let state: PersistedState = serde_json::from_slice(bytes)?;
         let mut doc = Self::from_state(state, device_id)?;
+        doc.observe_retained();
         doc.coalesce_loaded();
         Ok(doc)
+    }
+
+    /// After a load: the clock moves past every stamp the replica holds,
+    /// authoritative and pending (pending salvaged after a broken delta
+    /// chain too). A replica saved before received clocks were observed, or
+    /// one whose saved clock trails what it recovered, still writes after
+    /// everything it has seen. Batch ids are `b-` and a stamp of this
+    /// clock's: observed too, so no batch minted after the load (coalescing
+    /// included) reuses a retained one's id, and its ack retires only it.
+    fn observe_retained(&mut self) {
+        let own = &self.device_id;
+        for row in self.authoritative.values().flat_map(HashMap::values) {
+            self.clock.observe_row(row, own);
+        }
+        for batch in &self.pending {
+            if let Some(hlc) = batch.batch.strip_prefix("b-") {
+                self.clock.observe(hlc, own);
+            }
+            for op in &batch.ops {
+                self.clock.observe_op(op, own);
+            }
+        }
     }
 
     fn from_state(state: PersistedState, device_id: &str) -> Result<Self, DocError> {
@@ -808,7 +896,7 @@ impl RegistryDoc {
             doc.server_seq = state.server_seq;
         }
         doc.gc_floor = state.gc_floor;
-        doc.clock = state.clock;
+        doc.clock.restore(state.clock);
         doc.local_writes = state.local_writes;
         doc.pending = state.pending;
         for row in state.rows {
@@ -846,6 +934,7 @@ impl RegistryDoc {
         rows: Vec<RegistryRow>,
     ) -> StateOutcome {
         self.generation += 1;
+        self.observe_received(&rows);
         if !full {
             for row in rows {
                 self.put_authoritative(row);
@@ -869,7 +958,7 @@ impl RegistryDoc {
             self.server_seq = seq;
             self.gc_floor = gc_floor;
             if !seed.is_empty() {
-                self.enqueue_ops(seed);
+                self.enqueue_reseed(seed);
             }
             return StateOutcome::Reseeded;
         }
@@ -897,8 +986,16 @@ impl RegistryDoc {
         if seed.is_empty() {
             StateOutcome::Replaced
         } else {
-            self.enqueue_ops(seed);
+            self.enqueue_reseed(seed);
             StateOutcome::Reseeded
+        }
+    }
+
+    /// A re-seed carries the rows' own clocks, but its batches need ids: with
+    /// the clock exhausted there are none, and the rows stay local only.
+    fn enqueue_reseed(&mut self, seed: Vec<RowOp>) {
+        if let Err(err) = self.enqueue_ops(seed) {
+            tracing::error!(%err, "registry: could not queue the re-seed");
         }
     }
 
@@ -912,6 +1009,7 @@ impl RegistryDoc {
     #[must_use]
     pub fn apply_rows(&mut self, seq: u64, rows: Vec<RegistryRow>) -> bool {
         self.generation += 1;
+        self.observe_received(&rows);
         for row in rows {
             self.put_authoritative(row);
         }
@@ -973,6 +1071,16 @@ impl RegistryDoc {
         }
     }
 
+    /// The clock moves past every clock on rows received from the server, so
+    /// a write after them orders after them (standard HLC receive). Without
+    /// it, a write made in the same millisecond as a received one, or behind
+    /// a peer whose wall clock runs ahead, lost to it.
+    fn observe_received(&mut self, rows: &[RegistryRow]) {
+        for row in rows {
+            self.clock.observe_row(row, &self.device_id);
+        }
+    }
+
     fn put_authoritative(&mut self, row: RegistryRow) {
         self.touch_row(&row.kind, &row.id);
         self.authoritative
@@ -987,23 +1095,28 @@ impl RegistryDoc {
         Utc::now().timestamp_millis()
     }
 
-    fn next_hlc(&mut self) -> String {
-        let device = self.device_id.clone();
-        self.clock.next(Self::now_ms(), &device)
+    /// A fresh stamp, or `ClockExhausted` once the clock has handed out the
+    /// greatest one the wire format holds: a write fails rather than reuse
+    /// a stamp (a repeated op stamp loses LWW to its first use, a repeated
+    /// batch id lets one ack retire two batches).
+    fn next_hlc(&mut self) -> Result<String, DocError> {
+        self.clock
+            .next(Self::now_ms(), &self.device_id)
+            .ok_or(DocError::ClockExhausted)
     }
 
-    fn enqueue_ops(&mut self, mut ops: Vec<RowOp>) {
+    fn enqueue_ops(&mut self, mut ops: Vec<RowOp>) -> Result<(), DocError> {
         if ops.is_empty() {
-            return;
+            return Ok(());
         }
-        self.touch_ops(&ops);
         if self.local_only {
+            self.touch_ops(&ops);
             self.generation += 1;
             self.local_writes = true;
             for op in &ops {
                 self.fold_op(op);
             }
-            return;
+            return Ok(());
         }
         // The registry room rejects any batch over its op cap (500), and a
         // rejected batch is a PERMANENT wedge: error frames carry no batch
@@ -1014,16 +1127,21 @@ impl RegistryDoc {
         // writer can ever produce one; chunks apply in order, each
         // atomically (only cross-chunk atomicity is given up).
         const MAX_OPS_PER_BATCH: usize = 400;
+        // Batch ids only need device-lifetime uniqueness; the HLC of a
+        // fresh tick provides exactly that without a rng dependency. All of
+        // them first: an exhausted clock fails the write before it changes
+        // anything.
+        let batches = (0..ops.len().div_ceil(MAX_OPS_PER_BATCH))
+            .map(|_| self.next_hlc().map(|hlc| format!("b-{hlc}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.touch_ops(&ops);
         self.generation += 1;
-        while !ops.is_empty() {
+        for batch in batches {
             let tail = if ops.len() > MAX_OPS_PER_BATCH {
                 ops.split_off(MAX_OPS_PER_BATCH)
             } else {
                 Vec::new()
             };
-            // Batch ids only need device-lifetime uniqueness; the HLC of a
-            // fresh tick provides exactly that without a rng dependency.
-            let batch = format!("b-{}", self.next_hlc());
             self.pending.push(PendingBatch {
                 batch,
                 ops,
@@ -1032,6 +1150,7 @@ impl RegistryDoc {
             ops = tail;
         }
         self.coalesce_unsent();
+        Ok(())
     }
 
     /// Collapse repeated writes to one row across the UNSENT tail of
@@ -1074,10 +1193,8 @@ impl RegistryDoc {
         if self.pending.len().saturating_sub(start) < 2 {
             return 0;
         }
-        let tail_ops: Vec<RowOp> = self.pending[start..]
-            .iter()
-            .flat_map(|b| b.ops.iter().cloned())
-            .collect();
+        let unsent = self.pending[start..].to_vec();
+        let tail_ops: Vec<RowOp> = unsent.iter().flat_map(|b| b.ops.iter().cloned()).collect();
         let mut tail: Vec<(String, Vec<Option<RowOp>>, bool)> = self
             .pending
             .split_off(start)
@@ -1143,13 +1260,25 @@ impl RegistryDoc {
                 }));
             return 0;
         }
+        // A gained batch's fresh id, from a clock with ids left; with none,
+        // the queue stays as it was (coalescing only saves pushes).
+        let fresh = tail
+            .iter()
+            .filter(|(_, ops, gained)| *gained && ops.iter().any(Option::is_some))
+            .map(|_| self.next_hlc().map(|hlc| format!("b-{hlc}")))
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(fresh) = fresh else {
+            self.pending.extend(unsent);
+            return 0;
+        };
+        let mut fresh = fresh.into_iter();
         for (batch, ops, gained) in tail {
             let ops: Vec<RowOp> = ops.into_iter().flatten().collect();
             if ops.is_empty() {
                 continue;
             }
             let batch = if gained {
-                format!("b-{}", self.next_hlc())
+                fresh.next().expect("one fresh id per gained batch")
             } else {
                 batch
             };
@@ -1166,8 +1295,14 @@ impl RegistryDoc {
         folded
     }
 
-    fn write(&mut self, kind: &str, id: &str, op: OpKind, set: BTreeMap<String, Value>) {
-        let hlc = self.next_hlc();
+    fn write(
+        &mut self,
+        kind: &str,
+        id: &str,
+        op: OpKind,
+        set: BTreeMap<String, Value>,
+    ) -> Result<(), DocError> {
+        let hlc = self.next_hlc()?;
         self.enqueue_ops(vec![RowOp {
             kind: kind.to_string(),
             id: id.to_string(),
@@ -1175,7 +1310,7 @@ impl RegistryDoc {
             set: Some(set),
             hlc,
             clocks: None,
-        }]);
+        }])
     }
 
     /// An `update` carrying only the fields whose value differs from what
@@ -1190,7 +1325,7 @@ impl RegistryDoc {
         id: &str,
         set: BTreeMap<String, Value>,
         same: impl Fn(&str, &Value, &Value) -> bool,
-    ) {
+    ) -> Result<(), DocError> {
         let current = self.overlay_row(kind, id);
         let set: BTreeMap<String, Value> = set
             .into_iter()
@@ -1203,12 +1338,13 @@ impl RegistryDoc {
             })
             .collect();
         if !set.is_empty() {
-            self.write(kind, id, OpKind::Update, set);
+            self.write(kind, id, OpKind::Update, set)?;
         }
+        Ok(())
     }
 
-    fn delete_row_ops(&mut self, keys: &[(&str, &str)]) {
-        let hlc = self.next_hlc();
+    fn delete_row_ops(&mut self, keys: &[(&str, &str)]) -> Result<(), DocError> {
+        let hlc = self.next_hlc()?;
         let ops = keys
             .iter()
             .map(|(kind, id)| RowOp {
@@ -1220,7 +1356,7 @@ impl RegistryDoc {
                 clocks: None,
             })
             .collect();
-        self.enqueue_ops(ops);
+        self.enqueue_ops(ops)
     }
 
     // ── overlay reads ───────────────────────────────────────────────────────
@@ -1369,7 +1505,7 @@ impl RegistryDoc {
             ("cursorSdkEngineVersion", opt_str(device.version.as_deref())),
             ("capabilities", json!(device.capabilities)),
         ]);
-        self.write(KIND_DEVICES, &device.id.clone(), OpKind::Upsert, set);
+        self.write(KIND_DEVICES, &device.id.clone(), OpKind::Upsert, set)?;
         Ok(())
     }
 
@@ -1383,7 +1519,7 @@ impl RegistryDoc {
             device_id,
             OpKind::Update,
             fields([("name", json!(name))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1398,7 +1534,7 @@ impl RegistryDoc {
         if !self.row_exists(KIND_DEVICES, device_id) {
             return Ok(false);
         }
-        self.delete_row_ops(&[(KIND_DEVICES, device_id)]);
+        self.delete_row_ops(&[(KIND_DEVICES, device_id)])?;
         Ok(true)
     }
 
@@ -1417,7 +1553,7 @@ impl RegistryDoc {
             device_id,
             OpKind::Update,
             fields([("lastSeenAt", json!(at.timestamp_millis()))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1464,7 +1600,7 @@ impl RegistryDoc {
         if let Some(icon) = &space.icon {
             set.insert("icon".into(), json!(icon));
         }
-        self.write(KIND_SPACES, &space.id.clone(), OpKind::Upsert, set);
+        self.write(KIND_SPACES, &space.id.clone(), OpKind::Upsert, set)?;
         Ok(())
     }
 
@@ -1483,7 +1619,7 @@ impl RegistryDoc {
     /// `None` clears back to the derived name (basename of path). `false` when
     /// no such row.
     pub fn rename_space(&mut self, space_id: &str, name: Option<&str>) -> Result<bool, DocError> {
-        Ok(self.write_look_field(space_id, "name", opt_str(name)))
+        self.write_look_field(space_id, "name", opt_str(name))
     }
 
     /// LWW picture set from any device, for every copy of its repository, whole
@@ -1491,7 +1627,7 @@ impl RegistryDoc {
     /// tile. `false` when no row.
     pub fn set_space_icon(&mut self, space_id: &str, icon: Option<&zend_proto::SpaceIcon>) -> Result<bool, DocError> {
         let value = icon.map_or(Value::Null, |icon| json!(icon));
-        Ok(self.write_look_field(space_id, "icon", value))
+        self.write_look_field(space_id, "icon", value)
     }
 
     /// Owner-stamped git presence for the space folder (ownership is asserted
@@ -1519,7 +1655,7 @@ impl RegistryDoc {
                 ("githubRepo", opt_str(github_repo)),
                 ("gitCheckedAt", json!(checked_at.timestamp_millis())),
             ]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1543,7 +1679,7 @@ impl RegistryDoc {
             keys.push((KIND_SESSIONS, chat_id));
         }
         keys.push((KIND_SPACES, space_id));
-        self.delete_row_ops(&keys);
+        self.delete_row_ops(&keys)?;
         Ok(DeletedSpace { existed, chat_ids })
     }
 
@@ -1599,7 +1735,7 @@ impl RegistryDoc {
             ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
             ("childKind", opt_str(chat.child_kind.map(zend_proto::ChildKind::as_str))),
         ]);
-        self.write(KIND_CHATS, &chat.id.clone(), OpKind::Upsert, set);
+        self.write(KIND_CHATS, &chat.id.clone(), OpKind::Upsert, set)?;
         Ok(())
     }
 
@@ -1614,7 +1750,7 @@ impl RegistryDoc {
         cwd: Option<&str>,
         space_id: Option<&str>,
         created_at: DateTime<Utc>,
-    ) {
+    ) -> Result<(), DocError> {
         let mut set = fields([
             ("id", json!(chat_id)),
             ("deviceId", json!(self.device_id())),
@@ -1626,7 +1762,7 @@ impl RegistryDoc {
         if let Some(space_id) = space_id {
             set.insert("spaceId".into(), json!(space_id));
         }
-        self.write(KIND_CHATS, chat_id, OpKind::Upsert, set);
+        self.write(KIND_CHATS, chat_id, OpKind::Upsert, set)
     }
 
     /// Synced seen marker (LWW) with a monotonic guard: no write when the
@@ -1644,7 +1780,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("lastSeenAt", json!(at.timestamp_millis()))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1669,7 +1805,7 @@ impl RegistryDoc {
                 ("sleptAt", json!(until.map(|_| at.timestamp_millis()))),
                 ("sleepWokeAt", Value::Null),
             ]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1689,7 +1825,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("sleepWokeAt", json!(at.timestamp_millis()))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1724,7 +1860,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("title", json!(title))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1737,7 +1873,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("archived", json!(archived))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1752,7 +1888,7 @@ impl RegistryDoc {
         };
         for field in ["parentChatId", "childKind"] {
             if let Some(hlc) = row.clocks.get(field) {
-                self.clock.observe(hlc);
+                self.clock.observe(hlc, &self.device_id);
             }
         }
         self.write(
@@ -1760,7 +1896,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("parentChatId", Value::Null), ("childKind", Value::Null)]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1782,7 +1918,7 @@ impl RegistryDoc {
             set.insert("createdAt".to_string(), json!(ms));
         }
         if !set.is_empty() {
-            self.write(KIND_CHATS, chat_id, OpKind::Update, set);
+            self.write(KIND_CHATS, chat_id, OpKind::Update, set)?;
         }
         Ok(true)
     }
@@ -1797,7 +1933,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("deviceId", json!(device_id))]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1814,7 +1950,7 @@ impl RegistryDoc {
             chat_id,
             fields([("roomGen", json!(room_gen))]),
             same_value,
-        );
+        )?;
         Ok(true)
     }
 
@@ -1827,7 +1963,7 @@ impl RegistryDoc {
             chat_id,
             fields([("branch", json!(branch))]),
             same_value,
-        );
+        )?;
         Ok(true)
     }
 
@@ -1863,7 +1999,7 @@ impl RegistryDoc {
                 };
                 observed(now) == observed(next)
             },
-        );
+        )?;
         Ok(true)
     }
 
@@ -1874,7 +2010,7 @@ impl RegistryDoc {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);
         }
-        self.update_changed(KIND_CHATS, chat_id, fields([("cwd", json!(cwd))]), same_value);
+        self.update_changed(KIND_CHATS, chat_id, fields([("cwd", json!(cwd))]), same_value)?;
         Ok(true)
     }
 
@@ -1891,7 +2027,7 @@ impl RegistryDoc {
             chat_id,
             fields([("checkoutId", json!(checkout_id))]),
             same_value,
-        );
+        )?;
         Ok(true)
     }
 
@@ -1909,7 +2045,7 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("config", value)]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1936,7 +2072,7 @@ impl RegistryDoc {
                 ("harnessSessionHarness", opt_str(harness)),
             ]),
             same_value,
-        );
+        )?;
         Ok(true)
     }
 
@@ -1958,7 +2094,7 @@ impl RegistryDoc {
                 ("lastMessagePreview", json!(preview)),
                 ("lastMessageAt", json!(at.timestamp_millis())),
             ]),
-        );
+        )?;
         Ok(true)
     }
 
@@ -1969,7 +2105,7 @@ impl RegistryDoc {
     pub fn delete_chat(&mut self, chat_id: &str) -> Result<bool, DocError> {
         let existed = self.row_exists(KIND_CHATS, chat_id);
         self.detach_child_sessions(&[chat_id.to_string()])?;
-        self.delete_row_ops(&[(KIND_CHATS, chat_id), (KIND_SESSIONS, chat_id)]);
+        self.delete_row_ops(&[(KIND_CHATS, chat_id), (KIND_SESSIONS, chat_id)])?;
         Ok(existed)
     }
 
@@ -2017,7 +2153,7 @@ impl RegistryDoc {
             ),
             ("waiting", serde_json::to_value(&session.waiting)?),
         ]);
-        self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set);
+        self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set)?;
         Ok(())
     }
 
@@ -2062,7 +2198,7 @@ impl RegistryDoc {
             return Ok(false);
         }
         let initialized = self.sidebar_pins_initialized();
-        self.initialize_sidebar_pins();
+        self.initialize_sidebar_pins()?;
         let known: std::collections::HashSet<String> = chat_ids.map(str::to_owned).collect();
         let removed: Vec<_> = self
             .ordered_sidebar_pins()
@@ -2222,7 +2358,7 @@ impl RegistryDoc {
         let count = ops.len();
         // Chunk so a huge legacy workspace never exceeds the server's batch cap.
         for chunk in ops.chunks(400) {
-            self.enqueue_ops(chunk.to_vec());
+            self.enqueue_ops(chunk.to_vec())?;
         }
         Ok(count)
     }

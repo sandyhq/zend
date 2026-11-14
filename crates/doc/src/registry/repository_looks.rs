@@ -191,11 +191,16 @@ impl RegistryDoc {
 
     /// LWW set of `name` or `icon` from any device, on the Space it was made
     /// on and on its repository's look. `false` when no such Space.
-    pub(super) fn write_look_field(&mut self, space_id: &str, field: &str, value: Value) -> bool {
+    pub(super) fn write_look_field(
+        &mut self,
+        space_id: &str,
+        field: &str,
+        value: Value,
+    ) -> Result<bool, DocError> {
         let Some(row) = self.overlay_row(KIND_SPACES, space_id) else {
-            return false;
+            return Ok(false);
         };
-        let hlc = self.next_hlc();
+        let hlc = self.next_hlc()?;
         let op = |kind: &str, id: &str, op: OpKind| RowOp {
             kind: kind.to_owned(),
             id: id.to_owned(),
@@ -214,8 +219,8 @@ impl RegistryDoc {
                 OpKind::Upsert,
             ));
         }
-        self.enqueue_ops(ops);
-        true
+        self.enqueue_ops(ops)?;
+        Ok(true)
     }
 }
 
