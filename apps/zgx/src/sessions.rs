@@ -13,14 +13,20 @@
 //!                    icon? = { emoji?, image?, hue? } } },
 //!     chats = { { id, title, project?, device, branch?, cwd?, status?,
 //!                 updated, created, harness?, agent?, model?,
-//!                 running_subagents, side_chats, working_side_chats } },
+//!                 running_subagents, side_chats, working_side_chats,
+//!                 parent?, child_kind? } },
+//!                 (`parent` and `child_kind` = "session" only on a child
+//!                 session, a full chat of its own: it is listed here, not
+//!                 under its parent in `children`, and `parent` is the
+//!                 chat that started it; no other row has them)
 //!     children = { [parent id] = { { id, parent, title, device, status?,
 //!                 updated, created, harness?, agent?, child_kind? } } } (its
 //!                 side chats, newest first; `child_kind` "subagent" or
 //!                 "side" for one a Zend chat started, none for the person's),
 //!     places = { pinned = { id }, sections = { { id, name, sessions = { id },
 //!                collapsed } } },
-//!     archived = { chat, … } (as `chats`, the most recently moved first),
+//!     archived = { chat, … } (as `chats`, the most recently moved first;
+//!                a child session too, once archived),
 //!     places_ready,
 //!     connection = "unsaved" | "offline" | "reconnecting" | nil }
 //! Every list item carries an `id`, so a page keys its rows by it and they
@@ -413,14 +419,20 @@ enum Place {
     Hidden,
 }
 
+/// Whether `chat` is a child session (glossary): a child that is a full chat
+/// of its own, with a parent to name.
+fn is_child_session(chat: &Json) -> bool {
+    chat["childKind"].as_str() == Some("session") && chat["parentChatId"].as_str().is_some()
+}
+
 /// Where `chat` shows.
 fn place_of(chat: &Json) -> Place {
     let id = chat["id"].as_str().unwrap_or_default();
-    let hidden = id.starts_with(ORCHESTRATOR) || !chat["parentChatId"].is_null();
+    let hidden = id.starts_with(ORCHESTRATOR) || (!chat["parentChatId"].is_null() && !is_child_session(chat));
     if chat["archived"].as_bool().unwrap_or(false) {
         return if hidden { Place::Hidden } else { Place::Gone };
     }
-    match chat["parentChatId"].as_str() {
+    match chat["parentChatId"].as_str().filter(|_| !is_child_session(chat)) {
         Some(parent) => Place::Child(parent.to_owned()),
         None if hidden => Place::Hidden,
         None => Place::Top,
@@ -430,7 +442,8 @@ fn place_of(chat: &Json) -> Place {
 /// What deleting `root` takes with it, as the engine's `deleteChat` does:
 /// its subagents and side chats on computers, and theirs in turn, archived
 /// or not; a Cloud chat's children on Cloud too. A computer's chat keeps its
-/// Cloud delegates. `(subagents, side chats)`.
+/// Cloud delegates. Child sessions aren't taken: the engine detaches them
+/// (they become top-level chats) instead. `(subagents, side chats)`.
 fn deleted_with(chats: &[Json], root: &str) -> (u32, u32) {
     let on_cloud = |c: &Json| c["deviceId"].as_str().unwrap_or_default().starts_with("cloud-");
     let root_cloud = chats.iter().find(|c| c["id"].as_str() == Some(root)).is_some_and(on_cloud);
@@ -439,7 +452,7 @@ fn deleted_with(chats: &[Json], root: &str) -> (u32, u32) {
     let mut frontier: Vec<(&str, bool)> = vec![(root, root_cloud)];
     while let Some((parent, parent_cloud)) = frontier.pop() {
         for c in chats {
-            if c["parentChatId"].as_str() != Some(parent) {
+            if c["parentChatId"].as_str() != Some(parent) || c["childKind"].as_str() == Some("session") {
                 continue;
             }
             let Some(id) = c["id"].as_str() else { continue };
@@ -688,7 +701,7 @@ fn top_row(
     let created = c["createdAt"].as_str().and_then(unix_seconds).unwrap_or(0);
     let updated = c["lastMessageAt"].as_str().and_then(unix_seconds).unwrap_or(created);
     let opt = |v: Option<&str>| v.filter(|s| !s.is_empty()).map_or(Value::Nil, Value::from);
-    let value = Value::record([
+    let mut fields = vec![
         ("id", Value::from(id)),
         ("title", Value::from(chat_title(c["title"].as_str()))),
         ("project", opt(project)),
@@ -721,7 +734,15 @@ fn top_row(
         // it woke (Unix seconds).
         ("sleep_until", with.sleep.filter(|s| s.0).map_or(Value::Nil, |s| Value::from(s.1 as f64))),
         ("woke", with.sleep.filter(|s| !s.0).map_or(Value::Nil, |s| Value::from(s.1 as f64))),
-    ]);
+    ];
+    // A child session: the chat that started it, and its kind (the names a
+    // side chat's row has), so a page can nest it under its parent. No other
+    // row has them.
+    if let (true, Some(parent)) = (is_child_session(c), c["parentChatId"].as_str()) {
+        fields.push(("parent", Value::from(parent)));
+        fields.push(("child_kind", Value::from("session")));
+    }
+    let value = Value::record(fields);
     rows.insert(id.to_owned(), Row { moved: moved(c), updated: updated as f64, marks, with, value: value.clone() });
     value
 }
@@ -2224,6 +2245,22 @@ mod tests {
         assert_eq!(super::deleted_with(all, "gone"), (0, 0));
     }
 
+    /// The engine detaches a child session on delete: it, and what hangs
+    /// under it, isn't counted.
+    #[test]
+    fn a_delete_does_not_count_child_sessions() {
+        let chats = serde_json::json!([
+            { "id": "p", "deviceId": "mac" },
+            { "id": "s", "deviceId": "mac", "parentChatId": "p", "childKind": "session" },
+            { "id": "s-side", "deviceId": "mac", "parentChatId": "s", "childKind": "side" },
+            { "id": "s-gone", "deviceId": "mac", "parentChatId": "p", "childKind": "session", "archived": true },
+            { "id": "side", "deviceId": "mac", "parentChatId": "p", "childKind": "side" },
+        ]);
+        let all = chats.as_array().unwrap();
+        assert_eq!(super::deleted_with(all, "p"), (0, 1));
+        assert_eq!(super::deleted_with(all, "s"), (0, 1));
+    }
+
     /// Settings → Devices says why a device wasn't removed in a word of its
     /// own for each of the engine's refusals (crates/engine rpc.rs
     /// `RemoveDevice`), and an engine from before Remove says it's outdated.
@@ -2480,6 +2517,88 @@ mod tests {
         assert_eq!(p.field("side_chats").and_then(|n| n.as_f64()), Some(2.));
         assert_eq!(p.field("working_side_chats").and_then(|n| n.as_f64()), Some(1.));
         assert_eq!(p.field("running_subagents").and_then(|n| n.as_f64()), Some(2.));
+    }
+
+    /// Chats: a parent with a child session (live, working), one archived,
+    /// a side chat and a subagent, and a session whose parent is unnamed.
+    fn with_child_sessions() -> super::Sessions {
+        let s = super::Sessions::default();
+        s.set_chats(serde_json::json!([
+            { "id": "p", "title": "Parent", "deviceId": "d", "createdAt": "2026-11-01T10:00:00Z" },
+            { "id": "s", "parentChatId": "p", "childKind": "session", "title": "Worker", "deviceId": "d", "createdAt": "2026-11-01T10:05:00Z" },
+            { "id": "old", "parentChatId": "p", "childKind": "session", "archived": true, "title": "Done", "deviceId": "d", "createdAt": "2026-11-01T10:06:00Z" },
+            { "id": "side", "parentChatId": "p", "childKind": "side", "deviceId": "d", "createdAt": "2026-11-01T10:07:00Z" },
+            { "id": "sub", "parentChatId": "p", "childKind": "subagent", "archived": true, "deviceId": "d", "createdAt": "2026-11-01T10:08:00Z" },
+        ]));
+        s.set_live(serde_json::json!([
+            { "chatId": "s", "deviceId": "d", "status": "working", "updatedAt": "2099-01-01T00:00:00Z" },
+        ]));
+        s
+    }
+
+    #[test]
+    fn a_child_session_is_placed_by_itself_not_under_its_parent() {
+        use super::{Place, place_of};
+        let chat = |extra: serde_json::Value| {
+            let mut c = serde_json::json!({ "id": "x", "parentChatId": "p" });
+            c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            c
+        };
+        assert_eq!(place_of(&chat(serde_json::json!({ "childKind": "session" }))), Place::Top);
+        assert_eq!(place_of(&chat(serde_json::json!({ "childKind": "session", "archived": true }))), Place::Gone);
+        // A session without a parent is a plain chat; every other child stays.
+        assert_eq!(place_of(&serde_json::json!({ "id": "x", "childKind": "session" })), Place::Top);
+        assert_eq!(place_of(&chat(serde_json::json!({ "childKind": "side" }))), Place::Child("p".into()));
+        assert_eq!(place_of(&chat(serde_json::json!({ "childKind": "subagent" }))), Place::Child("p".into()));
+        assert_eq!(place_of(&chat(serde_json::json!({}))), Place::Child("p".into()));
+        assert_eq!(place_of(&chat(serde_json::json!({ "childKind": "side", "archived": true }))), Place::Hidden);
+    }
+
+    #[test]
+    fn a_child_session_s_row_names_its_parent_and_the_parent_does_not_count_it() {
+        let v = with_child_sessions().value();
+        let ids: Vec<String> = v.field("chats").unwrap().list().iter().filter_map(|c| c.field("id").map(crate::auth::text)).collect();
+        assert!(ids.contains(&"s".to_owned()) && ids.contains(&"p".to_owned()) && ids.len() == 2, "{ids:?}");
+        let s = chat(&v, "s");
+        assert_eq!(s.field("parent").map(crate::auth::text).as_deref(), Some("p"));
+        assert_eq!(s.field("child_kind").map(crate::auth::text).as_deref(), Some("session"));
+        assert_eq!(s.field("status").map(crate::auth::text).as_deref(), Some("working"));
+        // Archived: among `archived`, with the same fields; a subagent isn't.
+        let gone = v.field("archived").unwrap().list();
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].field("id").map(crate::auth::text).as_deref(), Some("old"));
+        assert_eq!(gone[0].field("parent").map(crate::auth::text).as_deref(), Some("p"));
+        assert_eq!(gone[0].field("child_kind").map(crate::auth::text).as_deref(), Some("session"));
+        // Other rows are unchanged: no such fields.
+        let p = chat(&v, "p");
+        assert!(p.field("parent").is_none_or(|k| matches!(k, zgx_script::Value::Nil)));
+        assert!(p.field("child_kind").is_none_or(|k| matches!(k, zgx_script::Value::Nil)));
+        // Only the side chat is the parent's: the working session isn't counted.
+        assert_eq!(p.field("side_chats").and_then(|n| n.as_f64()), Some(1.));
+        assert_eq!(p.field("working_side_chats").and_then(|n| n.as_f64()), Some(0.));
+        let kids = v.field("children").unwrap().field("p").unwrap().list();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].field("id").map(crate::auth::text).as_deref(), Some("side"));
+    }
+
+    #[test]
+    fn a_child_session_changing_place_rebuilds_the_lists() {
+        let s = with_child_sessions();
+        let _ = s.value();
+        // Archived: it moves from `chats` to `archived`.
+        let mut chats = s.chats.borrow().clone();
+        chats[1]["archived"] = serde_json::json!(true);
+        s.heard(super::Slot::Chats, chats.clone());
+        let v = s.value();
+        assert!(v.field("chats").unwrap().list().iter().all(|c| c.field("id").map(crate::auth::text).as_deref() != Some("s")));
+        assert_eq!(v.field("archived").unwrap().list().len(), 2);
+        // Its parent deleted: it is detached, a plain chat without the fields.
+        chats[1]["archived"] = serde_json::json!(false);
+        chats[1].as_object_mut().unwrap().remove("parentChatId");
+        chats[1].as_object_mut().unwrap().remove("childKind");
+        s.heard(super::Slot::Chats, chats);
+        let v = s.value();
+        assert!(chat(&v, "s").field("parent").is_none_or(|k| matches!(k, zgx_script::Value::Nil)));
     }
 
     #[test]
