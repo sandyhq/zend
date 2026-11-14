@@ -735,6 +735,7 @@ mod tests {
             exit_code: None,
             output_truncated: false,
             output_lines: None,
+            review: None,
         }
     }
 
@@ -994,6 +995,7 @@ mod composer_tests {
                 exit_code: None,
                 output_truncated: false,
                 output_lines: None,
+                review: None,
             }],
             created_at: 0,
             device_id: "d".into(),
