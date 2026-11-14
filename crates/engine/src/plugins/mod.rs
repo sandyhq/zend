@@ -17,6 +17,7 @@
 pub mod agents;
 pub mod broker;
 pub mod capability;
+pub mod check;
 pub mod files;
 pub mod guides;
 pub mod install;
@@ -178,6 +179,7 @@ pub fn handles(method: &str) -> bool {
             | methods::PLUGIN_LOG
             | methods::PLUGIN_LOGS
             | methods::WATCH_PLUGIN_LOGS
+            | methods::CHECK_PLUGIN
             | methods::WATCH_THEMES
     ) || lifecycle::handles(method)
         || themes::handles(method)
@@ -265,6 +267,9 @@ struct Inner {
     services: Services,
     /// Each plugin's log: its window's prints and errors, its service's.
     logs: logs::Logs,
+    /// What the last check after a save found in each own plugin (its
+    /// findings as logged), so the same ones aren't logged again.
+    checked: Mutex<HashMap<String, Vec<String>>>,
     /// The agents' usage, accounts and models, as plugins reach them
     /// (plugins/agents), and their events.
     agents: agents::Agents,
@@ -548,6 +553,7 @@ impl Plugins {
                 builtin_watch: Mutex::new(None),
                 services: Services::new(&storage, config),
                 logs: logs::Logs::new(data_dir),
+                checked: Mutex::new(HashMap::new()),
                 agents: agents::Agents::default(),
                 watchers: Mutex::new(HashMap::new()),
                 watching: Mutex::new(HashSet::new()),
@@ -840,6 +846,7 @@ impl Plugins {
             }
             if !resign.is_empty() {
                 let this = plugins.clone();
+                let ids: Vec<String> = resign.iter().cloned().collect();
                 let _ = tokio::task::spawn_blocking(move || {
                     for id in resign {
                         this.auto_resign(&id);
@@ -847,6 +854,14 @@ impl Plugins {
                 })
                 .await;
                 scan = true;
+                // Its Luau checked as it reloads: what's wrong, with its
+                // line, in its log (off this loop: luau-lsp takes a moment).
+                let this = plugins.clone();
+                tokio::task::spawn_blocking(move || {
+                    for id in ids {
+                        this.check_saved(&id);
+                    }
+                });
             }
             if scan {
                 plugins.rescan().await;
@@ -895,6 +910,36 @@ impl Plugins {
             }
             resign.insert(id.clone());
         }
+    }
+
+    /// Check an own plugin after a save, and log what changed in what it
+    /// found: each error with its file and line (`check`), or that it's
+    /// clean again.
+    fn check_saved(&self, id: &str) {
+        let dir = self.inner.plugins_dir.join(id);
+        let options = check::Options { data_dir: Some(self.inner.data_dir.clone()), ..Default::default() };
+        let Ok(report) = check::check_plugin(&dir, &options) else {
+            return;
+        };
+        let errors: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|f| f.severity == check::Severity::Error)
+            .map(ToString::to_string)
+            .collect();
+        let before = lock(&self.inner.checked).insert(id.to_owned(), errors.clone());
+        if before.as_ref() == Some(&errors) || (before.is_none() && errors.is_empty()) {
+            return;
+        }
+        for error in &errors {
+            self.inner.logs.push(id, "check", "error", error);
+        }
+        let mut summary = format!("check: {}", report.summary());
+        if let Some(note) = &report.types_note {
+            summary.push(' ');
+            summary.push_str(note);
+        }
+        self.inner.logs.push(id, "check", "info", &summary);
     }
 
     /// Re-sign an own plugin after it changed (never one that isn't own).
@@ -1899,6 +1944,15 @@ impl Plugins {
                 let (guide, _) = guides::ensure(&self.inner.data_dir);
                 item["guide"] = serde_json::json!(guide.display().to_string());
                 item["guide_summary"] = serde_json::json!(guides::PLUGINS_SUMMARY);
+                // Its first check: what `zend plugin check` says of it now.
+                let dir = self.inner.plugins_dir.join(&p.id);
+                let options = check::Options { data_dir: Some(self.inner.data_dir.clone()), ..Default::default() };
+                if let Ok(Ok(report)) = tokio::task::spawn_blocking(move || check::check_plugin(&dir, &options)).await {
+                    let mut out = serde_json::to_value(&report).unwrap_or_default();
+                    out["ok"] = serde_json::json!(report.ok());
+                    out["summary"] = serde_json::json!(report.summary());
+                    item["check"] = out;
+                }
                 RpcReply::value(&item)
             }
             methods::SIGN_PLUGIN => {
@@ -1995,6 +2049,37 @@ impl Plugins {
                         Ok(RpcReply::Value(reply))
                     }
                 }
+            }
+            methods::CHECK_PLUGIN => {
+                #[derive(serde::Deserialize)]
+                struct CheckParams {
+                    id: Option<String>,
+                    path: Option<String>,
+                    #[serde(default)]
+                    strict: bool,
+                }
+                let p: CheckParams = parse_params(params)?;
+                let dir = match (p.id.filter(|s| !s.trim().is_empty()), p.path.filter(|s| !s.trim().is_empty())) {
+                    (Some(id), None) => {
+                        manifest::check_id(id.trim()).map_err(failed)?;
+                        self.inner.plugins_dir.join(id.trim())
+                    }
+                    (None, Some(path)) if Path::new(&path).is_absolute() => PathBuf::from(path),
+                    (None, Some(_)) => return Err(failed("Give the folder's full path")),
+                    _ => return Err(failed("Give one of `id` (a plugin in the plugins folder) or `path` (a folder)")),
+                };
+                if !dir.is_dir() {
+                    return Err(failed("That plugin's folder can't be found"));
+                }
+                let options = check::Options { strict: p.strict, data_dir: Some(self.inner.data_dir.clone()), ..Default::default() };
+                let report = tokio::task::spawn_blocking(move || check::check_plugin(&dir, &options))
+                    .await
+                    .map_err(|_| failed("Couldn't check it"))?
+                    .map_err(failed)?;
+                let mut out = serde_json::to_value(&report).unwrap_or_default();
+                out["ok"] = serde_json::json!(report.ok());
+                out["summary"] = serde_json::json!(report.summary());
+                RpcReply::value(&out)
             }
             methods::VERIFY_PLUGIN => {
                 let p: PathParams = parse_params(params)?;

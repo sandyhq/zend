@@ -9,9 +9,14 @@ pub const SDK: &str = include_str!("../../../../apps/zgx/plugins-sdk/zend.luau")
 
 pub fn init_luau(id: &str, name: &str) -> String {
     format!(
-        r#"local zend = require("./zend")("{id}")
+        r#"--!strict
+local zend = require("./zend")("{id}")
 
 -- {name}
+--
+-- `--!strict` above has `zend plugin check` (and Zend, as you save) check
+-- the types here: a helper called with the wrong kind of value is named
+-- with its line. Take it out to check only what's wrong for sure.
 --
 -- Zend loads this file when the plugin is on, and reloads it as you save.
 -- zend.luau's header (next to this file) lists what each helper does and

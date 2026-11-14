@@ -592,24 +592,44 @@ zend.toast(zend.s("timer.done"))
 
 1. **`create_plugin { id, name, description, permissions }`** makes the folder and signs it as yours. Its reply gives the folder, its files and a link to this guide.
 2. **Edit `init.luau`** (and the manifest, for permissions). Zend re-signs and reloads it on every save. If the manifest asks for something new, the person allows it in Zend.
-3. **`plugin_status { id, snapshot = true }`** answers without a person:
+3. **Check it**: `check_plugin { id }` (MCP) or `zend plugin check <id or folder>` names each error as `file:line:column` before you look at the window (see "Checking" below). Zend checks an own plugin as you save it too, and writes the errors to its log.
+4. **`plugin_status { id, snapshot = true }`** answers without a person:
    - its status (on, off, pending review, tampered, broken, and why) and what it was allowed;
    - each place it made: its selector, how many elements it matched and their boxes;
    - what its Settings row says (a need its place doesn't give, places this template lacks, an error);
    - with `snapshot`, a PNG of the window around its nodes. Read the file at `snapshot`. The window need not be in front: it's drawn for the picture;
    - with `snapshot` and `page` (an id from `pages`), a PNG of that page of yours instead, built apart from the window for the picture: `plugin_status { id, snapshot = true, page = "board", width = 900, height = 700, state = { tab = "usage" } }`. The page need not be open. `width` and `height` are its size in points (1000 × 760 if left out). `state` stands in for what `zend.store` holds, by key, wherever the page's build reads it (`:get()` or `:peek()` in the page's build or a component's, as in `ui.use_state(tab:peek())`); what the window shows doesn't see it, and nothing kept changes. Only your plugin's own pages can be pictured;
    - `logs`: its last 20 log lines (see below).
-4. **Read its log**: `plugin_logs { id, since? }` (MCP) or `zend plugin logs <id> [--follow]`. It holds what the plugin printed and what failed, from its window part and its service.luau, oldest first. An error comes whole, with its traceback (file, line, function), not only the first line the toast shows.
-5. **Fix and save**, then ask again. Matched 0? Check the selector against `describe_elements`. A need? Place it inside something that provides it.
+5. **Read its log**: `plugin_logs { id, since? }` (MCP) or `zend plugin logs <id> [--follow]`. It holds what the plugin printed and what failed, from its window part and its service.luau, oldest first. An error comes whole, with its traceback (file, line, function), not only the first line the toast shows.
+6. **Fix and save**, then ask again. Matched 0? Check the selector against `describe_elements`. A need? Place it inside something that provides it.
 
 ### Logs
 
-Each line has `seq`, `at` (RFC 3339, this device's time), `source` (`window` or `service`), `level` (`print`, `error`, or `info` for Zend's own word: a service started, stopped, didn't load) and `text`.
+Each line has `seq`, `at` (RFC 3339, this device's time), `source` (`window`, `service`, or `check`: what the check after a save found), `level` (`print`, `error`, or `info` for Zend's own word: a service started, stopped, didn't load) and `text`.
 
 - **`print(...)`** in init.luau or service.luau goes to the log (and, from the window, to Zend's stderr as before). Arguments are joined by tabs.
 - **Errors** go there with their traceback: a failed load, an error in a build or handler, a service method, tool, timer or task that failed.
 - **Where it's kept.** Zend holds each plugin's last 500 lines in memory and appends them to `logs/plugins/<id>.log` in its data folder (`~/.zend`), which moves to `<id>.log.old` past 1 MB. A line is cut at 16 KB. The log stays on this device: it's never synced, and only Zend's own window may write to it. Removing the plugin removes its log.
 - **Reading on.** Pass the last `seq` you read as `since` to get only what came after; `zend plugin logs <id> --follow` keeps showing new lines.
+
+### Checking
+
+`zend plugin check <id or folder>` (it needs no Zend running) and `check_plugin { id }` or `{ path }` check every `.luau` file in the plugin:
+
+- **Syntax**, with the Luau compiler Zend runs plugins with. Always.
+- **Types**, with [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) (`analyze`, the new solver), against Zend's window API (`ui`), the plugin's own `zend.luau` (whose `zend` is typed: `zend.place`, `zend.menu`, … say what they take) and the `@ds/…` modules.
+
+A file starting with `--!strict` is checked strictly: a helper given the wrong kind of value is an error. A new plugin's `init.luau` starts with it. Any other file is checked in Luau's default mode, which reports only what's wrong for sure, so untyped code passes. `--strict` (`strict: true`) checks every file strictly.
+
+```
+$ zend plugin check ~/.zend/plugins/hello
+/home/you/.zend/plugins/hello/init.luau:4:19: error[TypeError]: Expected this to be 'string', but got 'number'
+1 error, 0 warnings (syntax and types).
+```
+
+It exits 1 when there's an error; warnings (lints such as an unused local) are said and pass. `--json` prints the report: `findings` (`file`, `line`, `column`, `severity`, `code`, `message`), `errors`, `warnings`, `ok`. Only the plugin's own files count: not the `@ds` modules, not its copy of `zend.luau`.
+
+luau-lsp is looked for in `LUAU_LSP`, beside Zend, in `tools/` of Zend's data folder (`~/.zend/tools/luau-lsp`), then on the PATH. Without it only the syntax is checked, and the check says so (`types_checked: false`).
 
 `list_plugins` lists them all. Selectors that aren't stable may move; templates may rename elements. `plugin_status` and Settings show "Not shown in this template" when yours aren't there.
 

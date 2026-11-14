@@ -127,19 +127,9 @@ type Item = { kind: string, id: string, label: string, run: (context: any) -> ()
 
 local made: { [string]: any } = {}
 
-return function(id: string): any
-	-- In the plugin's service (service.luau, run headless by the engine on
-	-- each device), the engine's own helpers: zend.serve, zend.tool,
-	-- zend.every, zend.on_stop, zend.emit, zend.run, zend.fetch,
-	-- zend.notify, zend.sleep, zend.task, zend.store, zend.json,
-	-- zend.device (see the guide's "Services").
-	local service = (_G :: any).zend_service
-	if service then
-		return service(id)
-	end
-	if made[id] then
-		return made[id]
-	end
+-- The window's helpers for plugin `id` (the function this file returns
+-- makes them once per id).
+local function build(id: string)
 	local prefix = `plugin.{id}`
 	local M = {}
 
@@ -266,7 +256,7 @@ return function(id: string): any
 		elseif name == "panel_branch" or name == "panel_details" then
 			-- The session, by its id: its device, branch and folder as its
 			-- record holds them ("sessions.read"; the folder "files.read"'s).
-			local sid = if type(value) == "table" then value.session else nil
+			local sid = if type(value) == "table" then (value :: any).session else nil
 			if type(sid) ~= "string" then
 				return nil
 			end
@@ -279,7 +269,7 @@ return function(id: string): any
 		elseif name == "panel" then
 			-- Plain data, and what can be done with it: a tab of this
 			-- plugin's own ("panel.tabs").
-			local panel = value
+			local panel: any = value
 			-- (A session's panel, or a page's: a plugin's page has its own.)
 			local session, page = panel.session, panel.page
 			panel.open_tab = function(tab: { kind: string, title: string, icon: string?, data: any? })
@@ -401,7 +391,7 @@ return function(id: string): any
 				if ok then
 					return ui.div { ref = here, w_full = p.fill, h_full = p.fill, node }
 				end
-				if type(node) == "table" and getmetatable(node) == NEED then
+				if type(node) == "table" and getmetatable(node :: any) == NEED then
 					ui.invoke(`{prefix}.problem`, { need = node.need, at = p.at })
 				else
 					ui.invoke(`{prefix}.problem`, { error = tostring(node), at = p.at })
@@ -457,7 +447,7 @@ return function(id: string): any
 				ui.invoke(`{prefix}.problem`, { error = "a slot is added to, not replaced", at = p.at })
 				return
 			end
-			local ok, why = pcall(ui.contribute, slot, Guard {})
+			local ok, why = pcall(ui.contribute :: any, slot, Guard {})
 			if not ok then
 				ui.invoke(`{prefix}.problem`, { error = tostring(why), at = p.at })
 			end
@@ -474,7 +464,7 @@ return function(id: string): any
 			end
 			-- A place zgx refuses (a list's row, say) is said as this
 			-- plugin's problem; its other places stand.
-			local ok, why = pcall(ui.contribute, spec)
+			local ok, why = pcall(ui.contribute :: any, spec)
 			if not ok then
 				ui.invoke(`{prefix}.problem`, { error = tostring(why), at = p.at })
 			end
@@ -673,7 +663,7 @@ return function(id: string): any
 		return ui.call(`{prefix}.github_call`, { op = "repository", project = project })
 	end
 	function M.github.list(project: string?, repository: string, opts: { filter: string?, after: string?, refresh: boolean?, cached: boolean? }?): any
-		local o = opts or {}
+		local o: any = opts or {}
 		return ui.call(`{prefix}.github_call`, {
 			op = "list",
 			project = project or ui.null,
@@ -728,7 +718,7 @@ return function(id: string): any
 	-- A promise of { status, stdout, stderr }; `opts`: { cwd, stdin,
 	-- timeout } (seconds, 60 unless said, 300 at most).
 	function M.run(program: string, args: { string }?, opts: { cwd: string?, stdin: string?, timeout: number?, env: { [string]: string }? }?): any
-		local o = opts or {}
+		local o: any = opts or {}
 		return ui.call(`{prefix}.run`, { program = program, args = args or {}, cwd = o.cwd, stdin = o.stdin, timeout = o.timeout, env = o.env })
 	end
 
@@ -1014,11 +1004,11 @@ return function(id: string): any
 	end
 
 	local function publish_items()
-		local list = {}
+		local list: { any } = {}
 		for _, item in items do
 			table.insert(list, { kind = item.kind, id = item.id, label = item.label })
 		end
-		table.sort(list, function(a, b)
+		table.sort(list, function(a: any, b: any)
 			return a.id < b.id
 		end)
 		ui.invoke(`{prefix}.menus`, list)
@@ -1225,7 +1215,7 @@ return function(id: string): any
 	-- read): { { provider, account, active, plan?, fetched_at?, error?,
 	-- windows = { { label, used, remaining, resets_at? } } } }.
 	function M.usage(opts: { provider: string?, device: string? }?): any
-		local o = opts or {}
+		local o: any = opts or {}
 		return agents("usage", { provider = o.provider }, o.device)
 	end
 
@@ -1237,7 +1227,7 @@ return function(id: string): any
 	-- The saved accounts ("accounts.read"): { { provider, account, active,
 	-- switchable, email?, name?, organization?, plan? } }.
 	function M.accounts(opts: { provider: string?, device: string? }?): any
-		local o = opts or {}
+		local o: any = opts or {}
 		return agents("accounts", { provider = o.provider }, o.device)
 	end
 
@@ -1258,7 +1248,7 @@ return function(id: string): any
 	-- The chats pinned to an account ("accounts.read"): { { provider,
 	-- account, since, chat? } } (`chat` with "sessions.read").
 	function M.pins(opts: { provider: string?, device: string? }?): any
-		local o = opts or {}
+		local o: any = opts or {}
 		return agents("pins", { provider = o.provider }, o.device)
 	end
 
@@ -1422,6 +1412,43 @@ return function(id: string): any
 		ui.invoke(`{prefix}.toast`, text)
 	end
 
-	made[id] = M
 	return M
+end
+
+-- In a service the engine's helpers come instead: those only a service
+-- has, untyped here (the engine's prelude is theirs).
+type Service = {
+	device: any,
+	emit: any,
+	fetch: any,
+	folders: any,
+	json: any,
+	null: any,
+	on_stop: any,
+	serve: any,
+	sleep: any,
+	task: any,
+	watch: any,
+}
+
+-- What `require("./zend")(id)` gives: `zend plugin check` holds a
+-- plugin's calls to it (`zend.place { at = 5 }` is an error there).
+export type Zend = typeof(build("")) & Service
+
+return function(id: string): Zend
+	-- In the plugin's service (service.luau, run headless by the engine on
+	-- each device), the engine's own helpers: zend.serve, zend.tool,
+	-- zend.every, zend.on_stop, zend.emit, zend.run, zend.fetch,
+	-- zend.notify, zend.sleep, zend.task, zend.store, zend.json,
+	-- zend.device (see the guide's "Services").
+	local service: any = (_G :: any).zend_service
+	if service then
+		return (service :: any)(id)
+	end
+	local zend = made[id]
+	if not zend then
+		zend = build(id)
+		made[id] = zend
+	end
+	return zend
 end

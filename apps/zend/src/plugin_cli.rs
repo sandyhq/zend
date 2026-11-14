@@ -146,6 +146,10 @@ pub async fn run(
     ipc_port: u16,
     data_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
+    // Checking needs no Zend: it runs here.
+    if let PluginCommand::Check { target, strict, json } = command {
+        return check(&target, strict, json, data_dir);
+    }
     let client = connect(ipc_port, data_dir).await?;
     let call = |method: &'static str, params: Value| call(&client, method, params);
     match command {
@@ -208,6 +212,7 @@ pub async fn run(
                 std::process::exit(1);
             }
         }
+        PluginCommand::Check { .. } => unreachable!("checked above, without Zend"),
         PluginCommand::List => {
             let list = call(methods::LIST_PLUGINS, json!({})).await?;
             let plugins = list["plugins"].as_array().cloned().unwrap_or_default();
@@ -298,6 +303,59 @@ fn size(bytes: u64) -> String {
         0..1024 => format!("{bytes} bytes"),
         1024..1_048_576 => format!("{:.1} KB", bytes as f64 / 1024.0),
         _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+    }
+}
+
+/// `zend plugin check`: its findings, one a line, and the exit code 1
+/// when one is an error.
+fn check(target: &str, strict: bool, as_json: bool, data_dir: &std::path::Path) -> anyhow::Result<()> {
+    use zend_engine::plugins::check;
+    let in_folder = data_dir.join(zend_engine::plugins::PLUGINS_DIR).join(target);
+    let dir = if looks_like_id(target) && in_folder.is_dir() {
+        in_folder
+    } else {
+        std::path::absolute(target)?
+    };
+    let options = check::Options { strict, data_dir: Some(data_dir.to_path_buf()), ..Default::default() };
+    let report = check::check_plugin(&dir, &options).map_err(anyhow::Error::msg)?;
+    if as_json {
+        let mut out = serde_json::to_value(&report)?;
+        out["ok"] = json!(report.ok());
+        out["summary"] = json!(report.summary());
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        for finding in &report.findings {
+            let mut text = finding.to_string();
+            text = text.replace('\n', "\n    ");
+            // Paths a terminal (or an editor) opens: from where you are.
+            println!("{}", shown_path(&dir, &text));
+        }
+        if let Some(note) = &report.types_note {
+            eprintln!("{note}");
+        }
+        println!("{}", report.summary());
+    }
+    if !report.ok() {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// A finding's line with its file as a path from the current folder (or a
+/// full one), not only the plugin's.
+fn shown_path(dir: &std::path::Path, line: &str) -> String {
+    let here = std::env::current_dir().ok();
+    let base = here
+        .as_deref()
+        .and_then(|here| dir.strip_prefix(here).ok())
+        .map(|rel| rel.to_path_buf())
+        .unwrap_or_else(|| dir.to_path_buf());
+    if base.as_os_str().is_empty() {
+        line.to_owned()
+    } else {
+        format!("{}/{line}", base.display())
     }
 }
 
