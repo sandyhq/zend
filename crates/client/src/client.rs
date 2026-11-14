@@ -995,11 +995,19 @@ impl Client {
             .workspace
             .chat(parent_id)
             .ok_or_else(|| ClientError::NotFound(parent_id.to_owned()))?;
-        // One level deep: a side chat's own side chat hangs off the root.
-        let root = parent.parent_chat_id.clone().unwrap_or_else(|| parent.id.clone());
+        // One level deep: a side chat's own side chat hangs off the root. A
+        // child session is a root of its own.
+        let root = parent
+            .parent_chat_id
+            .clone()
+            .filter(|_| parent.child_kind != Some(zend_proto::ChildKind::Session))
+            .unwrap_or_else(|| parent.id.clone());
         let mut chat = parent;
         chat.id = crate::new_id();
         chat.parent_chat_id = Some(root);
+        if chat.child_kind == Some(zend_proto::ChildKind::Session) {
+            chat.child_kind = Some(zend_proto::ChildKind::Side);
+        }
         chat.title = None;
         chat.archived = false;
         chat.created_at = Utc::now();
@@ -1024,7 +1032,11 @@ impl Client {
             .workspace
             .chat(source_id)
             .ok_or_else(|| ClientError::NotFound(source_id.to_owned()))?;
-        let parent = source.parent_chat_id.clone().unwrap_or_else(|| source.id.clone());
+        let parent = source
+            .parent_chat_id
+            .clone()
+            .filter(|_| source.child_kind != Some(zend_proto::ChildKind::Session))
+            .unwrap_or_else(|| source.id.clone());
         let chat_id = crate::new_id();
         let reply = self
             .inner
@@ -1145,7 +1157,8 @@ impl Client {
             .is_some_and(|chat| zend_proto::is_cloud_device(&chat.device_id, ""));
         // A Cloud chat's children on Cloud go with it: its delegates (each on
         // a machine of its own, which would otherwise outlive the parent) and
-        // its side chats (on its machine, now gone).
+        // its side chats (on its machine, now gone). Its child sessions stay,
+        // detached by `RegistryDoc::delete_chat`.
         let children: Vec<String> = if on_cloud {
             let (state, _) = self.inner.workspace.state();
             state
@@ -1154,6 +1167,7 @@ impl Client {
                 .filter(|chat| {
                     chat.parent_chat_id.as_deref() == Some(chat_id)
                         && zend_proto::is_cloud_device(&chat.device_id, "")
+                        && chat.child_kind != Some(zend_proto::ChildKind::Session)
                 })
                 .map(|chat| chat.id.clone())
                 .collect()
@@ -2110,5 +2124,63 @@ mod tests {
         });
         assert_eq!(pending, 0);
         assert_eq!(title.as_deref(), Some("title 19"));
+    }
+}
+
+#[cfg(test)]
+mod child_session_tests {
+    use super::*;
+    #[test]
+    fn deleting_a_parent_detaches_its_child_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(Default::default()), Arc::new(crate::events::NullListener)).unwrap();
+        let mut worker = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        let parent = worker.id.clone();
+        worker.id = "session-worker".into();
+        worker.parent_chat_id = Some(parent.clone());
+        worker.child_kind = Some(zend_proto::ChildKind::Session);
+        client.inner.registry_write(|doc| doc.upsert_chat(&worker)).unwrap();
+        client.delete_session(&parent).unwrap();
+        let kept = client.inner.workspace.mutate(|doc| doc.chat("session-worker")).unwrap().unwrap();
+        eprintln!("after Client::delete_session: parent={:?} childKind={:?}", kept.parent_chat_id, kept.child_kind);
+        assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+    }
+
+    #[test]
+    fn a_child_session_s_side_chat_hangs_off_it_as_a_side_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(Default::default()), Arc::new(crate::events::NullListener)).unwrap();
+        let mut worker = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        worker.parent_chat_id = Some(worker.id.clone());
+        worker.id = "session-worker".into();
+        worker.child_kind = Some(zend_proto::ChildKind::Session);
+        client.inner.registry_write(|doc| doc.upsert_chat(&worker)).unwrap();
+        let side = client.create_side_chat("session-worker").unwrap();
+        let side = client.inner.workspace.chat(&side).unwrap();
+        assert_eq!(side.parent_chat_id.as_deref(), Some("session-worker"));
+        assert_eq!(side.child_kind, Some(zend_proto::ChildKind::Side));
+    }
+
+    #[test]
+    fn a_child_session_is_found_by_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(Default::default()), Arc::new(crate::events::NullListener)).unwrap();
+        let mut worker = client.inner.workspace.mutate(|doc| doc.read_chats()).unwrap().into_iter()
+            .find(|c| c.parent_chat_id.is_none()).unwrap();
+        worker.parent_chat_id = Some(worker.id.clone());
+        worker.id = "search-worker".into();
+        worker.child_kind = Some(zend_proto::ChildKind::Session);
+        worker.title = Some("ZEBRAREVIEWWORKER".into());
+        client.inner.registry_write(|doc| doc.upsert_chat(&worker)).unwrap();
+        let workspace = client.workspace();
+        assert!(workspace.front.recent.iter().any(|r| r.id == worker.id), "visible in recent");
+        let hits = workspace.search("ZEBRAREVIEWWORKER", 20);
+        eprintln!("search results for visible child session: {}", hits.len());
+        assert!(hits.iter().any(|h| h.session.id == worker.id), "visible child session must be searchable");
     }
 }

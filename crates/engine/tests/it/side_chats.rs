@@ -1202,3 +1202,24 @@ async fn a_side_chat_keeps_its_subagent_tools_when_native_subagents_are_off() {
     );
     core.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_child_session_s_fork_is_a_side_chat_and_gets_its_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    core.workspace.create_chat_hosted("worker", None, Some(&core.device_id), Some(&core.device_id),
+        None, Some("/tmp".into()), Some("main".into()), Some(zend_proto::ChildKind::Session)).unwrap();
+    let source = core.doc_host.open("worker").unwrap();
+    source.doc().push_message(&message("u1", MessageRole::User, "Remember PINEAPPLE", MessageStatus::Complete)).unwrap();
+    source.doc().push_message(&message("a1", MessageRole::Assistant, "I remember PINEAPPLE", MessageStatus::Complete)).unwrap();
+    let client = zend_rpc::memory_client(core.rpc_service());
+    let fork: zend_proto::Chat = client.call_as(methods::FORK_SIDE_CHAT,
+        serde_json::json!({"chatId":"fork-of-session", "sourceChatId":"worker", "parentChatId":"main"})).await.unwrap();
+    let request = side_turn(&core, &requests, "fork-of-session", "What should I remember?", "f1").await;
+    eprintln!("fork kind={:?}, top_level={}, provider prompt={:?}", fork.child_kind, fork.is_top_level(), request.prompt);
+    core.shutdown().await;
+    assert!(request.prompt.contains("PINEAPPLE"), "a side-chat fork must deliver its copied history");
+}

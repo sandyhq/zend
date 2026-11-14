@@ -3254,3 +3254,25 @@ fn a_broken_delta_chain_keeps_its_pending_writes() {
     let ids: Vec<String> = loaded.read_chats().unwrap().into_iter().map(|c| c.id).collect();
     assert_eq!(ids, ["after", "kept"], "the pending write after the break was lost");
 }
+
+#[test]
+fn a_detach_wins_over_a_link_written_by_a_device_whose_clock_runs_ahead() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    b.upsert_chat(&chat("main", "dev-b")).unwrap();
+    a.clock.next(Utc::now().timestamp_millis() + 60_000, "dev-a");
+    let mut worker = chat("worker", "dev-a");
+    worker.parent_chat_id = Some("main".into());
+    worker.child_kind = Some(zend_proto::ChildKind::Session);
+    a.upsert_chat(&worker).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    b.delete_chat("main").unwrap();
+    assert!(b.detach_chat("worker").unwrap());
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert!(a.chat("main").unwrap().is_none(), "parent was deleted");
+    let kept = a.chat("worker").unwrap().unwrap();
+    eprintln!("after remote detach (creator clock +60s): parent={:?}, childKind={:?}", kept.parent_chat_id, kept.child_kind);
+    assert_eq!((kept.parent_chat_id, kept.child_kind), (None, None));
+}

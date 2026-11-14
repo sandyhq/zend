@@ -92,6 +92,20 @@ impl HlcClock {
         }
         encode_hlc(self.last_ms, self.counter, device)
     }
+
+    /// Move past a clock already seen (any device's), so the next one is
+    /// newer than it even when that device's wall clock runs ahead.
+    fn observe(&mut self, hlc: &str) {
+        let mut parts = hlc.splitn(3, '-');
+        let ms = parts.next().and_then(|s| s.parse::<i64>().ok());
+        let counter = parts.next().and_then(|s| s.parse::<u32>().ok());
+        if let (Some(ms), Some(counter)) = (ms, counter)
+            && (ms, counter) > (self.last_ms, self.counter)
+        {
+            self.last_ms = ms;
+            self.counter = counter;
+        }
+    }
 }
 
 // ── rows and ops (wire-compatible with edge/src/registry-core.ts) ───────────
@@ -1727,10 +1741,17 @@ impl RegistryDoc {
 
     /// Make a child top-level: its parent link (`parentChatId`,
     /// `childKind`) cleared, nothing else on its row touched. A child
-    /// session's parent being deleted does this.
+    /// session's parent being deleted does this. The clears are clocked
+    /// past the link's own clocks, so they win over a link written by a
+    /// device whose clock runs ahead.
     pub fn detach_chat(&mut self, chat_id: &str) -> Result<bool, DocError> {
-        if !self.row_exists(KIND_CHATS, chat_id) {
+        let Some(row) = self.overlay_row(KIND_CHATS, chat_id) else {
             return Ok(false);
+        };
+        for field in ["parentChatId", "childKind"] {
+            if let Some(hlc) = row.clocks.get(field) {
+                self.clock.observe(hlc);
+            }
         }
         self.write(
             KIND_CHATS,
@@ -1941,8 +1962,22 @@ impl RegistryDoc {
 
     /// Tombstone: delete the chat row (and its session-status row). The
     /// per-chat session doc remains — this removes the index entry only.
+    /// Its child sessions stay, detached (`detach_chat`): every path that
+    /// deletes a chat (the engine's `deleteChat`, a client's) shares this.
     pub fn delete_chat(&mut self, chat_id: &str) -> Result<bool, DocError> {
         let existed = self.row_exists(KIND_CHATS, chat_id);
+        let sessions: Vec<String> = self
+            .read_chats()?
+            .into_iter()
+            .filter(|chat| {
+                chat.parent_chat_id.as_deref() == Some(chat_id)
+                    && chat.child_kind == Some(zend_proto::ChildKind::Session)
+            })
+            .map(|chat| chat.id)
+            .collect();
+        for session in sessions {
+            self.detach_chat(&session)?;
+        }
         self.delete_row_ops(&[(KIND_CHATS, chat_id), (KIND_SESSIONS, chat_id)]);
         Ok(existed)
     }

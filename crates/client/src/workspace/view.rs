@@ -101,6 +101,8 @@ pub struct SessionRow {
     /// Oldest unadopted send from this device, if any.
     pub send_state: Option<SendState>,
     pub parent_chat_id: Option<String>,
+    /// What it is to its parent (`Chat::child_kind`).
+    pub child_kind: Option<zend_proto::ChildKind>,
     /// Sync room generation (2 = chat2; 1 = legacy, not dialable).
     pub room_gen: u32,
     /// Asleep until then (ms; the Activity view's Asleep), as
@@ -276,7 +278,11 @@ impl WorkspaceSnapshot {
         let mut hits: Vec<SearchHit> = self
             .sessions
             .values()
-            .filter(|row| row.parent_chat_id.is_none())
+            // A child session is listed, so it's found too.
+            .filter(|row| {
+                row.parent_chat_id.is_none()
+                    || row.child_kind == Some(zend_proto::ChildKind::Session)
+            })
             .filter_map(|row| score_row(row, &terms).map(|(score, field)| (row, score, field)))
             .map(|(row, score, field)| SearchHit {
                 session: row.clone(),
@@ -558,6 +564,7 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
         pull_request: change_request_for_chat(chat, cx.change_requests).cloned(),
         send_state,
         parent_chat_id: chat.parent_chat_id.clone(),
+        child_kind: chat.child_kind,
         room_gen: chat.room_gen.unwrap_or(1),
         sleep_until_ms,
         woke_at_ms,
