@@ -77,6 +77,10 @@ local shared = {
 		-- A collapsed group still lists its sessions working, asking or done
 		-- unseen: on, so folding a group away never hides what needs you.
 		keep_active = ui.persist("shell_sidebar_keep_active", true),
+		-- A child session listed under its parent, indented, the parent's
+		-- row folding them (on); off, each is a row of its own among the
+		-- sessions, naming its parent.
+		nest_children = ui.persist("shell_sidebar_nest_children", true),
 	},
 	-- The groups showing all their sessions ("Show N more"): until the app
 	-- quits (a reload keeps them).
@@ -348,6 +352,13 @@ end
 local shelf = ui.computed(function(): { any }
 	local names = devices()
 	local out = {}
+	local titles: { [string]: string } = {}
+	for _, c in sessions.now:get().chats do
+		titles[c.id] = c.title
+	end
+	for _, c in sessions.archived:get() do
+		titles[c.id] = c.title
+	end
 	for _, c in sessions.archived:get() do
 		table.insert(out, {
 			id = c.id,
@@ -359,6 +370,10 @@ local shelf = ui.computed(function(): { any }
 			agent_icon = c.agent_icon,
 			device = names[c.device] or locale.s("shell.sidebar.unknown_device"),
 			branch = c.branch,
+			-- (A child session on the shelf is a row of its own, naming its
+			-- parent.)
+			parent = c.parent,
+			parent_title = if c.parent then titles[c.parent] else nil,
 		})
 	end
 	return out
@@ -521,6 +536,18 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 			group.unused = true
 		end
 	end
+	-- Each session as the list reads it, with the group it stands in: whether
+	-- its parent stands in the same list (`parent_here`) needs them all, so
+	-- they're put in their groups after.
+	local made: { { group: ds.SidebarProject, device: string?, row: { [string]: any } } } = {}
+	local standing: { [ds.SidebarProject]: { [string]: string? } } = {}
+	local titles: { [string]: string } = {}
+	for _, c in now.chats do
+		titles[c.id] = c.title
+	end
+	for _, c in now.archived or {} do
+		titles[c.id] = c.title
+	end
 	for _, c in now.chats do
 		if just and not (just_group and c.project and by[c.project] == just_group) then
 			continue
@@ -541,7 +568,9 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 		end
 		local on_shelf = activity.shelf(c, status)
 		local rank = if act then activity.rank(c, on_shelf) else nil
-		table.insert(group.sessions, kept({
+		standing[group] = standing[group] or {}
+		standing[group][c.id] = c.device
+		table.insert(made, { group = group, device = c.device, row = {
 			id = c.id,
 			title = c.title,
 			status = status :: any,
@@ -555,7 +584,19 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 			-- (Its side chats working count as its subagents do, as its
 			-- lanes' badge counts them: screens/chat/lanes.)
 			subagents = (c.running_subagents or 0) + (c.working_side_chats or 0),
-		}) :: any)
+			-- A child session: the chat that started it (`parent`) and its
+			-- title; `parent_here` (below): it stands in this very list with
+			-- it (the same group and device), where the sidebar nests it.
+			parent = c.parent,
+			parent_title = if c.parent then titles[c.parent] else nil,
+		} })
+	end
+	for _, m in made do
+		local row = m.row
+		if row.parent and standing[m.group][row.parent] ~= nil and standing[m.group][row.parent] == m.device then
+			row.parent_here = true
+		end
+		table.insert(m.group.sessions, kept(row) :: any)
 	end
 	if #loose.sessions > 0 then
 		table.insert(out, loose)

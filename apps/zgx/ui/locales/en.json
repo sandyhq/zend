@@ -468,6 +468,9 @@
       "section_name": "Section name",
       "project_actions": "Project actions",
       "show_more": "Show {n} more",
+      "child_of": "Child of {title}",
+      "fold_children": "Fold child sessions",
+      "open_children": "Show child sessions",
       "new_section": "New section",
       "settings": "Settings",
       "view": {
@@ -490,6 +493,7 @@
         "compact": "Compact",
         "create_section": "Create section",
         "keep_active": "Active when collapsed",
+        "nest_children": "Nest child sessions",
         "devices_first": "Devices first",
         "projects_first": "Projects first",
         "empty_projects": "Empty projects",
