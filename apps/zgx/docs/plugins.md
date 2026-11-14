@@ -612,6 +612,16 @@ zend.toast(zend.s("timer.done"))
 - **Looking and trying.** `plugin_status` and `plugin_logs` with `preview = true` (`zend plugin logs <id> --preview`) answer for the preview. With `snapshot`, when none of its nodes shows, the picture is the whole preview window, to find what to click. `plugin_input { id, action, at }` acts on the preview's window, by the selectors `describe_elements` and the driver take (`#id`, `.class`, `"Text"`, `role:radio "Usage"`, `>>` for inside): `click`, `hover` (`at`, or `x`, `y` in points), and `set_state` with `state = { tab = "usage" }`: values for what `zend.store` holds, by key. A plugin page opens by clicking its title in the sidebar (`"Value"`). It answers once the window has laid out what the input did.
 - **Stop.** `zend plugin preview <id> --stop` (`preview_plugin { id, stop = true }`) ends both.
 
+### Preview in your window: Keep or Revert
+
+`zend plugin preview <folder> --in-window` (MCP `preview_plugin { path, in_window = true }`) runs a changed copy of one of your own plugins that's on in your own window, instead of the version you keep, until it's kept or reverted. A bar at the window's corner says "Previewing <name>" with **Revert** and **Keep**, as a template's preview does.
+
+- **Keep is the person's.** Only the bar's Keep keeps it (`KeepPluginPreview`, refused to agents and to other devices): the copy goes over your plugin's folder and what it kept in the preview over what yours kept. An agent can start a preview and revert it, never keep it.
+- **Revert** (the bar, or `preview_plugin { id, in_window = true, stop = true }`) takes it away: your folder, its grants and what it kept are as they were.
+- **What it starts from.** What it keeps (`zend.store`) starts as a copy of yours; changes stay with the preview until Keep. A copy that asks for more than you allowed is refused: allow it first, or preview it apart (without `in_window`).
+- **When it fails.** An `error()` while it loads leaves the version you keep running. The bar says why and offers Revert alone, and `plugin_logs` has the error, with its traceback, then Zend's line about it. `plugin_status` shows `window_preview` (`hash`, `running`, `failed`, `bar`) while it lasts.
+- **Trying it.** `plugin_input { id, preview = false, … }` acts on this window only when it runs offscreen (as a check's own instance does); in a window on screen, the person tries it.
+
 ### Logs
 
 Each line has `seq`, `at` (RFC 3339, this device's time), `source` (`window`, `service`, or `check`: what the check after a save found), `level` (`print`, `error`, or `info` for Zend's own word: a service started, stopped, didn't load) and `text`.
