@@ -23,6 +23,7 @@ fn run_request_attachments_survive_command_round_trip() {
         resume: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     };
     doc.queue_command(&SessionCommandEntry {
         id: "c1".into(),

@@ -9971,6 +9971,7 @@ impl Composer {
                         worktree: run_worktree,
                         env: Default::default(),
                         extra_mcp: Vec::new(),
+                        instructions: Vec::new(),
                     },
                     message_id: message_id.clone(),
                 };

@@ -115,6 +115,7 @@ fn run(
         worktree: None,
         resume: None,
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

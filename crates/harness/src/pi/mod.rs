@@ -1,5 +1,6 @@
 //! Native Pi JSONL RPC driver. See PROTOCOL.md for the legacy ACK barrier.
 mod catalog;
+mod instructions;
 mod mcp;
 mod normalize;
 mod rpc;
@@ -118,6 +119,7 @@ impl PiHarness {
             &["--no-session".into()],
             None,
             &[],
+            None,
             &Default::default(),
         )?;
         let (mut tx, rx) = tokio::sync::oneshot::channel();
@@ -142,6 +144,8 @@ impl PiHarness {
         args: &[String],
         mcp: Option<&zend_proto::McpServer>,
         extra_mcp: &[zend_proto::McpServer],
+        // Plugins' instructions; `None` (a discovery probe) loads none.
+        instructions: Option<&[zend_proto::SessionInstruction]>,
         run_env: &std::collections::BTreeMap<String, String>,
     ) -> Result<Process, HarnessError> {
         let exe = self.resolve_executable()?;
@@ -169,7 +173,10 @@ impl PiHarness {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let scratch = self::mcp::configure_all(&mut cmd, mcp, extra_mcp)?;
+        let mut scratch = self::mcp::configure_all(&mut cmd, mcp, extra_mcp)?;
+        let instructions = instructions
+            .map(|list| self::instructions::configure(&mut cmd, &mut scratch, list))
+            .transpose()?;
         let child = cmd.spawn().map_err(|e| {
             crate::executable::spawn_error(e, Some(cwd), || crate::executable::binary_hint(&exe))
         })?;
@@ -190,6 +197,7 @@ impl PiHarness {
         Ok(Process {
             child,
             _scratch: scratch,
+            instructions,
             transport,
             tail,
             stderr_task,
@@ -201,6 +209,8 @@ impl PiHarness {
 struct Process {
     child: Child,
     _scratch: Option<crate::scratch::ScratchDir>,
+    /// The file the plugins' instructions are read from each turn.
+    instructions: Option<PathBuf>,
     transport: rpc::Transport,
     tail: crate::StderrTail,
     stderr_task: tokio::task::JoinHandle<()>,
@@ -304,6 +314,17 @@ impl Harness for PiHarness {
     }
     /// `set_model` and `set_thinking_level` change the live process. Clearing
     /// either back to the default cannot be expressed that way.
+    /// The default, and the same plugins' instructions: different ones are
+    /// adopted in place (their file rewritten before the next turn).
+    fn same_runtime(&self, live: &RunRequest, next: &RunRequest) -> bool {
+        live.model == next.model
+            && live.reasoning == next.reasoning
+            && crate::same_model_options(&live.model_options, &next.model_options)
+            && live.cwd == next.cwd
+            && live.access == next.access
+            && live.plan == next.plan
+            && live.instructions == next.instructions
+    }
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
         let model = |r: &RunRequest| r.model.as_deref().filter(|m| *m != "default").is_some();
         live.cwd == next.cwd
@@ -398,6 +419,7 @@ impl Harness for PiHarness {
             &args,
             request.mcp.as_ref(),
             &request.extra_mcp,
+            Some(&request.instructions),
             &request.env,
         )?;
         let (tx, rx) = mpsc::channel(256);
@@ -632,6 +654,10 @@ impl Runner {
         request: &RunRequest,
         backlog: &mut Vec<Value>,
     ) -> Result<(), HarnessError> {
+        // Read by the extension before the next agent turn.
+        if let Some(file) = &self.process.instructions {
+            self::instructions::write(file, &request.instructions)?;
+        }
         if let Some(model) = request.model.as_deref().filter(|s| *s != "default") {
             let models = self
                 .process
@@ -780,6 +806,7 @@ impl Runner {
                             self.request.model = next.model.clone();
                             self.request.reasoning = next.reasoning;
                             self.request.model_options = next.model_options.clone();
+                            self.request.instructions = next.instructions.clone();
                             for frame in backlog {
                                 self.frame(frame).await?;
                             }

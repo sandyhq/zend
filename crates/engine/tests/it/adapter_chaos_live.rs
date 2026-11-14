@@ -133,6 +133,7 @@ impl Suite {
             worktree: None,
             resume: None,
             extra_mcp: Vec::new(),
+            instructions: Vec::new(),
         }
     }
 
@@ -1203,6 +1204,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         worktree: None,
         resume: None,
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

@@ -601,6 +601,14 @@ pub struct RunRequest {
     /// run it. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_mcp: Vec<McpServer>,
+    /// What this host's plugins (those allowed `session.instructions`) tell
+    /// the chat's agent, each in full as a system-prompt section of its own
+    /// (`plugin-<id>`), never through MCP instructions. Stamped by the HOST
+    /// engine for local runs, like [`Self::extra_mcp`]: a host must replace
+    /// whatever a sender put here. A driver that has no system prompt to add
+    /// to skips them. Additive + serde-defaulted for wire compat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<SessionInstruction>,
     /// Host-resolved environment for the spawned agent process (credential
     /// broker secrets on a Cloud device: `CODEX_HOME`, `GH_TOKEN`,
     /// `ANTHROPIC_API_KEY`, …). Filled by the HOST right before the request
@@ -634,6 +642,7 @@ impl std::fmt::Debug for RunRequest {
             mcp,
             env,
             extra_mcp,
+            instructions,
         } = self;
         f.debug_struct("RunRequest")
             .field("prompt", prompt)
@@ -651,8 +660,28 @@ impl std::fmt::Debug for RunRequest {
             .field("worktree", worktree)
             .field("mcp", mcp)
             .field("extra_mcp", extra_mcp)
+            .field("instructions", instructions)
             .field("env", &env.keys().collect::<Vec<_>>())
             .finish()
+    }
+}
+
+/// One plugin's instructions for a chat's agent ([`RunRequest::instructions`]):
+/// its entries for that chat, joined, in full.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInstruction {
+    /// The plugin's id: the section is `plugin-<id>`.
+    pub plugin: String,
+    /// The plugin's name, as Settings shows it.
+    pub name: String,
+    pub text: String,
+}
+
+impl SessionInstruction {
+    /// The system-prompt section these go in: `plugin-<id>`.
+    pub fn section(&self) -> String {
+        format!("plugin-{}", self.plugin)
     }
 }
 

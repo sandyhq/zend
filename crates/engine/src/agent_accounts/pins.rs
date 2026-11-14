@@ -105,7 +105,7 @@ fn fingerprint(prefix: &str, secret: &str) -> String {
 }
 
 /// Whether `harness` has a per-chat mechanism at all.
-fn pinnable(harness: HarnessId) -> bool {
+pub(crate) fn pinnable(harness: HarnessId) -> bool {
     matches!(harness, HarnessId::ClaudeCode | HarnessId::Muse)
 }
 

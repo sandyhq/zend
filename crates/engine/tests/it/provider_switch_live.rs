@@ -33,6 +33,7 @@ fn request(harness: HarnessId, prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

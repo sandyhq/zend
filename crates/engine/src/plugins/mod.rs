@@ -20,6 +20,7 @@ pub mod capability;
 pub mod files;
 pub mod guides;
 pub mod install;
+pub mod instructions;
 pub mod keys;
 mod lifecycle;
 pub mod manifest;
@@ -552,6 +553,7 @@ impl Plugins {
         plugins.inner.agents.set_sink(Arc::new(AgentSink {
             inner: Arc::downgrade(&plugins.inner),
         }));
+        plugins.inner.agents.keep_instructions_in(data_dir);
         plugins.publish_tools();
         plugins
     }

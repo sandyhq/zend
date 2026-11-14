@@ -162,6 +162,7 @@ async fn steering_never_aborts_a_running_tool() {
                     resume: None,
                     env: Default::default(),
                     extra_mcp: Vec::new(),
+                    instructions: Vec::new(),
                 },
             },
         )

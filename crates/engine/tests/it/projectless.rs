@@ -352,6 +352,7 @@ async fn exercise_projectless(mode: Mode) {
                         resume: None,
                         env: Default::default(),
                         extra_mcp: Vec::new(),
+                        instructions: Vec::new(),
                     },
                     message_id: message_id.into(),
                 },

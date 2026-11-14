@@ -137,6 +137,7 @@ impl Rig {
             resume: None,
             env: Default::default(),
             extra_mcp: Vec::new(),
+            instructions: Vec::new(),
         }
     }
 

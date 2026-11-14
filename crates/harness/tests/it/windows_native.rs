@@ -219,6 +219,7 @@ fn request(cwd: &Path, prompt: &str, resume: Option<&str>) -> RunRequest {
         resume: resume.map(str::to_owned),
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

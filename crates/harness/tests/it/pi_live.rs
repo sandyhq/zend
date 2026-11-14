@@ -100,6 +100,7 @@ async fn real_pi_mock_lifecycle() {
             mcp: None,
             env: Default::default(),
             extra_mcp: Vec::new(),
+            instructions: Vec::new(),
         };
         let previous_session = session.clone();
         let mut stream = harness.run(request, controls).await.unwrap();
@@ -205,6 +206,7 @@ async fn real_pi_mock_lifecycle() {
         mcp: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     };
     let events: Vec<_> = tokio::time::timeout(
         Duration::from_secs(20),
@@ -231,6 +233,195 @@ async fn real_pi_mock_lifecycle() {
             if *status == DoneStatus::Completed && session_id.is_some() && *session_id != session)),
         "{events:?}"
     );
+}
+
+/// The plugin instructions of the ZEBRA check (session.instructions).
+const ZEBRA: &str = "Antworte immer mit dem Wort ZEBRA am Ende";
+
+fn zebra_request(cwd: &std::path::Path, prompt: &str, text: Option<&str>) -> RunRequest {
+    RunRequest {
+        prompt: prompt.into(),
+        harness: None,
+        model: Some("zend-probe/mock".into()),
+        reasoning: None,
+        model_options: Default::default(),
+        cwd: cwd.display().to_string(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        access: Default::default(),
+        plan: false,
+        resume: None,
+        attachments: vec![],
+        worktree: None,
+        mcp: None,
+        env: Default::default(),
+        extra_mcp: Vec::new(),
+        instructions: text
+            .map(|text| {
+                vec![zend_proto::SessionInstruction {
+                    plugin: "zebra".into(),
+                    name: "Zebra".into(),
+                    text: text.into(),
+                }]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn open_controls() -> (mpsc::Sender<SteerMessage>, RunControls) {
+    let (tx, steering) = mpsc::channel(8);
+    let controls = RunControls {
+        realtime: None,
+        execution_lease: None,
+        steering,
+        interrupt: CancellationToken::new(),
+        request_input: Box::new(|_| oneshot::channel().1),
+        turn: Default::default(),
+    };
+    (tx, controls)
+}
+
+/// The stream's events up to its next `Done`: that status.
+async fn next_done(
+    stream: &mut (impl futures::Stream<Item = Result<AgentEvent, zend_harness::HarnessError>> + Unpin),
+) -> DoneStatus {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(event) = stream.next().await {
+            match event.unwrap() {
+                AgentEvent::Done { status, error, .. } => {
+                    if let Some(error) = error {
+                        eprintln!("turn settled {status:?}: {error}");
+                    }
+                    return status;
+                }
+                AgentEvent::Error { message } => eprintln!("error event: {message}"),
+                _ => {}
+            }
+        }
+        panic!("the run ended without a Done");
+    })
+    .await
+    .expect("a Done in time")
+}
+
+/// The system context of the model call for `prompt` (the last one), as
+/// text: Pi's system prompt and any system patches it sent.
+fn system_context(cwd: &std::path::Path, prompt: &str) -> String {
+    let calls: Vec<serde_json::Value> = std::fs::read_to_string(cwd.join("probe-contexts.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let call = calls
+        .iter()
+        .rev()
+        .find(|c| c["text"] == prompt)
+        .unwrap_or_else(|| panic!("no model call for {prompt:?}"));
+    let mut out = call["systemPrompt"].as_str().unwrap_or_default().to_owned();
+    for message in call["messages"].as_array().into_iter().flatten() {
+        if message["role"] != "user" && message["role"] != "assistant" && message["role"] != "toolResult" {
+            out.push('\n');
+            out.push_str(&message.to_string());
+        }
+    }
+    out
+}
+
+#[tokio::test]
+#[ignore = "requires Pi >= 0.85.1 installed; uses only a local mock provider"]
+async fn real_pi_plugin_instructions_reach_the_system_prompt() {
+    let (dir, harness) = isolated_pi();
+    let lead = dir.path().join("lead");
+    let child = dir.path().join("child");
+    let plain = dir.path().join("plain");
+    for d in [&lead, &child, &plain] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let section = format!("<plugin-zebra>\n{ZEBRA}\n</plugin-zebra>");
+    // Compaction keeps no recent turn whole, so this small session compacts.
+    std::fs::write(
+        dir.path().join("agent").join("settings.json"),
+        r#"{"retry":{"enabled":false},"compaction":{"keepRecentTokens":1}}"#,
+    )
+    .unwrap();
+    let has = |ctx: &str, text: &str| ctx.contains(text);
+
+    // A new session: the plugin's text, whole, in its own section.
+    let request = zebra_request(&lead, "hello", Some(ZEBRA));
+    let (tx, controls) = open_controls();
+    let mut stream = harness.run(request.clone(), controls).await.unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    let first = system_context(&lead, "hello");
+    assert!(has(&first, ZEBRA), "the new session's system prompt holds the instructions: {first}");
+    assert!(
+        has(&first, "<plugin-zebra>"),
+        "in a section of its own (plugin-zebra): {first}"
+    );
+    eprintln!("new session, plugin section as the model got it: {:?}", first.find("<plugin-zebra>").map(|at| &first[at..(at + section.len() + 8).min(first.len())]));
+
+    // Compacted: the next model call still has it.
+    tx.send(SteerMessage::text("second turn")).await.unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    tx.send(SteerMessage::text("/compact")).await.unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    tx.send(SteerMessage::text("after compaction")).await.unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    let compacted = system_context(&lead, "after compaction");
+    assert!(has(&compacted, ZEBRA), "still there after a compaction: {compacted}");
+    let calls = std::fs::read_to_string(lead.join("probe-contexts.jsonl")).unwrap();
+    assert!(calls.lines().count() >= 3, "the compaction asked the model too");
+    let last: serde_json::Value = serde_json::from_str(calls.lines().last().unwrap()).unwrap();
+    let said = |m: &serde_json::Value| match &m["content"] {
+        serde_json::Value::String(s) => s.clone(),
+        content => content.as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect(),
+    };
+    let users: Vec<String> = last["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .map(said)
+        .collect();
+    eprintln!("after compaction the model got these user messages: {users:?}");
+    assert!(!users.iter().any(|u| u == "hello"), "the first turn was compacted away: {users:?}");
+
+    // Changed while the process lives: the next turn has the new text only.
+    let changed = "Antworte immer mit dem Wort OKAPI am Ende";
+    tx.send(SteerMessage {
+        prompt: "changed".into(),
+        message_id: None,
+        attachments: Vec::new(),
+        config: Some(Box::new(zebra_request(&lead, "changed", Some(changed)))),
+    })
+    .await
+    .unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    let now = system_context(&lead, "changed");
+    assert!(has(&now, changed), "a change reaches the live process: {now}");
+    drop(tx);
+    while stream.next().await.is_some() {}
+
+    // A child session (its own run, a session of its own): the same text.
+    let (tx, controls) = open_controls();
+    let mut stream = harness
+        .run(zebra_request(&child, "child hello", Some(ZEBRA)), controls)
+        .await
+        .unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    drop(tx);
+    while stream.next().await.is_some() {}
+    let childs = system_context(&child, "child hello");
+    assert!(has(&childs, ZEBRA), "the child session's system prompt holds them: {childs}");
+    assert!(has(&childs, "<plugin-zebra>"));
+
+    // And a run told nothing has no such section.
+    let (tx, controls) = open_controls();
+    let mut stream = harness.run(zebra_request(&plain, "plain hello", None), controls).await.unwrap();
+    assert_eq!(next_done(&mut stream).await, DoneStatus::Completed);
+    drop(tx);
+    while stream.next().await.is_some() {}
+    let none = system_context(&plain, "plain hello");
+    assert!(!has(&none, "ZEBRA") && !has(&none, "<plugin-"), "{none}");
 }
 
 async fn wait_probe_lines(path: &std::path::Path, count: usize) -> Vec<serde_json::Value> {
@@ -282,6 +473,7 @@ async fn real_pi_steering_bursts_share_the_next_model_call() {
         mcp: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     };
     let mut stream = harness.run(request, controls).await.unwrap();
     let calls = cwd.join("probe-model-calls.jsonl");
