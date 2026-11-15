@@ -226,6 +226,10 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// One rendered part of an assistant message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -248,12 +252,18 @@ pub enum MessagePart {
     /// `rev` counts the agent's updates (`update_visual`): the script at
     /// `path` was replaced in place, so a client reads it again when `rev`
     /// grows. 0 (absent) for one never updated.
+    ///
+    /// `sent`: the person sent its answers in a message (the window says
+    /// so, engine `MarkVisualSent`): it no longer asks, and shows what was
+    /// sent. Absent (false) until then.
     Visual {
         id: String,
         path: String,
         title: String,
         #[serde(default, skip_serializing_if = "is_zero")]
         rev: u64,
+        #[serde(default, skip_serializing_if = "is_false")]
+        sent: bool,
     },
     /// Model thinking. Carries its body in a dedicated doc field (`reasoning`,
     /// never `text`) so pre-reasoning desktop builds — whose unknown-kind
@@ -492,6 +502,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 path: path.clone(),
                 title: title.clone(),
                 rev: 0,
+                sent: false,
             };
             if let Some(existing) = out.iter_mut().find(|p| p.id() == id) {
                 *existing = visual;

@@ -74,6 +74,7 @@ pub(crate) fn part(index: usize) -> MessagePart {
         path: path(id),
         title: title.to_owned(),
         rev: 0,
+        sent: false,
     }
 }
 

@@ -265,6 +265,46 @@ async fn a_completed_child_tells_its_idle_parent_once() {
     rig.core.shutdown().await;
 }
 
+/// The parent has a visual open (it asks, nothing sent): the event names it,
+/// with how many entries the person made, and says to update it rather than
+/// decide or ask again. One sent, or another chat's, isn't named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_open_visual_of_the_parent_is_named_in_the_event() {
+    let rig = Rig::new().await;
+    let uploads = &rig.core.uploads;
+    let inputs = serde_json::json!([
+        { "name": "goal", "kind": "field", "label": "Goal" },
+        { "name": "when", "kind": "choice", "label": "When" },
+    ]);
+    let keep = |id: &str, chat: &str, title: &str, sent: bool| {
+        let path = uploads.store_visual(id, "return function() return ui.text 'x' end").unwrap();
+        let meta = serde_json::json!({
+            "id": id, "chatId": chat, "title": title, "sent": sent, "inputs": inputs,
+        });
+        uploads.store_visual_meta(id, &meta.to_string()).unwrap();
+        path
+    };
+    let open = keep("v:open", "parent", "Migration plan", false);
+    uploads
+        .store_visual_entries(&open, r#"{"values":{"goal":"ship it","when":"Tonight"}}"#)
+        .unwrap();
+    keep("v:sent", "parent", "Done already", true);
+    keep("v:other", "kid", "Not the parent's", false);
+    rig.child("kid", None).await;
+    rig.send("kid", "build it");
+    rig.until("the event", |r| r.events().len() == 1).await;
+    let event = &rig.events()[0];
+    let lines: Vec<&str> = event.lines().collect();
+    assert_eq!(lines.len(), 2, "{event}");
+    assert!(lines[0].contains("chat Chat kid (kid) completed."), "{event}");
+    assert_eq!(
+        lines[1],
+        "Open visual v:open \"Migration plan\": 2 entries so far, not sent. Don't decide its questions or ask them again; update it with update_visual."
+    );
+    println!("EVENT:\n{event}");
+    rig.core.shutdown().await;
+}
+
 /// Two children settling together: one message, a line each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn children_settling_together_are_told_in_one_message() {

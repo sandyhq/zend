@@ -5952,6 +5952,7 @@ impl RpcService for EngineRpc {
                         id: stored_id.clone(),
                         chat_id: meta_chat,
                         title: meta_title,
+                        shown_at: crate::now_ms(),
                         inputs: crate::live_visuals::inputs_of(
                             &script,
                             zend_visual::seed_for(&stored_id),
@@ -5998,7 +5999,7 @@ impl RpcService for EngineRpc {
             methods::MARK_VISUAL_SENT => {
                 let p: MarkVisualSentParams = parse_params(params)?;
                 let uploads = self.uploads.clone();
-                tokio::task::spawn_blocking(move || {
+                let meta = tokio::task::spawn_blocking(move || {
                     let (_, stem) = uploads.visual_stem(&p.path)?;
                     let _held = crate::live_visuals::ENTRIES_LOCK
                         .lock()
@@ -6008,12 +6009,21 @@ impl RpcService for EngineRpc {
                         .and_then(|m| crate::live_visuals::VisualMeta::from_json(&m))
                         .ok_or_else(|| crate::EngineError::Other("that visual has no inputs Zend keeps".into()))?;
                     meta.sent = p.sent;
-                    uploads.store_visual_meta(&stem, &meta.to_json())
+                    uploads.store_visual_meta(&stem, &meta.to_json())?;
+                    Ok::<_, crate::EngineError>(meta)
                 })
                 .await
                 .map_err(|e| RpcError::Failed(e.to_string()))?
                 .map_err(|e| RpcError::BadParams(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "sent": p.sent }))
+                // Every window shows it sent (it no longer pins), and the
+                // transcript keeps that after a restart.
+                let in_transcript = self
+                    .doc_host
+                    .open(&meta.chat_id)
+                    .ok()
+                    .and_then(|handle| handle.doc().mark_visual_part_sent(&meta.id, p.sent).ok())
+                    .unwrap_or(false);
+                RpcReply::value(&serde_json::json!({ "sent": p.sent, "inTranscript": in_transcript }))
             }
             methods::SAVE_VISUAL_ENTRIES => {
                 let p: SaveVisualEntriesParams = parse_params(params)?;

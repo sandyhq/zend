@@ -23,6 +23,11 @@
 //!   `notifyParent` is off (unsaid: on for subagents and child sessions,
 //!   off for side chats),
 //!   and a turn an event itself started, so an event never makes another.
+//! - Each visual the parent showed that is still open (it asks the person
+//!   something and they haven't sent their answers: live_visuals.rs) adds
+//!   one line after the children's, so the parent goes on updating it in
+//!   place rather than deciding its questions or asking them again
+//!   (plans/live-visuals D7).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -33,7 +38,9 @@ use zend_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEn
 use zend_proto::{Chat, ChildKind, DoneStatus, Session, SessionStatus};
 
 use crate::doc_host::DocHost;
+use crate::live_visuals::VisualMeta;
 use crate::sessions::SessionsEngine;
+use crate::uploads::Uploads;
 use crate::workspace_host::WorkspaceHost;
 
 /// How every event line starts. Distinct from the `[Message from Zend chat`
@@ -123,6 +130,8 @@ pub(crate) struct ChildEvents {
     sessions: SessionsEngine,
     doc_host: DocHost,
     workspace: WorkspaceHost,
+    /// Where the parents' visuals are kept, to name the open ones.
+    uploads: Uploads,
     seen: HashMap<String, Seen>,
     /// Awaited sends already spent: a mark covers the first settle after
     /// it (where `wait: true` returns), not the turn's later ones.
@@ -132,11 +141,12 @@ pub(crate) struct ChildEvents {
 }
 
 impl ChildEvents {
-    pub(crate) fn new(sessions: SessionsEngine, doc_host: DocHost, workspace: WorkspaceHost) -> Self {
+    pub(crate) fn new(sessions: SessionsEngine, doc_host: DocHost, workspace: WorkspaceHost, uploads: Uploads) -> Self {
         Self {
             sessions,
             doc_host,
             workspace,
+            uploads,
             seen: HashMap::new(),
             spent: HashSet::new(),
             due: HashMap::new(),
@@ -255,11 +265,34 @@ impl ChildEvents {
         if lines.is_empty() {
             return;
         }
+        let mut lines = lines;
+        lines.extend(self.open_visual_lines(parent_id));
         let text = lines.join("\n");
         match self.deliver(&parent, &text) {
             Ok(how) => tracing::info!(parent = %parent_id, events = lines.len(), how, "child events: told the parent"),
             Err(error) => tracing::warn!(parent = %parent_id, %error, "child events: couldn't tell the parent"),
         }
+    }
+
+    /// A line for each visual `parent_id` showed that is still open, newest
+    /// first.
+    fn open_visual_lines(&self, parent_id: &str) -> Vec<String> {
+        let mut open: Vec<(VisualMeta, usize)> = self
+            .uploads
+            .visual_metas()
+            .iter()
+            .filter_map(|m| VisualMeta::from_json(m))
+            .filter(|m| m.chat_id == parent_id && m.is_open())
+            .map(|m| {
+                let entries = zend_visual::Entries::from_json(
+                    &self.uploads.visual_entries(&m.id).unwrap_or_default(),
+                );
+                let n = entries.values().len();
+                (m, n)
+            })
+            .collect();
+        open.sort_by(|a, b| b.0.shown_at.cmp(&a.0.shown_at).then_with(|| a.0.id.cmp(&b.0.id)));
+        open.iter().map(|(m, n)| open_visual_line(m, *n)).collect()
     }
 
     /// The event line for `chat`'s settled turn.
@@ -326,9 +359,14 @@ impl ChildEvents {
 
 /// Watch this engine's runs and tell parents of their children's settled
 /// turns until the sessions engine goes away.
-pub(crate) fn spawn(sessions: SessionsEngine, doc_host: DocHost, workspace: WorkspaceHost) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn(
+    sessions: SessionsEngine,
+    doc_host: DocHost,
+    workspace: WorkspaceHost,
+    uploads: Uploads,
+) -> tokio::task::JoinHandle<()> {
     let mut rows = sessions.watch_sessions();
-    let mut events = ChildEvents::new(sessions, doc_host, workspace);
+    let mut events = ChildEvents::new(sessions, doc_host, workspace, uploads);
     events.seed(&rows.borrow_and_update());
     tokio::spawn(async move {
         loop {
@@ -398,6 +436,17 @@ fn entry_error(entry: &SessionMessageEntry) -> Option<String> {
         MessagePart::Error { message, .. } => Some(message.clone()),
         _ => None,
     })
+}
+
+/// The line an event adds for a visual of the parent's that is still open:
+/// `n` entries the person made so far.
+fn open_visual_line(meta: &VisualMeta, n: usize) -> String {
+    format!(
+        "Open visual {} \"{}\": {n} {} so far, not sent. Don't decide its questions or ask them again; update it with update_visual.",
+        meta.id,
+        one_line(&meta.title),
+        if n == 1 { "entry" } else { "entries" },
+    )
 }
 
 /// The event line itself, from the child's transcript.
@@ -570,6 +619,21 @@ mod tests {
             entry("u2", MessageRole::User, vec![text("go")]),
         ];
         assert!(event_line(&chat(None), Outcome::Interrupted, &entries).contains("was interrupted. No reply text."));
+    }
+
+    #[test]
+    fn an_open_visual_adds_a_line_that_says_update_it_not_ask_again() {
+        let meta = VisualMeta {
+            id: "v:1".into(),
+            chat_id: "p".into(),
+            title: "Migration\nplan".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            open_visual_line(&meta, 2),
+            "Open visual v:1 \"Migration plan\": 2 entries so far, not sent. Don't decide its questions or ask them again; update it with update_visual."
+        );
+        assert!(open_visual_line(&meta, 1).contains(": 1 entry so far"));
     }
 
     #[test]

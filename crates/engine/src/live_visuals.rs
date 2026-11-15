@@ -37,6 +37,10 @@ pub struct VisualMeta {
     /// `MarkVisualSent`). From then on they bind.
     #[serde(default)]
     pub sent: bool,
+    /// When it was shown (ms since the epoch; 0 for one kept before this
+    /// was): the newest open ones are named first.
+    #[serde(default)]
+    pub shown_at: i64,
     /// Its named inputs, as its latest script first draws them.
     #[serde(default)]
     pub inputs: Vec<InputInfo>,
@@ -251,6 +255,7 @@ end"#;
             title: "Plan".into(),
             rev: 1,
             sent: false,
+            shown_at: 0,
             inputs: swapped.inputs.clone(),
         };
         let told = describe(&meta, &swapped.entries);

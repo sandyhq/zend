@@ -3895,6 +3895,16 @@ end"#;
         .unwrap();
     assert_eq!(read["sent"], true);
     assert_eq!(read["open"], false);
+    // The transcript says so too: every window stops pinning it, after a
+    // restart as well.
+    let sent = entries(&core)
+        .into_iter()
+        .flat_map(|e| e.parts)
+        .find_map(|p| match p {
+            MessagePart::Visual { sent, .. } => Some(sent),
+            _ => None,
+        });
+    assert_eq!(sent, Some(true), "the part is marked sent");
     core.shutdown().await;
 }
 

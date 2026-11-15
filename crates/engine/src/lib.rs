@@ -482,7 +482,7 @@ impl EngineCore {
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         plugins.start();
         let child_events =
-            child_events::spawn(sessions.clone(), doc_host.clone(), workspace.clone());
+            child_events::spawn(sessions.clone(), doc_host.clone(), workspace.clone(), uploads.clone());
         Ok(Self {
             sessions,
             doc_host,

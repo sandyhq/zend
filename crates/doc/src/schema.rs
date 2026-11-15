@@ -110,6 +110,10 @@ struct DocPartJson {
     /// the agent first updates it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rev: Option<u64>,
+    /// A visual's answers were sent (`kind: "visual"`, additive; absent
+    /// until the window marks it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sent: Option<bool>,
     /// Fork seam (`kind: "fork"`, additive): the chat the history above was
     /// copied from, and its title at the time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,12 +189,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             ..Default::default()
         },
         // The script path and title ride `path` and `name`.
-        MessagePart::Visual { id, path, title, rev } => DocPartJson {
+        MessagePart::Visual { id, path, title, rev, sent } => DocPartJson {
             id: id.clone(),
             kind: "visual".into(),
             path: Some(path.clone()),
             name: Some(title.clone()),
             rev: (*rev > 0).then_some(*rev),
+            sent: sent.then_some(true),
             ..Default::default()
         },
         MessagePart::Text { id, text } => DocPartJson {
@@ -309,6 +314,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 path,
                 title: p.name.unwrap_or_default(),
                 rev: p.rev.unwrap_or(0),
+                sent: p.sent.unwrap_or(false),
             },
             None => MessagePart::Error {
                 id: p.id,
@@ -1492,6 +1498,18 @@ impl SessionDoc {
         Ok(true)
     }
 
+    /// The person sent visual `part_id`'s answers (`sent`), or took that
+    /// back: every window shows it so, wherever its entry is. `false`
+    /// when this doc has no such visual.
+    pub fn mark_visual_part_sent(&self, part_id: &str, sent: bool) -> Result<bool, DocError> {
+        let Some(part) = self.newest_part_of_kind(part_id, "visual") else {
+            return Ok(false);
+        };
+        part.insert("sent", sent)?;
+        self.commit();
+        Ok(true)
+    }
+
     /// Whether `part_id` is one of this doc's subagent SPAWN chips, the only
     /// part a subagent doc may hang off (same lookup and gate as
     /// [`Self::update_subagent_chip`]).
@@ -1691,6 +1709,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     }
     if let Some(rev) = doc_part.rev {
         map.insert("rev", rev as i64)?;
+    }
+    if let Some(sent) = doc_part.sent {
+        map.insert("sent", sent)?;
     }
     Ok(())
 }
@@ -2215,6 +2236,9 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     }
     if let Some(rev) = doc_part.rev {
         map.insert("rev", rev as i64)?;
+    }
+    if let Some(sent) = doc_part.sent {
+        map.insert("sent", sent)?;
     }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.
