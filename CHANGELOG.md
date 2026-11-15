@@ -14,6 +14,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - Example plugin `plugins-dev/delegation`; a plugin's Settings page shows what it tells agents.
 - `docs/features.md`, `docs/roadmap.md`, this file; plugin tools listed in `docs/mcp.md`.
 - Visuals that ask: input nodes and `ui.answer` (the inputs as words into the composer); `update_visual` and `read_visual`; a message holding a visual's answers marks it sent (`MarkVisualSent`); open visuals pinned above the composer; child events name the parent's open visuals.
+- Visual kit batch a (dev): Acceptance, Findings, StackTrace, Dependencies, Benchmark, Pipeline, Tests, Logs, Coverage, Changes, Commits, Diff, PullRequest, Environments, Snippet, Code, Json, File (`crates/visual/src/kit_a.luau`), each with an example in `visuals/`.
 - Visual kit `ui.kit`: 22 components (Form and its inputs, Card, Callout, KeyValue, List, Steps, Status, Progress, Metric and more), each one call with data; examples in `visuals/`.
 
 ### Changed

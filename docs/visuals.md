@@ -100,6 +100,24 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Progress { value, max?, label?, tone? }` | a labelled bar: a percent, or value of max |
 | `Metric { label, value, note?, tone? }` | a key number; two to four in a `ui.row` |
 | `Gauge { value, min?, max?, label?, tone? }` | a dial, 0 to 100 by default |
+| `Acceptance { criteria, columns?, title? }` | is it really done: `{ name, status = passed, failed, blocked, untested, claimed; note?, evidence?, by?, at?, method? }`; with `columns`, a grid of claimed against checked |
+| `Findings { items, title? }` | review, lint or type errors `{ severity = critical…info, title, file?, line?, rule?, detail?, fix?, status? }`, sorted by severity; a patch `fix` is coloured |
+| `StackTrace { trace, title? }` | an error and its stack, from the text a tool printed (any language) or `{ message, frames }`; library frames faint |
+| `Dependencies { report, title? }` | outdated packages `{ name, current, latest, wanted?, severity?, type?, note? }` with how far behind |
+| `Benchmark { results, unit?, title? }` | before and after `{ name, before, after, unit?, better?, stddev? }` judged by which way is better, or runs `{ name, metrics, status? }` |
+| `Pipeline { run, title? }` | a CI run `{ name?, branch?, sha?, stages = { { name, status, jobs?, steps? } } }`; a failing job opens its steps |
+| `Tests { results, title? }` | `{ name, status = pass, fail, skip, todo; file?, line?, ms?, message? }`: totals, failures with messages, passes folded |
+| `Logs { output, command?, exit?, title? }` | text or a list of lines: levels coloured, repeats folded (×3) |
+| `Coverage { report, title? }` | `{ total?, files = { { path, pct | covered, total } } }`: the total, then the least covered files first |
+| `Changes { files, title? }` | files changed `{ path, added, removed, status?, diff? }`; a file with a `diff` opens to it |
+| `Commits { commits, title? }` | `{ sha, title, author?, date?, files?, added?, removed? }` |
+| `Diff { patch, title? }` | a unified patch with old and new line numbers, additions and removals coloured |
+| `PullRequest { title, number?, state?, author?, branch?, base?, checks?, review?, … }` | state, branch, checks and review of a pull request |
+| `Environments { items, title? }` | worktrees `{ name, branch, current?, threads?, changes?, pr? }` |
+| `Snippet { path, code, from? }` | an excerpt with line numbers from `from` (a visual cannot read files: pass the lines) |
+| `Code { code, language?, title? }` | a block of code as written |
+| `Json { value, label?, open? }` | a table as a tree to open and close; `open` levels start open (1) |
+| `File { path, line?, note? }` | a file path, folder faint, name bold |
 
 ## What a visual cannot do yet
 Kit kinds still to come: Slider, Rating, ListEditor, EditableTable, Quiz, Stepper, Timer (G6 leftovers), and the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).
