@@ -23,7 +23,10 @@ The fork is where the owner's changes to Zend's core are made. They are not sent
 4. The integration branch is merged into `main` (fast-forward where possible) and pushed, on the owner's word.
 
 ## Taking upstream changes
-Not decided, and not done since the rebrand. What is known:
-- A plain merge from upstream would conflict on every renamed name. The rebrand script would have to be run over upstream's tree first, then merged.
-- The fork's changes sit mostly in `crates/engine/src/plugins`, `crates/mcp`, `crates/harness`, `apps/zgx/src/plugins`, `apps/zgx/ui` and `third_party/zgx`. Small, bounded commits there keep a later merge possible.
+Decided 2026-11-15: upstream changes are taken only when the owner says so, and then by cherry-picking the chosen commits. No merge of upstream's branch, no regular sync.
+
+How, as far as known:
+- No upstream remote is configured. Add one for the pick and fetch it.
+- Upstream's commits use the old names. A picked commit conflicts wherever it touches a renamed name; run `scripts/zend-rebrand.pl` over the result, or resolve by hand, before committing. Not tried yet since the rebrand.
+- The fork's changes sit mostly in `crates/engine/src/plugins`, `crates/mcp`, `crates/harness`, `apps/zgx/src/plugins`, `apps/zgx/ui` and `third_party/zgx`. Picks touching those need the most care.
 - `ARCHITECTURE.md` is upstream's and partly out of date for this fork; see [architecture-fork.md](architecture-fork.md).
