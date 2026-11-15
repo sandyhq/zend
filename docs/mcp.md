@@ -255,6 +255,27 @@ edge. A brand-new chat has no session row until the host picks the run up, so
 the wait keeps waiting in that case rather than reporting the unstarted run as
 done (this was the one bug the first live run found).
 
+### Plugin tools
+
+For building and trying Zend plugins. How they fit together, with examples:
+[plugins.md](../apps/zgx/docs/plugins.md), section "The loop". Each tool's
+description says what it takes.
+
+| Tool                | Does                                                                 | CLI                                  |
+| ------------------- | -------------------------------------------------------------------- | ------------------------------------ |
+| `create_plugin`     | Makes a plugin folder, signed as the person's                        |                                      |
+| `list_plugins`      | Plugins on this device, with status                                  | `zend plugin list`                   |
+| `plugin_status`     | Status, places, Settings row, last log lines; with `snapshot` a PNG, with `page` of one of its pages; `preview` asks its preview | |
+| `plugin_logs`       | What it printed and what failed, with tracebacks (`since`, `preview`) | `zend plugin logs <id> [--follow]`   |
+| `check_plugin`      | Luau syntax and types (luau-lsp), per file and line                  | `zend plugin check <id or folder>`   |
+| `preview_plugin`    | Runs a folder in a Zend of its own, offscreen; `in_window` runs it in the person's window with Keep / Revert; `stop` ends it | `zend plugin preview <folder>` |
+| `plugin_input`      | Click, hover or set kept values in a preview                         |                                      |
+| `describe_elements` | Where a plugin can place its nodes                                   |                                      |
+| `install_plugin`, `update_plugin`, `export_plugin` | Install from a file or link, check for a newer version, save as a signed file | `zend plugin export <id>` |
+
+Keeping a preview and allowing a plugin are the person's alone, in Zend's
+window; no tool does either.
+
 ### Visual replies
 
 `show_visual` is listed only when `ZEND_CHAT_ID` is set: it shows an
