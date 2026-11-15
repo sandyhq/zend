@@ -4961,7 +4961,13 @@ fn images_block(pictures: &mut Vec<&Json>) -> Option<Value> {
 /// isn't this one.
 fn visual_block(part: &Json) -> Value {
     let field = |k: &str| part[k].as_str().map_or(Value::Nil, Value::from);
+    // The agent's updates (`update_visual`): one read before is read again.
+    let rev = part["rev"].as_u64().unwrap_or(0);
+    if let Some(id) = part["id"].as_str() {
+        crate::visuals::seen_rev(id, rev);
+    }
     Value::record([
+        ("rev", Value::Num(rev as f64)),
         ("id", Value::from(part["id"].as_str().unwrap_or_default())),
         ("kind", Value::from("visual")),
         ("path", field("path")),

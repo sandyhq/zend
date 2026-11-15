@@ -3722,6 +3722,182 @@ async fn publish_visual_lands_in_the_live_turn() {
     core.shutdown().await;
 }
 
+/// `update_visual` and `read_visual` below the MCP server (plans/live-visuals
+/// G3): an update keeps what the person entered (saved by the window,
+/// `SaveVisualEntries`), marks the input it adds as new, names the dropped
+/// one that holds an entry, rewrites the script in place and raises the
+/// part's `rev`; a read returns the entries, unsent; only the chat that
+/// showed it may do either; an open visual's title can't be shown again; the
+/// window marks it sent.
+#[tokio::test]
+async fn update_visual_keeps_the_entries_and_read_visual_returns_them() {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(
+        dir.path(),
+        Arc::new(HoldsTurn {
+            events: std::sync::Mutex::new(Some(rx)),
+        }),
+    );
+    let client = zend_rpc::memory_client(core.rpc_service());
+    const FORM: &str = r#"return function()
+  return ui.column {
+    ui.field { name = "goal", label = "Goal" },
+    ui.check { name = "backup", label = "Back up first" },
+  }
+end"#;
+    const NEXT: &str = r#"return function()
+  return ui.column {
+    ui.field { name = "goal", label = "Goal", value = "the script's" },
+    ui.choice { name = "when", label = "When", options = { "Now", "Tonight" } },
+  }
+end"#;
+    core.sessions
+        .dispatch(CHAT, HarnessId::Mock, run_request("ask me"), None)
+        .await
+        .unwrap();
+    tx.send(mock_script()[0].clone()).unwrap();
+    wait_for(|| core.sessions.turn_in_flight(CHAT), "turn starts").await;
+    let shown = client
+        .call(
+            zend_rpc::methods::PUBLISH_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "title": "Plan", "script": FORM }),
+        )
+        .await
+        .expect("PublishVisual");
+    let id = shown["id"].as_str().unwrap().to_owned();
+    // The window finds the script by its part.
+    let script_path = || {
+        entries(&core).into_iter().flat_map(|e| e.parts).find_map(|p| match p {
+            MessagePart::Visual { path, .. } => Some(path),
+            _ => None,
+        })
+    };
+    wait_for(|| script_path().is_some(), "visual part").await;
+    let path = script_path().unwrap();
+
+    // The same title again while it's open: refused, naming update_visual.
+    let again = client
+        .call(
+            zend_rpc::methods::PUBLISH_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "title": "plan", "script": FORM }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(again.contains("update_visual") && again.contains(&id), "{again}");
+
+    // The person types (the window saves it).
+    client
+        .call(
+            zend_rpc::methods::SAVE_VISUAL_ENTRIES,
+            serde_json::json!({ "path": path, "entries": {
+                "values": { "goal": "ship it", "backup": true },
+                "known": ["backup", "goal"],
+            } }),
+        )
+        .await
+        .expect("SaveVisualEntries");
+
+    // Only the chat that showed it may update or read it.
+    let other = client
+        .call(
+            zend_rpc::methods::READ_VISUAL,
+            serde_json::json!({ "chatId": "someone-else", "id": id }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(other.contains("another chat"), "{other}");
+    let broken = client
+        .call(
+            zend_rpc::methods::UPDATE_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "id": id, "script": "return ui.text { 'x', color = '#f00' }" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(broken.contains("theme tokens"), "{broken}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), FORM, "a broken update changes nothing");
+
+    let updated = client
+        .call(
+            zend_rpc::methods::UPDATE_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "id": id, "script": NEXT, "title": "Plan, v2" }),
+        )
+        .await
+        .expect("UpdateVisual");
+    assert_eq!(updated["id"], id.as_str());
+    assert_eq!(updated["rev"], 1);
+    assert_eq!(updated["added"], serde_json::json!(["when"]));
+    assert_eq!(updated["droppedWithEntries"], serde_json::json!(["backup"]));
+    assert_eq!(updated["entries"]["goal"], "ship it", "the person's, not the script's");
+    assert_eq!(updated["inputs"][1]["name"], "when");
+    assert_eq!(updated["inputs"][1]["new"], true);
+    assert_eq!(updated["inTranscript"], true);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), NEXT, "rewritten in place");
+
+    let read = client
+        .call(
+            zend_rpc::methods::READ_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "id": id }),
+        )
+        .await
+        .expect("ReadVisual");
+    assert_eq!(read["sent"], false);
+    assert_eq!(read["open"], true);
+    assert_eq!(read["title"], "Plan, v2");
+    assert_eq!(read["entries"], serde_json::json!({ "goal": "ship it", "backup": true }));
+    assert_eq!(read["inputs"][0]["entry"], "ship it");
+    assert_eq!(read["inputs"][1]["new"], true);
+    assert!(read["inputs"][0].get("new").is_none());
+
+    tx.send(done(DoneStatus::Completed)).unwrap();
+    wait_for(|| !core.sessions.turn_in_flight(CHAT), "turn ends").await;
+    let visual = || {
+        entries(&core)
+            .into_iter()
+            .flat_map(|e| e.parts)
+            .filter_map(|p| match p {
+                MessagePart::Visual { id, title, rev, .. } => Some((id, title, rev)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(visual(), [(id.clone(), "Plan, v2".to_owned(), 1)], "one part, updated");
+
+    // After the turn, too.
+    let updated = client
+        .call(
+            zend_rpc::methods::UPDATE_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "id": id, "script": NEXT }),
+        )
+        .await
+        .expect("UpdateVisual after the turn");
+    assert_eq!(updated["rev"], 2);
+    assert_eq!(updated["added"], serde_json::json!([]));
+    assert_eq!(visual(), [(id.clone(), "Plan, v2".to_owned(), 2)]);
+
+    // The window marks it sent: no longer open, and its title free again.
+    client
+        .call(
+            zend_rpc::methods::MARK_VISUAL_SENT,
+            serde_json::json!({ "path": path, "sent": true }),
+        )
+        .await
+        .expect("MarkVisualSent");
+    let read = client
+        .call(
+            zend_rpc::methods::READ_VISUAL,
+            serde_json::json!({ "chatId": CHAT, "id": id }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["sent"], true);
+    assert_eq!(read["open"], false);
+    core.shutdown().await;
+}
+
 /// `show_image` end to end below the MCP server: the RPC checks the bytes are
 /// an image, stores them in uploads, and folds an image part into the chat's
 /// live turn, after what the harness streamed (not through the generated-image

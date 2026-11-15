@@ -73,6 +73,8 @@ export type Props = {
 	device: string?,
 	source: string?,
 	api: string?,
+	-- Its part's update count (update_visual): the host reads it again.
+	rev: number?,
 }
 
 -- What the host says of every visual: `{ [id] = { rev, gen } }`.
@@ -1269,16 +1271,28 @@ return ui.component(function(props: Props): Node
 	local REVS = revs(api)
 	-- Read and started once (the host keeps it: a reload, the chat opened
 	-- again, another window, none starts it twice).
-	pcall(function()
-		local promise = ui.call(api .. ".open", {
-			id = id,
-			path = props.path,
-			title = props.title,
-			device = props.device,
-			source = props.source,
-		})
-		if promise then
-			promise:after(function() end, function() end)
+	local function open()
+		pcall(function()
+			local promise = ui.call(api .. ".open", {
+				id = id,
+				path = props.path,
+				title = props.title,
+				device = props.device,
+				source = props.source,
+				rev = props.rev,
+			})
+			if promise then
+				promise:after(function() end, function() end)
+			end
+		end)
+	end
+	open()
+	-- The agent updated it (its part's rev grew): the host reads it again,
+	-- what the reader entered kept.
+	ui.effect(function()
+		local r = REVS:get()[id]
+		if r and r.stale then
+			open()
 		end
 	end)
 	local rev = ui.computed(function(): number

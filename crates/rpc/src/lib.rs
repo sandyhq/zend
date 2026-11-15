@@ -354,6 +354,18 @@ pub mod methods {
     /// crates/visual `Entries` saves them). Relay-forwardable: the chat's
     /// host keeps them. Not an agent's: entries are the reader's.
     pub const SAVE_VISUAL_ENTRIES: &str = "SaveVisualEntries";
+    /// Replace a visual's script in place (`update_visual`): `{chatId, id,
+    /// script, title?, assets?}`, only from the chat that showed it. Its
+    /// entries stay; the reply names the inputs added and dropped. Local
+    /// only, like `PublishVisual`.
+    pub const UPDATE_VISUAL: &str = "UpdateVisual";
+    /// A visual's inputs, the person's entries and whether they were sent
+    /// (`read_visual`): `{chatId, id}`, only from the chat that showed it.
+    pub const READ_VISUAL: &str = "ReadVisual";
+    /// The person sent a visual's entries in a message (or took that back):
+    /// `{path, sent}`, `path` its script as its part names it. The
+    /// window's, like `SaveVisualEntries`: not an agent's.
+    pub const MARK_VISUAL_SENT: &str = "MarkVisualSent";
     /// Store an image file an agent shows and fold it into that chat's live
     /// turn as an image part (`show_image`). Local only, like `PublishVisual`.
     pub const PUBLISH_IMAGE: &str = "PublishImage";
@@ -845,6 +857,8 @@ pub fn agent_allowed(method: &str) -> bool {
             | methods::QUEUE_COMMAND
             // Showing the person something in the calling chat.
             | methods::PUBLISH_VISUAL
+            | methods::UPDATE_VISUAL
+            | methods::READ_VISUAL
             | methods::PUBLISH_IMAGE
             // Saying what the calling chat's agent waits on.
             | methods::AWAIT_BACKGROUND

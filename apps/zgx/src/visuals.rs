@@ -162,6 +162,13 @@ struct Entry {
     /// A save is under way; another is wanted after it.
     saving: bool,
     unsaved: bool,
+    /// The `rev` of its part its script was read at (the agent's updates,
+    /// `update_visual`), and the newest its part has shown: when that is
+    /// newer, the script is read again and swapped in, entries kept.
+    part_rev: u64,
+    wanted_rev: u64,
+    /// That read is under way.
+    rereading: bool,
 }
 
 impl Entry {
@@ -185,6 +192,9 @@ impl Entry {
             file: None,
             saving: false,
             unsaved: false,
+            part_rev: 0,
+            wanted_rev: 0,
+            rereading: false,
         }
     }
 
@@ -420,7 +430,12 @@ impl Visuals {
         Value::record(shown.map(|(id, e)| {
             (
                 id,
-                Value::record([("rev", Value::Num(e.rev as f64)), ("gen", Value::Num(e.generation as f64))]),
+                Value::record([
+                    ("rev", Value::Num(e.rev as f64)),
+                    ("gen", Value::Num(e.generation as f64)),
+                    // Its part says the agent updated it since it was read.
+                    ("stale", Value::Bool(e.wanted_rev > e.part_rev && e.file.is_some())),
+                ]),
             )
         }))
     }
@@ -688,6 +703,63 @@ pub fn entries_of(id: &str) -> Value {
     VISUALS.with(|v| v.with(id, |e| entries_value(&e.kept))).unwrap_or(Value::Nil)
 }
 
+/// Visual `id`'s part shows update `rev` (chat.rs, as it builds the
+/// block): one already read at an older one is marked stale, and its
+/// component asks `visuals.open` to read it again.
+pub fn seen_rev(id: &str, rev: u64) {
+    VISUALS.with(|v| {
+        let stale = v
+            .with(id, |e| {
+                let newer = rev > e.wanted_rev;
+                e.wanted_rev = e.wanted_rev.max(rev);
+                newer && e.wanted_rev > e.part_rev
+            })
+            .unwrap_or(false);
+        if stale {
+            v.publish();
+        }
+    });
+}
+
+/// `visuals.open` for one read already whose part was updated: read its
+/// script again and swap it in, what the reader entered kept (the input
+/// they're in left as it is). New files the update brought show as it's
+/// opened again.
+async fn reread(v: Rc<Visuals>, id: String) -> Result<Value, String> {
+    let Some((want, file)) = v
+        .with(&id, |e| {
+            if e.rereading || e.wanted_rev <= e.part_rev {
+                return None;
+            }
+            e.rereading = true;
+            Some((e.wanted_rev, e.file.clone()?))
+        })
+        .flatten()
+    else {
+        return Ok(Value::Nil);
+    };
+    let (path, device) = file;
+    let read = read_visual(&path, device).await;
+    v.with(&id, |e| {
+        e.rereading = false;
+        match read {
+            Ok((source, _)) => {
+                e.part_rev = want;
+                if let Err(why) = e.swap(&id, source) {
+                    eprintln!("zend-zgx: visual {id}'s update failed: {why}");
+                }
+            }
+            Err(why) => {
+                // Asked again the next time its part changes.
+                e.part_rev = want;
+                eprintln!("zend-zgx: visual {id}'s update unavailable: {why}");
+            }
+        }
+    });
+    v.publish();
+    Ok(Value::Nil)
+}
+
 /// (For tests: a new script for visual `id`, as `visuals.swap` gives one.)
 pub fn swap_source(id: &str, source: &str) -> Result<(), String> {
     VISUALS.with(|v| {
@@ -718,14 +790,26 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
         return Err("no visual".into());
     }
     let title = text(arg.field("title"));
+    let part_rev = arg.field("rev").and_then(Value::as_f64).unwrap_or(0.).max(0.) as u64;
     {
         let mut entries = v.entries.borrow_mut();
-        match entries.get(&id).map(|e| &e.load) {
-            // Read, or being read: once.
-            Some(Load::Loading | Load::Ready) => return Ok(Value::Nil),
+        match entries.get_mut(&id) {
+            // Read, or being read: once, unless the agent updated it since.
+            Some(e) if e.load == Load::Ready && e.wanted_rev.max(part_rev) > e.part_rev => {
+                e.wanted_rev = e.wanted_rev.max(part_rev);
+                drop(entries);
+                return reread(v, id).await;
+            }
+            Some(e) if matches!(e.load, Load::Loading | Load::Ready) => {
+                e.wanted_rev = e.wanted_rev.max(part_rev);
+                return Ok(Value::Nil);
+            }
             // (One that failed is read again, as the chat opens again.)
-            Some(Load::Failed(_)) | None => {
-                entries.insert(id.clone(), Entry::new(title));
+            // (One that failed is read again, as the chat opens again.)
+            _ => {
+                let mut entry = Entry::new(title);
+                (entry.part_rev, entry.wanted_rev) = (part_rev, part_rev);
+                entries.insert(id.clone(), entry);
             }
         }
     }

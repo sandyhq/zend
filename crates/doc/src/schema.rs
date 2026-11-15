@@ -106,6 +106,10 @@ struct DocPartJson {
     answers: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    /// A visual's update count (`kind: "visual"`, additive; absent until
+    /// the agent first updates it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rev: Option<u64>,
     /// Fork seam (`kind: "fork"`, additive): the chat the history above was
     /// copied from, and its title at the time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,11 +185,12 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             ..Default::default()
         },
         // The script path and title ride `path` and `name`.
-        MessagePart::Visual { id, path, title } => DocPartJson {
+        MessagePart::Visual { id, path, title, rev } => DocPartJson {
             id: id.clone(),
             kind: "visual".into(),
             path: Some(path.clone()),
             name: Some(title.clone()),
+            rev: (*rev > 0).then_some(*rev),
             ..Default::default()
         },
         MessagePart::Text { id, text } => DocPartJson {
@@ -303,6 +308,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 id: p.id,
                 path,
                 title: p.name.unwrap_or_default(),
+                rev: p.rev.unwrap_or(0),
             },
             None => MessagePart::Error {
                 id: p.id,
@@ -1473,6 +1479,19 @@ impl SessionDoc {
         Ok(true)
     }
 
+    /// An agent updated its visual `part_id` in place (`update_visual`):
+    /// its title and update count, wherever its entry is (searched from the
+    /// newest back). `false` when this doc has no such visual.
+    pub fn update_visual_part(&self, part_id: &str, title: &str, rev: u64) -> Result<bool, DocError> {
+        let Some(part) = self.newest_part_of_kind(part_id, "visual") else {
+            return Ok(false);
+        };
+        part.insert("name", title)?;
+        part.insert("rev", rev as i64)?;
+        self.commit();
+        Ok(true)
+    }
+
     /// Whether `part_id` is one of this doc's subagent SPAWN chips, the only
     /// part a subagent doc may hang off (same lookup and gate as
     /// [`Self::update_subagent_chip`]).
@@ -1483,6 +1502,11 @@ impl SessionDoc {
 
     /// The tool part with this id, searched from the NEWEST entry back.
     fn newest_tool_part(&self, part_id: &str) -> Option<LoroMap> {
+        self.newest_part_of_kind(part_id, "tool")
+    }
+
+    /// The part of `kind` with this id, searched from the NEWEST entry back.
+    fn newest_part_of_kind(&self, part_id: &str, kind: &str) -> Option<LoroMap> {
         let messages = self.doc.get_list("messages");
         for i in (0..messages.len()).rev() {
             let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
@@ -1503,7 +1527,7 @@ impl SessionDoc {
                 };
                 let is_tool = matches!(
                     part.get("kind"),
-                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == "tool"
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == kind
                 );
                 let id_matches = matches!(
                     part.get("id"),
@@ -1664,6 +1688,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     }
     if let Some(lines) = doc_part.output_lines {
         map.insert("outputLines", lines as i64)?;
+    }
+    if let Some(rev) = doc_part.rev {
+        map.insert("rev", rev as i64)?;
     }
     Ok(())
 }
@@ -2185,6 +2212,9 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     }
     if let Some(lines) = doc_part.output_lines {
         map.insert("outputLines", lines as i64)?;
+    }
+    if let Some(rev) = doc_part.rev {
+        map.insert("rev", rev as i64)?;
     }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.

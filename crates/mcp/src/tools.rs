@@ -264,6 +264,38 @@ fn catalog() -> Vec<ToolDef> {
         }),
     });
     tools.push(ToolDef {
+        name: UPDATE_VISUAL,
+        description: UPDATE_VISUAL_DESCRIPTION,
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The visual's id, as show_visual gave it (v:…)." },
+                "script": {
+                    "type": "string",
+                    "description": "The whole new Luau script, as for show_visual. Keep each input's name to keep what the person entered in it."
+                },
+                "title": { "type": "string", "description": "A new title (default: the one it has)." },
+                "assets": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Files the new script uses, as for show_visual (default: the ones it has)."
+                }
+            },
+            "required": ["id", "script"]
+        }),
+    });
+    tools.push(ToolDef {
+        name: READ_VISUAL,
+        description: READ_VISUAL_DESCRIPTION,
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The visual's id, as show_visual gave it (v:…)." }
+            },
+            "required": ["id"]
+        }),
+    });
+    tools.push(ToolDef {
         name: SHOW_IMAGE,
         description: SHOW_IMAGE_DESCRIPTION,
         input_schema: json!({
@@ -306,6 +338,32 @@ fn catalog() -> Vec<ToolDef> {
 /// Shows a page in the CALLING chat, so it is offered only to an agent that
 /// Zend launched (`ZEND_CHAT_ID` set).
 const SHOW_VISUAL: &str = "show_visual";
+
+/// Replaces a visual the CALLING chat showed, in place; offered like
+/// `show_visual`.
+const UPDATE_VISUAL: &str = "update_visual";
+
+/// Reads a visual the CALLING chat showed: inputs, entries, open or sent.
+const READ_VISUAL: &str = "read_visual";
+
+const UPDATE_VISUAL_DESCRIPTION: &str = "\
+Replace the script of a visual you showed in this chat (show_visual gave you its id), in place: \
+the same spot in the transcript, the same id. Use it instead of showing a visual again, above all \
+one with inputs the person may be filling in: new facts (a child session's result, a changed plan) \
+go into the visual they are answering in. What the person entered stays, by input name, whatever \
+your script's value says, and the input they are typing in is left alone; an input new with this \
+script is marked new for them. To mark a question settled elsewhere, keep its input and give it \
+answered = \"<text>\" (they can reopen it). The reply lists the inputs added, those you dropped \
+that hold an entry (kept, shown again if you bring the name back), and the current entries. \
+Entries are the person's draft: read-only for you. Don't answer, decide or ask again what they are \
+filling in, and don't copy their entries into the script. They bind only once sent (read_visual).";
+
+const READ_VISUAL_DESCRIPTION: &str = "\
+Read a visual you showed in this chat: its named inputs, what the person entered in each so far, \
+and whether it is open (it asks something and they haven't sent their answers) or sent. Entries are \
+the person's unsent draft until sent is true: read-only, not answers yet. Don't act on them, don't \
+decide or ask again what they are filling in; wait for their message. To change the visual, use \
+update_visual.";
 
 /// Shows an image file in the CALLING chat; offered like `show_visual`.
 const SHOW_IMAGE: &str = "show_image";
@@ -586,6 +644,21 @@ struct ShowVisualArgs {
 }
 
 #[derive(Deserialize)]
+struct UpdateVisualArgs {
+    id: String,
+    script: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    assets: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct ReadVisualArgs {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct BatchArgs {
     requests: Vec<Value>,
 }
@@ -851,7 +924,7 @@ impl Tools {
         catalog()
             .into_iter()
             .filter(|tool| match tool.name {
-                SHOW_VISUAL | SHOW_IMAGE => in_chat,
+                SHOW_VISUAL | UPDATE_VISUAL | READ_VISUAL | SHOW_IMAGE => in_chat,
                 WAIT_ON_BACKGROUND => waits,
                 _ => true,
             })
@@ -884,6 +957,8 @@ impl Tools {
             "respond_to_input" => self.respond_to_input(parse(args)?).await,
             "archive_chat" => self.archive_chat(parse(args)?).await,
             SHOW_VISUAL => self.show_visual(parse(args)?).await,
+            UPDATE_VISUAL => self.update_visual(parse(args)?).await,
+            READ_VISUAL => self.read_visual(parse(args)?).await,
             SHOW_IMAGE => self.show_image(parse(args)?).await,
             WAIT_ON_BACKGROUND => self.wait_on_background(parse(args)?).await,
             plugins::CREATE_PLUGIN => return self.create_plugin(args).await,
@@ -1632,9 +1707,43 @@ impl Tools {
             )
             .await?;
         Ok(json!({
+            "id": shown["id"],
             "visual": shown,
-            "message": "Shown to the reader above your reply. Don't mention or describe the visual; reply with only what it doesn't already say.",
+            "message": "Shown to the reader above your reply. Don't mention or describe the visual; reply with only what it doesn't already say. Keep its id: change it later with update_visual (never show it again), and read what the person entered with read_visual.",
         }))
+    }
+
+    async fn update_visual(&self, args: UpdateVisualArgs) -> anyhow::Result<Value> {
+        let chat_id = self
+            .zend
+            .origin()
+            .chat_id
+            .clone()
+            .context("update_visual only works from an agent Zend launched in a chat")?;
+        let mut params = json!({ "chatId": chat_id, "id": args.id, "script": args.script });
+        if let Some(title) = args.title {
+            params["title"] = json!(title);
+        }
+        if let Some(assets) = &args.assets {
+            params["assets"] = json!(read_visual_assets(assets).await?);
+        }
+        let updated = self.zend.call(zend_rpc::methods::UPDATE_VISUAL, params).await?;
+        Ok(json!({
+            "visual": updated,
+            "message": "Updated in place; the person sees the new version where the old one was. Don't describe it again.",
+        }))
+    }
+
+    async fn read_visual(&self, args: ReadVisualArgs) -> anyhow::Result<Value> {
+        let chat_id = self
+            .zend
+            .origin()
+            .chat_id
+            .clone()
+            .context("read_visual only works from an agent Zend launched in a chat")?;
+        self.zend
+            .call(zend_rpc::methods::READ_VISUAL, json!({ "chatId": chat_id, "id": args.id }))
+            .await
     }
 
     async fn show_image(&self, args: ShowImageArgs) -> anyhow::Result<Value> {
@@ -2196,6 +2305,13 @@ mod tests {
                         .push((method.to_owned(), params.clone()));
                     RpcReply::Value(json!({ "id": "v:1", "title": params["title"] }))
                 }
+                methods::UPDATE_VISUAL | methods::READ_VISUAL => {
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    RpcReply::Value(json!({ "id": params["id"], "rev": 1, "sent": false }))
+                }
                 methods::PUBLISH_IMAGE => {
                     self.writes
                         .lock()
@@ -2358,6 +2474,54 @@ mod tests {
         assert_eq!(method, methods::PUBLISH_VISUAL);
         assert_eq!(params["chatId"], "chat-alpha-1");
         assert_eq!(params["script"], "return ui.text 'chart'");
+        assert_eq!(shown["id"], "v:1");
+    }
+
+    #[tokio::test]
+    async fn update_and_read_visual_go_from_the_calling_chat_only() {
+        let world = Arc::new(World::default());
+        let outside = tools(world.clone(), Origin::default());
+        for name in ["update_visual", "read_visual"] {
+            assert!(!outside.has(name), "{name}");
+        }
+        assert!(
+            outside
+                .call("read_visual", json!({ "id": "v:1" }))
+                .await
+                .is_err()
+        );
+        let inside = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: Some("dev-local".into()),
+                ..Default::default()
+            },
+        );
+        assert!(inside.has("update_visual") && inside.has("read_visual"));
+        for description in [UPDATE_VISUAL_DESCRIPTION, READ_VISUAL_DESCRIPTION] {
+            assert!(description.contains("read-only"), "{description}");
+            assert!(description.contains("sent"), "{description}");
+        }
+        let updated = inside
+            .call(
+                "update_visual",
+                json!({ "id": "v:1", "script": "return ui.text 'b'", "title": "B" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated["visual"]["rev"], 1);
+        let read = inside.call("read_visual", json!({ "id": "v:1" })).await.unwrap();
+        assert_eq!(read["sent"], false);
+        let writes = world.writes.lock().unwrap();
+        let (method, params) = &writes[writes.len() - 2];
+        assert_eq!(method, methods::UPDATE_VISUAL);
+        assert_eq!(params["chatId"], "chat-alpha-1");
+        assert_eq!(params["title"], "B");
+        assert!(params.get("assets").is_none(), "no assets: the old ones stay");
+        let (method, params) = writes.last().unwrap();
+        assert_eq!(method, methods::READ_VISUAL);
+        assert_eq!(params, &json!({ "chatId": "chat-alpha-1", "id": "v:1" }));
     }
 
     #[tokio::test]
