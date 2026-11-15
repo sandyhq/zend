@@ -147,6 +147,36 @@ fn git_config_and_environment_dont_run_code() {
     assert!(!x.exists() && !y.exists() && !z.exists(), "git ran a command");
 }
 
+/// Without a cwd a run starts in the plugin's own folder (`home`), a cwd
+/// given still wins, and git's folder rules hold to the cwd asked for, not
+/// that folder: `git -C <whole path>` with no cwd still runs.
+#[test]
+fn a_run_without_a_cwd_starts_in_the_plugins_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let home = std::fs::canonicalize(home.path()).unwrap();
+    std::fs::write(home.join("value.mjs"), "x").unwrap();
+    let pwd = allowed(&["pwd", "ls"]);
+    let ran = run_in(&json!({ "program": "pwd" }), &pwd, Some(&home), PATH, &|_| false).unwrap();
+    assert_eq!(ran["stdout"].as_str().unwrap().trim_end(), home.to_str().unwrap(), "{ran}");
+    let ran = run_in(&json!({ "program": "ls", "cwd": "" }), &pwd, Some(&home), PATH, &|_| false).unwrap();
+    assert_eq!(ran["stdout"].as_str().unwrap().trim_end(), "value.mjs", "{ran}");
+    let ran = run_in(&json!({ "program": "pwd", "cwd": "/" }), &pwd, Some(&home), PATH, &|_| false).unwrap();
+    assert_eq!(ran["stdout"].as_str().unwrap().trim_end(), "/", "{ran}");
+    // A folder that's gone (an old snapshot): where this process is, as before.
+    let gone = home.join("gone");
+    let ran = run_in(&json!({ "program": "pwd" }), &pwd, Some(&gone), PATH, &|_| false).unwrap();
+    assert_eq!(ran["status"], 0, "{ran}");
+    if have("git") {
+        let repo = tempfile::tempdir().unwrap();
+        let git = allowed(&["git"]);
+        let init = run_in(&json!({ "program": "git", "args": ["init", "-q", repo.path()] }), &git, Some(&home), PATH, &|_| false).unwrap();
+        assert_eq!(init["status"], 0, "{init}");
+        let asked = json!({ "program": "git", "args": ["-C", repo.path(), "status", "--porcelain"] });
+        let ran = run_in(&asked, &git, Some(&home), PATH, &|_| false).unwrap();
+        assert_eq!(ran["status"], 0, "git -C outside the plugin's folder runs: {ran}");
+    }
+}
+
 /// R2: a repository whose own config runs things (an fsmonitor, hooks)
 /// runs none of them for a plugin's git: every run is hardened.
 #[test]

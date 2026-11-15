@@ -6,6 +6,9 @@
 //!   { program, args = { … }, cwd?, stdin?, timeout?, env? }
 //!     → { status, stdout, stderr }   (status -1: stopped at its timeout)
 //!
+//! Without a `cwd` it runs in the plugin's own folder as loaded ([`run`]'s
+//! `home`).
+//!
 //! **What this is.** A program named in `commands` runs as you. Most
 //! programs can run others or write any file (`sh`, `python3`, `node`,
 //! `git clone … ~/.config/…`, `gh release download -O ~/.zshrc`), so
@@ -659,19 +662,41 @@ fn find(name: &str, path: &str) -> Option<PathBuf> {
 /// above let it: the answer, or why it wasn't run. Blocks: call it off the
 /// async runtime (or the window's thread).
 /// Every git runs with hooks off.
-pub fn run(asked: &Json, allowed: &[String]) -> Result<Json, String> {
-    run_on(asked, allowed, user_path(), &|_| false)
+///
+/// `home` is the plugin's own folder as it was loaded (its snapshot): a
+/// run without a `cwd` starts there, so `node value.mjs` runs the copy
+/// that's loaded (a preview's, in a preview). It's only where the program
+/// starts: git's folder rules hold to the `cwd` the run asked for.
+pub fn run(asked: &Json, allowed: &[String], home: Option<&Path>) -> Result<Json, String> {
+    run_in(asked, allowed, home, user_path(), &|_| false)
 }
 
 /// [`run`], where a git that commits, merges or pushes ([`GIT_HOOKED`]) in
 /// a folder `trusted` says is a checkout of yours (a chat's, a project's)
 /// runs the repository's hooks, as git does when you run it.
-pub fn run_trusting(asked: &Json, allowed: &[String], trusted: &dyn Fn(&Path) -> bool) -> Result<Json, String> {
-    run_on(asked, allowed, user_path(), trusted)
+pub fn run_trusting(
+    asked: &Json,
+    allowed: &[String],
+    home: Option<&Path>,
+    trusted: &dyn Fn(&Path) -> bool,
+) -> Result<Json, String> {
+    run_in(asked, allowed, home, user_path(), trusted)
 }
 
-/// [`run_trusting`], finding programs on `path`.
+/// [`run_trusting`], finding programs on `path`, with no folder of the
+/// plugin's: a run without a `cwd` starts where this process is.
 pub fn run_on(asked: &Json, allowed: &[String], path: &str, trusted: &dyn Fn(&Path) -> bool) -> Result<Json, String> {
+    run_in(asked, allowed, None, path, trusted)
+}
+
+/// [`run_on`], a run without a `cwd` starting in `home` (see [`run`]).
+pub fn run_in(
+    asked: &Json,
+    allowed: &[String],
+    home: Option<&Path>,
+    path: &str,
+    trusted: &dyn Fn(&Path) -> bool,
+) -> Result<Json, String> {
     let program = asked["program"].as_str().unwrap_or_default();
     if !valid_name(program) || !allowed.iter().any(|a| a == program) {
         return Err(format!("This plugin doesn't run \"{program}\": its manifest's \"commands\" names what it may run"));
@@ -728,8 +753,9 @@ pub fn run_on(asked: &Json, allowed: &[String], path: &str, trusted: &dyn Fn(&Pa
             command.env(key, value);
         }
     }
-    if let Some(cwd) = &cwd {
-        command.current_dir(cwd);
+    // (Its own folder when it asked for none and still has one.)
+    if let Some(dir) = cwd.as_deref().or(home.filter(|h| h.is_absolute() && h.is_dir())) {
+        command.current_dir(dir);
     }
     // (No console of its own: run from a windowless app, gh and git would
     // each open one on Windows.)

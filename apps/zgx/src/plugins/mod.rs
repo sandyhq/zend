@@ -966,9 +966,12 @@ pub fn dev_plugins(host: &ScriptHost) {
         // Its programs, run for real (those its manifest names), and its
         // database in a folder of the run's own, never a data dir's.
         let allowed: Vec<String> = manifest["commands"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect();
+        let home = dir.clone();
         host.async_action(format!("plugin.{id}.run"), move |asked: Value| {
-            let (asked, allowed) = (value_json(&asked), allowed.clone());
-            async move { off_thread(move || commands::run(&asked, &allowed)).await.ok_or("The program couldn't be run")?.map(|v| json_value(&v)) }
+            let (asked, allowed, home) = (value_json(&asked), allowed.clone(), home.clone());
+            async move {
+                off_thread(move || commands::run(&asked, &allowed, Some(&home))).await.ok_or("The program couldn't be run")?.map(|v| json_value(&v))
+            }
         });
         let db_path = db::path_in(&std::env::temp_dir().join(format!("zgx-dev-plugins-{}", std::process::id())), &id);
         host.async_action(format!("plugin.{id}.db"), move |asked: Value| {
@@ -978,7 +981,7 @@ pub fn dev_plugins(host: &ScriptHost) {
                 off_thread(move || db::call(&path, &asked)).await.ok_or("The database couldn't be reached")?.map(|v| json_value(&v))
             }
         });
-        dev_github(host, &id);
+        dev_github(host, &id, &dir);
         dev_service(host, &id);
         eprintln!("zend-zgx: dev plugin {id} from {}", dir.display());
         plugins.extend(item.plugin());
@@ -992,7 +995,7 @@ pub fn dev_plugins(host: &ScriptHost) {
 /// drawn in a fixture, or offscreen by src/audit_shots.rs): each call
 /// answered by its `op` (`pr`, `diff`, `list`, `repository`, `file_url`),
 /// writes as done, and `records` and `store` published as the bridge would.
-fn dev_github(host: &ScriptHost, id: &str) {
+fn dev_github(host: &ScriptHost, id: &str, dir: &Path) {
     let Some(path) = crate::dev::switch("ZEND_ZGX_DEV_GITHUB") else { return };
     let answers: Json = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
         Ok(json) => json,
@@ -1012,16 +1015,17 @@ fn dev_github(host: &ScriptHost, id: &str) {
     // through `gh` (its pull requests' watch); anything else runs for real.
     if let Some(played) = answers.get("run").and_then(Json::as_array).cloned() {
         let real: Vec<String> = vec!["gh".into()];
+        let dir = dir.to_path_buf();
         host.async_action(format!("plugin.{id}.run"), move |asked: Value| {
             let asked = value_json(&asked);
             let all = format!("{} {}", asked["args"], asked["stdin"].as_str().unwrap_or_default());
             let hit = played.iter().find(|p| p["match"].as_array().into_iter().flatten().all(|w| w.as_str().is_some_and(|w| all.contains(w)))).cloned();
             eprintln!("zend-zgx: dev plugin run {} {}", if hit.is_some() { "played" } else { "real" }, asked["args"]);
-            let real = real.clone();
+            let (real, home) = (real.clone(), dir.clone());
             async move {
                 match hit {
                     Some(p) => Ok(json_value(&json!({ "status": 0, "stdout": p["stdout"].as_str().unwrap_or_default(), "stderr": "" }))),
-                    None => off_thread(move || commands::run(&asked, &real)).await.ok_or("The program couldn't be run")?.map(|v| json_value(&v)),
+                    None => off_thread(move || commands::run(&asked, &real, Some(&home))).await.ok_or("The program couldn't be run")?.map(|v| json_value(&v)),
                 }
             }
         });
@@ -2410,8 +2414,11 @@ impl Bridge {
                         return Err("This plugin wasn't allowed to run programs".to_string());
                     }
                     let allowed: Vec<String> = item.json["commands"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect();
+                    // Without a cwd: its folder as loaded (a preview's copy
+                    // while it previews).
+                    let home = item.json["snapshot"].as_str().map(PathBuf::from);
                     let asked = value_json(&asked);
-                    let ran = off_thread(move || commands::run(&asked, &allowed)).await.ok_or("The program couldn't be run")??;
+                    let ran = off_thread(move || commands::run(&asked, &allowed, home.as_deref())).await.ok_or("The program couldn't be run")??;
                     Ok(json_value(&ran))
                 }
             }

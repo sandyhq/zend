@@ -738,14 +738,15 @@ impl Ops for PluginOps {
                 if !self.plan.allows("commands") {
                     return done(Err(format!("{name} wasn't allowed to run programs on this device")));
                 }
-                let (allowed, hooks) = (self.plan.commands.clone(), self.hooks.clone());
+                // (Without a cwd: its snapshot, the folder it was loaded from.)
+                let (allowed, hooks, home) = (self.plan.commands.clone(), self.hooks.clone(), self.plan.dir.clone());
                 self.runtime.spawn_blocking(move || {
                     // A git that commits or pushes in one of this device's
                     // chats' or projects' folders runs that checkout's hooks
                     // (pre-commit, pre-push), as git does for you; anywhere
                     // else, or reading, none.
                     let trusted = |dir: &Path| hooks.folders().iter().any(|f| dir.starts_with(f));
-                    done(commands::run_trusting(&args, &allowed, &trusted))
+                    done(commands::run_trusting(&args, &allowed, Some(&home), &trusted))
                 });
             }
             "fetch" => {
