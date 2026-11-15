@@ -130,6 +130,15 @@ ones). No agent-visible timer is involved. No event is sent when:
 - the turn was started by an event line (no loops);
 - the child's `notify_parent` is off.
 
+After the children's lines, the message names each visual of the parent's
+that is still open (it has inputs and the person hasn't sent them), newest
+first, so a lead goes on updating it rather than deciding its questions or
+asking them again:
+
+```text
+Open visual <id> "<title>": <n> entries so far, not sent. Don't decide its questions or ask them again; update it with update_visual.
+```
+
 `notify_parent` is a `create_chat`/`create_chats` argument (`Mutate
 createChat { notifyParent? }`), kept in the child's doc meta
 (`SessionDoc::notify_parent`). When it is not set, it is on for `kind: subagent`
@@ -367,7 +376,14 @@ its update count `rev`, its inputs, and `sent`; crates/engine
   descriptions and every reply say so.
 - `sent` is the window's to set: `MarkVisualSent {path, sent}` when the person
   sends a message holding the visual's answers (`path` is the script's, as the
-  part names it). It is not an agent method.
+  part names it). It is not an agent method. It also marks the transcript's
+  visual part `sent` (zend-doc `mark_visual_part_sent`), so every window
+  shows it answered and stops pinning it above the composer.
+- While a visual of a parent is open, each child event it gets ends with a
+  line per open visual, newest first ("Child events"):
+  `Open visual <id> "<title>": <n> entries so far, not sent. Don't decide its
+  questions or ask them again; update it with update_visual.` The server's
+  instructions say the same.
 
 ### Image replies
 

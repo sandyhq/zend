@@ -75,6 +75,8 @@ export type Props = {
 	api: string?,
 	-- Its part's update count (update_visual): the host reads it again.
 	rev: number?,
+	-- Its part says its answers were sent (MarkVisualSent).
+	sent: boolean?,
 }
 
 -- What the host says of every visual: `{ [id] = { rev, gen } }`.
@@ -193,6 +195,8 @@ type Ctx = {
 	focus: (name: string?) -> (),
 	-- Its inputs as words into its chat's composer (`ui.answer`).
 	answer: () -> (),
+	-- The person sent its answers: it asks no more, its entries stay.
+	sent: () -> boolean,
 	-- A failure while drawing (a canvas's, a scene's), shown under it.
 	drew: (error: string?) -> (),
 }
@@ -1206,7 +1210,15 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 			return ui.div {}
 		end
 		local get = ctx.at(n.p)
-		return Button(place({
+		-- Sent: what was sent stays in its inputs, and it says so here.
+		return ui.show(ctx.sent, ui.text {
+			class = "visual-sent",
+			locale.s("ds.visual.answer.sent"),
+			literal = true,
+			text_size = "$zend.visual.text.sm.size",
+			line_height = "$zend.visual.text.sm.line",
+			color = "$text.tertiary",
+		}, Button(place({
 			class = "visual-answer",
 			tone = "primary",
 			size = "sm",
@@ -1220,7 +1232,7 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 				end,
 				literal = true,
 			},
-		}, n, parent))
+		}, n, parent)))
 	elseif k == "tabs" then
 		return ui.row(place({ min_w = 0, Tabs { n = n, ctx = ctx } }, n, parent))
 	elseif k == "toggle" then
@@ -1280,6 +1292,7 @@ return ui.component(function(props: Props): Node
 				device = props.device,
 				source = props.source,
 				rev = props.rev,
+				sent = props.sent,
 			})
 			if promise then
 				promise:after(function() end, function() end)
@@ -1302,6 +1315,11 @@ return ui.component(function(props: Props): Node
 	local gen = ui.computed(function(): number
 		local r = REVS:get()[id]
 		return if r then r.gen else -1
+	end)
+	-- Its answers were sent (its part says so, or this window just sent them).
+	local sent = ui.computed(function(): boolean
+		local r = REVS:get()[id]
+		return props.sent == true or (r ~= nil and r.sent == true)
 	end)
 	local snap = ui.computed(function(): any
 		rev:get()
@@ -1351,6 +1369,9 @@ return ui.component(function(props: Props): Node
 			end
 		end,
 		input = function(name: string, value: any)
+			if sent:peek() then
+				return
+			end
 			local ok, promise = pcall(ui.call, api .. ".input", { id = id, name = name, value = value })
 			if ok and promise then
 				promise:after(function() end, function() end)
@@ -1359,10 +1380,16 @@ return ui.component(function(props: Props): Node
 		focus = function(name: string?)
 			pcall(ui.invoke, api .. ".focus", { id = id, name = name })
 		end,
+		sent = function(): boolean
+			return sent:get()
+		end,
 		answer = function()
+			if sent:peek() then
+				return
+			end
 			local ok, text = pcall(ui.call_sync, api .. ".answer", id)
 			if ok and type(text) == "string" then
-				VisualAnswer.put(props.chat, id, text)
+				VisualAnswer.put(props.chat, id, text, { path = props.path, device = props.device })
 			end
 		end,
 		drew = function(error: string?)

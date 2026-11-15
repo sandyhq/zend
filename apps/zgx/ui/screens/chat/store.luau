@@ -282,6 +282,18 @@ end
 VisualAnswer.read = function(chat: string?): string
 	return shared.draft_of(answer_key(chat)).text
 end
+-- Sent holding a visual's answers: the visual shows it sent, and the
+-- chat's host marks it (visuals.sent → MarkVisualSent).
+VisualAnswer.mark = function(id: string, file: VisualAnswer.File?)
+	local ok, promise = pcall(ui.call, "visuals.sent", {
+		id = id,
+		path = if file then file.path else nil,
+		device = if file then file.device else nil,
+	})
+	if ok and promise then
+		promise:after(function() end, function() end)
+	end
+end
 VisualAnswer.write = function(chat: string?, text: string)
 	local key = answer_key(chat)
 	shared.set_draft_of(key, "text", text)

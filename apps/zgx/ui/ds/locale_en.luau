@@ -827,6 +827,8 @@ return {
 	["ds.visual.input.new"] = "New",
 	["ds.visual.input.change"] = "Change",
 	["ds.visual.answer.add"] = "Add to message",
+	["ds.visual.answer.sent"] = "Answers sent",
+	["ds.visual.pinned"] = "{title}: open above the message box",
 	["ds.links.open"] = "Open",
 	["ds.links.open_in_panel"] = "Open in browser panel",
 	["ds.links.open_outside"] = "Open in default browser",

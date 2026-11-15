@@ -48,6 +48,7 @@ local UserMessage = require("@self/user_message")
 local Lightbox = require("@self/lightbox")
 local ReplyPicture = require("@self/reply_picture")
 local Visual = require("@self/visual")
+local VisualPin = require("@self/visual_pin")
 local Activity = require("@self/activity")
 local status = require("@self/status")
 local Working = require("@self/working")
@@ -220,6 +221,10 @@ export type Block = {
 	source: string?,
 	title: string?,
 	device: string?,
+	-- A visual's part: its update count, and whether its answers were sent.
+	rev: number?,
+	sent: boolean?,
+	chat: string?,
 	tools: { Tool }?,
 	summary: string?,
 	live: boolean?,
@@ -689,7 +694,11 @@ local function blocks_of(list: () -> { Block }, m: Message, now: () -> Message, 
 		end
 		-- An agent's visual: built once, followed by the host (src/visuals.rs).
 		if b.kind == "visual" then
-			return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev }
+			local visual = Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent }
+			-- Open and pinned above the composer: a line in its place.
+			return ui.show(function(): boolean
+				return VisualPin.pinned:get()[b.id] == true
+			end, VisualPin.Marker { id = b.id, title = b.title }, visual)
 		end
 		-- Pictures an agent showed: one alone, or several on a tray, among
 		-- the reply's pictures in the lightbox. More arriving while it works

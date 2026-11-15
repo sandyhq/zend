@@ -169,6 +169,9 @@ struct Entry {
     wanted_rev: u64,
     /// That read is under way.
     rereading: bool,
+    /// The person sent its answers (its part says so, or they just sent a
+    /// message holding them): it no longer asks, so it isn't pinned.
+    sent: bool,
 }
 
 impl Entry {
@@ -195,7 +198,15 @@ impl Entry {
             part_rev: 0,
             wanted_rev: 0,
             rereading: false,
+            sent: false,
         }
+    }
+
+    /// It asks the person something they haven't sent: drawn, with inputs,
+    /// not sent (engine live_visuals `is_open`). The window pins it above
+    /// the composer while it is.
+    fn open(&self) -> bool {
+        !self.sent && self.tree.as_ref().is_some_and(|tree| !zv::inputs(tree).is_empty())
     }
 
     /// Run `source`'s setup and first render, seeded from `id`.
@@ -435,6 +446,8 @@ impl Visuals {
                     ("gen", Value::Num(e.generation as f64)),
                     // Its part says the agent updated it since it was read.
                     ("stale", Value::Bool(e.wanted_rev > e.part_rev && e.file.is_some())),
+                    ("open", Value::Bool(e.open())),
+                    ("sent", Value::Bool(e.sent)),
                 ]),
             )
         }))
@@ -596,6 +609,13 @@ fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<S
         }
     });
     let (v, sc) = (visuals.clone(), scope.clone());
+    host.async_action(name("sent"), move |arg| {
+        let v = v.clone();
+        let trusted = sc.is_none();
+        let arg = scoped(arg, &sc);
+        async move { mark_sent(v, arg, trusted).await }
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
     host.action(name("focus"), move |arg| {
         let arg = scoped(arg, &sc);
         let id = text(arg.field("id"));
@@ -721,6 +741,53 @@ pub fn seen_rev(id: &str, rev: u64) {
     });
 }
 
+/// What visual `id`'s part says of it being sent (chat.rs): one shown here
+/// stops asking, in every place it shows.
+pub fn seen_sent(id: &str, sent: bool) {
+    if !sent {
+        return;
+    }
+    VISUALS.with(|v| {
+        if v.with(id, |e| !std::mem::replace(&mut e.sent, true)).unwrap_or(false) {
+            v.publish();
+        }
+    });
+}
+
+/// `visuals.sent {id, path?, device?}`: the person sent a message holding
+/// visual `id`'s answers (ds/visual_answer): it shows sent here at once,
+/// and the engine of the chat's host marks it (`MarkVisualSent`), its part
+/// too, so every window and the agent see it answered. `path` and
+/// `device` stand in for one this window no longer holds (the app's own
+/// `visuals` only: a plugin's marks only a visual of its own it holds).
+async fn mark_sent(v: Rc<Visuals>, arg: Value, trusted: bool) -> Result<Value, String> {
+    let id = text(arg.field("id"));
+    let given = Some(text(arg.field("path")))
+        .filter(|_| trusted)
+        .filter(|p| !p.is_empty())
+        .map(|p| (p, arg.field("device").map(crate::auth::text).filter(|d| !d.is_empty())));
+    let file = v
+        .with(&id, |e| {
+            e.sent = true;
+            e.file.clone()
+        })
+        .flatten()
+        .or(given);
+    v.publish();
+    let Some((path, device)) = file else {
+        return Err("no visual file".into());
+    };
+    let mut params = json!({ "path": path, "sent": true });
+    if let Some(device) = device {
+        params["targetDeviceId"] = json!(device);
+    }
+    crate::engine::get().call("MarkVisualSent", params).await.map_err(|why| {
+        eprintln!("zend-zgx: visual {id} not marked sent: {why}");
+        why.to_string()
+    })?;
+    Ok(Value::Nil)
+}
+
 /// `visuals.open` for one read already whose part was updated: read its
 /// script again and swap it in, what the reader entered kept (the input
 /// they're in left as it is). New files the update brought show as it's
@@ -791,6 +858,10 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
     }
     let title = text(arg.field("title"));
     let part_rev = arg.field("rev").and_then(Value::as_f64).unwrap_or(0.).max(0.) as u64;
+    let sent = arg.field("sent").is_some_and(Value::truthy);
+    if sent {
+        seen_sent(&id, true);
+    }
     {
         let mut entries = v.entries.borrow_mut();
         match entries.get_mut(&id) {
@@ -809,6 +880,7 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
             _ => {
                 let mut entry = Entry::new(title);
                 (entry.part_rev, entry.wanted_rev) = (part_rev, part_rev);
+                entry.sent = sent;
                 entries.insert(id.clone(), entry);
             }
         }

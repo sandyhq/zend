@@ -1026,8 +1026,10 @@
         "change": "Change"
       },
       "answer": {
-        "add": "Add to message"
-      }
+        "add": "Add to message",
+        "sent": "Answers sent"
+      },
+      "pinned": "{title}: open above the message box"
     },
     "links": {
       "open": "Open",

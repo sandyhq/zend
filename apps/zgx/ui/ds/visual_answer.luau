@@ -11,15 +11,26 @@
 --
 --   VisualAnswer.read = function(chat) return draft end
 --   VisualAnswer.write = function(chat, text) … end
---   VisualAnswer.put(chat, id, block)   true when the draft took it
+--   VisualAnswer.put(chat, id, block, file)   true when the draft took it
+--   VisualAnswer.mark = function(id, file) … end   (the app: `visuals.sent`)
+--   VisualAnswer.sending(text)   the composer, as it sends `text`
+--
+-- Sent in a message that still holds its block, a visual is answered: the
+-- app marks it sent (engine `MarkVisualSent`), so it shows what was sent
+-- and asks no more (plans/live-visuals G4).
 
 local M = {}
 
 M.read = nil :: ((chat: string?) -> string)?
 M.write = nil :: ((chat: string?, text: string) -> ())?
 
+export type File = { path: string?, device: string? }
+M.mark = nil :: ((id: string, file: File?) -> ())?
+
 -- What each visual last put in, by its id.
 local given = ui.shared("visual.answers", {} :: { [string]: string })
+-- And where each one's script is, to mark it sent.
+local files: { [string]: File } = {}
 
 function M.available(): boolean
 	return M.read ~= nil and M.write ~= nil
@@ -47,7 +58,38 @@ function M.merge(draft: string, previous: string?, block: string): string
 	return draft .. "\n\n" .. block
 end
 
-function M.put(chat: string?, id: string, block: string): boolean
+-- The ids of the visuals whose block `text` holds as it was put in.
+function M.held_in(text: string): { string }
+	local out = {}
+	for id, block in given:peek() do
+		if block ~= "" and string.find(text, block, 1, true) then
+			table.insert(out, id)
+		end
+	end
+	table.sort(out)
+	return out
+end
+
+-- `text` is being sent: each visual whose answers it holds is marked
+-- sent, and forgotten here (pressed again, its block goes in anew).
+function M.sending(text: string): { string }
+	local held = M.held_in(text)
+	if #held == 0 then
+		return held
+	end
+	local all = table.clone(given:peek())
+	for _, id in held do
+		all[id] = nil
+		if M.mark then
+			M.mark(id, files[id])
+		end
+		files[id] = nil
+	end
+	given:set(all)
+	return held
+end
+
+function M.put(chat: string?, id: string, block: string, file: File?): boolean
 	local read, write = M.read, M.write
 	if not read or not write or block == "" then
 		return false
@@ -57,6 +99,9 @@ function M.put(chat: string?, id: string, block: string): boolean
 	local all = table.clone(given:peek())
 	all[id] = block
 	given:set(all)
+	if file then
+		files[id] = file
+	end
 	if now ~= draft then
 		write(chat, now)
 	end

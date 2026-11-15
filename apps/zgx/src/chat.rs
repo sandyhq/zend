@@ -4963,11 +4963,14 @@ fn visual_block(part: &Json) -> Value {
     let field = |k: &str| part[k].as_str().map_or(Value::Nil, Value::from);
     // The agent's updates (`update_visual`): one read before is read again.
     let rev = part["rev"].as_u64().unwrap_or(0);
+    let sent = part["sent"].as_bool().unwrap_or(false);
     if let Some(id) = part["id"].as_str() {
         crate::visuals::seen_rev(id, rev);
+        crate::visuals::seen_sent(id, sent);
     }
     Value::record([
         ("rev", Value::Num(rev as f64)),
+        ("sent", Value::Bool(sent)),
         ("id", Value::from(part["id"].as_str().unwrap_or_default())),
         ("kind", Value::from("visual")),
         ("path", field("path")),
