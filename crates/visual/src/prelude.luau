@@ -32,6 +32,8 @@ for _, kind in
 		"toggle",
 		"slider",
 		"link",
+		-- Source lines, coloured by the reader's highlighter for `language`.
+		"code",
 		-- Named inputs: Zend keeps what the reader enters by `name`.
 		"field",
 		"area",
@@ -51,6 +53,18 @@ end
 
 -- (`ui.entry(name)`, set by Zend: what the reader entered in the input
 -- named `name`, or nil. Read-only: entries belong to the reader.)
+
+-- JSON's null, for ui.kit.Json: a value where Luau's nil would drop a
+-- key or cut a list short. One frozen table, compared by identity;
+-- its metatable is frozen too, so no script can change what it says.
+ui.null = table.freeze(setmetatable(
+	{},
+	table.freeze({
+		__tostring = function()
+			return "null"
+		end,
+	})
+))
 
 -- A theme token at an opacity.
 function ui.color(token, alpha)

@@ -37,8 +37,42 @@ fn text(script: &str) -> String {
 fn text_of(node: &Node) -> String {
     match &node.kind {
         NodeKind::Text(text) => text.spans.iter().map(|s| s.text.as_str()).collect(),
+        // A code line as "<gutter> <line>" (or the line alone).
+        NodeKind::Code(code) => code
+            .lines
+            .iter()
+            .map(|l| if code.gutter { format!("{} {}", l.gutter, l.text) } else { l.text.clone() })
+            .collect::<Vec<_>>()
+            .join("|"),
         _ => children(node).map(text_of).collect::<Vec<_>>().join("|"),
     }
+}
+
+/// Every ui.code in a tree, in order.
+fn codes(node: &Node) -> Vec<Code> {
+    let mut out = Vec::new();
+    if let NodeKind::Code(code) = &node.kind {
+        out.push((**code).clone());
+    }
+    for child in children(node) {
+        out.extend(codes(child));
+    }
+    out
+}
+
+fn tree(script: &str) -> Node {
+    Visual::load(script, 1)
+        .unwrap_or_else(|e| panic!("{script}: {}", e.message))
+        .render()
+        .unwrap_or_else(|e| panic!("{script}: {}", e.message))
+}
+
+fn marks(code: &Code) -> Vec<(usize, CodeMark)> {
+    code.lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| l.mark.map(|m| (i + 1, m)))
+        .collect()
 }
 
 fn has(script: &str, parts: &[&str]) {
@@ -222,9 +256,17 @@ fn changes_open_a_diff_and_diff_numbers_its_lines() {
         r#"return ui.kit.Diff {{ patch = "{}" }}"#,
         patch.replace('\n', "\\n")
     ));
-    for part in ["--- a/f.ts", "@@ -40,3 +40,3 @@", "  40   40 ", "  41      -  old", "  new", "  42 "] {
+    for part in ["--- a/f.ts", "@@ -40,3 +40,3 @@", "  40   40   fn a() {", "  41      -   old", "     41 +   new", "  42   42   }"] {
         assert!(got.contains(part), "{part:?} in {got:?}");
     }
+    // The hunk is one ui.code in the file's language, its added and
+    // removed lines marked, the signs and numbers in the gutter.
+    let diff = tree(&format!(r#"return ui.kit.Diff {{ patch = "{}" }}"#, patch.replace('\n', "\\n")));
+    let hunks = codes(&diff);
+    assert_eq!(hunks.len(), 1, "{hunks:?}");
+    assert_eq!(hunks[0].language.as_deref(), Some("ts"));
+    assert_eq!(hunks[0].text(), "fn a() {\n  old\n  new\n}");
+    assert_eq!(marks(&hunks[0]), vec![(2, CodeMark::Removed), (3, CodeMark::Added)]);
     let script = format!(
         r#"return function() return ui.kit.Changes {{ files = {{
             {{ path = "src/api/users.ts", added = 3, removed = 1, status = "modified", diff = "{}" }},
@@ -265,7 +307,7 @@ fn commits_pull_requests_and_environments() {
 fn snippet_code_file_and_json() {
     has(
         r#"return ui.kit.Snippet { path = "data/retry.ts", from = 4, code = "a\nb\nc" }"#,
-        &["data/retry.ts", "lines 4–6", "4  a", "6  c"],
+        &["data/retry.ts", "lines 4–6", "4 a", "6 c"],
     );
     err(r#"return ui.kit.Snippet { path = "x" }"#, &["a visual cannot read files"]);
     has(
@@ -287,6 +329,111 @@ fn snippet_code_file_and_json() {
         r#"return ui.kit.Json { open = 3, value = { data = { amount = 4900, lines = { "a" } } } }"#,
         &["4900", "[1]", "\"a\""],
     );
+}
+
+#[test]
+fn code_kinds_build_a_code_node_in_their_language() {
+    // Code: the language as given (lowercased), no gutter unless asked.
+    let code = &codes(&tree(r#"return ui.kit.Code { language = "TS", code = "let a = 1\n\tb()\n" }"#))[0];
+    assert_eq!(code.language.as_deref(), Some("ts"));
+    assert!(!code.gutter);
+    assert_eq!(code.text(), "let a = 1\n    b()", "tabs as four spaces, the last newline dropped");
+    // Snippet: the language from the path, numbered from its first line,
+    // marks by the file's own line numbers.
+    let snippet = &codes(&tree(
+        r#"return ui.kit.Snippet { path = "src/main.rs", from = 9, code = "a\nb\nc", marks = { [10] = "focus" } }"#,
+    ))[0];
+    assert_eq!(snippet.language.as_deref(), Some("rs"));
+    assert_eq!(
+        snippet.lines.iter().map(|l| l.gutter.as_str()).collect::<Vec<_>>(),
+        [" 9", "10", "11"],
+        "numbers padded to the widest"
+    );
+    assert_eq!(marks(snippet), vec![(2, CodeMark::Focus)]);
+    // File: with code, its excerpt and its line marked; a Dockerfile goes
+    // by its name.
+    let file = &codes(&tree(
+        r#"return ui.kit.File { path = "deploy/Dockerfile", line = 3, from = 2, code = "FROM x\nRUN y\nCMD z" }"#,
+    ))[0];
+    assert_eq!(file.language.as_deref(), Some("dockerfile"));
+    assert_eq!(marks(file), vec![(2, CodeMark::Focus)]);
+    assert!(codes(&tree(r#"return ui.kit.File { path = "a.rs", line = 3 }"#)).is_empty());
+    err(r#"return ui.kit.File { path = "a.rs", from = 3 }"#, &["ui.kit.File takes from and language only with code"]);
+    // An unknown language is passed on as it is: the window shows it plain.
+    let plain = &codes(&tree(r#"return ui.kit.Code { language = "klingon", code = "x" }"#))[0];
+    assert_eq!(plain.language.as_deref(), Some("klingon"));
+    // Two files in one patch: a hunk each, in its file's language.
+    let patch = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/y.go b/y.go\n--- /dev/null\n+++ b/y.go\n@@ -0,0 +1,2 @@\n+package y\n+\n\\ No newline at end of file";
+    let lua = patch.replace('\\', "\\\\").replace('\n', "\\n");
+    let diff = tree(&format!(r#"return ui.kit.Diff {{ patch = "{lua}" }}"#));
+    let hunks = codes(&diff);
+    let langs: Vec<_> = hunks.iter().map(|h| h.language.clone().unwrap_or_default()).collect();
+    assert_eq!(langs, ["py", "go"]);
+    assert_eq!(marks(&hunks[1]), vec![(1, CodeMark::Added), (2, CodeMark::Added)]);
+    assert!(text_of(&diff).contains("\\ No newline at end of file"));
+}
+
+#[test]
+fn the_code_node_checks_what_it_is_given() {
+    let node = tree(r#"return ui.code { code = "a\nb", gutter = { "  1 +", false }, marks = { [1] = "added", [2] = false } }"#);
+    let NodeKind::Code(code) = &node.kind else { panic!("{node:?}") };
+    assert!(code.gutter);
+    assert_eq!(code.lines[0].gutter, "  1 +");
+    assert_eq!(code.lines[1].gutter, "     ", "a missing label is padded too");
+    assert_eq!(marks(code), vec![(1, CodeMark::Added)]);
+    let numbered = tree(r#"return ui.code { "x", numbers = true }"#);
+    let NodeKind::Code(numbered) = &numbered.kind else { panic!() };
+    assert_eq!(numbered.lines[0].gutter, "1");
+    let e = |s: &str, want: &str| {
+        let got = check(s, 1).unwrap_err().message;
+        assert!(got.contains(want), "{s}: {got}");
+    };
+    e(r#"return ui.code { language = "rust" }"#, "ui.code needs code");
+    e(r#"return ui.code { code = "a", marks = { [3] = "added" } }"#, "marks line 3, but its lines are 1 to 1");
+    e(r#"return ui.code { code = "a", marks = { [1] = "red" } }"#, "has mark 'red' on line 1: use added, removed or focus");
+    e(r#"return ui.code { code = "a", from = 1.5 }"#, "'from' must be a whole line number");
+    e(r#"return ui.code { code = "a", gutter = { "1", "2" } }"#, "has 2 gutter labels for 1 lines");
+    e(r#"return ui.code { code = string.rep("x\n", 2001) }"#, "more than 2000 lines");
+    e(r#"return ui.code { code = "a", colour = "red" }"#, "ui.code has no 'colour'");
+}
+
+#[test]
+fn json_shows_null_in_objects_and_lists() {
+    let got = text(r#"return ui.kit.Json { open = 3, value = { gone = ui.null, list = { 1, ui.null, 3 } } }"#);
+    assert!(got.contains("gone|null"), "{got}");
+    assert!(got.contains("[3]"), "the null keeps the list whole: {got}");
+    assert_eq!(got.matches("null").count(), 2, "{got}");
+    assert!(text("return ui.kit.Json { value = ui.null }").contains("null"));
+    assert_eq!(text("return ui.text { tostring(ui.null) }"), "null");
+}
+
+#[test]
+fn json_reads_text_in_its_own_key_order() {
+    let json = r#"{"zeta": 1, "alpha": [true, false, null, -2.5e1], "esc": "a\"b\\c\nd\u00e9\ud83d\ude00", "empty": {}, "none": []}"#;
+    let got = text(&format!("return ui.kit.Json {{ open = 3, text = {json:?} }}"));
+    let zeta = got.find("zeta").unwrap();
+    let alpha = got.find("alpha").unwrap();
+    assert!(zeta < alpha, "the text's order, not sorted: {got}");
+    for part in ["true", "false", "null", "-25", "{0}", "[0]", "[4]", "é😀", "a\\\"b"] {
+        assert!(got.contains(part), "{part} in {got}");
+    }
+    // A mistake names what was expected, the line and the column.
+    for (bad, want) in [
+        (r#"{"a": 1,}"#, "ui.kit.Json can't read text: expected a key in double quotes, found '}' at line 1, column 9"),
+        ("{\n  \"a\" 1\n}", "expected ':' after the key, found '1' at line 2, column 7"),
+        (r#"[1 2]"#, "expected ',' or ']', found '2' at line 1, column 4"),
+        (r#"{"a": "open"#, "a string that is never closed at line 1, column 7"),
+        (r#"["\x"]"#, "unknown escape '\\x'"),
+        ("[\"a\nb\"]", "a line break or control character inside a string"),
+        (r#"[01]"#, "expected ',' or ']', found '1' at line 1, column 3"),
+        (r#"[1.]"#, "expected a digit after '.' at line 1, column 4"),
+        (r#"{} x"#, "expected the end of the text after the value, found 'x' at line 1, column 4"),
+        ("", "expected a value, found the end of the text at line 1, column 1"),
+        (r#"[nul]"#, "expected a value, found 'n'"),
+    ] {
+        err(&format!("return ui.kit.Json {{ text = {bad:?} }}"), &[want]);
+    }
+    err(r#"return ui.kit.Json { value = 1, text = "1" }"#, &["takes value or text, not both"]);
 }
 
 #[test]

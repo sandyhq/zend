@@ -38,7 +38,7 @@ pub use assets::Assets;
 pub use draw::{DrawCmd, DrawText, Pointer};
 pub use entries::{Entries, EntryValue, Shape};
 pub use node::{
-    Axis, Canvas, Chart, ChartKind, Column, ColumnKind, HandlerId, Input, InputColumn, InputKind,
+    Axis, Canvas, Chart, ChartKind, Code, CodeLine, CodeMark, Column, ColumnKind, HandlerId, Input, InputColumn, InputKind,
     InputOption, Node, NodeKind, NumberFormat, NumberRange, NumberStyle, number_words, SceneNode, Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
 };
 pub use raster::{Quality, Raster, RasterLabel};

@@ -136,26 +136,15 @@ local function mono(s, color)
 	return ui.text({ s == "" and " " or s, mono = true, size = "sm", color = color })
 end
 
--- Source lines, one mono text each, with an optional gutter of line numbers.
-local function code_lines(lines, first, color)
-	local width = first and #tostring(first + #lines - 1) or 0
-	local out = {}
-	for i, line in ipairs(lines) do
-		if first then
-			table.insert(
-				out,
-				ui.text({
-					size = "sm",
-					mono = true,
-					ui.span({ string.format("%" .. width .. "d  ", first + i - 1), color = "faint", mono = true }),
-					ui.span({ plain(line) == "" and " " or plain(line), color = color, mono = true }),
-				})
-			)
-		else
-			table.insert(out, mono(plain(line), color))
-		end
+-- The language a file's code is in, as the window's highlighter names
+-- languages: its extension ("rs", "ts"), else its whole name
+-- ("dockerfile"). One the highlighter doesn't know shows plain.
+local function language_of(path)
+	if type(path) ~= "string" or path == "" then
+		return nil
 	end
-	return ui.column({ gap = 0, out })
+	local name = (path:match("([^/\\]+)$") or path):lower()
+	return name:match("%.([%w_+#-]+)$") or name
 end
 
 local function pct_text(n)
@@ -1071,37 +1060,67 @@ end)
 -- coloured by what it does. Several files are fine.
 local DIFF_LINES = 400
 
+-- Each hunk is one ui.code in the language of its file (from the diff's
+-- headers), so the window colours it; the gutter holds the old and new
+-- numbers and the sign, and added and removed lines are marked.
 local function diff_body(patch)
 	local lines = split_lines(patch)
 	local nodes, old, new, rem_old, rem_new = {}, 0, 0, 0, 0
+	local language, hunk = nil, nil
+	local function flush()
+		if hunk and #hunk.code > 0 then
+			table.insert(
+				nodes,
+				ui.code({ code = table.concat(hunk.code, "\n") .. "\n", language = language, gutter = hunk.gutter, marks = hunk.marks })
+			)
+		end
+		hunk = nil
+	end
+	local function meta(text, token, weight)
+		flush()
+		table.insert(
+			nodes,
+			ui.text({ mono = true, size = "sm", ui.span({ text == "" and " " or text, color = token, weight = weight, mono = true }) })
+		)
+	end
+	local function file_of(path)
+		path = path:gsub("\t.*$", "")
+		if path ~= "/dev/null" then
+			language = language_of((path:gsub("^[ab]/", "")))
+		end
+	end
 	for i, line in ipairs(lines) do
 		if i > DIFF_LINES then
+			flush()
 			table.insert(nodes, ui.text({ "… " .. (#lines - DIFF_LINES) .. " more lines", size = "sm", color = "faint" }))
 			break
 		end
 		local text = plain(line)
 		local c = text:sub(1, 1)
-		local gutter, token, weight = "          ", nil, 400
-		if rem_old > 0 or rem_new > 0 then
+		if c == "\\" then
+			-- "\ No newline at end of file"
+			meta(text, "faint", 400)
+		elseif rem_old > 0 or rem_new > 0 then
+			hunk = hunk or { code = {}, gutter = {}, marks = {} }
+			local gutter, mark, body
 			if c == "+" then
 				new += 1
 				rem_new -= 1
-				gutter = string.format("     %4d ", new)
-				token = "success"
+				gutter, mark, body = string.format("     %4d +", new), "added", text:sub(2)
 			elseif c == "-" then
 				old += 1
 				rem_old -= 1
-				gutter = string.format("%4d      ", old)
-				token = "danger"
-			elseif c == "\\" then
-				token = "faint"
+				gutter, mark, body = string.format("%4d      -", old), "removed", text:sub(2)
 			else
 				old += 1
 				new += 1
 				rem_old -= 1
 				rem_new -= 1
-				gutter = string.format("%4d %4d ", old, new)
+				gutter, body = string.format("%4d %4d  ", old, new), c == " " and text:sub(2) or text
 			end
+			table.insert(hunk.code, body)
+			table.insert(hunk.gutter, gutter)
+			hunk.marks[#hunk.code] = mark
 		elseif text:sub(1, 2) == "@@" then
 			local a, b, c2, d = text:match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
 			if a then
@@ -1109,20 +1128,22 @@ local function diff_body(patch)
 				rem_old = b == "" and 1 or tonumber(b)
 				rem_new = d == "" and 1 or tonumber(d)
 			end
-			token = "accent"
+			meta(text, "accent", 400)
 		else
-			token, weight = text:match("^diff ") and "text" or "muted", text:match("^diff ") and 600 or 400
+			-- The hunk before keeps its own file's language.
+			flush()
+			local git = text:match("^diff %-%-git %S+ (%S+)")
+			if git then
+				language = nil
+				file_of(git)
+			elseif text:match("^%-%-%- ") or text:match("^%+%+%+ ") then
+				file_of(text:sub(5))
+			end
+			local head = text:match("^diff ") ~= nil
+			meta(text, head and "text" or "muted", head and 600 or 400)
 		end
-		table.insert(
-			nodes,
-			ui.text({
-				mono = true,
-				size = "sm",
-				ui.span({ gutter, color = "faint", mono = true }),
-				ui.span({ text == "" and " " or text, color = token, weight = weight, mono = true }),
-			})
-		)
 	end
+	flush()
 	return ui.column({ gap = 0, nodes })
 end
 
@@ -1385,7 +1406,7 @@ end
 
 -- Lines of a file with their numbers. The sandbox can't read the file, so
 -- `code` is the excerpt and `from` the number of its first line.
-define("Snippet", { "path", "code", "from", "language" }, function(p)
+define("Snippet", { "path", "code", "from", "language", "marks" }, function(p)
 	if p.path == nil then
 		fail("needs path = \"...\"")
 	end
@@ -1403,12 +1424,13 @@ define("Snippet", { "path", "code", "from", "language" }, function(p)
 			ui.span({ p.path, mono = true, weight = 600 }),
 			ui.span({ "  lines " .. from .. (to > from and ("–" .. to) or ""), color = "muted", mono = true }),
 		}),
-		code_lines(lines, from),
+		ui.code({ code = table.concat(lines, "\n") .. "\n", language = p.language or language_of(p.path), from = from, marks = p.marks }),
 	})
 end)
 
--- A block of code, as written (no highlighting), with its language named.
-define("Code", { "code", "language", "title" }, function(p)
+-- A block of code, coloured by the window's highlighter for its language
+-- (plain for one it doesn't know), with its language named.
+define("Code", { "code", "language", "title", "from", "numbers", "marks" }, function(p)
 	local code = p.code or p[1]
 	if type(code) ~= "string" then
 		fail("needs code = \"...\"")
@@ -1421,18 +1443,37 @@ define("Code", { "code", "language", "title" }, function(p)
 			p.title and ui.text({ p.title, weight = 600, grow = true }) or false,
 			p.language and ui.text({ p.language, size = "xs", color = "faint" }) or false,
 		}) or false,
-		code_lines(split_lines(code), nil)
+		ui.code({ code = table.concat(split_lines(code), "\n") .. "\n", language = p.language, from = p.from, numbers = p.numbers, marks = p.marks })
 	)
 end)
 
--- A file to look at: its folder faint, its name bold, an optional line.
-define("File", { "path", "line", "note" }, function(p)
+-- A file to look at: its folder faint, its name bold, an optional line;
+-- with `code`, the excerpt under it (numbered from `from`, else `line`),
+-- `line` marked.
+define("File", { "path", "line", "note", "code", "from", "language" }, function(p)
 	local path = p.path or p[1]
 	if type(path) ~= "string" or path == "" then
 		fail("needs path = \"src/main.rs\"")
 	end
+	if p.code ~= nil and type(p.code) ~= "string" then
+		fail("has code that isn't a string: pass the excerpt's lines as one text")
+	end
+	if p.code == nil and (p.from ~= nil or p.language ~= nil) then
+		fail("takes from and language only with code = \"<the lines>\"")
+	end
 	local dir, name = path:match("^(.*/)([^/]+)$")
-	return build(
+	local excerpt = false
+	if p.code then
+		local lines = split_lines(p.code)
+		local from = p.from or p.line or 1
+		local line = tonumber(p.line)
+		local marks = nil
+		if line and line >= from and line < from + #lines then
+			marks = { [line] = "focus" }
+		end
+		excerpt = ui.code({ code = table.concat(lines, "\n") .. "\n", language = p.language or language_of(path), from = from, marks = marks })
+	end
+	local row = build(
 		ui.row,
 		{ gap = 10, align = "center" },
 		ui.text({
@@ -1444,9 +1485,206 @@ define("File", { "path", "line", "note" }, function(p)
 		}),
 		p.note and ui.text({ p.note, size = "sm", color = "muted" }) or false
 	)
+	if not excerpt then
+		return row
+	end
+	return ui.column({ gap = 6, row, excerpt })
 end)
 
 local JSON_SHOWN = 60
+local NULL = ui.null
+
+-- What Json { text } read: each object's keys in the order the text has
+-- them, and which empty tables were [] or {}.
+local KEY_ORDER = setmetatable({}, { __mode = "k" })
+local EMPTY_ARRAY = setmetatable({}, { __mode = "k" })
+local JSON_DEPTH = 200
+
+local JSON_ESCAPES = { ['"'] = '"', ["\\"] = "\\", ["/"] = "/", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
+
+-- JSON text into Luau values, null as ui.null. A mistake fails with what
+-- was expected and where: "at line 3, column 7".
+local function json_parse(s)
+	local pos = 1
+	local function bad(what, at)
+		at = at or pos
+		local line, col = 1, 1
+		for i = 1, math.min(at, #s + 1) - 1 do
+			if s:byte(i) == 10 then
+				line += 1
+				col = 1
+			else
+				col += 1
+			end
+		end
+		fail(string.format("can't read text: %s at line %d, column %d", what, line, col))
+	end
+	local function found()
+		local c = s:sub(pos, pos)
+		return c == "" and "the end of the text" or ("'" .. c .. "'")
+	end
+	local function ws()
+		pos = s:find("[^ \t\r\n]", pos) or #s + 1
+	end
+	local value
+	local function str()
+		local start = pos
+		pos += 1
+		local out = {}
+		while true do
+			local j = s:find('[%c"\\]', pos)
+			if not j then
+				bad("a string that is never closed", start)
+			end
+			table.insert(out, s:sub(pos, j - 1))
+			pos = j
+			local c = s:sub(j, j)
+			if c == '"' then
+				pos += 1
+				return table.concat(out)
+			elseif c == "\\" then
+				local e = s:sub(j + 1, j + 1)
+				if JSON_ESCAPES[e] then
+					table.insert(out, JSON_ESCAPES[e])
+					pos += 2
+				elseif e == "u" then
+					local hex = s:match("^%x%x%x%x", j + 2)
+					if not hex then
+						bad("expected four hex digits after \\u", j + 2)
+					end
+					local cp = tonumber(hex, 16)
+					pos = j + 6
+					if cp >= 0xD800 and cp <= 0xDBFF then
+						local low = s:match("^\\u(%x%x%x%x)", pos)
+						local lo = low and tonumber(low, 16)
+						if lo and lo >= 0xDC00 and lo <= 0xDFFF then
+							cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)
+							pos += 6
+						end
+					end
+					if cp >= 0xD800 and cp <= 0xDFFF then
+						cp = 0xFFFD
+					end
+					table.insert(out, utf8.char(cp))
+				else
+					bad("unknown escape '\\" .. e .. "' (JSON has \\\" \\\\ \\/ \\b \\f \\n \\r \\t \\u)", j)
+				end
+			elseif s:byte(j) == 127 then
+				table.insert(out, c)
+				pos += 1
+			else
+				bad("a line break or control character inside a string (write it as \\n, \\t, ...)", j)
+			end
+		end
+	end
+	local function num()
+		local start = pos
+		local int = s:match("^-?0", pos) or s:match("^-?[1-9]%d*", pos)
+		if not int then
+			bad("expected a value, found " .. found())
+		end
+		pos += #int
+		if s:sub(pos, pos) == "." then
+			local frac = s:match("^%.%d+", pos)
+			if not frac then
+				bad("expected a digit after '.'", pos + 1)
+			end
+			pos += #frac
+		end
+		if s:match("^[eE]", pos) then
+			local exp = s:match("^[eE][-+]?%d+", pos)
+			if not exp then
+				bad("expected a digit in the exponent", pos + 1)
+			end
+			pos += #exp
+		end
+		return tonumber(s:sub(start, pos - 1))
+	end
+	value = function(depth)
+		if depth > JSON_DEPTH then
+			bad("nesting deeper than " .. JSON_DEPTH)
+		end
+		ws()
+		local c = s:sub(pos, pos)
+		if c == "{" then
+			pos += 1
+			local out, order = {}, {}
+			KEY_ORDER[out] = order
+			ws()
+			if s:sub(pos, pos) == "}" then
+				pos += 1
+				return out
+			end
+			while true do
+				ws()
+				if s:sub(pos, pos) ~= '"' then
+					bad("expected a key in double quotes, found " .. found())
+				end
+				local key = str()
+				ws()
+				if s:sub(pos, pos) ~= ":" then
+					bad("expected ':' after the key, found " .. found())
+				end
+				pos += 1
+				local v = value(depth + 1)
+				if out[key] == nil then
+					table.insert(order, key)
+				end
+				out[key] = v
+				ws()
+				local sep = s:sub(pos, pos)
+				pos += 1
+				if sep == "}" then
+					return out
+				elseif sep ~= "," then
+					pos -= 1
+					bad("expected ',' or '}', found " .. found())
+				end
+			end
+		elseif c == "[" then
+			pos += 1
+			local out = {}
+			ws()
+			if s:sub(pos, pos) == "]" then
+				pos += 1
+				EMPTY_ARRAY[out] = true
+				return out
+			end
+			while true do
+				table.insert(out, value(depth + 1))
+				ws()
+				local sep = s:sub(pos, pos)
+				pos += 1
+				if sep == "]" then
+					return out
+				elseif sep ~= "," then
+					pos -= 1
+					bad("expected ',' or ']', found " .. found())
+				end
+			end
+		elseif c == '"' then
+			return str()
+		elseif s:sub(pos, pos + 3) == "true" then
+			pos += 4
+			return true
+		elseif s:sub(pos, pos + 4) == "false" then
+			pos += 5
+			return false
+		elseif s:sub(pos, pos + 3) == "null" then
+			pos += 4
+			return NULL
+		elseif c == "" then
+			bad("expected a value, found the end of the text")
+		end
+		return num()
+	end
+	local result = value(1)
+	ws()
+	if pos <= #s then
+		bad("expected the end of the text after the value, found " .. found())
+	end
+	return result
+end
 
 local function json_scalar(v)
 	local t = type(v)
@@ -1456,19 +1694,32 @@ local function json_scalar(v)
 		return ui.fmt(v, { decimals = v == math.floor(v) and 0 or 6 }):gsub(",", ""), "accent"
 	elseif t == "boolean" then
 		return tostring(v), "warning"
+	elseif v == NULL then
+		return "null", "faint"
 	end
 	return tostring(v), "faint"
 end
 
 -- A value as a tree you open and close: tables become objects (keys sorted)
--- or arrays (a sequence). Luau has no null: leave a key out or use a string.
-define("Json", { "value", "label", "open", "key" }, function(p)
+-- or arrays (a sequence); ui.null is JSON's null (a nil would drop the key
+-- or cut a list short). Or `text`: JSON itself, read here, its keys in its
+-- own order.
+define("Json", { "value", "text", "label", "open", "key" }, function(p)
 	local root = p.value
 	if root == nil then
 		root = p[1]
 	end
+	if p.text ~= nil then
+		if root ~= nil then
+			fail("takes value or text, not both")
+		end
+		if type(p.text) ~= "string" then
+			fail("needs text = \"<JSON>\" as a string")
+		end
+		root = json_parse(p.text)
+	end
 	if root == nil then
-		fail("needs value = <a table or a value>")
+		fail("needs value = <a table or a value> (ui.null for null), or text = \"<JSON>\"")
 	end
 	local id = p.key or p.label or "json"
 	local depth_open = p.open or 1
@@ -1480,7 +1731,7 @@ define("Json", { "value", "label", "open", "key" }, function(p)
 		end
 		budget -= 1
 		local indent = ui.text({ "", width = depth * 16 })
-		if type(value) ~= "table" then
+		if type(value) ~= "table" or value == NULL then
 			local shown, token = json_scalar(value)
 			table.insert(
 				nodes,
@@ -1494,12 +1745,15 @@ define("Json", { "value", "label", "open", "key" }, function(p)
 			)
 			return
 		end
-		local array = #value > 0 or next(value) == nil
+		local order = KEY_ORDER[value]
+		local array = order == nil and (#value > 0 or next(value) == nil or EMPTY_ARRAY[value] ~= nil)
 		local keys = {}
 		if array then
 			for i = 1, #value do
 				table.insert(keys, i)
 			end
+		elseif order then
+			keys = order
 		else
 			for k in pairs(value) do
 				table.insert(keys, k)

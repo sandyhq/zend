@@ -88,6 +88,9 @@ pub enum NodeKind {
     },
     /// A named input whose value Zend keeps ([`crate::Entries`]).
     Input(Box<Input>),
+    /// `ui.code`: source lines in mono, coloured by the renderer's own
+    /// highlighter for its language (plain when it knows none).
+    Code(Box<Code>),
     /// `ui.answer`: a button that puts the visual's inputs, as words
     /// ([`crate::answer_text`]), into the composer of its chat, under
     /// what's there. It never sends: the reader edits and sends. No label:
@@ -330,6 +333,65 @@ pub struct Span {
     pub mono: bool,
     pub italic: bool,
 }
+
+/// `ui.code { code, language?, numbers?, from?, gutter?, marks? }`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Code {
+    pub lines: Vec<CodeLine>,
+    /// As the script names it ("rust", "rs", "ts"), lowercased; the
+    /// renderer decides whether it knows it.
+    pub language: Option<String>,
+    /// Lines carry a gutter label: their numbers, or the script's own.
+    pub gutter: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CodeLine {
+    /// The line, tabs as four spaces.
+    pub text: String,
+    /// Its gutter label, padded to the widest (empty without a gutter).
+    pub gutter: String,
+    pub mark: Option<CodeMark>,
+}
+
+/// What a line of code is to the reader: a diff's added or removed line,
+/// or one to look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeMark {
+    Added,
+    Removed,
+    Focus,
+}
+
+impl CodeMark {
+    pub fn name(self) -> &'static str {
+        match self {
+            CodeMark::Added => "added",
+            CodeMark::Removed => "removed",
+            CodeMark::Focus => "focus",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "added" => Some(CodeMark::Added),
+            "removed" => Some(CodeMark::Removed),
+            "focus" => Some(CodeMark::Focus),
+            _ => None,
+        }
+    }
+}
+
+impl Code {
+    /// The code as one text, a line a `\n`.
+    pub fn text(&self) -> String {
+        let lines: Vec<&str> = self.lines.iter().map(|l| l.text.as_str()).collect();
+        lines.join("\n")
+    }
+}
+
+/// The most lines one `ui.code` shows.
+pub const MAX_CODE_LINES: usize = 2000;
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -895,6 +957,7 @@ impl Parser {
                 self.input(&props, InputKind::Number { style })?
             }
             "items" => self.input(&props, InputKind::Items)?,
+            "code" => NodeKind::Code(Box::new(code(&props)?)),
             "rows" => self.input(&props, InputKind::Rows)?,
             "answer" => {
                 props.allow(&["label"])?;
@@ -1310,6 +1373,112 @@ fn chart(props: &Props) -> Result<Chart, VisualError> {
             decimals: props.number("x_decimals")?.map(|d| d.clamp(0.0, 6.0) as u8),
         },
         legend: props.bool("legend")?.unwrap_or(true),
+    })
+}
+
+fn code(props: &Props) -> Result<Code, VisualError> {
+    props.allow(&["code", "language", "numbers", "from", "gutter", "marks"])?;
+    let source = match props.table.raw_get::<Value>("code")? {
+        Value::Nil => props.table.raw_get::<Value>(1)?,
+        v => v,
+    };
+    let Value::String(source) = source else {
+        return Err(props.error("needs code = \"<the lines>\""));
+    };
+    let source = source.to_string_lossy().replace("\r\n", "\n");
+    let source = source.strip_suffix('\n').unwrap_or(&source);
+    let mut lines: Vec<CodeLine> = source
+        .split('\n')
+        .map(|l| CodeLine {
+            text: clip(l.replace('\t', "    ")),
+            ..Default::default()
+        })
+        .collect();
+    if lines.len() > MAX_CODE_LINES {
+        return Err(props.error(&format!(
+            "has more than {MAX_CODE_LINES} lines: show an excerpt (from = its first line's number)"
+        )));
+    }
+    let language = props
+        .string("language")?
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty());
+    if language.as_ref().is_some_and(|l| l.len() > 40) {
+        return Err(props.error("'language' is over 40 characters"));
+    }
+    let from = match props.number("from")? {
+        None => None,
+        Some(f) if f.fract() == 0.0 && (0.0..=1e9).contains(&f) => Some(f as i64),
+        Some(_) => return Err(props.error("'from' must be a whole line number")),
+    };
+    let first = from.unwrap_or(1);
+    let numbers = props.bool("numbers")?.unwrap_or(from.is_some());
+    let labels: Option<Vec<Value>> = props.get("gutter")?;
+    let gutter = numbers || labels.is_some();
+    if let Some(labels) = labels {
+        if labels.len() > lines.len() {
+            return Err(props.error(&format!(
+                "has {} gutter labels for {} lines",
+                labels.len(),
+                lines.len()
+            )));
+        }
+        for (line, label) in lines.iter_mut().zip(labels) {
+            line.gutter = match label {
+                Value::Boolean(false) | Value::Nil => String::new(),
+                v => clip(value_text(&v)),
+            };
+        }
+    } else if numbers {
+        for (i, line) in lines.iter_mut().enumerate() {
+            line.gutter = (first + i as i64).to_string();
+        }
+    }
+    if gutter {
+        let width = lines.iter().map(|l| l.gutter.chars().count()).max().unwrap_or(0);
+        for line in &mut lines {
+            let pad = width - line.gutter.chars().count();
+            line.gutter.insert_str(0, &" ".repeat(pad));
+        }
+    }
+    if let Some(marks) = props.get::<Option<Table>>("marks")? {
+        for pair in marks.pairs::<Value, Value>() {
+            let (key, value) = pair?;
+            let n = match key {
+                Value::Integer(n) => n,
+                Value::Number(n) if n.fract() == 0.0 => n as i64,
+                _ => {
+                    return Err(props.error(
+                        "'marks' takes line numbers: marks = { [12] = \"focus\" }",
+                    ));
+                }
+            };
+            let mark = match value {
+                Value::Boolean(false) => continue,
+                Value::String(s) => {
+                    let s = s.to_string_lossy();
+                    CodeMark::parse(&s).ok_or_else(|| {
+                        props.error(&format!(
+                            "has mark '{s}' on line {n}: use added, removed or focus"
+                        ))
+                    })?
+                }
+                _ => return Err(props.error("a mark is \"added\", \"removed\" or \"focus\"")),
+            };
+            let index = n - first;
+            let Some(line) = usize::try_from(index).ok().and_then(|i| lines.get_mut(i)) else {
+                return Err(props.error(&format!(
+                    "marks line {n}, but its lines are {first} to {}",
+                    first + lines.len() as i64 - 1
+                )));
+            };
+            line.mark = Some(mark);
+        }
+    }
+    Ok(Code {
+        lines,
+        language,
+        gutter,
     })
 }
 
