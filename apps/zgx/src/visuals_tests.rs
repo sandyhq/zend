@@ -969,6 +969,42 @@ fn transcript_of(entry: serde_json::Value) -> TestApp {
     app
 }
 
+/// The agent updates a visual (`update_visual`): its part's rev grows, and
+/// the window holding it reads the script again and swaps it in, what the
+/// reader entered kept by input name (plans/live-visuals G3/G4). Its part
+/// saying it was sent, it asks no more.
+#[test]
+fn a_part_whose_rev_grew_is_read_again_and_keeps_the_entries() {
+    use serde_json::json;
+    const PATH: &str = "/u/v_reread-visual.luau";
+    crate::visuals::serve_file(PATH, Some(r#"return function() return ui.column { ui.text "First version", ui.field { name = "goal", label = "Goal" } } end"#));
+    crate::visuals::serve_file("/u/v_reread-entries.json", None);
+    crate::visuals::serve_file("/u/v_reread-assets.json", None);
+    let part = |rev: u64, sent: bool| json!({ "kind": "visual", "id": "v:reread", "path": PATH, "title": "Plan", "rev": rev, "sent": sent });
+    let entry = |rev: u64, sent: bool| json!({ "id": "a1", "role": "assistant", "status": "complete", "createdAt": 0, "parts": [ part(rev, sent) ] });
+    let mut app = transcript_of(entry(0, false));
+    app.wait_until(|app| app.find("\"First version\"").is_some());
+    app.type_text("role:textbox \"Goal\"", "ship it");
+    app.wait_until(|_| crate::visuals::entries_of("v:reread").field("goal").is_some());
+
+    crate::visuals::serve_file(PATH, Some(r#"return function() return ui.column { ui.text "Second version", ui.field { name = "goal", label = "Goal" }, ui.check { name = "backup", label = "Back up" } } end"#));
+    // (The transcript reads the part again as the host sends it: rev 1.)
+    let _ = crate::chat::message(&entry(1, false), None);
+    let reread = app.wait_until(|app| app.find("\"Second version\"").is_some());
+    assert!(reread, "not read again:\n{}", app.tree());
+    assert!(app.find("role:checkbox \"Back up\"").is_some());
+    assert_eq!(
+        crate::visuals::entries_of("v:reread").field("goal").map(crate::auth::text).as_deref(),
+        Some("ship it"),
+        "the reader's entry kept"
+    );
+    // The same rev again: nothing read (it stays as it is).
+    let _ = crate::chat::message(&entry(1, true), None);
+    app.frames(10);
+    assert!(app.find("\"Second version\"").is_some());
+    assert_eq!(app.error(), None);
+}
+
 #[test]
 fn a_show_visual_call_leaves_no_tool_row_and_its_visual_sits_in_place() {
     use serde_json::json;

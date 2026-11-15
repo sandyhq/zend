@@ -692,6 +692,18 @@ pub fn preload(id: &str, title: &str, source: &str) {
     });
 }
 
+#[cfg(test)]
+thread_local! {
+    static SERVED: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::default();
+}
+
+/// (For tests: the chat's host has `path` holding `text`, or none, in
+/// place of the engine's `ReadAttachmentChunk`.)
+#[cfg(test)]
+pub fn serve_file(path: &str, text: Option<&str>) {
+    SERVED.with(|s| s.borrow_mut().insert(path.into(), text.map(|t| t.as_bytes().to_vec())));
+}
+
 /// (For tests: what a window going idle does here.)
 #[cfg(test)]
 pub fn rest() {
@@ -946,6 +958,10 @@ async fn read_visual(path: &str, device: Option<String>) -> Result<(String, zv::
 /// are kept), a chunk at a time, from `device` when it isn't this one.
 async fn read_file(path: &str, device: Option<&str>) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
+    #[cfg(test)]
+    if let Some(served) = SERVED.with(|s| s.borrow().get(path).cloned()) {
+        return served.ok_or_else(|| "no such file".to_string());
+    }
     let mut bytes = Vec::new();
     let mut offset = 0u64;
     loop {

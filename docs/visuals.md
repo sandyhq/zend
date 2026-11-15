@@ -57,5 +57,21 @@ Helpers: `ui.state`, `ui.map`, `ui.range`, `ui.scale`, `ui.ticks`, `ui.fmt`, `ui
 | Memory | 64 MB |
 | Time | 250 ms for setup, a render or a handler; 60 ms per canvas or scene frame |
 
+## Asking the reader
+Input nodes take `name` (required, unique), `label`, `description`, `value` (the first value only) and `answered` (decided elsewhere: shown collapsed, with Change):
+
+| Node | Entry |
+|---|---|
+| `ui.field`, `ui.area` | one line, several lines of text |
+| `ui.check` | a boolean |
+| `ui.checklist`, `ui.choice { many = true }` | the options picked |
+| `ui.choice`, `ui.select` | one option |
+| `ui.answer { label? }` | the button "Add to message" |
+
+- **Entries are the reader's.** Zend keeps them beside the script, by input name, across reloads and updates.
+- **The answer goes into the composer, never sent by itself.** `ui.answer` puts the inputs as words ("label: value", the title as a heading) under the draft; pressed again it replaces its own block. When the reader sends a message that still holds that block, the visual is answered: it shows "Answers sent", takes no more entries, and `read_visual` says `sent`.
+- **Open visuals stay in reach.** A visual with inputs that isn't sent yet is pinned above the composer while the transcript moves on; in the transcript a line marks its place. Sent, it goes back there.
+- **Update, don't ask again.** `update_visual { id, script, title? }` replaces the script in place (the same spot, the entries kept by name; a new input shows "New"). `read_visual { id }` returns the inputs, the entries, `open` and `sent`. Entries are the reader's draft until `sent`: read-only for the agent, not answers. While a visual is open, `show_visual` with its title is refused, and each child event to that chat names it ("Open visual <id> …"): keep working and put what you learn into it with `update_visual`.
+
 ## What a visual cannot do yet
-A visual has no text field, checklist or choice; nothing the reader enters reaches the agent; and a shown visual cannot be changed. These are being built (plan `live-visuals`, [roadmap.md](roadmap.md)): input nodes with entries kept by Zend, an answer button that appends the entries to the composer, `update_visual` and `read_visual`, and a component kit (`ui.kit`). This page is extended as each lands.
+A component kit (`ui.kit`), an example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).

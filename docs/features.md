@@ -8,6 +8,10 @@ What sandyhq/zend adds on top of the upstream app, one paragraph each, with wher
 A chat can start other chats as subagents, side chats or child sessions (`create_chat`, `create_chats`). The parent does not wait or poll: when a child settles a turn, the engine sends the parent a `[Zend event: …]` message with the outcome and the child's last reply or question.
 How to use: [mcp.md](mcp.md), sections "Parent links", "Child events" and "Delegating across providers".
 
+### Visuals that ask (`ui.answer`, `update_visual`, `read_visual`)
+An agent's visual can ask: text fields, checkboxes, choices and a button that puts the reader's entries as words under the draft in the composer, never sent by itself. Zend keeps the entries by input name. While a visual waits for its answers it stays pinned above the composer as the transcript moves on; once the person sends a message holding them it shows "Answers sent". The agent changes it in place with `update_visual` and reads it with `read_visual`; entries are read-only to it until sent, and each child event names the parent's open visuals so a lead keeps the visual up to date instead of asking again.
+How to use: [visuals.md](visuals.md), section "Asking the reader"; [mcp.md](mcp.md), "Child events".
+
 ### Instructions from plugins (`session.instructions`)
 A plugin can give text to the agents of your chats: for every chat on the device, one project's chats, or one chat. The text goes whole into the agent's system prompt as its own section and is renewed every turn. 8 KB per chat. Settings shows each plugin's text, read only. Works for chats on Pi; other harnesses run without it.
 How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your agents". Example: `apps/zgx/plugins-dev/delegation`.
