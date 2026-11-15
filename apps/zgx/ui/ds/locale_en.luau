@@ -824,6 +824,8 @@ return {
 	["ds.visual.unavailable"] = "{title} couldn't be shown",
 	["ds.visual.stopped"] = "The visual stopped",
 	["ds.visual.copy_error"] = "Copy error",
+	["ds.visual.input.new"] = "New",
+	["ds.visual.input.change"] = "Change",
 	["ds.links.open"] = "Open",
 	["ds.links.open_in_panel"] = "Open in browser panel",
 	["ds.links.open_outside"] = "Open in default browser",

@@ -15,6 +15,12 @@
 --   button, toggle,     ds Button, Switch, Slider; tabs a Segmented control
 --   slider, tabs        (a Select for many or long options)
 --   link                the accent, opened where the app opens links
+--   input               a named input (field, area, check, checklist,
+--                       choice, select): ds TextField, TextArea, Checkbox,
+--                       Radio, Select. What the reader enters is kept
+--                       outside the script (`visuals.input`), so a new
+--                       script for the visual keeps it; the one with focus
+--                       isn't changed under the reader (`visuals.focus`).
 --   rule, space         a hairline, room
 --   canvas              zgx's canvas: the script's drawing, in our tokens
 --   scene, shader       rendered on the GPU off this thread (the shipping
@@ -39,6 +45,10 @@ local Switch = require("@self/switch")
 local Slider = require("@self/slider")
 local Segmented = require("@self/segmented")
 local Select = require("@self/select")
+local TextField = require("@self/text_field")
+local TextArea = require("@self/text_area")
+local Checkbox = require("@self/checkbox")
+local Radio = require("@self/radio")
 local Icon = require("@self/icon")
 local Stat = require("@self/stat")
 local DataTable = require("@self/data_table")
@@ -76,7 +86,7 @@ local FRAME = 33
 
 -- What can be built at a size of its own in a row; the rest fill its spare
 -- width there (the shipping app's "fluid" nodes).
-local FLUID = { slider = true, chart = true, canvas = true, scene = true, shader = true, table = true, rule = true }
+local FLUID = { slider = true, chart = true, canvas = true, scene = true, shader = true, table = true, rule = true, input = true }
 
 local function raw(n: number?, why: string): any
 	return if n == nil then nil else ui.raw(n, why)
@@ -169,6 +179,10 @@ type Ctx = {
 	-- Every render's number: canvases draw again with it.
 	gen: () -> number,
 	event: (handler: number?, arg: any?) -> (),
+	-- What the reader entered in a named input (nil clears it), and the
+	-- input that has focus (nil: none).
+	input: (name: string, value: any) -> (),
+	focus: (name: string?) -> (),
 	-- A failure while drawing (a canvas's, a scene's), shown under it.
 	drew: (error: string?) -> (),
 }
@@ -301,6 +315,237 @@ local Toggle = ui.component(function(props: { n: any, ctx: Ctx }): Node
 				value:toggle()
 			end,
 		},
+	}
+end)
+
+-- ---- named inputs ---------------------------------------------------------------
+
+local function same(a: any, b: any): boolean
+	if type(a) == "table" and type(b) == "table" then
+		return #a == #b and table.concat(a, "\0") == table.concat(b, "\0")
+	end
+	return a == b
+end
+
+local function copy(list: any): { string }
+	local out = {}
+	if type(list) == "table" then
+		for _, v in list do
+			table.insert(out, v)
+		end
+	end
+	return out
+end
+
+-- Words over a group of options: its label, "New" while it's new since
+-- the agent's last script, and what it says more.
+local function heading(n: any, get: () -> any): Node
+	return ui.column {
+		gap = "$space.1",
+		ui.row {
+			items = "center",
+			gap = "$space.2",
+			ui.text {
+				n.label or n.name,
+				literal = true,
+				text_size = "$zend.visual.text.body.size",
+				line_height = "$zend.visual.text.body.line",
+				weight = "$font.weight.medium",
+				color = "$text.primary",
+			},
+			ui.show(function(): boolean
+				local now = get()
+				return now ~= nil and now.fresh == true
+			end, ui.text {
+				class = "visual-input-new",
+				locale.s("ds.visual.input.new"),
+				literal = true,
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
+				color = "$accent",
+			}),
+		},
+		if n.description
+			then ui.text {
+				n.description,
+				literal = true,
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
+				color = "$text.secondary",
+			}
+			else nil,
+	}
+end
+
+local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
+	local n, ctx = props.n, props.ctx
+	local get = ctx.at(n.p)
+	local name = n.name
+	local focused = false
+	local initial = n.value
+	if type(initial) == "table" then
+		initial = copy(initial)
+	end
+	local value = ui.use_state(initial)
+	-- The tree's value (the reader's entry, else the script's) becomes the
+	-- control's, except under the reader's caret.
+	ui.effect(function()
+		local now = get()
+		if now and not focused and not same(now.value, value:peek()) then
+			value:set(if type(now.value) == "table" then copy(now.value) else now.value)
+		end
+	end)
+	-- The reader's change is kept, outside the script.
+	ui.effect(function()
+		local v = value:get()
+		local now = ctx.peek(n.p)
+		if now and not same(v, now.value) then
+			ctx.input(name, v)
+		end
+	end)
+	local reopened = ui.use_state(false)
+	local kind = n.kind
+	local options = {}
+	for _, o in n.options or {} do
+		table.insert(options, { value = o.value, label = o.label, description = o.description })
+	end
+	local control: Node
+	if kind == "field" then
+		control = TextField {
+			value = value,
+			label = n.label,
+			placeholder = n.placeholder,
+			hint = n.description,
+			name = n.label or name,
+			w_full = true,
+			on_focus_change = function(on: boolean)
+				focused = on
+				ctx.focus(if on then name else nil)
+			end,
+		}
+	elseif kind == "area" then
+		control = TextArea {
+			value = value,
+			label = n.label,
+			placeholder = n.placeholder,
+			hint = n.description,
+			name = n.label or name,
+			rows = 3,
+			w_full = true,
+		}
+	elseif kind == "check" then
+		control = Checkbox {
+			value = function(): boolean
+				return value:get() == true
+			end,
+			on_change = function(on: boolean)
+				value:set(on)
+			end,
+			label = n.label or name,
+			description = n.description,
+		}
+	elseif kind == "select" then
+		control = Select {
+			value = value,
+			options = options,
+			label = n.label,
+			placeholder = n.placeholder,
+			hint = n.description,
+			name = n.label or name,
+			size = "sm",
+		}
+	elseif n.many then
+		-- A checklist, or a choice of several: a box per option.
+		local boxes = { gap = "$space.1" }
+		for _, o in options do
+			local option = o.value
+			table.insert(boxes, Checkbox {
+				value = function(): boolean
+					return table.find(value:get() or {}, option) ~= nil
+				end,
+				on_change = function(on: boolean)
+					local next = {}
+					for _, o2 in options do
+						local was = table.find(value:peek() or {}, o2.value) ~= nil
+						if (o2.value == option and on) or (o2.value ~= option and was) then
+							table.insert(next, o2.value)
+						end
+					end
+					value:set(next)
+				end,
+				label = o.label,
+				description = o.description,
+			})
+		end
+		control = ui.column { gap = "$space.2", heading(n, get), ui.column(boxes) }
+	else
+		control = ui.column {
+			gap = "$space.2",
+			heading(n, get),
+			Radio { value = value, options = options, label = n.label or name },
+		}
+	end
+	-- One with no heading of its own says it's new beside it.
+	local own_heading = kind == "checklist" or kind == "choice"
+	local body = if own_heading
+		then control
+		else ui.column {
+			gap = "$space.1",
+			w_full = true,
+			control,
+			ui.show(function(): boolean
+				local now = get()
+				return now ~= nil and now.fresh == true
+			end, ui.text {
+				class = "visual-input-new",
+				locale.s("ds.visual.input.new"),
+				literal = true,
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
+				color = "$accent",
+			}),
+		}
+	-- Answered elsewhere: the answer, collapsed, with a way back in.
+	return ui.column {
+		class = "visual-input",
+		w_full = true,
+		min_w = 0,
+		gap = "$space.2",
+		ui.show(function(): boolean
+			local now = get()
+			return now ~= nil and now.answered ~= nil and not reopened:get()
+		end, ui.row {
+			class = "visual-input-answered",
+			items = "center",
+			gap = "$space.2",
+			ui.text {
+				function(): string
+					local now = get()
+					return (n.label or name) .. ": " .. (if now and now.answered then now.answered else "")
+				end,
+				literal = true,
+				truncate = true,
+				text_size = "$zend.visual.text.body.size",
+				line_height = "$zend.visual.text.body.line",
+				color = "$text.secondary",
+			},
+			ui.text {
+				locale.s("ds.visual.input.change"),
+				literal = true,
+				role = "button",
+				cursor = "pointer",
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
+				color = "$accent",
+				on_click = function()
+					reopened:set(true)
+				end,
+			},
+		}),
+		ui.show(function(): boolean
+			local now = get()
+			return now == nil or now.answered == nil or reopened:get()
+		end, body),
 	}
 end)
 
@@ -952,6 +1197,8 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 		return ui.row(place({ min_w = 0, Toggle { n = n, ctx = ctx } }, n, parent))
 	elseif k == "slider" then
 		return ui.column(place({ w_full = parent ~= "row", min_w = 0, VisualSlider { n = n, ctx = ctx } }, n, parent))
+	elseif k == "input" then
+		return ui.column(place({ w_full = parent ~= "row", min_w = 0, Input { n = n, ctx = ctx } }, n, parent))
 	elseif k == "link" then
 		local get = ctx.at(n.p)
 		return ui.text(place({
@@ -1060,6 +1307,15 @@ return ui.component(function(props: Props): Node
 			if type(handler) == "number" then
 				pcall(ui.invoke, api .. ".event", { id = id, h = handler, arg = arg })
 			end
+		end,
+		input = function(name: string, value: any)
+			local ok, promise = pcall(ui.call, api .. ".input", { id = id, name = name, value = value })
+			if ok and promise then
+				promise:after(function() end, function() end)
+			end
+		end,
+		focus = function(name: string?)
+			pcall(ui.invoke, api .. ".focus", { id = id, name = name })
 		end,
 		drew = function(error: string?)
 			local message = error or ""

@@ -31,6 +31,19 @@
 //!       `src` (`host:visual/<id>/<p>`): `{ src, labels, hints }`.
 //!   visuals.release { id, p }                              (`ui.action`)
 //!       a scene or shader gone from the screen lets its GPU state go.
+//!   visuals.input { id, name, value? }                     (`ui.call`)
+//!       the reader entered `value` in the input `name` (a string, a
+//!       boolean, a list of strings; nil clears it): kept beside the
+//!       visual's script on the chat's host (engine `SaveVisualEntries`,
+//!       `{stem}-entries.json`), read back as it opens again.
+//!   visuals.focus { id, name? }                            (`ui.action`)
+//!       the input `name` took focus (none: focus left): while it has it,
+//!       a new script doesn't change what it shows.
+//!   visuals.entries id                                     (`ui.call_sync`)
+//!       what the reader entered, `{ [name] = value }`.
+//!   visuals.swap { id, source }                            (`ui.call`)
+//!       a new script for a visual that's open, its entries kept (an error
+//!       leaves the old one running). (For plans/live-visuals G3.)
 //! And the shared state `visuals`, `{ [id] = { rev, generation } }`: `rev` counts
 //! changes to the tree's shape (a visual builds again only then), `generation`
 //! every render (its canvases draw again). Nothing else is copied into the
@@ -137,6 +150,15 @@ struct Entry {
     scenes: HashMap<String, (u64, Arc<zv::Scene>)>,
     /// Shaders' frame counts and last times, by node path.
     shaders: HashMap<String, (u32, f64)>,
+    /// What the reader entered in its inputs: the runtime's, copied after
+    /// each render, so they outlive a sleep.
+    kept: zv::Entries,
+    /// Its script's path and host, where its entries are saved (none for
+    /// one drawn from a source).
+    file: Option<(String, Option<String>)>,
+    /// A save is under way; another is wanted after it.
+    saving: bool,
+    unsaved: bool,
 }
 
 impl Entry {
@@ -156,6 +178,10 @@ impl Entry {
             generation: 0,
             scenes: HashMap::new(),
             shaders: HashMap::new(),
+            kept: zv::Entries::default(),
+            file: None,
+            saving: false,
+            unsaved: false,
         }
     }
 
@@ -165,7 +191,7 @@ impl Entry {
         let seed = zv::seed_for(id);
         match zv::Visual::load(&source, seed) {
             Ok(runtime) => {
-                self.runtime = Some(runtime.with_assets(assets.clone()));
+                self.runtime = Some(runtime.with_assets(assets.clone()).with_entries(self.kept.clone()));
                 (self.source, self.assets, self.seed) = (source, assets, seed);
                 self.load = Load::Ready;
                 self.render();
@@ -185,7 +211,9 @@ impl Entry {
     fn render(&mut self) {
         let Some(runtime) = self.runtime.as_mut() else { return };
         self.generation += 1;
-        match runtime.render() {
+        let rendered = runtime.render();
+        self.kept = runtime.entries();
+        match rendered {
             Ok(tree) => {
                 let had_error = self.error.take().is_some();
                 if self.tree.as_ref() != Some(&tree) {
@@ -226,7 +254,7 @@ impl Entry {
                 return Err("not running".into());
             }
             let loaded = zv::Visual::load(&self.source, self.seed).map_err(|e| e.message)?;
-            let mut runtime = loaded.with_assets(self.assets.clone());
+            let mut runtime = loaded.with_assets(self.assets.clone()).with_entries(self.kept.clone());
             let tree = runtime.render().map_err(|e| e.message)?;
             if self.tree.as_ref() != Some(&tree) {
                 self.value = node_value(&tree, "0");
@@ -249,6 +277,45 @@ impl Entry {
             Ok(()) => self.render(),
             Err(error) => self.fail(error),
         }
+    }
+
+    /// The reader entered `value` in input `name` (`None`: cleared it).
+    fn set_entry(&mut self, name: &str, value: Option<zv::EntryValue>) {
+        match self.wake() {
+            Ok(runtime) => runtime.set_entry(name, value),
+            Err(why) => return self.fail(zv::VisualError::script(why)),
+        }
+        self.render();
+    }
+
+    /// The input `name` took focus, or (`None`) focus left.
+    fn focus(&mut self, name: Option<&str>) {
+        if self.kept.focused() == name {
+            return;
+        }
+        match self.wake() {
+            Ok(runtime) => runtime.focus(name),
+            Err(why) => return self.fail(zv::VisualError::script(why)),
+        }
+        self.render();
+    }
+
+    /// A new script, its entries kept; on an error the old one runs on.
+    fn swap(&mut self, id: &str, source: String) -> Result<(), String> {
+        if self.load != Load::Ready {
+            let assets = self.assets.clone();
+            self.start(id, source, assets);
+            return match &self.load {
+                Load::Failed(why) => Err(why.clone()),
+                _ => Ok(()),
+            };
+        }
+        self.wake()?.swap(&source).map_err(|e| e.message)?;
+        self.source = source;
+        // Its state is new: the old script's is gone.
+        self.keep_awake = false;
+        self.render();
+        Ok(())
     }
 
     fn snapshot(&self) -> Value {
@@ -484,6 +551,59 @@ fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<S
         let arg = scoped(arg, &sc);
         async move { frame(v, host, arg).await }
     });
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.async_action(name("input"), move |arg| {
+        let v = v.clone();
+        let arg = scoped(arg, &sc);
+        async move {
+            let (id, input) = (text(arg.field("id")), text(arg.field("name")));
+            let changed = v
+                .with(&id, |e| {
+                    let before = e.rev;
+                    e.set_entry(&input, entry_value(arg.field("value")));
+                    e.rev != before
+                })
+                .ok_or("no visual")?;
+            if changed {
+                v.publish();
+            }
+            save_entries(&v, &id).await;
+            Ok(Value::Nil)
+        }
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.action(name("focus"), move |arg| {
+        let arg = scoped(arg, &sc);
+        let id = text(arg.field("id"));
+        let input = arg.field("name").map(crate::auth::text).filter(|n| !n.is_empty());
+        let changed = v
+            .with(&id, |e| {
+                let before = e.rev;
+                e.focus(input.as_deref());
+                e.rev != before
+            })
+            .unwrap_or(false);
+        if changed {
+            v.publish();
+        }
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.function(name("entries"), move |arg| {
+        let id = crate::auth::text(&scoped(arg, &sc));
+        v.with(&id, |e| entries_value(&e.kept)).unwrap_or(Value::Nil)
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.async_action(name("swap"), move |arg| {
+        let v = v.clone();
+        let arg = scoped(arg, &sc);
+        async move {
+            let id = text(arg.field("id"));
+            let source = arg.field("source").map(crate::auth::text).ok_or("no source")?;
+            v.with(&id, |e| e.swap(&id, source)).ok_or("no visual")??;
+            v.publish();
+            Ok(Value::Nil)
+        }
+    });
     let (v, sc) = (visuals.clone(), scope);
     host.action(name("release"), move |arg| {
         let arg = scoped(arg, &sc);
@@ -582,12 +702,29 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
         }
     }
     v.publish();
+    let (path, device) = (text(arg.field("path")), arg.field("device").map(crate::auth::text));
+    let device = device.filter(|d| !d.is_empty());
     let loaded = match arg.field("source") {
-        Some(source) => Ok((crate::auth::text(source), zv::Assets::default())),
-        None => read_visual(&text(arg.field("path")), arg.field("device").map(crate::auth::text)).await,
+        Some(source) => Ok((crate::auth::text(source), zv::Assets::default(), None)),
+        None => read_visual(&path, device.clone()).await.map(|(source, assets)| (source, assets, Some(path))),
+    };
+    // What the reader entered before, kept beside the script.
+    let kept = match loaded.as_ref().ok().and_then(|(_, _, path)| path.as_deref()) {
+        Some(path) => {
+            let stem = path.trim_end_matches("-visual.luau");
+            match read_file(&format!("{stem}-entries.json"), device.as_deref()).await {
+                Ok(bytes) => zv::Entries::from_json(&String::from_utf8_lossy(&bytes)),
+                Err(_) => zv::Entries::default(),
+            }
+        }
+        None => zv::Entries::default(),
     };
     v.with(&id, |e| match loaded {
-        Ok((source, assets)) => e.start(&id, source, assets),
+        Ok((source, assets, path)) => {
+            e.kept = kept;
+            e.file = path.map(|path| (path, device));
+            e.start(&id, source, assets)
+        }
         Err(why) => {
             eprintln!("zend-zgx: visual {id} unavailable: {why}");
             e.load = Load::Failed(why);
@@ -649,6 +786,66 @@ async fn read_file(path: &str, device: Option<&str>) -> Result<Vec<u8>, String> 
         }
         offset = next;
     }
+}
+
+/// Save visual `id`'s entries beside its script, one save at a time: one
+/// asked for while another is under way follows it, with what's kept then.
+async fn save_entries(v: &Rc<Visuals>, id: &str) {
+    let busy = v.with(id, |e| {
+        let busy = e.saving;
+        e.unsaved = true;
+        e.saving = e.file.is_some();
+        busy || e.file.is_none()
+    });
+    if busy != Some(false) {
+        return;
+    }
+    loop {
+        let Some(Some((params, path))) = v.with(id, |e| {
+            e.unsaved = false;
+            let (path, device) = e.file.clone()?;
+            let entries = serde_json::from_str::<serde_json::Value>(&e.kept.to_json()).ok()?;
+            let mut params = json!({ "path": path, "entries": entries });
+            if let Some(device) = device {
+                params["targetDeviceId"] = json!(device);
+            }
+            Some((params, path))
+        }) else {
+            break;
+        };
+        if let Err(why) = crate::engine::get().call("SaveVisualEntries", params).await {
+            eprintln!("zend-zgx: entries of visual {id} not saved beside {path}: {why}");
+        }
+        if v.with(id, |e| e.unsaved) != Some(true) {
+            break;
+        }
+    }
+    v.with(id, |e| e.saving = false);
+}
+
+/// An entry from what the script sent: a string, a boolean, a list of
+/// strings; nil (or nothing) clears it.
+fn entry_value(value: Option<&Value>) -> Option<zv::EntryValue> {
+    match value? {
+        Value::Nil => None,
+        Value::Bool(b) => Some(zv::EntryValue::Bool(*b)),
+        list @ (Value::List(_) | Value::Map(_)) => {
+            Some(zv::EntryValue::List(list.items().iter().map(crate::auth::text).collect()))
+        }
+        other => Some(zv::EntryValue::Text(crate::auth::text(other))),
+    }
+}
+
+fn entry_data(value: &zv::EntryValue) -> Value {
+    match value {
+        zv::EntryValue::Text(t) => Value::from(t.as_str()),
+        zv::EntryValue::Bool(b) => Value::Bool(*b),
+        zv::EntryValue::List(items) => list(items.iter().map(|i| Value::from(i.as_str())).collect()),
+    }
+}
+
+fn entries_value(entries: &zv::Entries) -> Value {
+    Value::record(entries.values().iter().map(|(name, value)| (name.as_str(), entry_data(value))))
 }
 
 /// A handler's argument from what the script sent.
@@ -926,6 +1123,58 @@ fn node_value(node: &zv::Node, path: &str) -> Value {
             f.push(("k", Value::from("link")));
             f.push(("label", Value::from(label.as_str())));
             f.push(("url", Value::from(url.as_str())));
+        }
+        zv::NodeKind::Input(input) => {
+            let (kind, many) = match input.kind {
+                zv::InputKind::Field => ("field", false),
+                zv::InputKind::Area => ("area", false),
+                zv::InputKind::Check => ("check", false),
+                zv::InputKind::Checklist => ("checklist", true),
+                zv::InputKind::Choice { many } => ("choice", many),
+                zv::InputKind::Select => ("select", false),
+            };
+            f.push(("k", Value::from("input")));
+            f.push(("kind", Value::from(kind)));
+            f.push(("many", Value::Bool(many)));
+            f.push(("name", Value::from(input.name.as_str())));
+            // Its control is the same one whatever moves around it.
+            if node.key.is_none() {
+                f.push(("key", Value::from(format!("input:{}", input.name).as_str())));
+            }
+            for (field, text) in [
+                ("label", &input.label),
+                ("description", &input.description),
+                ("placeholder", &input.placeholder),
+                ("answered", &input.answered),
+            ] {
+                if let Some(text) = text {
+                    f.push((field, Value::from(text.as_str())));
+                }
+            }
+            if !input.options.is_empty() {
+                f.push((
+                    "options",
+                    list(
+                        input
+                            .options
+                            .iter()
+                            .map(|o| {
+                                let mut of = vec![
+                                    ("value", Value::from(o.value.as_str())),
+                                    ("label", Value::from(o.label.as_str())),
+                                ];
+                                if let Some(d) = &o.description {
+                                    of.push(("description", Value::from(d.as_str())));
+                                }
+                                Value::record(of)
+                            })
+                            .collect(),
+                    ),
+                ));
+            }
+            f.push(("value", entry_data(&input.value)));
+            f.push(("kept", Value::Bool(input.kept)));
+            f.push(("fresh", Value::Bool(input.fresh)));
         }
     }
     Value::record(f)
@@ -1805,6 +2054,83 @@ mod tests {
           }
         end
     "#;
+
+    const FORM: &str = r#"
+        return function()
+          return ui.column {
+            ui.field { name = "goal", label = "Goal", value = "ship" },
+            ui.checklist { name = "steps", options = { "build", "test" } },
+          }
+        end
+    "#;
+
+    fn input_data(e: &Entry, name: &str) -> Value {
+        fn find(v: &Value, name: &str) -> Option<Value> {
+            if v.field("k").map(crate::auth::text).as_deref() == Some("input")
+                && v.field("name").map(crate::auth::text).as_deref() == Some(name)
+            {
+                return Some(v.clone());
+            }
+            v.field("children")?.items().iter().find_map(|c| find(c, name))
+        }
+        find(&tree(e), name).expect("the input")
+    }
+
+    #[test]
+    fn inputs_go_as_data_keyed_by_name_with_the_entry_shown() {
+        let mut e = started("v:form", FORM);
+        let goal = input_data(&e, "goal");
+        assert_eq!(goal.field("key").map(crate::auth::text).as_deref(), Some("input:goal"));
+        assert_eq!(goal.field("value").map(crate::auth::text).as_deref(), Some("ship"));
+        assert_eq!(goal.field("kept"), Some(&Value::Bool(false)));
+        e.set_entry("goal", entry_value(Some(&Value::from("mine"))));
+        e.set_entry("steps", entry_value(Some(&list(vec![Value::from("test")]))));
+        let goal = input_data(&e, "goal");
+        assert_eq!(goal.field("value").map(crate::auth::text).as_deref(), Some("mine"));
+        assert_eq!(goal.field("kept"), Some(&Value::Bool(true)));
+        let steps = input_data(&e, "steps");
+        assert_eq!(steps.field("value").map(|v| v.items().len()), Some(1));
+        let entries = entries_value(&e.kept);
+        assert_eq!(entries.field("goal").map(crate::auth::text).as_deref(), Some("mine"));
+        // Nil clears it.
+        e.set_entry("goal", entry_value(Some(&Value::Nil)));
+        assert_eq!(input_data(&e, "goal").field("value").map(crate::auth::text).as_deref(), Some("ship"));
+    }
+
+    #[test]
+    fn entries_outlive_a_sleep_and_a_new_script() {
+        let mut e = started("v:form", FORM);
+        e.set_entry("goal", Some(zv::EntryValue::Text("mine".into())));
+        e.keep_awake = false;
+        e.sleep();
+        assert!(e.runtime.is_none(), "a form with nothing but entries sleeps");
+        e.wake().unwrap();
+        assert_eq!(input_data(&e, "goal").field("value").map(crate::auth::text).as_deref(), Some("mine"));
+        e.swap(
+            "v:form",
+            r#"return function() return ui.column {
+                ui.field { name = "goal", value = "theirs" },
+                ui.field { name = "due" },
+            } end"#
+                .into(),
+        )
+        .unwrap();
+        assert_eq!(input_data(&e, "goal").field("value").map(crate::auth::text).as_deref(), Some("mine"));
+        assert_eq!(input_data(&e, "due").field("fresh"), Some(&Value::Bool(true)));
+        assert!(e.swap("v:form", "return 5".into()).is_err());
+        assert_eq!(input_data(&e, "goal").field("value").map(crate::auth::text).as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn the_focused_field_holds_while_the_script_changes() {
+        let mut e = started("v:form", FORM);
+        e.focus(Some("goal"));
+        e.swap("v:form", r#"return function() return ui.field { name = "goal", value = "new" } end"#.into())
+            .unwrap();
+        assert_eq!(input_data(&e, "goal").field("value").map(crate::auth::text).as_deref(), Some("ship"));
+        e.focus(None);
+        assert_eq!(input_data(&e, "goal").field("value").map(crate::auth::text).as_deref(), Some("new"));
+    }
 
     #[test]
     fn a_visual_runs_and_its_tree_is_plain_data() {
