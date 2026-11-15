@@ -236,7 +236,26 @@ impl Visual {
             .set_name("=kit")
             .set_mode(mlua::chunk::ChunkMode::Text)
             .call(ui.clone())?;
-        ui.set("kit", kit)?;
+        // Batches of kinds, each in a file of its own, join the kit before it
+        // is frozen again.
+        let merged = lua.create_table()?;
+        for pair in kit.pairs::<Value, Value>() {
+            let (k, v) = pair?;
+            merged.set(k, v)?;
+        }
+        for (name, source) in [("kit_a", include_str!("kit_a.luau"))] {
+            let extra: Table = lua
+                .load(source)
+                .set_name(format!("={name}"))
+                .set_mode(mlua::chunk::ChunkMode::Text)
+                .call(ui.clone())?;
+            for pair in extra.pairs::<Value, Value>() {
+                let (k, v) = pair?;
+                merged.set(k, v)?;
+            }
+        }
+        merged.set_readonly(true);
+        ui.set("kit", merged)?;
         globals.set("ui", ui)?;
         let math: Table = globals.get("math")?;
         let randomseed: Function = math.get("randomseed")?;
@@ -797,5 +816,7 @@ pub fn seed_for(id: &str) -> u64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod kit_a_tests;
 #[cfg(test)]
 mod kit_tests;
