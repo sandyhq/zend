@@ -1,5 +1,7 @@
 # zend — Architecture
 
+> Upstream's design document. For plugins, visuals, the MCP server, child sessions and the zgx window, which it does not cover, see [docs/architecture-fork.md](docs/architecture-fork.md).
+
 A ground-up native rewrite of [zend](../zend) — a multi-device controller for coding agents
 (Claude Code / Codex) — in Rust, with a gpui UI. Fresh app; no backwards compatibility required.
 
