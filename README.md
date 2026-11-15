@@ -45,6 +45,13 @@ zend daemon start
 
 Devices signed in to the same account can read and write each other's workspace files, so only sign in devices you trust. Existing local sessions are never uploaded.
 
+## Documentation
+
+- **Using it:** [working with agents](docs/working-with-agents.md), [using plugins](docs/using-plugins.md), [when something is wrong](docs/troubleshooting.md).
+- **What this fork adds:** [features](docs/features.md), [roadmap](docs/roadmap.md), [changelog](CHANGELOG.md).
+- **Building on it:** [plugin guide](apps/zgx/docs/plugins.md), [visuals](docs/visuals.md), [MCP tools](docs/mcp.md).
+- **Changing Zend itself:** [AGENTS.md](AGENTS.md), [architecture of the fork](docs/architecture-fork.md), [fork and upstream](docs/fork.md), [testing](docs/reference/testing.md), [stand-in instance](docs/reference/test-instance.md), [build and install](docs/reference/build-and-deploy.md), [decisions](docs/adr/), [words](CONTEXT.md).
+
 ## Sponsors
 
 Thank you to [The Context Company](https://www.thecontextcompany.com/) for sponsoring Zend. You can help fund Zend's development too by [becoming a sponsor on GitHub](https://github.com/sponsors/sandyhq).
