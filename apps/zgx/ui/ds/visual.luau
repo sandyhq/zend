@@ -1448,6 +1448,9 @@ local function code(n: any, parent: string): Node
 		source[i] = l.s
 	end
 	local runs = if n.lang and Syntax.highlighter(n.lang) then Syntax.lines(table.concat(source, "\n"), n.lang) else nil
+	-- (The room the lines scroll in: the washes run its whole width, a
+	-- long line's past it. A percentage doesn't reach through the scroll.)
+	local room = ui.ref()
 	local rows: { Node } = {}
 	for i, l in lines do
 		local mark = CODE_MARK[l.m]
@@ -1501,10 +1504,16 @@ local function code(n: any, parent: string): Node
 		w_full = parent ~= "row",
 		min_w = 0,
 		ui.scroll_x {
+			ref = room,
 			w_full = true,
 			fade_x = { 16, 32 },
 			fade_overflow = true,
-			ui.column { min_w = "100%", table.unpack(rows) },
+			ui.column {
+				min_w = function(): number
+					return room.width or 0
+				end,
+				table.unpack(rows),
+			},
 		},
 	}, n, parent))
 end
