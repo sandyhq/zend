@@ -29,6 +29,19 @@ const KINDS: &[&str] = &[
     "Steps",
     "TextArea",
     "Toggle",
+    // Batch c (G7c): charts, drawing, media, 3D.
+    "Carousel",
+    "Chart",
+    "Diagram",
+    "Icon",
+    "Map",
+    "Scene",
+    "SegmentedBar",
+    "Shader",
+    "Sparkline",
+    "Tree",
+    "Treemap",
+    "Waterfall",
 ];
 
 fn tree(script: &str) -> Node {
