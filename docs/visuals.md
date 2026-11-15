@@ -73,5 +73,33 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 - **Open visuals stay in reach.** A visual with inputs that isn't sent yet is pinned above the composer while the transcript moves on; in the transcript a line marks its place. Sent, it goes back there.
 - **Update, don't ask again.** `update_visual { id, script, title? }` replaces the script in place (the same spot, the entries kept by name; a new input shows "New"). `read_visual { id }` returns the inputs, the entries, `open` and `sent`. Entries are the reader's draft until `sent`: read-only for the agent, not answers. While a visual is open, `show_visual` with its title is refused, and each child event to that chat names it ("Open visual <id> …"): keep working and put what you learn into it with `update_visual`.
 
+## Kit
+`ui.kit` holds ready-made components: one call with data, built from the nodes above, so they look and behave like the rest of the visual. Unknown props are errors. Inputs need `name` and are kept like the input nodes. Tones: `neutral`, `good`, `warn`, `bad`, `info`. Examples: `visuals/` in the repo; the rule for adding a kind: `visuals/README.md`.
+
+| Kind | What it is |
+|---|---|
+| `Form { title?, description?, submit?, ... }` | questions as children, ending in one answer button (`submit` its label); answer buttons inside are taken out |
+| `Input { name, label?, placeholder?, value? }` | one line of text |
+| `TextArea { name, label?, placeholder? }` | several lines |
+| `DateInput { name, label? }` | a date as yyyy-mm-dd (a text field) |
+| `Toggle { name, label, value? }` | yes or no (a check) |
+| `Checklist { name, options, value? }` | options to tick |
+| `Choice { name, options, many? }` | one of a few short options, or several with `many` |
+| `Radio { name, options }` | one option; options `{ value, detail }` |
+| `Select { name, options, placeholder? }` | one of many, in a drop-down |
+| `OptionCards { name, options, value?, many? }` | options `{ value, title, detail }`; a list `value` picks several |
+| `FollowUps { prompts, name?, answer? }` | suggested next questions; the pick goes into the answer; brings its own answer button unless `answer = false` |
+| `Card { title?, subtitle?, ... }` | a titled section, no box |
+| `Details { title, open?, ... }` | a section the reader opens and closes |
+| `Callout { text, title?, tone? }` | a note to heed, with a toned mark |
+| `Badge { text, tone? }` | a one- to three-word status |
+| `KeyValue { pairs }` | `{ { key, value }, ... }` in order, or `{ key = value }` sorted; values may be nodes |
+| `List { items, ordered? }` | rows: strings or `{ title, detail?, value?, tone?, icon? }` |
+| `Steps { items }` | `{ title, detail?, status? = done, current, blocked }` |
+| `Status { items }` | health: `{ name, status = on-track, at-risk, off-track, blocked, done, not-started; owner?, due?, progress?, note? }` |
+| `Progress { value, max?, label?, tone? }` | a labelled bar: a percent, or value of max |
+| `Metric { label, value, note?, tone? }` | a key number; two to four in a `ui.row` |
+| `Gauge { value, min?, max?, label?, tone? }` | a dial, 0 to 100 by default |
+
 ## What a visual cannot do yet
-A component kit (`ui.kit`), an example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).
+Kit kinds still to come: Slider, Rating, ListEditor, EditableTable, Quiz, Stepper, Timer (G6 leftovers), and the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).

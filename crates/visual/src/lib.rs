@@ -230,6 +230,13 @@ impl Visual {
                 })
             })?,
         )?;
+        // The kit last: its functions build on everything above.
+        let kit: Table = lua
+            .load(include_str!("kit.luau"))
+            .set_name("=kit")
+            .set_mode(mlua::chunk::ChunkMode::Text)
+            .call(ui.clone())?;
+        ui.set("kit", kit)?;
         globals.set("ui", ui)?;
         let math: Table = globals.get("math")?;
         let randomseed: Function = math.get("randomseed")?;
@@ -790,3 +797,5 @@ pub fn seed_for(id: &str) -> u64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod kit_tests;

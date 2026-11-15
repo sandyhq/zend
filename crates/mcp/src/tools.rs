@@ -501,6 +501,10 @@ GLSL errors come back with the pass and line number.\n\
 prefix, decimals }) groups digits; ui.map(list, function(v, i) end); ui.range(a, b, step); ui.clamp; \
 ui.lerp; ui.series(i) is \"chart<i>\"; ui.color(token, alpha); ui.mix(a, b, t). print(...) output comes \
 back to you.\n\
+- ui.kit has ready-made components built from these nodes, each one call with data (ui.kit.Form { \
+title, ui.kit.Choice { name = \"audience\", label, options = { ... } }, ... } asks the reader and ends in \
+an answer button; also Input, TextArea, Checklist, Radio, Select, Toggle, OptionCards, FollowUps, Card, \
+Callout, KeyValue, List, Steps, Status, Progress, Metric, Badge, Details, Gauge, DateInput).\n\
 \n\
 Colors are theme tokens, never hex or color names (except scene materials): text; muted (labels, axes, captions); faint \
 (tertiary notes); accent (the one thing to notice); on-accent (text on an accent mark); success, \

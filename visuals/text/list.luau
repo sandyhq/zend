@@ -1,0 +1,15 @@
+-- title: Services
+-- category: text
+-- description: Rows with a title, detail, value and tone.
+-- tags: list, rows, items
+return function()
+	return ui.kit.Card {
+		title = "Services",
+		ui.kit.List { items = {
+			{ title = "api", detail = "p99 120 ms", tone = "good", value = "99.98%" },
+			{ title = "worker", detail = "queue backlog since 14:05", tone = "warn", value = "98.1%" },
+			{ title = "billing", detail = "failing health checks", tone = "bad", value = "92.4%" },
+			{ title = "search", tone = "good", value = "100%" },
+		} },
+	}
+end
