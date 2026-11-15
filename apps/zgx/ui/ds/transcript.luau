@@ -695,10 +695,9 @@ local function blocks_of(list: () -> { Block }, m: Message, now: () -> Message, 
 		-- An agent's visual: built once, followed by the host (src/visuals.rs).
 		if b.kind == "visual" then
 			local visual = Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent }
-			-- Open and pinned above the composer: a line in its place.
-			return ui.show(function(): boolean
-				return VisualPin.pinned:get()[b.id] == true
-			end, VisualPin.Marker { id = b.id, title = b.title }, visual)
+			-- Open and scrolled out of view: pinned above the composer, a line
+			-- in its place (ds/visual_pin).
+			return VisualPin.Place { id = b.id, title = b.title, visual = visual }
 		end
 		-- Pictures an agent showed: one alone, or several on a tray, among
 		-- the reply's pictures in the lightbox. More arriving while it works

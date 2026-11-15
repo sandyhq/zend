@@ -1270,6 +1270,22 @@ TRANSCRIPTS.sv = {
 		},
 	}),
 }
+-- The question visual's chat moving on: tall replies under it, so its place
+-- scrolls out of view and it is pinned (src/visual_answer_tests.rs).
+ui.command {
+	id = "sv_more",
+	title = "Replies under the question visual",
+	run = function()
+		local n = store.messages:len()
+		for i = 1, 4 do
+			local paragraphs = {}
+			for p = 1, 8 do
+				table.insert(paragraphs, `Paragraph {p} of reply {i}: the transcript moves on under the visual, line after line, until its place is out of view.`)
+			end
+			store.messages:push(line(`qm{n + i}`, "assistant", 2 + i, table.concat(paragraphs, "\n\n")))
+		end
+	end,
+}
 seed()
 ui.command {
 	id = "group_grows",

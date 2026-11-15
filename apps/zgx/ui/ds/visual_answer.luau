@@ -28,7 +28,26 @@ export type File = { path: string?, device: string? }
 M.mark = nil :: ((id: string, file: File?) -> ())?
 
 -- What each visual last put in, by its id.
-local given = ui.shared("visual.answers", {} :: { [string]: string })
+-- (A plugin's page has no composer and the app doesn't share this with
+-- plugins: there it's a table of its own, and no answer button shows.)
+local given = (function(): any
+	local ok, shared = pcall(ui.shared, "visual.answers", {} :: { [string]: string })
+	if ok then
+		return shared
+	end
+	local held: { [string]: string } = {}
+	return {
+		peek = function(_): { [string]: string }
+			return held
+		end,
+		get = function(_): { [string]: string }
+			return held
+		end,
+		set = function(_, v: { [string]: string })
+			held = v
+		end,
+	}
+end)()
 -- And where each one's script is, to mark it sent.
 local files: { [string]: File } = {}
 

@@ -20,12 +20,12 @@ fn mount() -> TestApp {
     app.frames(10);
     app.host.run_command("go_sv");
     app.frames(30);
-    // (Pinned over the composer once it has drawn: once there, only there.)
-    let settled = app.wait_until(|app| app.target(ANSWER).is_ok() && app.find(".visual-pinned-marker").is_some());
+    // (In its place in the transcript, in view: not pinned.)
+    let settled = app.wait_until(|app| app.find(&format!("#transcript >> {ANSWER}")).is_some());
     if !settled {
         let tree = app.tree();
         let lines: Vec<&str> = tree.lines().filter(|l| l.contains("visual") || l.contains("Add to message")).collect();
-        panic!("not pinned: {:?}\n{}", app.target(ANSWER), lines.join("\n"));
+        panic!("not drawn in place: {:?}\n{}", app.target(ANSWER), lines.join("\n"));
     }
     assert_eq!(app.error(), None, "the fixture failed");
     if std::env::var("G4_DEBUG").is_ok() {
@@ -34,6 +34,56 @@ fn mount() -> TestApp {
         eprintln!("ANSWER {b:?} PIN {p:?}\n{}", app.tree().lines().filter(|l| l.contains("pinned") || l.contains("Add to") || l.contains("scroll")).collect::<Vec<_>>().join("\n"));
     }
     app
+}
+
+/// The chat moves on (the fixture's `sv_more`): the visual's place
+/// scrolls out of view and it is pinned above the composer.
+fn pin(app: &mut TestApp) {
+    app.host.run_command("sv_more");
+    app.frames(30);
+    let pinned = app.wait_until(|app| {
+        app.find(&format!("#chat-pinned-visual >> {ANSWER}")).is_some() && app.find(".visual-pinned-marker").is_some()
+    });
+    assert!(pinned, "not pinned once scrolled away:\n{}", visual_lines(app));
+}
+
+/// The transcript scrolled back up to the visual's place.
+fn back(app: &mut TestApp) {
+    for _ in 0..10 {
+        if app.find("#chat-pinned-visual").is_none() {
+            break;
+        }
+        app.scroll("#transcript", -4000.);
+        app.frames(10);
+    }
+    let returned = app.wait_until(|app| app.find("#chat-pinned-visual").is_none() && app.find(&format!("#transcript >> {ANSWER}")).is_some());
+    assert!(returned, "not back in its place:\n{}", visual_lines(app));
+}
+
+fn visual_lines(app: &mut TestApp) -> String {
+    let tree = app.tree();
+    tree.lines().filter(|l| l.contains("visual") || l.contains("textbox") || l.contains("Add to message")).collect::<Vec<_>>().join("\n")
+}
+
+/// The tree line of what has the keys.
+fn line_of_focus(app: &mut TestApp) -> String {
+    app.tree().lines().find(|l| l.split(' ').any(|w| w == "focused")).map(|l| l.trim().to_owned()).unwrap_or_default()
+}
+
+fn has_keys(app: &mut TestApp, target: &str) -> bool {
+    let id = app.target(target).ok();
+    id.is_some() && app.ui.input.focused() == id
+}
+
+fn goal(app: &TestApp) -> Option<String> {
+    crate::visuals::entries_of("v:fixture-answer").field("goal").map(crate::auth::text)
+}
+
+/// Typed as the keyboard types, into what has the keys.
+fn text(app: &mut TestApp, s: &str) {
+    app.ui.dispatch(zgx::input::InputEvent::Text(s.into()));
+    app.settle();
+    app.frames(10);
 }
 
 fn draft(app: &TestApp) -> String {
@@ -56,7 +106,7 @@ fn calls(app: &TestApp) -> String {
 #[test]
 fn an_open_visual_is_pinned_and_a_message_holding_its_answers_marks_it_sent() {
     let mut app = mount();
-    app.wait_until(|app| app.find("#chat-pinned-visual >> role:button \"Add to message\"").is_some());
+    pin(&mut app);
     assert!(app.find(".visual-pinned-marker").is_some(), "no line in the transcript");
     app.type_text("role:textbox \"Goal\"", "Move the db");
     app.frames(10);
@@ -86,6 +136,7 @@ fn an_open_visual_is_pinned_and_a_message_holding_its_answers_marks_it_sent() {
 #[test]
 fn a_message_without_the_block_leaves_it_open() {
     let mut app = mount();
+    pin(&mut app);
     app.type_text(COMPOSER, "Something else.");
     app.frames(5);
     app.keys("Enter");
@@ -143,5 +194,85 @@ fn the_answers_go_under_the_draft_unsent_and_a_second_press_replaces_them() {
     app.frames(10);
     assert_eq!(draft(&app), edited);
     assert!(!calls(&app).contains("send:"), "something was sent: {}", calls(&app));
+    assert_eq!(app.error(), None);
+}
+
+/// Pinned only once its place has scrolled out of view: in view it stays
+/// where it is, out of view it's over the composer (its place a line, as
+/// tall as it was, seen in the stand-in), and scrolled back it returns (plans/live-visuals fix1).
+#[test]
+fn an_open_visual_is_pinned_only_while_its_place_is_out_of_view() {
+    let mut app = mount();
+    app.frames(20);
+    assert!(app.find("#chat-pinned-visual").is_none(), "pinned while in view:\n{}", visual_lines(&mut app));
+    assert!(app.find(".visual-pinned-marker").is_none());
+    pin(&mut app);
+    back(&mut app);
+    assert!(app.find(".visual-pinned-marker").is_none());
+    assert_eq!(app.error(), None);
+}
+
+/// The first keystroke into a visual's field keeps the keys there, in its
+/// place and pinned. (The first entry made the input "kept", which the
+/// visual's shape counted: the whole visual was built again, the field
+/// went, and the composer took the keys: plans/live-visuals fix1.)
+#[test]
+fn the_first_keystroke_into_a_visual_keeps_the_keys_there() {
+    let goal_box = "role:textbox \"Goal\"";
+    let mut app = mount();
+    let before = app.target(&format!("#transcript >> {goal_box}")).unwrap();
+    app.click(&format!("#transcript >> {goal_box}"));
+    app.frames(5);
+    assert!(has_keys(&mut app, goal_box), "{}", line_of_focus(&mut app));
+    text(&mut app, "M");
+    app.wait_until(|app| goal(app).as_deref() == Some("M"));
+    app.frames(10);
+    assert!(has_keys(&mut app, goal_box), "the keys left the field for {}:\n{}", line_of_focus(&mut app), visual_lines(&mut app));
+    assert!(!has_keys(&mut app, COMPOSER), "the composer took the keys");
+    assert_eq!(app.target(goal_box).unwrap(), before, "the field was built again");
+    text(&mut app, "ove");
+    app.wait_until(|app| goal(app).as_deref() == Some("Move"));
+    assert_eq!(goal(&app).as_deref(), Some("Move"));
+
+    // Pinned, a first entry into another field.
+    let mut app = mount();
+    pin(&mut app);
+    let pinned_goal = format!("#chat-pinned-visual >> {goal_box}");
+    app.click(&pinned_goal);
+    app.frames(5);
+    text(&mut app, "N");
+    app.wait_until(|app| goal(app).as_deref() == Some("N"));
+    app.frames(10);
+    assert!(has_keys(&mut app, &pinned_goal), "the keys left the pinned field:\n{}", visual_lines(&mut app));
+    assert!(!has_keys(&mut app, COMPOSER), "the composer took the keys");
+    assert_eq!(app.error(), None);
+}
+
+/// Moving between its place and the pin (scrolled away, scrolled back), the
+/// field being typed in keeps the keys and the caret, and the entry stays.
+#[test]
+fn moving_between_place_and_pin_keeps_the_keys_and_the_caret() {
+    let goal_box = "role:textbox \"Goal\"";
+    let mut app = mount();
+    app.click(&format!("#transcript >> {goal_box}"));
+    app.frames(5);
+    text(&mut app, "abc");
+    app.keys("Left");
+    app.frames(5);
+    app.wait_until(|app| goal(app).as_deref() == Some("abc"));
+    pin(&mut app);
+    app.frames(10);
+    let pinned_goal = format!("#chat-pinned-visual >> {goal_box}");
+    assert!(has_keys(&mut app, &pinned_goal), "the pinned field hasn't the keys:\n{}", visual_lines(&mut app));
+    text(&mut app, "X");
+    app.wait_until(|app| goal(app).as_deref() == Some("abXc"));
+    assert_eq!(goal(&app).as_deref(), Some("abXc"), "the caret moved");
+    back(&mut app);
+    app.frames(10);
+    let placed_goal = format!("#transcript >> {goal_box}");
+    assert!(has_keys(&mut app, &placed_goal), "the field in its place hasn't the keys:\n{}", visual_lines(&mut app));
+    text(&mut app, "Y");
+    app.wait_until(|app| goal(app).as_deref() == Some("abXYc"));
+    assert_eq!(goal(&app).as_deref(), Some("abXYc"), "the caret moved");
     assert_eq!(app.error(), None);
 }

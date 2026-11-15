@@ -13,7 +13,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - Permission `session.instructions`: `zend.set_instructions`, `zend.instructions`, and `run.preparing` answered with `{ instructions }`; whole in Pi's system prompt.
 - Example plugin `plugins-dev/delegation`; a plugin's Settings page shows what it tells agents.
 - `docs/features.md`, `docs/roadmap.md`, this file; plugin tools listed in `docs/mcp.md`.
-- Visuals that ask: input nodes and `ui.answer` (the inputs as words into the composer); `update_visual` and `read_visual`; a message holding a visual's answers marks it sent (`MarkVisualSent`); open visuals pinned above the composer; child events name the parent's open visuals.
+- Visuals that ask: input nodes and `ui.answer` (the inputs as words into the composer); `update_visual` and `read_visual`; a message holding a visual's answers marks it sent (`MarkVisualSent`); open visuals pinned above the composer once their place scrolls out of view, back in place when it scrolls into view; child events name the parent's open visuals.
 - Visual kit `ui.kit`: 22 components (Form and its inputs, Card, Callout, KeyValue, List, Steps, Status, Progress, Metric and more), each one call with data; examples in `visuals/`.
 
 ### Changed

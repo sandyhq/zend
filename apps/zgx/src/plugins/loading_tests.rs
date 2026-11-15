@@ -1168,3 +1168,57 @@ n:set(n:peek() + 1)
     a.host.save();
     assert_eq!(saved().as_deref().map(str::trim), Some("1"), "starts from its initial");
 }
+
+/// A plugin's own visual (`zend.visual`, a plugin page's live preview):
+/// ds/visual draws it from the plugin's VM without the app's composer
+/// state, which the app doesn't share with plugins. Before plans/live-visuals
+/// fix1 it failed at once (`ui.shared "visual.answers": the app does not
+/// expose it to plugins`). There is no composer to take answers there: its
+/// input shows, its answer button doesn't, and nothing is pinned.
+#[test]
+fn a_plugins_own_visual_draws_without_the_apps_composer_state() {
+    let root = dir("visual");
+    let init = r##"
+local zend = require("./zend")("gallery")
+zend.place { at = "#bar", after = function()
+    return ui.column { id = "preview", zend.visual {
+        id = "v1",
+        title = "Ask",
+        source = [[return function() return ui.column { gap = 8,
+            ui.field { name = "goal", label = "Goal" },
+            ui.answer {},
+        } end]],
+    } }
+end }
+"##;
+    let item = plugin(&root, "gallery", init, &["ui.add"], &[], &[]);
+    write(&root, "app/app.luau", APP);
+    let entry = root.join("app/app.luau");
+    let heard: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
+    let log = heard.clone();
+    let mut a = TestApp::new(move |runtime| {
+        // (The design system lent as the app lends it: the real ui/ds.)
+        let host = super::lend_design_system(ScriptHost::new(runtime, &entry), &Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.luau"));
+        expose_surface(&host);
+        expose_own(&host, "gallery");
+        for name in ["calls", "inbox"] {
+            host.shared(&format!("plugin.gallery.{name}"), vlist(Vec::new()));
+        }
+        host.shared("plugin.gallery.records", Value::Nil).set(json_value(&records::records_with(&item.permissions(), &item.change(), &sources())));
+        for name in ["result", "ack", "menus", "toast", "problem", "open_tab", "add_page", "cost"] {
+            let (log, key) = (log.clone(), format!("plugin.gallery.{name}"));
+            host.action(key.clone(), move |v: Value| log.borrow_mut().push((key.clone(), v.to_json())));
+        }
+        host.set_plugins(item.plugin().into_iter().collect());
+        host
+    });
+    let drawn = a.wait_until(|a| a.find("#preview >> role:textbox \"Goal\"").is_some());
+    let problems: Vec<String> = heard.borrow().iter().filter(|(k, _)| k.ends_with(".problem")).map(|(_, v)| v.clone()).collect();
+    assert!(drawn, "the visual didn't draw: {problems:?}\n{}", a.tree());
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(a.error(), None);
+    // (No composer: no answer button, nothing pinned.)
+    assert!(a.find("role:button \"Add to message\"").is_none(), "{}", a.tree());
+    assert!(a.find(".visual-pinned-marker").is_none());
+    assert!(a.find("#chat-pinned-visual").is_none());
+}

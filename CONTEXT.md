@@ -56,7 +56,7 @@
 - **Node** — One element of a visual's tree (`ui.text`, `ui.chart`, …).
 - **Input** — A node the reader fills in (planned: field, area, check, checklist, choice, select). Each has a fixed **name**.
 - **Entry** — What the reader put into one input. Kept by Zend per visual and input name. **Unsent** until the person sends a message holding it; unsent entries are the person's draft, readable by the agent, not binding.
-- **Open visual** — A visual with inputs whose entries are not yet sent. Stays pinned above the composer (planned).
+- **Open visual** — A visual with inputs whose entries are not yet sent. Pinned above the composer while its place in the transcript is out of view.
 - **Kit** — Ready-made visual components shipped with Zend, called with data (`ui.kit.<Kind> { … }`) (planned).
 
 ## Development vocabulary

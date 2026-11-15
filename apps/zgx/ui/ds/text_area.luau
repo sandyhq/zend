@@ -30,6 +30,10 @@ export type Props = {
 	disabled: boolean?,
 	name: (string | Message)?,
 	autofocus: boolean?,
+	-- The textarea's element, for a caller that sets its selection.
+	input_ref: Ref?,
+	-- Told as the field takes and gives up the keys.
+	on_focus_change: ((focused: boolean) -> ())?,
 	-- ⌘Enter (a form's submit from a multi-line field).
 	on_submit: ((text: string) -> ())?,
 	on_key: ((e: any) -> boolean?)?,
@@ -53,9 +57,19 @@ return ui.component(function(props: Props): Node
 	local size: control.Size = props.size or "md"
 	local value = props.value
 	local focused = ui.use_state(false)
+	if props.on_focus_change then
+		local heard = focused:peek()
+		ui.effect(function()
+			local now = focused:get()
+			if now ~= heard then
+				heard = now
+				props.on_focus_change(now)
+			end
+		end)
+	end
 	local hovered = ui.use_state(false)
 	local measure = ui.ref()
-	local input_ref = ui.ref()
+	local input_ref = props.input_ref or ui.ref()
 	local line = ui.theme.get("zend.field.line") :: number? or 20
 	local rows, max_rows = props.rows or 3, props.max_rows or 10
 	local font = if props.mono then "$font.mono" else nil

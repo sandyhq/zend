@@ -63,6 +63,7 @@ local locale = require("@self/locale")
 local Links = require("@ds/links")
 local ReplyPicture = require("@self/reply_picture")
 local VisualAnswer = require("@self/visual_answer")
+local VisualCarry = require("@self/visual_carry")
 
 export type Props = {
 	id: string,
@@ -107,6 +108,12 @@ end
 local FOLLOWS = {
 	t = true,
 	value = true,
+	-- (An input's state the reader's entry changes: read in place. In the
+	-- shape, the first keystroke built the visual again and its field lost
+	-- the caret to the composer: plans/live-visuals fix1.)
+	kept = true,
+	fresh = true,
+	answered = true,
 	label = true,
 	delta = true,
 	tone = true,
@@ -396,6 +403,23 @@ local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
 	local get = ctx.at(n.p)
 	local name = n.name
 	local focused = false
+	local input_ref = ui.ref()
+	if n.kind == "field" or n.kind == "area" then
+		-- Built in a new place while it had the keys (ds/visual_carry): it
+		-- takes them back, its selection too. (Once mounted: after this frame.)
+		ui.after(0, function()
+			local el = input_ref:peek()
+			local c = el and VisualCarry.take(ctx.id, name)
+			if c then
+				el:focus()
+				if c.a then
+					pcall(function()
+						el:set_selection(c.a, c.b)
+					end)
+				end
+			end
+		end)
+	end
 	local initial = n.value
 	if type(initial) == "table" then
 		initial = copy(initial)
@@ -432,8 +456,10 @@ local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			hint = n.description,
 			name = n.label or name,
 			w_full = true,
+			input_ref = input_ref,
 			on_focus_change = function(on: boolean)
 				focused = on
+				VisualCarry.hold(ctx.id, name, if on then input_ref:peek() else nil)
 				ctx.focus(if on then name else nil)
 			end,
 		}
@@ -446,6 +472,12 @@ local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			name = n.label or name,
 			rows = 3,
 			w_full = true,
+			input_ref = input_ref,
+			on_focus_change = function(on: boolean)
+				focused = on
+				VisualCarry.hold(ctx.id, name, if on then input_ref:peek() else nil)
+				ctx.focus(if on then name else nil)
+			end,
 		}
 	elseif kind == "check" then
 		control = Checkbox {

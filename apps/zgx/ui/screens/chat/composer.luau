@@ -36,6 +36,7 @@ local DropOverlay = require("@ds/drop_overlay")
 local Asks = require("@app/screens/chat/asks")
 local VisualAnswer = require("@ds/visual_answer")
 local VisualPin = require("@ds/visual_pin")
+local VisualCarry = require("@ds/visual_carry")
 local Visual = require("@ds/visual")
 local glass = require("@ds/glass")
 local Invocations = require("@app/screens/chat/invocations")
@@ -1479,21 +1480,41 @@ local function Composer(): Node
 		}
 	end
 
-	-- The newest open visual of the chat shown (ds/visual_pin): pinned, its
-	-- place in the transcript a line.
+	-- The newest open visual of the chat shown whose place in the
+	-- transcript is out of view (ds/visual_pin): pinned, its place a line.
 	local revs = ui.shared("visuals", {} :: { [string]: any })
-	local pinned = ui.computed(function(): any
+	local wanted = ui.computed(function(): any
 		if not session_id:get() then
 			return nil
 		end
-		return VisualPin.pick(store.messages:get(), revs:get())
+		return VisualPin.pick(store.messages:get(), revs:get(), VisualPin.away:get())
 	end)
+	-- What's pinned, as the effect below sets it (the panel follows this,
+	-- not `wanted`: what has the keys is saved before either place goes).
+	local pinned = ui.state("chat_pinned_visual", nil :: any)
 	ui.effect(function()
-		local b = pinned:get()
+		local b = wanted:get()
 		local id = if b then b.id else nil
 		local was = next(VisualPin.pinned:peek())
-		if was ~= id then
-			VisualPin.pinned:set(if id then { [id] = true } else {})
+		local held = pinned:peek()
+		if was == id and (held and held.id) == id then
+			if b and held ~= b then
+				pinned:set(b)
+			end
+			return
+		end
+		do
+			-- (What has the keys in either moves with it: ds/visual_carry.)
+			if was then
+				VisualCarry.save(was)
+			end
+			if id then
+				VisualCarry.save(id)
+			end
+			ui.batch(function()
+				VisualPin.pinned:set(if id then { [id] = true } else {})
+				pinned:set(b)
+			end)
 		end
 	end)
 
@@ -1776,8 +1797,8 @@ local function Composer(): Node
 				-- the pane, left a box over the transcript taking its wheel.)
 				-- (And not over a plugin's page: the chat's page is kept unseen
 				-- under it, and so is this.)
-				-- The chat's open visual, pinned over the pill while the
-				-- transcript moves on (ds/visual_pin).
+				-- The chat's open visual, pinned over the pill once its place
+				-- has scrolled out of view (ds/visual_pin).
 				ui.show(function(): boolean
 					return not new_chat() and pinned:get() ~= nil and route.current:get().name ~= "plugin"
 				end, PinnedVisual {
