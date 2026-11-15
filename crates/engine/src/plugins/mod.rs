@@ -931,6 +931,9 @@ impl Plugins {
         let Ok(report) = check::check_plugin(&dir, &options) else {
             return;
         };
+        if let Some(fetched) = &report.fetched {
+            self.inner.logs.push(id, "check", "info", fetched);
+        }
         let errors: Vec<String> = report
             .findings
             .iter()

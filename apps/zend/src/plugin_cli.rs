@@ -377,6 +377,9 @@ fn check(target: &str, strict: bool, as_json: bool, data_dir: &std::path::Path) 
         out["summary"] = json!(report.summary());
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
+        if let Some(fetched) = &report.fetched {
+            eprintln!("{fetched}");
+        }
         for finding in &report.findings {
             let mut text = finding.to_string();
             text = text.replace('\n', "\n    ");

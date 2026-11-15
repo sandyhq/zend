@@ -8,8 +8,10 @@
 //! - Types, with `luau-lsp analyze` against zgx's definitions (the `ui`
 //!   global the window gives) and Zend's own `@ds/…` modules, the new
 //!   solver. The same tool `zgx check` uses: the Luau crate Zend links has
-//!   no type checker in it. Without luau-lsp on this machine the types are
-//!   skipped, and the report says so.
+//!   no type checker in it. Zend doesn't ship it: the first check that
+//!   finds none fetches a pinned release into `<data>/tools` (`fetch`),
+//!   and its report says so. Without it (offline, the fetch failed) the
+//!   types are skipped, and the report says why.
 //!
 //! A file is checked in the mode it asks for (`--!strict` at its top), else
 //! Luau's own default, nonstrict, which reports only what is wrong for
@@ -25,6 +27,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+
+pub mod fetch;
 
 /// zgx's window API, as luau-lsp definitions (`ui`, its nodes and states).
 const DEFINITIONS: &str = include_str!("../../../../third_party/zgx/crates/zgx-script/types/zgx.d.luau");
@@ -42,6 +46,15 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 /// What to say when luau-lsp isn't on this machine.
 pub const INSTALL: &str = "Types not checked: luau-lsp isn't on this machine. Put it on the PATH, beside Zend, \
 or in <data>/tools (or set LUAU_LSP): https://github.com/JohnnyMorganz/luau-lsp/releases";
+
+/// What to say when luau-lsp isn't on this machine and fetching it failed.
+fn fetch_failed(why: &str) -> String {
+    format!(
+        "Types not checked: luau-lsp isn't on this machine, and fetching luau-lsp {} failed: {why}. Put it on the PATH, \
+beside Zend, or in <data>/tools (or set LUAU_LSP): https://github.com/JohnnyMorganz/luau-lsp/releases",
+        fetch::VERSION
+    )
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -97,6 +110,9 @@ pub struct Report {
     pub types_checked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub types_note: Option<String>,
+    /// That luau-lsp was fetched for this check, and where to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetched: Option<String>,
 }
 
 impl Report {
@@ -123,7 +139,7 @@ pub fn find_luau_lsp(data_dir: Option<&Path>) -> Option<PathBuf> {
     {
         return Some(path);
     }
-    let name = if cfg!(windows) { "luau-lsp.exe" } else { "luau-lsp" };
+    let name = fetch::binary_name();
     let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(name)));
     let tools = data_dir.map(|dir| dir.join("tools").join(name));
     let path = std::env::var_os("PATH")
@@ -178,7 +194,8 @@ pub fn check_plugin(dir: &Path, options: &Options) -> Result<Report, String> {
             findings.push(finding);
         }
     }
-    let (types_checked, types_note) = match types(dir, &files, &sdk_copies, options) {
+    let mut fetched = None;
+    let (types_checked, types_note) = match types(dir, &files, &sdk_copies, options, &mut fetched) {
         Ok(found) => {
             // The compiler said the syntax errors already.
             findings.extend(found.into_iter().filter(|f| f.code != "SyntaxError"));
@@ -197,6 +214,7 @@ pub fn check_plugin(dir: &Path, options: &Options) -> Result<Report, String> {
         findings,
         types_checked,
         types_note,
+        fetched,
     })
 }
 
@@ -276,9 +294,33 @@ fn compiler_message(text: &str) -> (u32, String) {
 
 /// luau-lsp's findings in the plugin's own files (not its SDK copy), or
 /// why the types weren't checked.
-fn types(dir: &Path, files: &[String], sdk_copies: &[String], options: &Options) -> Result<Vec<Finding>, String> {
+fn types(
+    dir: &Path,
+    files: &[String],
+    sdk_copies: &[String],
+    options: &Options,
+    fetched: &mut Option<String>,
+) -> Result<Vec<Finding>, String> {
     let data_dir = options.data_dir.as_deref();
-    let luau_lsp = options.luau_lsp.clone().or_else(|| find_luau_lsp(data_dir)).ok_or_else(|| INSTALL.to_owned())?;
+    let luau_lsp = match options.luau_lsp.clone().or_else(|| find_luau_lsp(data_dir)) {
+        Some(found) => found,
+        // None here: fetched into Zend's data folder, the first time.
+        None => match data_dir.filter(|_| fetch::allowed()) {
+            None => return Err(INSTALL.to_owned()),
+            Some(data) => match fetch::fetch(data) {
+                Ok((path, false)) => path,
+                Ok((path, true)) => {
+                    *fetched = Some(format!(
+                        "Fetched luau-lsp {} into {} (its SHA-256 checked), for this check and the next ones.",
+                        fetch::VERSION,
+                        path.display()
+                    ));
+                    path
+                }
+                Err(why) => return Err(fetch_failed(&why)),
+            },
+        },
+    };
     let ds = options.ds.clone().or_else(|| ds_dir(data_dir));
 
     // A copy luau-lsp reads, the root init.luau renamed (see INIT_AS).

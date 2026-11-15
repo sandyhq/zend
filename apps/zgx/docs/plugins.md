@@ -648,7 +648,7 @@ $ zend plugin check ~/.zend/plugins/hello
 
 It exits 1 when there's an error; warnings (lints such as an unused local) are said and pass. `--json` prints the report: `findings` (`file`, `line`, `column`, `severity`, `code`, `message`), `errors`, `warnings`, `ok`. Only the plugin's own files count: not the `@ds` modules, not its copy of `zend.luau`.
 
-luau-lsp is looked for in `LUAU_LSP`, beside Zend, in `tools/` of Zend's data folder (`~/.zend/tools/luau-lsp`), then on the PATH. Without it only the syntax is checked, and the check says so (`types_checked: false`).
+luau-lsp is looked for in `LUAU_LSP`, beside Zend, in `tools/` of Zend's data folder (`~/.zend/tools/luau-lsp`), then on the PATH. Zend doesn't ship it: when none is found, the first check fetches luau-lsp 1.70.1 for this platform from its GitHub release into `tools/`, checks the zip's SHA-256 against the one Zend holds before unpacking it, and says so (`Fetched luau-lsp 1.70.1 into …`, `fetched` in the JSON). Offline, or when the fetch fails, only the syntax is checked and the check says why (`types_checked: false`, `types_note`); it tries again ten minutes later. `ZEND_LUAU_LSP_FETCH=0` turns fetching off.
 
 `list_plugins` lists them all. Selectors that aren't stable may move; templates may rename elements. `plugin_status` and Settings show "Not shown in this template" when yours aren't there.
 

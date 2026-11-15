@@ -63,6 +63,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # Already in the tree (zed-scap, through the app); only its system and disk
 # parts here, no threads pool.
 sysinfo = { version = "0.31.4", default-features = false, features = ["system", "disk"] }
+# The pinned luau-lsp release a plugin check fetches (plugins/check/fetch.rs).
+zip.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The battery's IOKit power-source dictionary (device_stats.rs); already in the tree.
@@ -78,7 +80,6 @@ zend-mcp.workspace = true
 zend-harness = { workspace = true, features = ["installer-fixture"] }
 # Paused-clock tests (the 30-minute idle reaper).
 tokio = { workspace = true, features = ["test-util"] }
-zip.workspace = true
 tokio-tungstenite.workspace = true
 # A registry build of the fake ACP agent (tests/acp_registry_rpc.rs).
 tar = "0.4"
