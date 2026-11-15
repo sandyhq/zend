@@ -151,6 +151,22 @@ impl Store {
         changed
     }
 
+    /// Take away every entry of `plugin` (it was removed). Whether any went.
+    pub fn forget(&mut self, plugin: &str) -> bool {
+        self.retain(|p| p != plugin)
+    }
+
+    /// Keep only the entries of plugins `keep` says yes to. Whether any went.
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|e| keep(&e.plugin));
+        let gone = self.entries.len() != before;
+        if gone {
+            self.save();
+        }
+        gone
+    }
+
     /// `plugin`'s own entries.
     pub fn of(&self, plugin: &str) -> Vec<Entry> {
         let mut own: Vec<Entry> = self.entries.iter().filter(|e| e.plugin == plugin).cloned().collect();
@@ -253,6 +269,22 @@ mod tests {
         assert_eq!(again.of("zebra").len(), 1);
         assert_eq!(again.of("zebra")[0].text, "Antworte immer mit dem Wort ZEBRA am Ende");
         assert_eq!(again.of("zebra")[0].scope, Scope::Device);
+    }
+
+    #[test]
+    fn a_removed_plugins_entries_are_forgotten_on_disk_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(dir.path());
+        s.set("gone", "default", Scope::Device, Some("old rules".into()), 1);
+        s.set("gone", "extra", Scope::Chat("c1".into()), Some("for c1".into()), 1);
+        s.set("kept", "default", Scope::Device, Some("still here".into()), 1);
+        assert!(s.forget("gone"));
+        assert!(!s.forget("gone"), "nothing left to forget");
+        let again = Store::open(dir.path());
+        assert!(again.of("gone").is_empty(), "gone from plugin-instructions.json");
+        assert_eq!(again.of("kept").len(), 1);
+        let on_disk = std::fs::read_to_string(dir.path().join("plugin-instructions.json")).unwrap();
+        assert!(!on_disk.contains("old rules") && on_disk.contains("still here"), "{on_disk}");
     }
 
     #[test]

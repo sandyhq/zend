@@ -316,6 +316,8 @@ pub trait Sink: Send + Sync + 'static {
     fn ask_service(&self, _plugin: &str, _listener: &str, _event: &str, _data: Json) -> BoxFuture<'static, Result<Json, String>> {
         Box::pin(async { Err("its service isn't running here".into()) })
     }
+    /// What some plugin tells agents changed (Settings shows it).
+    fn instructions_changed(&self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1117,8 +1119,53 @@ impl Agents {
         }
         if changed {
             self.record(by, action);
+            self.told_changed();
         }
         Ok(out)
+    }
+
+    /// Tell the sink that what plugins tell agents changed.
+    fn told_changed(&self) {
+        if let Some(sink) = self.sink() {
+            sink.instructions_changed();
+        }
+    }
+
+    /// What `plugin` tells agents here now, each entry whole, as its page
+    /// in Settings shows it: a chat's entry names the chat's title too.
+    pub fn told(&self, plugin: &str) -> Vec<Json> {
+        let own = lock(&self.inner.instructions).of(plugin);
+        if own.is_empty() {
+            return Vec::new();
+        }
+        let chats = if own.iter().any(|e| matches!(e.scope, Scope::Chat(_))) {
+            self.host().map(|h| h.chats()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        own.iter()
+            .map(|e| {
+                let mut row = instruction_row(e);
+                if let Scope::Chat(id) = &e.scope
+                    && let Some(title) = chats.iter().find(|c| &c.id == id).and_then(|c| c.title.clone())
+                {
+                    row["chat_title"] = json!(title);
+                }
+                row
+            })
+            .collect()
+    }
+
+    /// A removed plugin's entries go (none reach an agent anyway), as its
+    /// storage does: when it's removed, and when a new plugin is installed
+    /// under its id. (A folder gone for a while keeps them, as it keeps its
+    /// storage.)
+    pub fn forget_instructions(&self, plugin: &str) {
+        let gone = lock(&self.inner.instructions).forget(plugin);
+        if gone {
+            tracing::info!(plugin, "plugins: forgot the instructions of a removed plugin");
+            self.told_changed();
+        }
     }
 
     /// What plugins tell `chat`'s agent for a run of `harness`: a section
@@ -1231,6 +1278,7 @@ impl Agents {
                     let bytes = text.len();
                     if lock(&self.inner.instructions).set(&plugin, instructions::PREPARING_KEY, scope, Some(text), crate::now_ms()) {
                         self.record(&by, json!({ "op": "set_instructions", "key": instructions::PREPARING_KEY, "chat": chat, "bytes": bytes }));
+                        sink.instructions_changed();
                     }
                 }
                 None | Some(Json::Null) => {}

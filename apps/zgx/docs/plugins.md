@@ -525,7 +525,9 @@ With `session.instructions`, a plugin tells your agents how to work: its text go
 - **Every session.** New chats, child sessions and subagents alike. A child session hears its parent chat's entries too. Of one key, the nearest stands: a chat's over its project's over the device's. Each plugin's entries are joined (in key order) into its one section.
 - **It holds.** Zend gives the agent its section at the start of each turn, so it's there after a compaction and a change reaches a running chat at its next turn.
 - **8 KB a chat.** A longer `text` is refused (`bad_call`); entries that together run over are left out whole, and your row says which.
-- **Yours to see.** Every change is recorded as the plugin's (`plugin_status`, `agents.actions`), and `plugin_status` lists what it tells agents now (`agents.instructions`). Agents do what it says, so `session.instructions` is always asked, even for your own plugins. Turned off, removed or no longer allowed, a plugin's entries reach no agent (they're kept for when it's allowed again).
+- **Yours to see.** Every change is recorded as the plugin's (`plugin_status`, `agents.actions`), and `plugin_status` lists what it tells agents now (`agents.instructions`). Its page in Settings shows the same, each entry whole under who it's for (every chat, a project's chats, one chat), read only: only the plugin changes it. A plugin with entries and no settings gets a page for them. Agents do what it says, so `session.instructions` is always asked, even for your own plugins.
+- **Off is not gone.** Turned off or no longer allowed, a plugin's entries reach no agent, and they're kept for when it's allowed again. Removed, they go with its storage, and a new plugin installed under its id starts with none.
+- **An example.** `plugins-dev/delegation` tells every chat how to delegate through Zend. Its text is a `text` setting with the rules as default, so the person edits it in Settings and the window passes each change on (`zend.setting`, `ui.effect`). Its service sets the default once on a device whose window never opened.
 - **Pi for now.** Chats on other harnesses run without them.
 
 ```lua

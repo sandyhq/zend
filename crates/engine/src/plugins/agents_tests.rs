@@ -220,9 +220,15 @@ struct FakeSink {
     /// How many asks were in flight at once, at most.
     inflight: Arc<AtomicUsize>,
     most_inflight: Arc<AtomicUsize>,
+    /// How often it heard that what plugins tell agents changed.
+    instructions_changed: AtomicUsize,
 }
 
 impl Sink for FakeSink {
+    fn instructions_changed(&self) {
+        self.instructions_changed.fetch_add(1, Ordering::SeqCst);
+    }
+
     fn grants(&self, plugin: &str) -> Option<Grant> {
         lock(&self.grants).get(plugin).map(|allowed| Grant {
             name: format!("Plugin {plugin}"),
@@ -1348,6 +1354,44 @@ async fn instructions_need_session_instructions_and_reach_every_chat_in_full() {
     f.op("p", json!({ "op": "set_instructions" })).await.unwrap();
     assert!(f.told_to("c1").await.is_empty());
     assert!(f.agents.status("p").get("instructions").is_none());
+}
+
+/// What a plugin tells agents, as its Settings page shows it (each entry
+/// whole, a chat's with its title), each change said to the sink (the list
+/// is published again), and a removed plugin's entries forgotten.
+#[tokio::test]
+async fn what_a_plugin_tells_agents_is_listed_said_as_it_changes_and_forgotten_once_removed() {
+    let f = Fixture::new();
+    f.family();
+    let mut titled = chat("c1", "opus");
+    titled.title = Some("Fix the flaky test".into());
+    lock(&f.host.chats)[0] = titled;
+    f.grant("p", &[SESSION_INSTRUCTIONS]);
+    f.grant("q", &[SESSION_INSTRUCTIONS]);
+    let changes = || f.sink.instructions_changed.load(Ordering::SeqCst);
+    assert!(f.agents.told("p").is_empty());
+    f.op("p", json!({ "op": "set_instructions", "text": ZEBRA })).await.unwrap();
+    assert_eq!(changes(), 1);
+    f.op("p", json!({ "op": "set_instructions", "text": ZEBRA })).await.unwrap();
+    assert_eq!(changes(), 1, "said again, unchanged: nothing to publish");
+    f.op("p", json!({ "op": "set_instructions", "text": "Here, run checks yourself.", "chat": "c1" })).await.unwrap();
+    f.op("q", json!({ "op": "set_instructions", "text": "q's own" })).await.unwrap();
+    assert_eq!(changes(), 3);
+    let told = f.agents.told("p");
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_eq!(told[0]["text"], ZEBRA);
+    assert!(told[0].get("chat").is_none(), "every chat's: {told:?}");
+    assert_eq!((told[1]["chat"].as_str(), told[1]["chat_title"].as_str()), (Some("c1"), Some("Fix the flaky test")));
+    // Removed: its entries go, another plugin's stay.
+    f.agents.forget_instructions("p");
+    assert!(f.agents.told("p").is_empty());
+    assert!(f.agents.status("p").get("instructions").is_none());
+    assert_eq!(f.agents.told("q").len(), 1);
+    assert_eq!(changes(), 4, "forgetting is a change too");
+    f.agents.forget_instructions("p");
+    assert_eq!(changes(), 4, "nothing left to forget");
+    let left: Vec<String> = f.told_to("c1").await.into_iter().map(|t| t.plugin).collect();
+    assert_eq!(left, vec!["q".to_string()]);
 }
 
 #[tokio::test]

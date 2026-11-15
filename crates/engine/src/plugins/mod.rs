@@ -1293,7 +1293,25 @@ impl Plugins {
 
     fn list_value(&self) -> serde_json::Value {
         let entries = lock(&self.inner.entries);
-        let items: Vec<&scan::PluginItem> = entries.iter().map(|e| &e.item).collect();
+        // Each with what it tells agents here now (its page in Settings
+        // shows it, read only).
+        let items: Vec<(String, serde_json::Value)> = entries
+            .iter()
+            .map(|e| (e.item.id.clone(), serde_json::to_value(&e.item).unwrap_or_default()))
+            .collect();
+        drop(entries);
+        let items: Vec<serde_json::Value> = items
+            .into_iter()
+            .map(|(id, mut item)| {
+                let told = self.inner.agents.told(&id);
+                if !told.is_empty()
+                    && let Some(fields) = item.as_object_mut()
+                {
+                    fields.insert("instructions".into(), serde_json::Value::Array(told));
+                }
+                item
+            })
+            .collect();
         let key_notices = lock(&self.inner.key_notices).clone();
         serde_json::json!({
             "dirs": {
@@ -1825,8 +1843,9 @@ impl Plugins {
                     state.own.remove(&p.id);
                 })?;
                 // What it kept (`zend.store`, its settings, its database)
-                // goes with it.
+                // goes with it, and what it told agents.
                 forget_storage(&self.inner.plugins_dir, &p.id);
+                self.inner.agents.forget_instructions(&p.id);
                 install::forget_found(&self.inner.plugins_dir, &p.id);
                 self.rescan().await;
                 RpcReply::value(&serde_json::json!({}))
@@ -2750,6 +2769,12 @@ struct AgentSink {
 }
 
 impl agents::Sink for AgentSink {
+    fn instructions_changed(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            Plugins { inner }.publish_list();
+        }
+    }
+
     fn grants(&self, plugin: &str) -> Option<agents::Grant> {
         let entry = Plugins { inner: self.inner.upgrade()? }.entry(plugin)?;
         (entry.item.status == Status::On).then(|| agents::Grant {

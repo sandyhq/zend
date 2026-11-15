@@ -3687,6 +3687,15 @@
         "off": "让新建对话显示 {name} 绘制的内容。关闭后恢复“外观”中的墙纸。",
         "instead_of": "当前墙纸来自 {other}。开启后改用 {name}。",
         "terms": "墙纸 背景 新建对话 效果 wallpaper background new chat effect"
+      },
+      "instructions": {
+        "title": "它告诉你的智能体什么",
+        "description": "你的智能体现在在系统提示词里收到的指令（目前仅限 Pi 对话）。只有插件能更改它们：如有设置，可通过上面的设置更改。",
+        "not_allowed": "它未被允许给你的智能体下达指令，所以这些都不会送到它们那里。",
+        "device": "所有对话",
+        "project": "{project} 中的对话",
+        "chat": "仅在 {title} 中",
+        "terms": "指令 系统提示词 智能体 规则 instructions system prompt agents rules"
       }
     },
     "init": {

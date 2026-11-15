@@ -3687,6 +3687,15 @@
         "off": "Open new chats on what {name} draws. Appearance's wallpaper comes back when this is off.",
         "instead_of": "{other} is the wallpaper now. Turning this on uses {name} instead.",
         "terms": "wallpaper background new chat effect"
+      },
+      "instructions": {
+        "title": "What it tells your agents",
+        "description": "Its instructions as your agents get them now, in their system prompt (Pi chats only for now). Only the plugin changes them: through its settings above, if it has any.",
+        "not_allowed": "It isn't allowed to give your agents instructions, so none of this reaches them.",
+        "device": "Every chat",
+        "project": "Chats in {project}",
+        "chat": "Only in {title}",
+        "terms": "instructions system prompt agents rules"
       }
     },
     "init": {

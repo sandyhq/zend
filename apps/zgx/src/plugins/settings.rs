@@ -41,6 +41,12 @@
 //! ignored for its default. Removing the plugin removes the file (the
 //! engine's `RemovePlugin`, and the app's Remove).
 //!
+//! **What it tells agents.** A plugin allowed `session.instructions` has
+//! its entries shown on its page too, each whole and read only (the
+//! engine's list carries them, `instructions` on its item: `{ key, text,
+//! since, chat?, chat_title?, project? }`). A plugin with entries and no
+//! settings has a page for them alone.
+//!
 //! The plugin reads its values (with defaults) from `plugin.<id>.settings`,
 //! its own and read only; only Zend's page sets them (`plugins.setting_set`,
 //! an action no plugin reaches).
@@ -385,6 +391,8 @@ struct Held {
     /// What the plugin reports of its settings, by id (`status`): held
     /// while it's on.
     status: Map<String, Json>,
+    /// What it tells agents now (the engine's entries), shown read only.
+    told: Vec<Json>,
 }
 
 /// Every plugin's settings: the plugins on now, what each declares, and
@@ -405,6 +413,10 @@ pub struct On {
     /// One of Zend's own (shipped inside the app): it may declare
     /// permission rows.
     pub builtin: bool,
+    /// What it tells agents now (`session.instructions`), as the engine's
+    /// list says: each entry `{ key, text, since, chat?, chat_title?,
+    /// project? }`.
+    pub instructions: Vec<Json>,
 }
 
 /// What `sync` found, for the window to publish.
@@ -432,9 +444,15 @@ impl Book {
         let before = self.held.len();
         self.held.retain(|id, _| keep.contains_key(id.as_str()));
         changed.list |= self.held.len() != before;
-        for On { id, name, hash, builtin } in on {
+        for On { id, name, hash, builtin, instructions } in on {
             let same = self.held.get(id).is_some_and(|h| h.hash == *hash && h.name == *name);
             if same {
+                if let Some(h) = self.held.get_mut(id)
+                    && h.told != *instructions
+                {
+                    h.told = instructions.clone();
+                    changed.list = true;
+                }
                 continue;
             }
             let manifest = read(id);
@@ -449,8 +467,9 @@ impl Book {
             // What it reported of settings it still declares.
             let mut status = self.held.get(id).map(|h| h.status.clone()).unwrap_or_default();
             status.retain(|k, _| declared.iter().any(|s| s.id == *k && !zend_s(&s.kind)));
-            let held = Held { name: name.clone(), hash: hash.clone(), declared, description, stored, status };
-            if had.as_ref() != Some(&(held.name.clone(), held.declared.clone(), held.description.clone())) {
+            let told_before = self.held.get(id).map(|h| h.told.clone()).unwrap_or_default();
+            let held = Held { name: name.clone(), hash: hash.clone(), declared, description, stored, status, told: instructions.clone() };
+            if had.as_ref() != Some(&(held.name.clone(), held.declared.clone(), held.description.clone())) || told_before != held.told {
                 changed.list = true;
             }
             if was.as_ref() != Some(&values(&held.declared, &held.stored)) {
@@ -517,10 +536,12 @@ impl Book {
         }
     }
 
-    /// The plugins on with settings, by name (then id), each with what it
-    /// declares and its values: what Settings draws a page of each from.
+    /// The plugins on with settings, or with what they tell agents, by name
+    /// (then id), each with what it declares, its values and what it tells
+    /// agents: what Settings draws a page of each from.
     pub fn list(&self) -> Json {
-        let mut list: Vec<(&String, &Held)> = self.held.iter().filter(|(_, h)| !h.declared.is_empty()).collect();
+        let mut list: Vec<(&String, &Held)> =
+            self.held.iter().filter(|(_, h)| !h.declared.is_empty() || !h.told.is_empty()).collect();
         list.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()).then_with(|| a.0.cmp(b.0)));
         Json::Array(
             list.into_iter()
@@ -532,6 +553,7 @@ impl Book {
                         "values": values(&h.declared, &h.stored),
                         "status": h.status,
                         "description": h.description,
+                        "instructions": h.told,
                     })
                 })
                 .collect(),
@@ -575,7 +597,7 @@ mod tests {
 
     /// `book` following `list` (`(id, name, hash, manifest)`).
     fn sync(book: &mut Book, list: &[(&str, &str, &str, Json)]) -> Changed {
-        let on: Vec<On> = list.iter().map(|(i, n, h, _)| On { id: i.to_string(), name: n.to_string(), hash: h.to_string(), builtin: false }).collect();
+        let on: Vec<On> = list.iter().map(|(i, n, h, _)| On { id: i.to_string(), name: n.to_string(), hash: h.to_string(), ..On::default() }).collect();
         book.sync(&on, |id| list.iter().find(|(i, ..)| *i == id).map(|(.., m)| m.clone()))
     }
 
@@ -742,7 +764,7 @@ mod tests {
         assert!(values(&d, &Map::new()).is_empty(), "a permission row has no value");
         // Built-in comes from the engine's flag, as the book is told it.
         let mut book = Book::new(None);
-        let on = |builtin| [On { id: "p".into(), name: "P".into(), hash: format!("{builtin}"), builtin }];
+        let on = |builtin| [On { id: "p".into(), name: "P".into(), hash: format!("{builtin}"), builtin, ..On::default() }];
         book.sync(&on(false), |_| Some(m.clone()));
         assert_eq!(book.list(), json!([]));
         book.sync(&on(true), |_| Some(m.clone()));
@@ -787,7 +809,7 @@ mod tests {
         assert_eq!(ids, ["enabled", "sound", "shortcut", "destination", "screen-recording", "accessibility"], "nothing left out");
         assert_eq!(page_description(&m).as_deref(), Some("Set up once, one permission at a time. Screen Recording captures the window; Accessibility optionally adds off-screen application text."), "its intro, whole");
         let mut book = Book::new(None);
-        book.sync(&[On { id: "appshots".into(), name: "Appshots".into(), hash: "h".into(), builtin: true }], |_| Some(m.clone()));
+        book.sync(&[On { id: "appshots".into(), name: "Appshots".into(), hash: "h".into(), builtin: true, ..On::default() }], |_| Some(m.clone()));
         let v = book.values("appshots");
         assert_eq!((v["enabled"].clone(), v["sound"].clone(), v["shortcut"].clone(), v["destination"].clone()), (json!(false), json!(true), json!("ctrl+alt+space"), json!("automatic")));
         // The shortcut's registration, as Appshots would report it.
