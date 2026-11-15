@@ -231,7 +231,7 @@ impl Visual {
             })?,
         )?;
         // The kit last: its functions build on everything above.
-        let kit: Table = lua
+        let (kit, helpers): (Table, Table) = lua
             .load(include_str!("kit.luau"))
             .set_name("=kit")
             .set_mode(mlua::chunk::ChunkMode::Text)
@@ -253,6 +253,11 @@ impl Visual {
                 .set_mode(mlua::chunk::ChunkMode::Text)
                 .call::<()>((ui.clone(), kit.clone()))?;
         }
+        // Batch c (charts, drawing, media, 3D) adds its kinds before the freeze.
+        lua.load(include_str!("kit_c.luau"))
+            .set_name("=kit_c")
+            .set_mode(mlua::chunk::ChunkMode::Text)
+            .call::<()>((ui.clone(), kit.clone(), helpers))?;
         kit.set_readonly(true);
         ui.set("kit", kit)?;
         globals.set("ui", ui)?;
@@ -817,6 +822,8 @@ pub fn seed_for(id: &str) -> u64 {
 mod tests;
 #[cfg(test)]
 mod kit_a_tests;
+#[cfg(test)]
+mod kit_c_tests;
 #[cfg(test)]
 mod kit_tests;
 #[cfg(test)]

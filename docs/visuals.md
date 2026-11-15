@@ -133,6 +133,18 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Transcript { tracks }` | tracks `{ name, text | words }` compared word by word with the first; word error rate and coloured differences |
 | `Walkthrough { steps, key? }` | one step at a time with Back and Next: `{ title, body?, code?, language? }` |
 | `Flashcards { cards, key? }` | click a card to turn it; `{ front, back }` |
+| `Chart { type, labels?, series, unit?, stacked?, height?, max? }` | bar, line, area, scatter, pie, radar, funnel, heatmap, histogram, box; series: numbers, `{ name, values, tone? }` or `{ name = values }` |
+| `Sparkline { values, tone?, width?, height? }` | a tiny trend line for a table cell |
+| `SegmentedBar { parts, unit? }` | shares of one whole, `{ label, value, tone? }`, with a legend |
+| `Waterfall { spans, unit? }` | trace spans `{ name, start, duration, depth?, tone?, detail? }` on one time axis |
+| `Treemap { items, unit?, height? }` | `{ path, size }` as nested rectangles by folder |
+| `Tree { items }` | paths, or `{ label, children?, note? }`, as an outline |
+| `Diagram { mermaid, details?, height? }` | a Mermaid flowchart or sequence diagram; `details` by node id shows on click |
+| `Map { places, route?, height? }` | `{ name, lat, lng, note?, day? }` plotted by coordinates (no basemap, no lookups) |
+| `Scene { objects \| function(t), height?, camera?, orbit?, spin?, animate? }` | a 3D scene from `{ shape = box, sphere, cylinder, surface, mesh, model, line, path, point, label, sprite, grid, axes, environment, ... }` |
+| `Shader { code, inputs?, height?, ... }` | a Shadertoy-style fragment shader |
+| `Carousel { key?, ... }` | slides (children), one at a time, with arrows |
+| `Icon { name, tone? }` | a glyph for a common lucide icon name |
 
 ## What a visual cannot do yet
-Kit kinds still to come: Slider, Rating, ListEditor, EditableTable, Quiz, Stepper, Timer (G6 leftovers), and the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).
+Kit kinds left out of batch c: Image, Gallery (no node shows a picture: use `show_image`) and Swatches (a canvas takes theme tokens, not hex colours). Kit kinds still to come: Slider, Rating, ListEditor, EditableTable, Quiz, Stepper, Timer (G6 leftovers), and the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).

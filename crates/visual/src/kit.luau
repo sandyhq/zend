@@ -549,5 +549,13 @@ define("Gauge", { "value", "min", "max", "label", "tone" }, function(p)
 	})
 end)
 
--- lib.rs loads the batches after this one, then freezes the table.
-return kit
+-- Later batches (kit_c.luau, ...) add kinds to `kit` with these helpers; Rust
+-- freezes it afterwards.
+return kit, {
+	define = define,
+	fail = fail,
+	tone = tone,
+	build = build,
+	children = children,
+	cell = cell,
+}
