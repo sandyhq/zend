@@ -15,6 +15,9 @@ How to use: [visuals.md](visuals.md), section "Asking the reader"; [mcp.md](mcp.
 ### Visual kit (`ui.kit`)
 Ready-made components for visuals, each one call with data instead of a hundred lines of nodes: `ui.kit.Form` with `Input`, `TextArea`, `Checklist`, `Choice`, `Radio`, `Select`, `Toggle`, `OptionCards`, `FollowUps` asks the reader and ends in the answer button; `Slider`, `Stepper`, `Rating`, `ListEditor`, `EditableTable` and `Quiz` ask for numbers, lists, rows and quiz picks; `Timer` counts down; `Card`, `Callout`, `KeyValue`, `List`, `Steps`, `Status`, `Progress`, `Metric` and a few more show things. Built from the existing nodes in Zend's style; every renderer has them. How to use: [visuals.md](visuals.md), section "Kit"; examples in `visuals/`.
 
+### Code in visuals (`ui.code`, `ui.null`)
+A visual can show source lines in their language: `ui.code` colours them with the window's own highlighter (the one Markdown code blocks and diffs use), with line numbers or its own gutter and lines marked added, removed or to look at. The kit's Code, Snippet, File and Diff use it, so a diff keeps its added and removed washes and colours each file by its language. `ui.kit.Json` shows `ui.null` as null and reads a JSON text (`text = "<json>"`), naming the line and column of a mistake. In the zgx window; the other renderers show the lines plain. How to use: [visuals.md](visuals.md), "Nodes" and "Kit"; examples in `visuals/code/`.
+
 ### Instructions from plugins (`session.instructions`)
 A plugin can give text to the agents of your chats: for every chat on the device, one project's chats, or one chat. The text goes whole into the agent's system prompt as its own section and is renewed every turn. 8 KB per chat. Settings shows each plugin's text, read only. Works for chats on Pi; other harnesses run without it.
 How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your agents". Example: `apps/zgx/plugins-dev/delegation`.

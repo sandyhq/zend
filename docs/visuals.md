@@ -35,12 +35,13 @@ Nodes are props tables: children are the array part, strings are text, `nil` and
 | `ui.table` | `columns`, `rows`; cells are strings, numbers or nodes |
 | `ui.chart` | `type` bar, line, area, scatter; `x`, `series`, `stacked`, `horizontal`, `min`, `max`, `unit`, `prefix`, `decimals`, `legend`; axes and hover readout built in |
 | `ui.rule`, `ui.space`, `ui.link` | divider, gap, link |
+| `ui.code` | source lines in a `language` (`rust`, `rs`, `ts`, `py`…; the window colours them with its own highlighter, an unknown one plain): `code`, `numbers` or `from` (first line's number), `gutter` (a label per line, instead of numbers), `marks` (`{ [line] = "added" \| "removed" \| "focus" }`, by the gutter's numbers); at most 2000 lines, scrolls sideways |
 | `ui.tabs`, `ui.toggle`, `ui.slider`, `ui.button` | controls, each with a handler |
 | `ui.canvas` | 2D drawing in pixels: `draw = function(g, w, h, t)`, `g:line`, `polyline`, `polygon`, `rect`, `circle`, `arc`, `text`; `g.pointer` for hover; `animate` |
 | `ui.scene` | real 3D on the GPU: `s:box`, `sphere`, `cylinder`, `surface`, `mesh`, `line`, `path`, `point`, `label`, `grid`, `axes`, `model`, `environment`, `sprite`; materials `roughness`, `metal`, `glow`, `glass` |
 | `ui.shader` | Shadertoy-style GLSL (`mainImage`), up to four buffer passes, named float `inputs` bound to state |
 
-Helpers: `ui.state`, `ui.map`, `ui.range`, `ui.scale`, `ui.ticks`, `ui.fmt`, `ui.clamp`, `ui.lerp`, `ui.series`, `ui.color`, `ui.mix`. `print(...)` output comes back to the agent.
+Helpers: `ui.null` (JSON's null for `ui.kit.Json`, where Luau's `nil` would drop a key or end a list), `ui.state`, `ui.map`, `ui.range`, `ui.scale`, `ui.ticks`, `ui.fmt`, `ui.clamp`, `ui.lerp`, `ui.series`, `ui.color`, `ui.mix`. `print(...)` output comes back to the agent.
 
 ## Rules Zend enforces
 - **No boxes.** Layout nodes have no fill, border, shadow, padding or font props. No cards, tiles, panels, banners or canvas backgrounds: content lies directly on the chat.
@@ -114,13 +115,13 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Coverage { report, title? }` | `{ total?, files = { { path, pct | covered, total } } }`: the total, then the least covered files first |
 | `Changes { files, title? }` | files changed `{ path, added, removed, status?, diff? }`; a file with a `diff` opens to it |
 | `Commits { commits, title? }` | `{ sha, title, author?, date?, files?, added?, removed? }` |
-| `Diff { patch, title? }` | a unified patch with old and new line numbers, additions and removals coloured |
+| `Diff { patch, title? }` | a unified patch with old and new line numbers, additions and removals washed, each file's lines coloured by its language |
 | `PullRequest { title, number?, state?, author?, branch?, base?, checks?, review?, … }` | state, branch, checks and review of a pull request |
 | `Environments { items, title? }` | worktrees `{ name, branch, current?, threads?, changes?, pr? }` |
-| `Snippet { path, code, from? }` | an excerpt with line numbers from `from` (a visual cannot read files: pass the lines) |
-| `Code { code, language?, title? }` | a block of code as written |
-| `Json { value, label?, open? }` | a table as a tree to open and close; `open` levels start open (1) |
-| `File { path, line?, note? }` | a file path, folder faint, name bold |
+| `Snippet { path, code, from?, language?, marks? }` | an excerpt with line numbers from `from`, coloured by the path's language (a visual cannot read files: pass the lines); `marks` as `ui.code`'s |
+| `Code { code, language?, title?, numbers?, marks? }` | a block of code, coloured by `language` |
+| `Json { value \| text, label?, open? }` | a table as a tree to open and close; `open` levels start open (1). `ui.null` shows `null`, in lists too; `text = "<json>"` reads a JSON text, keys in its order (a mistake names its line and column) |
+| `File { path, line?, note?, code?, from?, language? }` | a file path, folder faint, name bold; with `code` (its lines from `from`, default `line`) the excerpt under it, coloured, `line` marked |
 | `Board { items, columns? }` | cards in status columns: `{ key?, title, status, priority?, labels?, owner?, due?, agentsWorking?, detail? }`; `columns` fixes the order |
 | `Roadmap { items }` | a Gantt chart: `{ title, start, end | days, lane?, status?, progress?, after?, detail? }` or `{ title, milestone }`; dates `yyyy-mm-dd` |
 | `Plan { steps, name?, label?, submit?, answer? }` | steps to approve as a checklist: `{ title, detail?, risk?, estimate?, files?, optional? }`; ends in its own answer button unless `answer = false` |

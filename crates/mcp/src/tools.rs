@@ -438,6 +438,9 @@ Scatter series take points = { { x, y }, ... } (x_unit, x_decimals). Axes, gridl
 hover readout are built in.\n\
 - ui.rule {} is a hairline divider; ui.space { size = 16 }; ui.link { label, url = \"https://...\" } \
 opens like a chat link.\n\
+- ui.code { code = \"...\", language = \"rust\", from = 40, marks = { [41] = \"added|removed|focus\" } }: \
+source lines, coloured for their language by the window, numbered from `from` (or numbers = true). \
+ui.null is JSON's null for ui.kit.Json (which also takes text = \"<json>\").\n\
 - Controls: ui.tabs { options = { ... }, value, on_change = function(option) end }, ui.toggle { label, \
 value = bool, on_change = function(on) end }, ui.slider { label, value, min, max, step, unit, on_change \
 = function(n) end }, ui.button { label, on_click = function() end, primary = bool }.\n\
