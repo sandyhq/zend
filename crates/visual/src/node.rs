@@ -114,10 +114,98 @@ impl Input {
         match &self.value {
             EntryValue::Bool(b) => if *b { "yes" } else { "no" }.into(),
             EntryValue::Text(t) if self.kind.has_options() => label(t),
-            EntryValue::Text(t) => t.clone(),
+            EntryValue::Text(t) => match (self.kind, &self.range) {
+                (InputKind::Number { style: NumberStyle::Rating }, Some(range)) if !t.is_empty() => {
+                    format!("{t} of {}", range.max.map_or(String::new(), number_words))
+                }
+                _ => t.clone(),
+            },
             EntryValue::List(items) => items.iter().map(|i| label(i)).collect::<Vec<_>>().join(", "),
+            EntryValue::Rows(rows) => rows
+                .iter()
+                .map(|row| self.row_cells(row).join(" | "))
+                .collect::<Vec<_>>()
+                .join("; "),
         }
     }
+
+    /// A row's cells in words, one per column (a yes/no column as yes or
+    /// no, a missing cell empty).
+    pub fn row_cells(&self, row: &[String]) -> Vec<String> {
+        self.columns
+            .iter()
+            .enumerate()
+            .map(|(i, column)| {
+                let cell = row.get(i).map(String::as_str).unwrap_or("");
+                match column.kind {
+                    ColumnKind::Bool => if cell == "true" { "yes" } else { "no" }.to_owned(),
+                    _ => cell.to_owned(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// A number in words, as `ui.number` keeps it: no trailing zeros.
+pub fn number_words(n: f64) -> String {
+    number_text(&Value::Number(n))
+}
+
+/// How `ui.number` draws its number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberStyle {
+    /// Dragged along a groove from min to max.
+    Slider,
+    /// A value with − and + beside it.
+    Stepper,
+    /// Stars, 1 to max (5 unless given).
+    Rating,
+}
+
+impl NumberStyle {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Slider => "slider",
+            Self::Stepper => "stepper",
+            Self::Rating => "rating",
+        }
+    }
+}
+
+/// Where a `ui.number` may go.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberRange {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: f64,
+}
+
+/// What a column of `ui.rows` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnKind {
+    Text,
+    Number,
+    /// A checkbox per row: its cell is "true" or "false".
+    Bool,
+}
+
+impl ColumnKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Number => "number",
+            Self::Bool => "boolean",
+        }
+    }
+}
+
+/// One column of `ui.rows`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputColumn {
+    /// What a row given as a table keys its cell by.
+    pub key: String,
+    pub label: String,
+    pub kind: ColumnKind,
 }
 
 /// The kinds of named input.
@@ -135,6 +223,13 @@ pub enum InputKind {
     Choice { many: bool },
     /// `ui.select`: one of many options, in a menu.
     Select,
+    /// `ui.number`: a number, as a slider, a stepper or stars; its entry is
+    /// the number's digits.
+    Number { style: NumberStyle },
+    /// `ui.items`: short texts the reader adds, edits and removes.
+    Items,
+    /// `ui.rows`: an editable table, rows of cells under fixed columns.
+    Rows,
 }
 
 impl InputKind {
@@ -146,13 +241,17 @@ impl InputKind {
             Self::Checklist => "checklist",
             Self::Choice { .. } => "choice",
             Self::Select => "select",
+            Self::Number { .. } => "number",
+            Self::Items => "items",
+            Self::Rows => "rows",
         }
     }
 
     pub fn shape(self) -> Shape {
         match self {
             Self::Check => Shape::Bool,
-            Self::Checklist | Self::Choice { many: true } => Shape::List,
+            Self::Checklist | Self::Choice { many: true } | Self::Items => Shape::List,
+            Self::Rows => Shape::Rows,
             _ => Shape::Text,
         }
     }
@@ -180,6 +279,10 @@ pub struct Input {
     pub description: Option<String>,
     pub placeholder: Option<String>,
     pub options: Vec<InputOption>,
+    /// `ui.number`: where it may go.
+    pub range: Option<NumberRange>,
+    /// `ui.rows`: its columns, in order.
+    pub columns: Vec<InputColumn>,
     /// What it shows: the reader's entry, or the script's start value.
     pub value: EntryValue,
     /// The script's start value.
@@ -778,6 +881,21 @@ impl Parser {
                 self.input(&props, InputKind::Choice { many })?
             }
             "select" => self.input(&props, InputKind::Select)?,
+            "number" => {
+                let style = match props.string("style")?.as_deref() {
+                    None | Some("slider") => NumberStyle::Slider,
+                    Some("stepper") => NumberStyle::Stepper,
+                    Some("rating") => NumberStyle::Rating,
+                    Some(other) => {
+                        return Err(props.error(&format!(
+                            "has style '{other}': use slider, stepper, or rating"
+                        )));
+                    }
+                };
+                self.input(&props, InputKind::Number { style })?
+            }
+            "items" => self.input(&props, InputKind::Items)?,
+            "rows" => self.input(&props, InputKind::Rows)?,
             "answer" => {
                 props.allow(&["label"])?;
                 NodeKind::Answer {
@@ -809,6 +927,9 @@ impl Parser {
             InputKind::Checklist => known.push("options"),
             InputKind::Choice { .. } => known.extend(["options", "many"]),
             InputKind::Check => {}
+            InputKind::Number { .. } => known.extend(["min", "max", "step", "style"]),
+            InputKind::Items => known.push("placeholder"),
+            InputKind::Rows => known.push("columns"),
         }
         props.allow(&known)?;
         let name = match props.string("name")? {
@@ -874,9 +995,58 @@ impl Parser {
                 return Err(props.error(&format!("has option '{}' twice", twice.value)));
             }
         }
+        let range = match kind {
+            InputKind::Number { style } => Some(number_range(props, style)?),
+            _ => None,
+        };
+        let columns = match kind {
+            InputKind::Rows => columns(props)?,
+            _ => Vec::new(),
+        };
         let start = match kind.shape() {
             Shape::Bool => EntryValue::Bool(props.bool("value")?.unwrap_or(false)),
+            Shape::Text if range.is_some() => {
+                let range = range.unwrap();
+                let value = match props.table.raw_get::<Value>("value")? {
+                    Value::Nil => None,
+                    Value::Integer(n) => Some(n as f64),
+                    Value::Number(n) if n.is_finite() => Some(n),
+                    _ => return Err(props.error("'value' is a number")),
+                };
+                let value = match (kind, value) {
+                    (_, Some(v)) => Some(v),
+                    // Stars start unrated; the rest where they may begin.
+                    (InputKind::Number { style: NumberStyle::Rating }, None) => None,
+                    (_, None) => Some(range.min.unwrap_or(0.0)),
+                };
+                EntryValue::Text(value.map(number_words).unwrap_or_default())
+            }
             Shape::Text => EntryValue::Text(props.text_value("value")?.unwrap_or_default()),
+            Shape::Rows => EntryValue::Rows(match props.table.raw_get::<Value>("value")? {
+                Value::Nil => Vec::new(),
+                Value::Table(t) => {
+                    let mut rows = Vec::new();
+                    for row in t.sequence_values::<Value>() {
+                        let Value::Table(row) = row? else {
+                            return Err(props.error("'value' is a list of rows, each a table"));
+                        };
+                        let mut cells = Vec::new();
+                        for (i, column) in columns.iter().enumerate() {
+                            let mut cell = row.raw_get::<Value>(column.key.as_str())?;
+                            if cell.is_nil() {
+                                cell = row.raw_get::<Value>(i + 1)?;
+                            }
+                            cells.push(clip(value_text(&cell)));
+                        }
+                        rows.push(cells);
+                    }
+                    if rows.len() > 200 {
+                        return Err(props.error("has more than 200 rows"));
+                    }
+                    rows
+                }
+                _ => return Err(props.error("'value' is a list of rows, each a table")),
+            }),
             Shape::List => EntryValue::List(match props.table.raw_get::<Value>("value")? {
                 Value::Nil => Vec::new(),
                 Value::Table(t) => t
@@ -894,6 +1064,8 @@ impl Parser {
             description: props.string("description")?,
             placeholder: props.string("placeholder")?,
             options,
+            range,
+            columns,
             value: start.clone(),
             start,
             kept: false,
@@ -1294,6 +1466,96 @@ pub(crate) fn parse_color(value: Value) -> Result<Option<Color>, VisualError> {
             )));
         }
     })
+}
+
+/// `ui.number`'s min, max and step: a slider from 0 to 100 unless given,
+/// stars from 1 to 5 (max up to 10), a stepper open at both ends.
+fn number_range(props: &Props, style: NumberStyle) -> Result<NumberRange, VisualError> {
+    let finite = |name: &str| -> Result<Option<f64>, VisualError> {
+        match props.number(name)? {
+            Some(n) if !n.is_finite() => Err(props.error(&format!("'{name}' must be a finite number"))),
+            n => Ok(n),
+        }
+    };
+    let (min, max, step) = (finite("min")?, finite("max")?, finite("step")?);
+    let range = match style {
+        NumberStyle::Slider => {
+            let min = min.unwrap_or(0.0);
+            let max = max.unwrap_or(100.0);
+            let whole = min.fract() == 0.0 && max.fract() == 0.0;
+            NumberRange {
+                min: Some(min),
+                max: Some(max),
+                step: step.unwrap_or(if whole { 1.0 } else { (max - min) / 100.0 }),
+            }
+        }
+        NumberStyle::Stepper => NumberRange { min, max, step: step.unwrap_or(1.0) },
+        NumberStyle::Rating => {
+            if min.is_some() || step.is_some() {
+                return Err(props.error("with style = \"rating\" takes max only (stars from 1 to max)"));
+            }
+            let max = max.unwrap_or(5.0);
+            if max.fract() != 0.0 || !(2.0..=10.0).contains(&max) {
+                return Err(props.error("with style = \"rating\" needs a whole max from 2 to 10"));
+            }
+            NumberRange { min: Some(0.0), max: Some(max), step: 1.0 }
+        }
+    };
+    if let (Some(lo), Some(hi)) = (range.min, range.max)
+        && hi <= lo
+    {
+        return Err(props.error("needs max above min"));
+    }
+    if range.step <= 0.0 {
+        return Err(props.error("needs a step above 0"));
+    }
+    Ok(range)
+}
+
+/// `ui.rows`' columns: names, or { key, label?, type? = text | number | boolean }.
+fn columns(props: &Props) -> Result<Vec<InputColumn>, VisualError> {
+    let list = match props.table.raw_get::<Value>("columns")? {
+        Value::Table(t) => t,
+        _ => return Err(props.error("needs columns = { \"...\", ... }")),
+    };
+    let mut out: Vec<InputColumn> = Vec::new();
+    for column in list.sequence_values::<Value>() {
+        let column = match column? {
+            Value::Table(t) => {
+                let key = t.raw_get::<Value>("key").map(|v| value_text(&v)).unwrap_or_default();
+                if key.is_empty() {
+                    return Err(props.error("has a column without key"));
+                }
+                let label = t.raw_get::<Option<String>>("label").ok().flatten().unwrap_or_else(|| key.clone());
+                let kind = match t.raw_get::<Option<String>>("type").ok().flatten().as_deref() {
+                    None | Some("text") => ColumnKind::Text,
+                    Some("number") => ColumnKind::Number,
+                    Some("boolean") => ColumnKind::Bool,
+                    Some(other) => {
+                        return Err(props.error(&format!(
+                            "has a column of type '{other}': use text, number, or boolean"
+                        )));
+                    }
+                };
+                InputColumn { key: clip(key), label: clip(label), kind }
+            }
+            other => {
+                let key = clip(value_text(&other));
+                InputColumn { key: key.clone(), label: key, kind: ColumnKind::Text }
+            }
+        };
+        if out.iter().any(|c| c.key == column.key) {
+            return Err(props.error(&format!("has column '{}' twice", column.key)));
+        }
+        out.push(column);
+    }
+    if out.is_empty() {
+        return Err(props.error("needs columns = { \"...\", ... }"));
+    }
+    if out.len() > 12 {
+        return Err(props.error("has more than 12 columns"));
+    }
+    Ok(out)
 }
 
 pub(crate) fn value_text(value: &Value) -> String {

@@ -349,7 +349,8 @@ without rerunning the script.
 ### Updating a visual and reading its entries
 
 `show_visual` returns the visual's `id`. The visual's named inputs (`ui.field`,
-`ui.area`, `ui.check`, `ui.checklist`, `ui.choice`, `ui.select`) keep what the
+`ui.area`, `ui.check`, `ui.checklist`, `ui.choice`, `ui.select`, `ui.number`,
+`ui.items`, `ui.rows`) keep what the
 person enters as their *entries*: the window saves them beside the script
 (`SaveVisualEntries`, `{id}-entries.json`). The engine keeps a meta file
 beside it too (`{id}-visual-meta.json`: the chat that showed it, its title,

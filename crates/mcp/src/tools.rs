@@ -504,7 +504,9 @@ back to you.\n\
 - ui.kit has ready-made components built from these nodes, each one call with data (ui.kit.Form { \
 title, ui.kit.Choice { name = \"audience\", label, options = { ... } }, ... } asks the reader and ends in \
 an answer button; also Input, TextArea, Checklist, Radio, Select, Toggle, OptionCards, FollowUps, Card, \
-Callout, KeyValue, List, Steps, Status, Progress, Metric, Badge, Details, Gauge, DateInput).\n\
+Callout, KeyValue, List, Steps, Status, Progress, Metric, Badge, Details, Gauge, DateInput; Slider, \
+Stepper, Rating, ListEditor, EditableTable and Quiz are kept and answered like the other inputs; \
+Timer counts down).\n\
 \n\
 Colors are theme tokens, never hex or color names (except scene materials): text; muted (labels, axes, captions); faint \
 (tertiary notes); accent (the one thing to notice); on-accent (text on an accent mark); success, \

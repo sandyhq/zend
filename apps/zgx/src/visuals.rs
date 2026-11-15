@@ -1024,13 +1024,20 @@ async fn save_entries(v: &Rc<Visuals>, id: &str) {
 }
 
 /// An entry from what the script sent: a string, a boolean, a list of
-/// strings; nil (or nothing) clears it.
+/// strings, a list of rows (lists of strings, `ui.rows`); nil (or nothing)
+/// clears it. No rows is an empty list, which a `ui.rows` takes as none.
 fn entry_value(value: Option<&Value>) -> Option<zv::EntryValue> {
     match value? {
         Value::Nil => None,
         Value::Bool(b) => Some(zv::EntryValue::Bool(*b)),
         list @ (Value::List(_) | Value::Map(_)) => {
-            Some(zv::EntryValue::List(list.items().iter().map(crate::auth::text).collect()))
+            let items = list.items();
+            if !items.is_empty() && items.iter().all(|i| matches!(i, Value::List(_) | Value::Map(_))) {
+                return Some(zv::EntryValue::Rows(
+                    items.iter().map(|row| row.items().iter().map(crate::auth::text).collect()).collect(),
+                ));
+            }
+            Some(zv::EntryValue::List(items.iter().map(crate::auth::text).collect()))
         }
         other => Some(zv::EntryValue::Text(crate::auth::text(other))),
     }
@@ -1041,6 +1048,11 @@ fn entry_data(value: &zv::EntryValue) -> Value {
         zv::EntryValue::Text(t) => Value::from(t.as_str()),
         zv::EntryValue::Bool(b) => Value::Bool(*b),
         zv::EntryValue::List(items) => list(items.iter().map(|i| Value::from(i.as_str())).collect()),
+        zv::EntryValue::Rows(rows) => list(
+            rows.iter()
+                .map(|row| list(row.iter().map(|c| Value::from(c.as_str())).collect()))
+                .collect(),
+        ),
     }
 }
 
@@ -1338,7 +1350,40 @@ fn node_value(node: &zv::Node, path: &str) -> Value {
                 zv::InputKind::Checklist => ("checklist", true),
                 zv::InputKind::Choice { many } => ("choice", many),
                 zv::InputKind::Select => ("select", false),
+                zv::InputKind::Number { style } => {
+                    f.push(("style", Value::from(style.name())));
+                    ("number", false)
+                }
+                zv::InputKind::Items => ("items", false),
+                zv::InputKind::Rows => ("rows", false),
             };
+            if let Some(range) = &input.range {
+                if let Some(min) = range.min {
+                    f.push(("min", Value::Num(min)));
+                }
+                if let Some(max) = range.max {
+                    f.push(("max", Value::Num(max)));
+                }
+                f.push(("step", Value::Num(range.step)));
+            }
+            if !input.columns.is_empty() {
+                f.push((
+                    "columns",
+                    list(
+                        input
+                            .columns
+                            .iter()
+                            .map(|c| {
+                                Value::record(vec![
+                                    ("key", Value::from(c.key.as_str())),
+                                    ("label", Value::from(c.label.as_str())),
+                                    ("type", Value::from(c.kind.name())),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ));
+            }
             f.push(("k", Value::from("input")));
             f.push(("kind", Value::from(kind)));
             f.push(("many", Value::Bool(many)));

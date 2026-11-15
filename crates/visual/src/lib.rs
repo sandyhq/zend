@@ -38,8 +38,8 @@ pub use assets::Assets;
 pub use draw::{DrawCmd, DrawText, Pointer};
 pub use entries::{Entries, EntryValue, Shape};
 pub use node::{
-    Axis, Canvas, Chart, ChartKind, Column, HandlerId, Input, InputKind, InputOption, Node,
-    NodeKind, NumberFormat, SceneNode, Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
+    Axis, Canvas, Chart, ChartKind, Column, ColumnKind, HandlerId, Input, InputColumn, InputKind,
+    InputOption, Node, NodeKind, NumberFormat, NumberRange, NumberStyle, number_words, SceneNode, Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
 };
 pub use raster::{Quality, Raster, RasterLabel};
 pub use scene::{
@@ -227,6 +227,13 @@ impl Visual {
                     Some(EntryValue::List(items)) => {
                         Value::Table(lua.create_sequence_from(items.iter().cloned())?)
                     }
+                    Some(EntryValue::Rows(rows)) => {
+                        let out = lua.create_table()?;
+                        for row in rows {
+                            out.push(lua.create_sequence_from(row.iter().cloned())?)?;
+                        }
+                        Value::Table(out)
+                    }
                 })
             })?,
         )?;
@@ -258,6 +265,24 @@ impl Visual {
             .set_name("=kit_c")
             .set_mode(mlua::chunk::ChunkMode::Text)
             .call::<()>((ui.clone(), kit.clone(), helpers))?;
+        // Batch e returns its kinds; a name used twice is an error.
+        for (name, source) in [("=kit_e", include_str!("kit_e.luau"))] {
+            let more: Table = lua
+                .load(source)
+                .set_name(name)
+                .set_mode(mlua::chunk::ChunkMode::Text)
+                .call(ui.clone())?;
+            for pair in more.pairs::<Value, Value>() {
+                let (kind, build) = pair?;
+                if kit.contains_key(kind.clone())? {
+                    return Err(VisualError::script(format!(
+                        "{name}: kit kind {} is defined twice",
+                        node::value_text(&kind)
+                    )));
+                }
+                kit.raw_set(kind, build)?;
+            }
+        }
         kit.set_readonly(true);
         ui.set("kit", kit)?;
         globals.set("ui", ui)?;
@@ -525,6 +550,28 @@ pub fn answer_text(title: &str, tree: &Node) -> String {
             }
             continue;
         }
+        // An item list, a line each; a table as a Markdown table.
+        let answered = input.answered.is_some() && !input.kept;
+        match (&input.value, answered) {
+            (EntryValue::List(items), false) if input.kind == InputKind::Items && !items.is_empty() => {
+                lines.push(format!("{label}:"));
+                lines.extend(items.iter().map(|i| format!("- {}", i.replace('\n', " "))));
+                continue;
+            }
+            (EntryValue::Rows(rows), false) if !rows.is_empty() => {
+                let cell = |c: &str| c.replace('|', "\\|").replace('\n', " ");
+                let heads: Vec<String> = input.columns.iter().map(|c| cell(&c.label)).collect();
+                lines.push(format!("{label}:"));
+                lines.push(format!("| {} |", heads.join(" | ")));
+                lines.push(format!("|{}", "---|".repeat(heads.len())));
+                for row in rows {
+                    let cells: Vec<String> = input.row_cells(row).iter().map(|c| cell(c)).collect();
+                    lines.push(format!("| {} |", cells.join(" | ")));
+                }
+                continue;
+            }
+            _ => {}
+        }
         let value = match (&input.answered, input.kept) {
             (Some(answered), false) => answered.clone(),
             _ => input.value_text(),
@@ -624,8 +671,11 @@ pub fn check_with_assets(source: &str, seed: u64, assets: Assets) -> Result<Repo
     for (name, kind, first) in names.into_iter().take(24) {
         let value = match kind.shape() {
             Shape::Bool => EntryValue::Bool(true),
+            Shape::Text if matches!(kind, InputKind::Number { .. }) => EntryValue::Text("1".into()),
             Shape::Text => EntryValue::Text(first.unwrap_or_else(|| "An answer".into())),
+            Shape::List if kind == InputKind::Items => EntryValue::List(vec!["An answer".into()]),
             Shape::List => EntryValue::List(first.into_iter().collect()),
+            Shape::Rows => EntryValue::Rows(vec![vec!["An answer".into(), "1".into()]]),
         };
         visual.set_entry(&name, Some(value));
         visual
@@ -828,3 +878,5 @@ mod kit_c_tests;
 mod kit_tests;
 #[cfg(test)]
 mod kit_b_tests;
+#[cfg(test)]
+mod kit_e_tests;

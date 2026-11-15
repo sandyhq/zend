@@ -18,6 +18,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - Visual kit batch a (dev): Acceptance, Findings, StackTrace, Dependencies, Benchmark, Pipeline, Tests, Logs, Coverage, Changes, Commits, Diff, PullRequest, Environments, Snippet, Code, Json, File (`crates/visual/src/kit_a.luau`), each with an example in `visuals/`.
 - Visual kit `ui.kit`: 22 components (Form and its inputs, Card, Callout, KeyValue, List, Steps, Status, Progress, Metric and more), each one call with data; examples in `visuals/`.
 - Visual kit, planning and data kinds: Board, Roadmap, Plan, Decision, Estimate, Table, Timeline, Calendar, CalendarHeatmap, Provenance, Sources, Entity, Transcript, Walkthrough, Flashcards (`crates/visual/src/kit_b.luau`).
+- Named inputs `ui.number` (slider, stepper, stars), `ui.items`, `ui.rows`, and kit kinds Slider, Stepper, Rating, ListEditor, EditableTable, Quiz, Timer.
 
 ### Changed
 - `zend.run` without a `cwd` runs in the plugin's own folder.
