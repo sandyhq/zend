@@ -257,7 +257,7 @@ fn catalog() -> Vec<ToolDef> {
                 "assets": {
                     "type": "object",
                     "additionalProperties": { "type": "string" },
-                    "description": "Files the script uses, by the name it uses them: { \"prism.glb\": \"models/prism.glb\", \"sky.hdr\": \"/tmp/sky.hdr\" }. Paths are on this machine, relative to your working directory. glTF models (.glb, or .gltf with everything embedded), PNG, JPEG, WebP, and Radiance .hdr images; at most 16 files, 8 MB each, 10 MB together."
+                    "description": "Files the script uses, by the name it uses them: { \"shot.png\": \"out/shot.png\", \"prism.glb\": \"models/prism.glb\", \"sky.hdr\": \"/tmp/sky.hdr\" }. Paths are on this machine, relative to your working directory. glTF models (.glb, or .gltf with everything embedded), PNG, JPEG, WebP (pictures for ui.image, textures), and Radiance .hdr images; at most 16 files, 8 MB each, 10 MB together."
                 }
             },
             "required": ["script", "title"]
@@ -395,7 +395,8 @@ Show an interactive visual (chart, table, dashboard, diagram, simulation, 3D vie
 chat, above your final text reply; call it before writing that reply. Use it when a visual says more \
 than prose. The reader already sees it, so the reply should not announce, locate, or restate it: add \
 only what the visual doesn't say. To show an image file as it is (a screenshot, a photo), use \
-show_image instead.\n\
+show_image instead; to place a picture inside a visual (marked up, compared, in a grid), pass it in \
+assets and draw it with ui.image.\n\
 \n\
 A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Zend runs it in a \
 sandbox (no I/O or network; math.random is seeded, so data is the same on every render) and renders \
@@ -441,6 +442,14 @@ opens like a chat link.\n\
 - ui.code { code = \"...\", language = \"rust\", from = 40, marks = { [41] = \"added|removed|focus\" } }: \
 source lines, coloured for their language by the window, numbered from `from` (or numbers = true). \
 ui.null is JSON's null for ui.kit.Json (which also takes text = \"<json>\").\n\
+- ui.image { src = \"shot.png\", alt, height, fit = \"contain|cover\" }: a PNG, JPEG or WebP passed in \
+assets, by its name (never a path or a link), as wide as the reply at its own shape unless height \
+is given. before = \"old.png\", split = 0.5: a wipe the reader drags, before on the left. marks = { { x, \
+y, w?, h?, label, tone }, ... } in shares of the picture (0-1; a point without w and h): numbered \
+regions, named on hover; selected = i rings one; on_click = function(i) end gets the mark clicked. \
+ui.kit.Image { src, caption }, Gallery { items = { { src, caption }, ... }, columns }, Compare { \
+before, after, labels }, Hotspots { src, spots = { { x, y, w?, h?, title, detail? } }, selected?, \
+on_select? } build on it. A name missing from assets, or a file that isn't a picture, is an error.\n\
 - Controls: ui.tabs { options = { ... }, value, on_change = function(option) end }, ui.toggle { label, \
 value = bool, on_change = function(on) end }, ui.slider { label, value, min, max, step, unit, on_change \
 = function(n) end }, ui.button { label, on_click = function() end, primary = bool }.\n\

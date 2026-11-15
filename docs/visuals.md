@@ -3,7 +3,7 @@
 A visual is something an agent shows in a chat instead of, or beside, prose: a chart, a table, a dashboard, a diagram, a simulation, a 3D view. This page is the reference for writing one. How the runtime works inside: [mcp.md](mcp.md), "Visual replies". The authoritative, complete wording is the description of the `show_visual` tool (`SHOW_VISUAL_DESCRIPTION` in `crates/mcp/src/tools.rs`); when this page and the tool disagree, the tool is right.
 
 ## The tool
-`show_visual { script, title, assets? }`, offered only to an agent Zend launched in a chat. Call it before the final text reply; the visual appears above that reply. The reader already sees it, so the reply adds only what the visual doesn't say. For an image file as it is, use `show_image { path }`.
+`show_visual { script, title, assets? }`, offered only to an agent Zend launched in a chat. Call it before the final text reply; the visual appears above that reply. The reader already sees it, so the reply adds only what the visual doesn't say. For an image file as it is, use `show_image { path }`; to place a picture inside a visual, pass it in `assets` and draw it with `ui.image`.
 
 Zend runs the script before showing it (setup, the first render, every draw, and each tab, toggle, slider and button once) and returns the first error with its line. Fix and call again; the reader sees nothing until it passes.
 
@@ -36,6 +36,7 @@ Nodes are props tables: children are the array part, strings are text, `nil` and
 | `ui.chart` | `type` bar, line, area, scatter; `x`, `series`, `stacked`, `horizontal`, `min`, `max`, `unit`, `prefix`, `decimals`, `legend`; axes and hover readout built in |
 | `ui.rule`, `ui.space`, `ui.link` | divider, gap, link |
 | `ui.code` | source lines in a `language` (`rust`, `rs`, `ts`, `py`…; the window colours them with its own highlighter, an unknown one plain): `code`, `numbers` or `from` (first line's number), `gutter` (a label per line, instead of numbers), `marks` (`{ [line] = "added" \| "removed" \| "focus" }`, by the gutter's numbers); at most 2000 lines, scrolls sideways |
+| `ui.image` | a picture passed in `assets` (PNG, JPEG or WebP), by its name, never a path or a link: `src` (or `ui.image "shot.png"`), `alt`, `height` (else as wide as the reply, at its own shape), `fit` contain or cover; `before` and `split` (0.5) make a wipe the reader drags, `before` on the left; `marks` `{ { x, y, w?, h?, label?, tone? } }` in shares of the picture (0 to 1; no `w`, `h`: a point) are numbered regions, named on hover; `selected` rings one; `on_click = function(i)` gets the mark clicked. A missing name or a file that isn't a picture is an error naming it. The zgx window shows it; GPUI and mobile show its `alt` as a placeholder line |
 | `ui.tabs`, `ui.toggle`, `ui.slider`, `ui.button` | controls, each with a handler |
 | `ui.canvas` | 2D drawing in pixels: `draw = function(g, w, h, t)`, `g:line`, `polyline`, `polygon`, `rect`, `circle`, `arc`, `text`; `g.pointer` for hover; `animate` |
 | `ui.scene` | real 3D on the GPU: `s:box`, `sphere`, `cylinder`, `surface`, `mesh`, `line`, `path`, `point`, `label`, `grid`, `axes`, `model`, `environment`, `sprite`; materials `roughness`, `metal`, `glow`, `glass` |
@@ -149,6 +150,10 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Shader { code, inputs?, height?, ... }` | a Shadertoy-style fragment shader |
 | `Carousel { key?, ... }` | slides (children), one at a time, with arrows |
 | `Icon { name, tone? }` | a glyph for a common lucide icon name |
+| `Image { src, alt?, caption?, height?, fit? }` | one picture from `assets`, its caption under it |
+| `Gallery { items, columns?, height?, fit? }` | pictures in a grid (`columns` 1 to 6; unless given, as many as items up to 3), each `{ src, caption?, alt? }` or a name, cut to one height (140, `cover`) |
+| `Compare { before, after, split?, labels?, alt?, caption?, height? }` | before and after over each other; the reader drags the line between them |
+| `Hotspots { src, spots, selected?, on_select?, height? }` | numbered regions on a picture, `{ x, y, w?, h?, title, detail?, tone? }` in shares of it (`tone` a colour token); every spot's details listed under it, or with `on_select = function(i)` (keep `i` in a `ui.state` and pass it as `selected`) only the picked one's |
 | `Slider { name, label?, min?, max?, step?, value? }` | a number dragged in a range (`ui.number`), 0 to 100 unless given |
 | `Stepper { name, label?, min?, max?, step?, value? }` | a count with − and + |
 | `Rating { name, label?, max?, value? }` | stars, 1 to `max` (5 unless given); "4 of 5" in the answer |
@@ -158,4 +163,4 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Timer { seconds?, label? }` | a countdown with Start, Pause and Reset, or a stopwatch without `seconds`; it keeps no entry |
 
 ## What a visual cannot do yet
-Kit kinds left out of batch c: Image, Gallery (no node shows a picture: use `show_image`) and Swatches (a canvas takes theme tokens, not hex colours). Also left out: Hotspots and Compare (no picture node), Threads (no live chat status), Load (a visual cannot read files). Examples: the Visual Gallery plugin and the tool `visual_examples`.
+Swatches (a canvas takes theme tokens, not hex colours). Threads (no live chat status), Load (a visual cannot read files). Examples: the Visual Gallery plugin and the tool `visual_examples`.

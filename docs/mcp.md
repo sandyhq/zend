@@ -316,7 +316,10 @@ environment maps, sprites and bloom), with the runtime's software rasterizer
 camera on the geometry and draws it into one transparent image. A visual's
 files (`assets`: at most 16, 8 MB each, 10 MB together) are stored beside its
 script as `{id}-asset-{name}` with an `{id}-assets.json` list, and travel to
-other devices like attachments. `ui.shader` takes Shadertoy-style GLSL
+other devices like attachments. `ui.image` shows one of them (PNG, JPEG or
+WebP) by name; the check refuses a name that isn't there or a file that isn't a
+picture, and the zgx window decodes the bytes it already holds for the visual
+(`visuals.picture`), so nothing is fetched. `ui.shader` takes Shadertoy-style GLSL
 (`mainImage`, `iResolution`, `iTime`, `iMouse`, plus `iCamera` for an orbit
 camera, named float inputs bound to the script's state, `iNoise`, and up to four
 Shadertoy-style buffer passes read as `iChannel0`-`3`, with feedback from their
