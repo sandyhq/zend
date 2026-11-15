@@ -217,6 +217,7 @@ impl Layouter<'_, '_> {
                 })
             }
             NodeKind::Text(text) => Some(self.text_para(text).natural()),
+            NodeKind::Code(code) => self.natural(&code.plain()),
             NodeKind::Space(size) => Some(*size),
             NodeKind::Stat {
                 value,
@@ -314,6 +315,8 @@ impl Layouter<'_, '_> {
                     .paint
                     .para(self.ctx, &para, x, y, width, text.align, text.truncate)
             }
+            // (Plain mono lines: the colours are zend-zgx's highlighter.)
+            NodeKind::Code(code) => self.place(&code.plain(), path, x, y, width),
             NodeKind::Rule => {
                 self.out
                     .paint

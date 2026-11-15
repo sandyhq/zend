@@ -112,6 +112,19 @@ end
 ]],
 	},
 	{
+		name = "code",
+		title = "Source lines",
+		source = [[
+return function()
+  return ui.column { gap = 12,
+    ui.code { key = "rust", language = "rs", from = 7, marks = { [8] = "added" },
+      code = "fn main() {\n    let n = 42; // the answer\n}" },
+    ui.code { key = "plain", language = "klingon", code = "fn main() {\n    let n = 42;\n}" },
+  }
+end
+]],
+	},
+	{
 		name = "canvas",
 		title = "Orbiting dots",
 		source = [[

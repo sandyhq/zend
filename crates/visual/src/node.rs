@@ -388,6 +388,52 @@ impl Code {
         let lines: Vec<&str> = self.lines.iter().map(|l| l.text.as_str()).collect();
         lines.join("\n")
     }
+
+    /// The code uncoloured, for a renderer without a highlighter: a column
+    /// of small mono lines, the gutter faint (an added line's success, a
+    /// removed one's danger, a focused one's accent).
+    pub fn plain(&self) -> Node {
+        let node = |kind| Node {
+            kind,
+            width: None,
+            grow: false,
+            key: None,
+        };
+        let children = self
+            .lines
+            .iter()
+            .map(|line| {
+                let mut spans = Vec::new();
+                if self.gutter {
+                    let token = match line.mark {
+                        Some(CodeMark::Added) => Token::Success,
+                        Some(CodeMark::Removed) => Token::Danger,
+                        Some(CodeMark::Focus) => Token::Accent,
+                        None => Token::Faint,
+                    };
+                    spans.push(Span {
+                        text: format!("{}  ", line.gutter),
+                        color: Some(Color::token(token)),
+                        mono: true,
+                        ..Default::default()
+                    });
+                }
+                spans.push(Span {
+                    // (An empty line keeps its height.)
+                    text: if line.text.is_empty() { " ".into() } else { line.text.clone() },
+                    mono: true,
+                    ..Default::default()
+                });
+                node(NodeKind::Text(Text {
+                    spans,
+                    size: TextSize::Sm,
+                    mono: true,
+                    ..Default::default()
+                }))
+            })
+            .collect();
+        node(NodeKind::Stack(Stack { children, ..Default::default() }))
+    }
 }
 
 /// The most lines one `ui.code` shows.

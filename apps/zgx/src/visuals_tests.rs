@@ -30,6 +30,51 @@ fn has(app: &mut TestApp, target: &str) -> bool {
     app.find(target).is_some()
 }
 
+/// What a block draws its text with, in order: a paragraph of styled runs
+/// as (its text, how many colours its runs have), plain text as (it, 0).
+fn drawn_text(app: &mut TestApp, target: &str) -> Vec<(String, usize)> {
+    use zgx::scene::NodeKind;
+    let root = app.target(target).unwrap_or_else(|e| panic!("{e}"));
+    let scene = app.ui.scene.borrow();
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        match scene.kind(id) {
+            NodeKind::RichText { text, .. } => {
+                let mut colours: Vec<String> = text.runs().iter().map(|r| format!("{:?}", r.color)).collect();
+                colours.sort();
+                colours.dedup();
+                out.push((text.text().to_owned(), colours.len()));
+            }
+            NodeKind::Text { text, .. } => out.push((text.to_string(), 0)),
+            _ => {}
+        }
+        stack.extend(scene.children(id).iter().rev());
+    }
+    out
+}
+
+#[test]
+fn code_is_coloured_by_its_language_and_plain_without_one() {
+    let mut app = mount(Some("code"));
+    // Rust: its gutter numbers from 7, and `fn`, `main` and the comment
+    // in colours of their own.
+    let rust = drawn_text(&mut app, "#visual-code >> \"rs\"");
+    assert_eq!(rust.iter().filter(|(_, c)| *c == 0).map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["7", "8", "9"], "{rust:?}");
+    let first = rust.iter().find(|(t, _)| t == "fn main() {").unwrap_or_else(|| panic!("{rust:?}"));
+    assert!(first.1 >= 2, "a keyword coloured apart from the rest: {rust:?}");
+    let comment = rust.iter().find(|(t, _)| t.contains("the answer")).unwrap_or_else(|| panic!("{rust:?}"));
+    assert!(comment.1 >= 2, "{rust:?}");
+    // A language Zend doesn't colour: the same lines as plain text, no
+    // gutter.
+    let plain = drawn_text(&mut app, "#visual-code >> \"klingon\"");
+    assert_eq!(
+        plain,
+        [("fn main() {".to_owned(), 0), ("    let n = 42;".to_owned(), 0), ("}".to_owned(), 0)],
+        "plain, the indent kept"
+    );
+}
+
 #[test]
 fn every_node_type_draws_with_the_design_system() {
     let mut app = mount(None);

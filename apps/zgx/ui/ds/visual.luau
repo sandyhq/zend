@@ -15,6 +15,9 @@
 --   button, toggle,     ds Button, Switch, Slider; tabs a Segmented control
 --   slider, tabs        (a Select for many or long options)
 --   link                the accent, opened where the app opens links
+--   code                mono lines coloured by ds/syntax for their
+--                       language (plain for one it doesn't know), a gutter,
+--                       marked lines washed in their tone; scrolls sideways
 --   answer              a Button: the inputs as words into the chat's
 --                       composer, under its draft (ds/visual_answer); never
 --                       sends
@@ -61,6 +64,7 @@ local motion = require("@self/motion")
 local status = require("@self/status")
 local locale = require("@self/locale")
 local Links = require("@ds/links")
+local Syntax = require("@self/syntax")
 local ReplyPicture = require("@self/reply_picture")
 local VisualAnswer = require("@self/visual_answer")
 local VisualCarry = require("@self/visual_carry")
@@ -1422,6 +1426,89 @@ local function place(props: { [any]: any }, n: any, parent: string)
 	return props
 end
 
+-- ---- code -------------------------------------------------------------------
+
+-- A marked line's wash and its gutter label's ink.
+local CODE_MARK = {
+	added = { wash = "$zend.tone.success.wash", ink = "$zend.diff.added" },
+	removed = { wash = "$zend.tone.danger.wash", ink = "$zend.diff.removed" },
+	focus = { wash = "$zend.tone.accent.wash", ink = "$accent" },
+}
+
+-- Source lines (ui.code), coloured by the app's own highlighter
+-- (ds/syntax, as Markdown's code blocks and the diff are) for the script's
+-- language; one it doesn't know, or none, is plain text. A marked line
+-- takes its tone's wash the whole way across and its gutter label the
+-- tone's ink. The lines scroll sideways as one, as the app's diff does.
+-- (Their text is in the shape: a change builds them again.)
+local function code(n: any, parent: string): Node
+	local lines = n.lines or {}
+	local source = {}
+	for i, l in lines do
+		source[i] = l.s
+	end
+	local runs = if n.lang and Syntax.highlighter(n.lang) then Syntax.lines(table.concat(source, "\n"), n.lang) else nil
+	local rows: { Node } = {}
+	for i, l in lines do
+		local mark = CODE_MARK[l.m]
+		local kids: { Node } = {}
+		if n.gutter then
+			table.insert(kids, ui.text {
+				l.g or "",
+				class = "visual-code-gutter",
+				literal = true,
+				shrink = 0,
+				pr = "$space.3",
+				tabular = true,
+				font = "$font.mono",
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
+				color = if mark then mark.ink else "$text.tertiary",
+			})
+		end
+		local line: { [any]: any } = {
+			class = "visual-code-text",
+			literal = true,
+			shrink = 0,
+			font = "$font.mono",
+			text_size = "$zend.visual.text.sm.size",
+			line_height = "$zend.visual.text.sm.line",
+			color = "$text.primary",
+		}
+		local own = runs and runs[i]
+		if own and #own > 0 then
+			for j, r in own do
+				line[j] = ui.span { r.text, color = r.color, literal = true }
+			end
+			table.insert(kids, ui.rich(line))
+		else
+			-- (An empty line keeps its height.)
+			line[1] = if l.s == "" then " " else l.s
+			table.insert(kids, ui.text(line))
+		end
+		table.insert(rows, ui.row {
+			class = "visual-code-line",
+			label = l.s,
+			w_full = true,
+			px = "$space.1",
+			bg = if mark then mark.wash else nil,
+			table.unpack(kids),
+		})
+	end
+	return ui.column(place({
+		class = "visual-code",
+		label = n.lang,
+		w_full = parent ~= "row",
+		min_w = 0,
+		ui.scroll_x {
+			w_full = true,
+			fade_x = { 16, 32 },
+			fade_overflow = true,
+			ui.column { min_w = "100%", table.unpack(rows) },
+		},
+	}, n, parent))
+end
+
 local function stack(n: any, ctx: Ctx, parent: string): Node
 	local row = n.k == "row"
 	local kids: { Node } = {}
@@ -1602,6 +1689,8 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 		return ui.column(place({ w_full = parent ~= "row", min_w = 0, VisualSlider { n = n, ctx = ctx } }, n, parent))
 	elseif k == "input" then
 		return ui.column(place({ w_full = parent ~= "row", min_w = 0, Input { n = n, ctx = ctx } }, n, parent))
+	elseif k == "code" then
+		return code(n, parent)
 	elseif k == "link" then
 		local get = ctx.at(n.p)
 		return ui.text(place({

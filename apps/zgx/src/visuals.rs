@@ -1337,6 +1337,30 @@ fn node_value(node: &zv::Node, path: &str) -> Value {
                 f.push(("label", Value::from(label.as_str())));
             }
         }
+        zv::NodeKind::Code(code) => {
+            // `lines`: { s = text (a change builds it again), g? = gutter label, m? = mark } per line;
+            // the window colours them by `lang` with its own highlighter.
+            f.push(("k", Value::from("code")));
+            if let Some(lang) = &code.language {
+                f.push(("lang", Value::from(lang.as_str())));
+            }
+            f.push(("gutter", Value::Bool(code.gutter)));
+            let lines = code
+                .lines
+                .iter()
+                .map(|line| {
+                    let mut l: Vec<(&str, Value)> = vec![("s", Value::from(line.text.as_str()))];
+                    if code.gutter {
+                        l.push(("g", Value::from(line.gutter.as_str())));
+                    }
+                    if let Some(mark) = line.mark {
+                        l.push(("m", Value::from(mark.name())));
+                    }
+                    Value::record(l)
+                })
+                .collect();
+            f.push(("lines", list(lines)));
+        }
         zv::NodeKind::Link { label, url } => {
             f.push(("k", Value::from("link")));
             f.push(("label", Value::from(label.as_str())));
