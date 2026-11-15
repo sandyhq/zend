@@ -69,6 +69,7 @@ async fn check_persistence(
         resume: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     };
     core.sessions
         .dispatch(

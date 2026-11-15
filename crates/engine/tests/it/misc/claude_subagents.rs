@@ -39,6 +39,7 @@ fn request(dir: &Path, scenario: &str) -> RunRequest {
         )]
         .into(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

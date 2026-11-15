@@ -50,6 +50,7 @@ fn request(mode: &str) -> RunRequest {
             .into_iter()
             .collect(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

@@ -22,6 +22,12 @@
 -- tone, text? }`, plain text in a fixed tone): Zend draws the badge beside
 -- the control and the text in the description's place.
 --
+-- `instructions` is what the plugin tells your agents now
+-- (`session.instructions`, the engine's entries): `{ { key, text, since,
+-- chat?, chat_title?, project? } }`. The page shows each whole, read only,
+-- under who it's for; a plugin with entries and no settings has a page for
+-- them alone.
+--
 -- What's set goes to the host (`M.set`, `M.choose_folder`: a fixture
 -- answers them itself), which keeps it for that plugin alone and tells
 -- the plugin (`plugin.<id>.settings`). Each page is in Settings search.
@@ -66,7 +72,10 @@ export type Entry = {
 	-- What its page says under its title (the manifest's
 	-- `settings_description`, plain); none, Zend's own line.
 	description: string?,
+	-- What it tells your agents now, each entry whole.
+	instructions: { Told }?,
 }
+export type Told = { key: string, text: string, since: number?, chat: string?, chat_title: string?, project: string? }
 
 M.list = ui.shared("plugins.settings", {} :: { Entry })
 
@@ -495,6 +504,63 @@ local WallpaperRows = ui.component(function(props: { plugin: string, setting: Se
 	}
 end)
 
+-- What a plugin tells your agents now (followed), each entry whole.
+local function told_of(plugin: string): { Told }
+	local e = M.of(plugin)
+	return if e and type(e.instructions) == "table" then e.instructions else {}
+end
+
+-- Who an entry is for, in words (its key too, past the first).
+local function told_for(t: Told): string
+	local who = if t.chat
+		then ui.t("plugins.settings.instructions.chat", { title = t.chat_title or t.chat }):get()
+		elseif t.project then ui.t("plugins.settings.instructions.project", { project = t.project }):get()
+		else ui.t("plugins.settings.instructions.device"):get()
+	if t.key and t.key ~= "default" then
+		return `{who} · {t.key}`
+	end
+	return who
+end
+
+-- What it tells your agents, under the settings: one row an entry, who
+-- it's for and its whole text, read only (only the plugin changes it).
+-- Said plainly when the plugin isn't allowed to, so none of it reaches
+-- them.
+local function told_section(plugin: string, allowed: () -> boolean): Node
+	return ui.presence(function(): string
+		local parts: { string } = { if allowed() then "on" else "off" }
+		for _, t in told_of(plugin) do
+			table.insert(parts, table.concat({ t.key or "", t.chat or "", t.chat_title or "", t.project or "", t.text or "" }, "\1"))
+		end
+		return table.concat(parts, "\0")
+	end, function(_key: string): Node
+		local list = told_of(plugin)
+		if #list == 0 then
+			return ui.div {}
+		end
+		local rows: { Node } = {}
+		for _, t in list do
+			table.insert(
+				rows,
+				ds.Settings.Row {
+					label = told_for(t),
+					description = t.text,
+				}
+			)
+		end
+		return search.anchor(
+			"instructions",
+			ds.Settings.Section {
+				title = ui.t("plugins.settings.instructions.title"),
+				description = if allowed()
+					then ui.t("plugins.settings.instructions.description")
+					else ui.t("plugins.settings.instructions.not_allowed"),
+				ds.Settings.Group(rows :: any),
+			}
+		)
+	end, { w_full = true, class = "plugin-instructions" })
+end
+
 -- A plugin's page.
 local function view(plugin: string): Node
 	local function name(): string
@@ -580,6 +646,15 @@ local function view(plugin: string): Node
 			end
 			return ui.column { w_full = true, gap = "$space.6", table.unpack(out) }
 		end, { w_full = true }),
+		told_section(plugin, function(): boolean
+			local p = item()
+			for _, granted in (if p then p.allowed else nil) or {} do
+				if granted == "session.instructions" then
+					return true
+				end
+			end
+			return false
+		end),
 	}
 end
 
@@ -632,6 +707,9 @@ ui.effect(function()
 				elseif s.kind == "wallpaper" then ui.t("plugins.settings.wallpaper.terms")
 				else s.description
 			table.insert(rows, { key = s.id, title = label_of(s), section = s.section, terms = terms })
+		end
+		if type(e.instructions) == "table" and #e.instructions > 0 then
+			table.insert(rows, { key = "instructions", title = ui.t("plugins.settings.instructions.title"), terms = ui.t("plugins.settings.instructions.terms") })
 		end
 		search.index(page, e.name, ui.t("plugins.settings.terms"), rows)
 	end

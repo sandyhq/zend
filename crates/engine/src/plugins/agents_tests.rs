@@ -220,9 +220,15 @@ struct FakeSink {
     /// How many asks were in flight at once, at most.
     inflight: Arc<AtomicUsize>,
     most_inflight: Arc<AtomicUsize>,
+    /// How often it heard that what plugins tell agents changed.
+    instructions_changed: AtomicUsize,
 }
 
 impl Sink for FakeSink {
+    fn instructions_changed(&self) {
+        self.instructions_changed.fetch_add(1, Ordering::SeqCst);
+    }
+
     fn grants(&self, plugin: &str) -> Option<Grant> {
         lock(&self.grants).get(plugin).map(|allowed| Grant {
             name: format!("Plugin {plugin}"),
@@ -1288,3 +1294,182 @@ async fn with_nobody_listening_the_pre_run_hook_reads_nothing_and_waits_for_no_o
     f.answer("p", Ok(json!({ "account": "a2" })), Duration::ZERO);
     assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await.as_deref(), Some("a2"));
 }
+
+
+// ── Instructions for chats' agents (session.instructions) ────────────────
+
+const ZEBRA: &str = "Antworte immer mit dem Wort ZEBRA am Ende";
+
+impl Fixture {
+    /// `c1` in project `proj`, and `c2` a child session of it.
+    fn family(&self) -> &Self {
+        let mut lead = chat("c1", "opus");
+        lead.space_id = Some("proj".into());
+        let mut child = chat("c2", "opus");
+        child.space_id = Some("proj".into());
+        child.parent_chat_id = Some("c1".into());
+        let mut other = chat("c3", "opus");
+        other.space_id = Some("elsewhere".into());
+        *lock(&self.host.chats) = vec![lead, child, other];
+        self
+    }
+
+    async fn told_to(&self, chat: &str) -> Vec<SessionInstruction> {
+        self.agents.instructions_for(HarnessId::Pi, chat).await
+    }
+}
+
+#[tokio::test]
+async fn instructions_need_session_instructions_and_reach_every_chat_in_full() {
+    let f = Fixture::new();
+    f.family();
+    let set = json!({ "op": "set_instructions", "text": ZEBRA });
+    f.grant("p", &[SESSIONS_READ]);
+    let refused = f.op("p", set.clone()).await.unwrap_err();
+    assert_eq!(refused.reason, reason::NOT_ALLOWED);
+    assert!(refused.message.contains(SESSION_INSTRUCTIONS), "{}", refused.message);
+    assert!(f.told_to("c1").await.is_empty());
+
+    f.grant("p", &[SESSION_INSTRUCTIONS]);
+    let done = f.op("p", set.clone()).await.unwrap();
+    assert_eq!(done, json!({ "key": "default", "set": true, "changed": true }));
+    for chat in ["c1", "c2", "c3"] {
+        let told = f.told_to(chat).await;
+        assert_eq!(
+            told,
+            vec![SessionInstruction { plugin: "p".into(), name: "Plugin p".into(), text: ZEBRA.into() }],
+            "{chat}: the whole text, as the plugin's own section"
+        );
+        assert_eq!(told[0].section(), "plugin-p");
+    }
+    // Said again: nothing changes, nothing recorded twice.
+    assert_eq!(f.op("p", set).await.unwrap()["changed"], false);
+    let status = f.agents.status("p");
+    assert_eq!(status["actions"].as_array().unwrap().len(), 1, "{status}");
+    assert_eq!(status["actions"][0]["op"], "set_instructions");
+    assert_eq!(status["instructions"], json!([{ "key": "default", "text": ZEBRA, "since": status["instructions"][0]["since"] }]));
+    assert_eq!(f.op("p", json!({ "op": "instructions" })).await.unwrap()[0]["text"], ZEBRA);
+
+    // Taken back with no text.
+    f.op("p", json!({ "op": "set_instructions" })).await.unwrap();
+    assert!(f.told_to("c1").await.is_empty());
+    assert!(f.agents.status("p").get("instructions").is_none());
+}
+
+/// What a plugin tells agents, as its Settings page shows it (each entry
+/// whole, a chat's with its title), each change said to the sink (the list
+/// is published again), and a removed plugin's entries forgotten.
+#[tokio::test]
+async fn what_a_plugin_tells_agents_is_listed_said_as_it_changes_and_forgotten_once_removed() {
+    let f = Fixture::new();
+    f.family();
+    let mut titled = chat("c1", "opus");
+    titled.title = Some("Fix the flaky test".into());
+    lock(&f.host.chats)[0] = titled;
+    f.grant("p", &[SESSION_INSTRUCTIONS]);
+    f.grant("q", &[SESSION_INSTRUCTIONS]);
+    let changes = || f.sink.instructions_changed.load(Ordering::SeqCst);
+    assert!(f.agents.told("p").is_empty());
+    f.op("p", json!({ "op": "set_instructions", "text": ZEBRA })).await.unwrap();
+    assert_eq!(changes(), 1);
+    f.op("p", json!({ "op": "set_instructions", "text": ZEBRA })).await.unwrap();
+    assert_eq!(changes(), 1, "said again, unchanged: nothing to publish");
+    f.op("p", json!({ "op": "set_instructions", "text": "Here, run checks yourself.", "chat": "c1" })).await.unwrap();
+    f.op("q", json!({ "op": "set_instructions", "text": "q's own" })).await.unwrap();
+    assert_eq!(changes(), 3);
+    let told = f.agents.told("p");
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_eq!(told[0]["text"], ZEBRA);
+    assert!(told[0].get("chat").is_none(), "every chat's: {told:?}");
+    assert_eq!((told[1]["chat"].as_str(), told[1]["chat_title"].as_str()), (Some("c1"), Some("Fix the flaky test")));
+    // Removed: its entries go, another plugin's stay.
+    f.agents.forget_instructions("p");
+    assert!(f.agents.told("p").is_empty());
+    assert!(f.agents.status("p").get("instructions").is_none());
+    assert_eq!(f.agents.told("q").len(), 1);
+    assert_eq!(changes(), 4, "forgetting is a change too");
+    f.agents.forget_instructions("p");
+    assert_eq!(changes(), 4, "nothing left to forget");
+    let left: Vec<String> = f.told_to("c1").await.into_iter().map(|t| t.plugin).collect();
+    assert_eq!(left, vec!["q".to_string()]);
+}
+
+#[tokio::test]
+async fn a_plugin_no_longer_allowed_tells_no_agent() {
+    let f = Fixture::new();
+    f.family().grant("p", &[SESSION_INSTRUCTIONS]);
+    f.op("p", json!({ "op": "set_instructions", "text": ZEBRA })).await.unwrap();
+    assert_eq!(f.told_to("c1").await.len(), 1);
+    f.grant("p", &[SESSIONS_READ]);
+    assert!(f.told_to("c1").await.is_empty(), "taken away with its permission");
+    f.grant("p", &[SESSION_INSTRUCTIONS]);
+    assert_eq!(f.told_to("c1").await.len(), 1, "kept, and back when allowed again");
+}
+
+#[tokio::test]
+async fn instructions_for_a_project_or_a_chat_reach_its_children_and_the_nearest_wins() {
+    let f = Fixture::new();
+    f.family().grant("p", &[SESSION_INSTRUCTIONS, SESSIONS_READ]);
+    f.op("p", json!({ "op": "set_instructions", "text": "device-wide" })).await.unwrap();
+    f.op("p", json!({ "op": "set_instructions", "project": "proj", "text": "in proj" })).await.unwrap();
+    f.op("p", json!({ "op": "set_instructions", "key": "style", "chat": "c1", "text": "lead's style" })).await.unwrap();
+    let text = |told: Vec<SessionInstruction>| told.into_iter().map(|t| t.text).collect::<Vec<_>>().join(" | ");
+    let c1 = text(f.told_to("c1").await);
+    assert!(c1.contains("in proj") && !c1.contains("device-wide"), "the project's entry stands for the device's: {c1}");
+    assert!(c1.contains("lead's style"), "{c1}");
+    let c2 = text(f.told_to("c2").await);
+    assert!(c2.contains("lead's style") && c2.contains("in proj"), "a child session hears its parent's: {c2}");
+    let c3 = text(f.told_to("c3").await);
+    assert_eq!(c3, "device-wide", "another project's chat: only the device's");
+    // A chat and a project at once is no scope.
+    let both = f.op("p", json!({ "op": "set_instructions", "chat": "c1", "project": "proj", "text": "x" })).await;
+    assert_eq!(both.unwrap_err().reason, reason::BAD_CALL);
+    let long = "x".repeat(instructions::MAX_BYTES + 1);
+    let too_long = f.op("p", json!({ "op": "set_instructions", "text": long })).await;
+    assert_eq!(too_long.unwrap_err().reason, reason::BAD_CALL);
+}
+
+#[tokio::test]
+async fn a_run_preparing_answer_gives_that_chat_its_instructions_once() {
+    let f = Fixture::new();
+    f.family().grant("p", &[SESSION_INSTRUCTIONS, SESSIONS_READ]);
+    f.hook("p");
+    f.answer("p", Ok(json!({ "instructions": ZEBRA })), Duration::ZERO);
+    let told = f.told_to("c2").await;
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0].text, ZEBRA);
+    let asked = lock(&f.sink.asked).clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].3, "run.preparing");
+    assert_eq!(asked[0].4, json!({ "provider": "pi", "chat": "c2", "project": "proj", "parent": "c1" }));
+    // Kept for that chat: later runs aren't asked, and still get it.
+    assert_eq!(f.told_to("c2").await[0].text, ZEBRA);
+    assert_eq!(lock(&f.sink.asked).len(), 1);
+    assert_eq!(f.told_to("c3").await[0].text, ZEBRA);
+    assert_eq!(lock(&f.sink.asked).len(), 2, "another chat is asked for its own");
+    assert_eq!(f.agents.status("p")["actions"][0]["key"], "run.preparing");
+}
+
+#[tokio::test]
+async fn a_listener_without_session_instructions_is_not_asked_for_them() {
+    let f = Fixture::new();
+    f.family().grant("p", &[SESSIONS_READ]);
+    f.hook("p");
+    f.answer("p", Ok(json!({ "instructions": ZEBRA })), Duration::ZERO);
+    assert!(f.told_to("c1").await.is_empty());
+    assert!(lock(&f.sink.asked).is_empty());
+}
+
+#[tokio::test]
+async fn a_plugin_that_pins_and_instructs_is_asked_once_for_both() {
+    let f = Fixture::new();
+    f.pinning().grant("p", &[ACCOUNTS_PIN, ACCOUNTS_READ, SESSIONS_READ, SESSION_INSTRUCTIONS]);
+    f.agents.observe_accounts(&f.snapshot());
+    f.hook("p");
+    f.answer("p", Ok(json!({ "account": "a2", "instructions": ZEBRA })), Duration::ZERO);
+    let told = f.agents.instructions_for(HarnessId::ClaudeCode, "c1").await;
+    assert_eq!(told[0].text, ZEBRA);
+    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await.as_deref(), Some("a2"));
+    assert_eq!(lock(&f.sink.asked).len(), 1, "one ask, both answers");
+}
+

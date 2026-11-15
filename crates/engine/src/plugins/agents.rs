@@ -15,6 +15,7 @@
 //! | `models.read` | read a harness's models and a chat's model; model events |
 //! | `models.set` | set a chat's model, effort and options |
 //! | `messages.send` | send a chat a message, start a chat, answer a question, as the composer does |
+//! | `session.instructions` | tell chats' agents instructions, in full in their system prompt (plugins/instructions) |
 //!
 //! Turn and input events need `sessions.read`; a turn's reply rides its
 //! `turn.finished` with `messages.read`. A field a plugin wasn't allowed is
@@ -52,7 +53,7 @@ use futures::future::BoxFuture;
 use serde_json::{Map, Value as Json, json};
 use zend_proto::{
     AgentAccount, AgentAccountsSnapshot, Chat, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel,
-    Session, SessionStatus, UserInputAnswer, run_errors::ProviderProblem,
+    Session, SessionInstruction, SessionStatus, UserInputAnswer, run_errors::ProviderProblem,
 };
 
 pub const USAGE_READ: &str = "usage.read";
@@ -62,6 +63,8 @@ pub const ACCOUNTS_PIN: &str = "accounts.pin";
 pub const MODELS_READ: &str = "models.read";
 pub const MODELS_SET: &str = "models.set";
 pub const MESSAGES_SEND: &str = "messages.send";
+pub use super::instructions::SESSION_INSTRUCTIONS;
+use super::instructions::{self, Scope};
 const FILES_READ: &str = "files.read";
 const SESSIONS_READ: &str = "sessions.read";
 
@@ -99,6 +102,22 @@ pub fn event_needs(event: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// One of a plugin's instruction entries, as `zend.instructions` and its
+/// Settings row show it.
+fn instruction_row(e: &instructions::Entry) -> Json {
+    let mut row = json!({ "key": e.key, "text": e.text, "since": e.since });
+    match &e.scope {
+        Scope::Device => {}
+        Scope::Project(p) => row["project"] = json!(p),
+        Scope::Chat(c) => row["chat"] = json!(c),
+    }
+    row
+}
+
+/// How long a `run.preparing` answer asked for a run's instructions stands
+/// for that run's pin ask.
+const PREPARED_KEPT: Duration = Duration::from_secs(60);
 
 /// Pacing (tests make them short).
 #[derive(Debug, Clone)]
@@ -297,6 +316,8 @@ pub trait Sink: Send + Sync + 'static {
     fn ask_service(&self, _plugin: &str, _listener: &str, _event: &str, _data: Json) -> BoxFuture<'static, Result<Json, String>> {
         Box::pin(async { Err("its service isn't running here".into()) })
     }
+    /// What some plugin tells agents changed (Settings shows it).
+    fn instructions_changed(&self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -360,6 +381,12 @@ struct State {
     queued_by: HashMap<String, By>,
     /// Chats `run.preparing` passed on, so each is asked once.
     declined: HashSet<(String, HarnessId)>,
+    /// Chats whose first run asked for instructions (`run.preparing`).
+    instructions_asked: HashSet<String>,
+    /// What a plugin allowed to pin too answered that ask, kept for the pin
+    /// ask of the same run (so a listener is asked once): by (chat, plugin),
+    /// with when, as a run that isn't pinned after all never takes it.
+    prepared: HashMap<(String, String), (Instant, Json)>,
     /// Each chat's last turn's final reply, until its `turn.finished`.
     replies: HashMap<String, String>,
     /// Each plugin's last actions (`plugin_status`).
@@ -404,6 +431,8 @@ struct Inner {
     /// One chat's `run.preparing` at a time: each answer sees the pin of the
     /// last (a plugin that spreads chats counts pins).
     preparing: tokio::sync::Mutex<()>,
+    /// What plugins tell chats' agents (`session.instructions`).
+    instructions: Mutex<instructions::Store>,
 }
 
 /// One event before it's fitted to a plugin's grants: what it says, and the
@@ -593,6 +622,7 @@ impl Agents {
                 pacing,
                 state: Mutex::new(State::default()),
                 preparing: tokio::sync::Mutex::new(()),
+                instructions: Mutex::new(instructions::Store::default()),
             }),
         }
     }
@@ -606,6 +636,12 @@ impl Agents {
     /// host was set.
     pub fn shutdown(&self) {
         lock(&self.inner.host).take();
+    }
+
+    /// Keep plugins' instructions in `data_dir` (read what's there now).
+    /// Without it they last while the engine runs.
+    pub fn keep_instructions_in(&self, data_dir: &std::path::Path) {
+        *lock(&self.inner.instructions) = instructions::Store::open(data_dir);
     }
 
     pub fn set_sink(&self, sink: Arc<dyn Sink>) {
@@ -757,6 +793,15 @@ impl Agents {
             "answer" => {
                 need(MESSAGES_SEND, "answer your chats' questions")?;
                 self.answer(&by, &args)
+            }
+            "set_instructions" => {
+                need(SESSION_INSTRUCTIONS, "give your chats' agents instructions")?;
+                self.set_instructions(&by, &args)
+            }
+            "instructions" => {
+                need(SESSION_INSTRUCTIONS, "give your chats' agents instructions")?;
+                let own = lock(&self.inner.instructions).of(plugin);
+                Ok(json!(own.iter().map(instruction_row).collect::<Vec<_>>()))
             }
             "set_default_model" => {
                 // The default for new chats is the window's own (the app
@@ -964,15 +1009,27 @@ impl Agents {
         for (plugin, key) in listeners {
             let Some(grant) = sink.grants(&plugin).filter(|g| g.allows(ACCOUNTS_PIN)) else { continue };
             let by = By { plugin: plugin.clone(), name: grant.name.clone() };
+            // Asked already for this run, for its instructions: that answer.
+            let earlier = self
+                .state()
+                .prepared
+                .remove(&(chat.to_owned(), plugin.clone()))
+                .filter(|(at, _)| at.elapsed() < PREPARED_KEPT)
+                .map(|(_, answer)| answer);
             let mut data = json!({ "provider": harness.as_str() });
             if grant.allows(SESSIONS_READ) {
                 data["chat"] = json!(chat);
             }
-            let asked = tokio::time::timeout(
-                self.inner.pacing.prepare_wait,
-                sink.ask_service(&plugin, &key, "run.preparing", data),
-            )
-            .await;
+            let asked = match earlier {
+                Some(answer) => Ok(Ok(answer)),
+                None => {
+                    tokio::time::timeout(
+                        self.inner.pacing.prepare_wait,
+                        sink.ask_service(&plugin, &key, "run.preparing", data),
+                    )
+                    .await
+                }
+            };
             let answer = match asked {
                 Err(_) => {
                     self.notice(&plugin, format!("Its run.preparing listener didn't answer in {} s, so a chat ran without it", self.inner.pacing.prepare_wait.as_secs().max(1)));
@@ -1006,6 +1063,236 @@ impl Agents {
             self.state().declined.insert((chat.to_owned(), harness));
         }
         chosen
+    }
+
+    // ── Instructions (`session.instructions`, plugins/instructions) ──────
+
+    /// `zend.set_instructions { key?, chat? | project?, text }`: set (or,
+    /// with no text, take away) one of the plugin's entries.
+    fn set_instructions(&self, by: &By, args: &Json) -> Result<Json, Refused> {
+        let key = args
+            .get("key")
+            .and_then(Json::as_str)
+            .filter(|k| !k.is_empty())
+            .unwrap_or(instructions::DEFAULT_KEY);
+        if key.len() > instructions::MAX_KEY || !key.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+            return Err(Refused::new(
+                reason::BAD_CALL,
+                format!("A key is up to {} letters, digits, dots, dashes and underscores", instructions::MAX_KEY),
+            ));
+        }
+        let text = match args.get("text") {
+            None | Some(Json::Null) => None,
+            Some(Json::String(s)) => Some(s.trim().to_owned()).filter(|s| !s.is_empty()),
+            Some(_) => return Err(Refused::new(reason::BAD_CALL, "text is what the agents are told: a string")),
+        };
+        if text.as_ref().is_some_and(|t| t.len() > instructions::MAX_BYTES) {
+            return Err(Refused::new(
+                reason::BAD_CALL,
+                format!("Instructions are at most {} KB", instructions::MAX_BYTES / 1024),
+            ));
+        }
+        let word = |name: &str| args.get(name).and_then(Json::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        let scope = match (word("chat"), word("project")) {
+            (Some(_), Some(_)) => {
+                return Err(Refused::new(reason::BAD_CALL, "Say a chat or a project, not both"));
+            }
+            (Some(_), None) => Scope::Chat(self.chat(args)?.id),
+            (None, Some(project)) => Scope::Project(project),
+            (None, None) => Scope::Device,
+        };
+        let set = text.is_some();
+        let bytes = text.as_ref().map_or(0, String::len);
+        let changed = lock(&self.inner.instructions).set(&by.plugin, key, scope.clone(), text, crate::now_ms());
+        let mut action = json!({ "op": "set_instructions", "key": key, "bytes": bytes });
+        let mut out = json!({ "key": key, "set": set, "changed": changed });
+        match &scope {
+            Scope::Device => {}
+            Scope::Project(p) => {
+                action["project"] = json!(p);
+                out["project"] = json!(p);
+            }
+            Scope::Chat(c) => {
+                action["chat"] = json!(c);
+                out["chat"] = json!(c);
+            }
+        }
+        if changed {
+            self.record(by, action);
+            self.told_changed();
+        }
+        Ok(out)
+    }
+
+    /// Tell the sink that what plugins tell agents changed.
+    fn told_changed(&self) {
+        if let Some(sink) = self.sink() {
+            sink.instructions_changed();
+        }
+    }
+
+    /// What `plugin` tells agents here now, each entry whole, as its page
+    /// in Settings shows it: a chat's entry names the chat's title too.
+    pub fn told(&self, plugin: &str) -> Vec<Json> {
+        let own = lock(&self.inner.instructions).of(plugin);
+        if own.is_empty() {
+            return Vec::new();
+        }
+        let chats = if own.iter().any(|e| matches!(e.scope, Scope::Chat(_))) {
+            self.host().map(|h| h.chats()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        own.iter()
+            .map(|e| {
+                let mut row = instruction_row(e);
+                if let Scope::Chat(id) = &e.scope
+                    && let Some(title) = chats.iter().find(|c| &c.id == id).and_then(|c| c.title.clone())
+                {
+                    row["chat_title"] = json!(title);
+                }
+                row
+            })
+            .collect()
+    }
+
+    /// A removed plugin's entries go (none reach an agent anyway), as its
+    /// storage does: when it's removed, and when a new plugin is installed
+    /// under its id. (A folder gone for a while keeps them, as it keeps its
+    /// storage.)
+    pub fn forget_instructions(&self, plugin: &str) {
+        let gone = lock(&self.inner.instructions).forget(plugin);
+        if gone {
+            tracing::info!(plugin, "plugins: forgot the instructions of a removed plugin");
+            self.told_changed();
+        }
+    }
+
+    /// What plugins tell `chat`'s agent for a run of `harness`: a section
+    /// per plugin that is on and allowed `session.instructions` now, its
+    /// entries for the chat joined (plugins/instructions). Before a chat's
+    /// first run here, the plugins allowed it that listen for
+    /// `run.preparing` are asked, each for at most `prepare_wait`; an
+    /// answer's `{ instructions }` is kept for that chat.
+    pub async fn instructions_for(&self, harness: HarnessId, chat: &str) -> Vec<SessionInstruction> {
+        let Some(sink) = self.sink() else { return Vec::new() };
+        let chats = self.host().map(|h| h.chats()).unwrap_or_default();
+        let find = |id: &str| chats.iter().find(|c| c.id == id);
+        let project = find(chat).and_then(|c| c.space_id.clone());
+        // The chat, then the chats it hangs off (a child hears its parent's).
+        let mut lineage = vec![chat.to_owned()];
+        while lineage.len() < 8 {
+            let Some(parent) = find(lineage.last().expect("lineage")).and_then(|c| c.parent_chat_id.clone()) else {
+                break;
+            };
+            if lineage.contains(&parent) {
+                break;
+            }
+            lineage.push(parent);
+        }
+        if self.state().instructions_asked.insert(chat.to_owned()) {
+            self.ask_instructions(&*sink, harness, chat, project.as_deref(), lineage.get(1).map(String::as_str))
+                .await;
+        }
+        let lineage: Vec<&str> = lineage.iter().map(String::as_str).collect();
+        let by_plugin = lock(&self.inner.instructions).for_chat(&lineage, project.as_deref());
+        let mut out = Vec::new();
+        for (plugin, texts) in by_plugin {
+            let Some(grant) = sink.grants(&plugin).filter(|g| g.allows(SESSION_INSTRUCTIONS)) else { continue };
+            let (text, left_out) = instructions::section(&texts);
+            if !left_out.is_empty() {
+                self.notice(
+                    &plugin,
+                    format!(
+                        "Its instructions for a chat came to more than {} KB, so {} were left out",
+                        instructions::MAX_BYTES / 1024,
+                        left_out.join(", ")
+                    ),
+                );
+            }
+            if !text.is_empty() {
+                out.push(SessionInstruction { plugin, name: grant.name, text });
+            }
+        }
+        out
+    }
+
+    /// Ask the `run.preparing` listeners allowed `session.instructions`
+    /// what `chat`'s agent should be told, before its first run here.
+    async fn ask_instructions(
+        &self,
+        sink: &dyn Sink,
+        harness: HarnessId,
+        chat: &str,
+        project: Option<&str>,
+        parent: Option<&str>,
+    ) {
+        let listeners: Vec<(String, String)> = {
+            let st = self.state();
+            st.listeners
+                .iter()
+                .filter(|((_, target), _)| *target == Target::Service)
+                .flat_map(|((plugin, _), list)| {
+                    list.iter()
+                        .filter(|l| l.event == "run.preparing" && matches(&l.opts, &json!({ "provider": harness.as_str() })))
+                        .map(move |l| (plugin.clone(), l.key.clone()))
+                })
+                .collect()
+        };
+        for (plugin, key) in listeners {
+            let Some(grant) = sink.grants(&plugin).filter(|g| g.allows(SESSION_INSTRUCTIONS)) else { continue };
+            let mut data = json!({ "provider": harness.as_str() });
+            if grant.allows(SESSIONS_READ) {
+                data["chat"] = json!(chat);
+                if let Some(project) = project {
+                    data["project"] = json!(project);
+                }
+                if let Some(parent) = parent {
+                    data["parent"] = json!(parent);
+                }
+            }
+            let asked = tokio::time::timeout(
+                self.inner.pacing.prepare_wait,
+                sink.ask_service(&plugin, &key, "run.preparing", data),
+            )
+            .await;
+            let answer = match asked {
+                Err(_) => {
+                    self.notice(&plugin, format!("Its run.preparing listener didn't answer in {} s, so a chat ran without it", self.inner.pacing.prepare_wait.as_secs().max(1)));
+                    continue;
+                }
+                Ok(Err(why)) => {
+                    self.notice(&plugin, format!("Its run.preparing listener failed: {why}"));
+                    continue;
+                }
+                Ok(Ok(answer)) => answer,
+            };
+            match answer.get("instructions") {
+                Some(Json::String(text)) if text.trim().len() > instructions::MAX_BYTES => {
+                    self.notice(&plugin, format!("Its run.preparing instructions came to more than {} KB, so they were left out", instructions::MAX_BYTES / 1024));
+                }
+                Some(Json::String(text)) if !text.trim().is_empty() => {
+                    let by = By { plugin: plugin.clone(), name: grant.name.clone() };
+                    let scope = Scope::Chat(chat.to_owned());
+                    let text = text.trim().to_owned();
+                    let bytes = text.len();
+                    if lock(&self.inner.instructions).set(&plugin, instructions::PREPARING_KEY, scope, Some(text), crate::now_ms()) {
+                        self.record(&by, json!({ "op": "set_instructions", "key": instructions::PREPARING_KEY, "chat": chat, "bytes": bytes }));
+                        sink.instructions_changed();
+                    }
+                }
+                None | Some(Json::Null) => {}
+                Some(Json::String(_)) => {}
+                Some(_) => self.notice(&plugin, "Its run.preparing answer's instructions weren't a string".to_owned()),
+            }
+            // A plugin that may pin too is asked once for this run (where
+            // this run can be pinned at all).
+            if grant.allows(ACCOUNTS_PIN) && crate::agent_accounts::pinnable(harness) {
+                let mut st = self.state();
+                st.prepared.retain(|_, (at, _)| at.elapsed() < PREPARED_KEPT);
+                st.prepared.insert((chat.to_owned(), plugin), (Instant::now(), answer));
+            }
+        }
     }
 
     async fn activate(&self, by: &By, harness: HarnessId, account: &str) -> Result<Json, Refused> {
@@ -1346,10 +1633,17 @@ impl Agents {
         let st = self.state();
         let actions: Vec<Json> = st.actions.get(plugin).map(|a| a.iter().cloned().collect()).unwrap_or_default();
         let notices: Vec<String> = st.notices.get(plugin).map(|n| n.iter().cloned().collect()).unwrap_or_default();
-        if actions.is_empty() && notices.is_empty() {
+        drop(st);
+        // What it tells agents now, as Settings shows it (each entry whole).
+        let told: Vec<Json> = lock(&self.inner.instructions).of(plugin).iter().map(instruction_row).collect();
+        if actions.is_empty() && notices.is_empty() && told.is_empty() {
             return Json::Null;
         }
-        json!({ "actions": actions, "notices": notices })
+        let mut out = json!({ "actions": actions, "notices": notices });
+        if !told.is_empty() {
+            out["instructions"] = json!(told);
+        }
+        out
     }
 
     /// What `plugin`'s row in Settings says, latest last.

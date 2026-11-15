@@ -25,6 +25,9 @@ export default function(pi) {
         const content = context.messages[i].content;
         batch.unshift(typeof content === 'string' ? content : content.filter(c=>c.type==='text').map(c=>c.text).join(''));
       }
+      // What the model was given (its system prompt and any system patches),
+      // for tests of what Zend puts there.
+      appendFileSync('probe-contexts.jsonl', JSON.stringify({text, systemPrompt: context.systemPrompt ?? null, messages: context.messages})+'\n');
       const gate = text === 'burst hold' ? 'initial' : text.startsWith('burst-') ? 'burst' : text.startsWith('late-') ? 'late' : undefined;
       if (gate) appendFileSync('probe-model-calls.jsonl', JSON.stringify(batch)+'\n');
       const msg = {role:'assistant',content:[], api:model.api, provider:model.provider, model:model.id, usage:{input:10,output:2,cacheRead:0,cacheWrite:0,totalTokens:12,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'stop',timestamp:Date.now()};

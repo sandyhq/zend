@@ -56,6 +56,7 @@ fn run_request(prompt: &str) -> RunRequest {
         resume: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 

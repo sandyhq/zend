@@ -67,6 +67,13 @@ local model = {
 	scenes_stored = {} :: { [string]: any },
 	-- Backdrops: someone else's plugin that offers a wallpaper too.
 	backdrops = false,
+	-- Delegation (plugins-dev/delegation): tells your agents its rules
+	-- (`session.instructions`), editable in its `rules` setting.
+	delegation = false,
+	delegation_allowed = true,
+	delegation_rules = "Delegate parallel pieces with create_chats.",
+	-- Its entry for one chat alone, besides every chat's.
+	delegation_chat = true,
 }
 
 -- Parallax scenes' settings (plugins-builtin/parallax-scenes/zend-plugin.json's).
@@ -99,10 +106,20 @@ local function publish()
 		local v = model.stored[s.id]
 		values[s.id] = if v == nil then s.default else v
 	end
+	-- (The plugins on, with no gap where one is off.)
+	local function present(items: { any }, n: number): { any }
+		local out: { any } = {}
+		for i = 1, n do
+			if items[i] ~= nil then
+				table.insert(out, items[i])
+			end
+		end
+		return out
+	end
 	pstate.now:set({
 		state = "ready",
 		dirs = { plugins = "/tmp/plugins", templates = "/tmp/templates" },
-		list = {
+		list = present({
 			{
 				id = "settings-demo",
 				name = "Greeter",
@@ -145,7 +162,21 @@ local function publish()
 					hash = "backdrops-1",
 				}
 				else nil,
-		} :: { any },
+			if model.delegation
+				then {
+					id = "delegation",
+					name = "Delegation",
+					version = "1.0.0",
+					author = { kind = "you" },
+					status = "on",
+					permissions = { "session.instructions", "service" },
+					allowed = if model.delegation_allowed then { "session.instructions", "service" } else { "service" },
+					ask = {},
+					hash = "delegation-1",
+					own = true,
+				}
+				else nil,
+		} :: { any }, 4),
 	})
 	local list: { any } = {}
 	if model.on then
@@ -193,6 +224,23 @@ local function publish()
 			status = {},
 		})
 	end
+	if model.delegation then
+		local told: { any } = {}
+		if model.delegation_rules ~= "" then
+			table.insert(told, { key = "default", text = model.delegation_rules, since = 1 })
+		end
+		if model.delegation_chat then
+			table.insert(told, { key = "default", text = "Here, run checks yourself.", since = 2, chat = "c-7", chat_title = "Fix the flaky test" })
+		end
+		table.insert(list, {
+			plugin = "delegation",
+			name = "Delegation",
+			settings = { { id = "rules", kind = "text", label = "Rules", description = "What every session is told.", default = "" } },
+			values = { rules = model.delegation_rules },
+			status = {},
+			instructions = told,
+		})
+	end
 	psettings.list:set(list)
 end
 
@@ -202,6 +250,13 @@ stub.set = function(plugin: string, id: string, value: any)
 	note(`set:{plugin}:{id}:{tostring(value)}`)
 	if plugin == "parallax-scenes" then
 		model.scenes_stored[id] = value
+		publish()
+		return
+	end
+	-- (Delegation tells your agents its rules as they're set: the engine's
+	-- entry follows, and the list with it.)
+	if plugin == "delegation" then
+		model.delegation_rules = value
 		publish()
 		return
 	end
@@ -311,6 +366,31 @@ ui.command {
 	title = "Backdrops, another plugin with a wallpaper, is on",
 	run = function()
 		model.backdrops = true
+		publish()
+	end,
+}
+ui.command {
+	id = "delegation_on",
+	title = "Delegation, which tells your agents its rules, is on",
+	run = function()
+		model.delegation = true
+		publish()
+	end,
+}
+ui.command {
+	id = "delegation_disallowed",
+	title = "Delegation's session.instructions is taken back",
+	run = function()
+		model.delegation_allowed = false
+		publish()
+	end,
+}
+ui.command {
+	id = "delegation_tells_nothing",
+	title = "Delegation's rules are emptied and its chat entry goes",
+	run = function()
+		model.delegation_rules = ""
+		model.delegation_chat = false
 		publish()
 	end,
 }

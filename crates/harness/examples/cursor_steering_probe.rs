@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
         attachments: vec![], worktree: None, resume: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     };
     let mut stream = CursorHarness::new()
         .run(

@@ -1499,6 +1499,55 @@ async fn plugins_removing_a_folder_that_squats_a_builtin_keeps_the_builtins() {
 /// B12 (R29) and B8: a plugin new under an id starts with nothing a plugin
 /// once under it kept; a folder gone for a while keeps its storage; removing
 /// takes the folder away rather than leaving it in `.removed`.
+/// What a plugin tells agents (`session.instructions`) rides on its item in
+/// the list (what its Settings page shows), and goes from
+/// plugin-instructions.json once the plugin is removed.
+#[tokio::test]
+async fn plugins_list_what_a_plugin_tells_agents_and_forget_it_once_removed() {
+    let f = fixture();
+    let made = call(
+        &f.plugins,
+        methods::NEW_PLUGIN,
+        serde_json::json!({ "id": "delegation", "name": "Delegation", "permissions": ["session.instructions"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["status"], "pending", "always asked, even for your own");
+    call(&f.plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "delegation", "allow": true, "hash": made["hash"] }))
+        .await
+        .unwrap();
+    let mut stream = match f.plugins.dispatch(methods::WATCH_PLUGINS, serde_json::json!({})).await {
+        Ok(RpcReply::Stream(stream)) => stream,
+        _ => panic!("stream"),
+    };
+    assert!(item(&f.plugins, "delegation").await.get("instructions").is_none(), "nothing told yet");
+    let set = f
+        .plugins
+        .agents()
+        .call("delegation", serde_json::json!({ "op": "set_instructions", "text": "Delegate with create_chats." }))
+        .await
+        .unwrap();
+    assert_eq!(set["changed"], true);
+    let listed = item(&f.plugins, "delegation").await;
+    assert_eq!(listed["instructions"][0]["text"], "Delegate with create_chats.", "{listed}");
+    assert_eq!(listed["instructions"][0]["key"], "default");
+    // Watched: the list is published again with it.
+    let mut seen = false;
+    for _ in 0..8 {
+        let Ok(Some(frame)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await else { break };
+        if frame.to_string().contains("Delegate with create_chats.") {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "the watched list carries what it tells agents");
+    let file = f.data.join("plugin-instructions.json");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("Delegate with create_chats."));
+    call(&f.plugins, methods::REMOVE_PLUGIN, serde_json::json!({ "id": "delegation" })).await.unwrap();
+    assert!(!std::fs::read_to_string(&file).unwrap_or_default().contains("Delegate with create_chats."), "forgotten on disk");
+    assert!(f.plugins.agents().status("delegation").get("instructions").is_none());
+}
+
 #[tokio::test]
 async fn plugins_storage_and_removed_folders_go_with_the_plugin() {
     let f = fixture();

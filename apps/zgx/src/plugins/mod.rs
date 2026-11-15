@@ -2668,6 +2668,8 @@ impl Bridge {
                 // Zend's own, as the engine says (shipped in the app,
                 // allowed as it ships, never edited).
                 builtin: i.json["builtin"].as_bool() == Some(true),
+                // What it tells agents now, shown on its page.
+                instructions: i.json["instructions"].as_array().cloned().unwrap_or_default(),
             })
             .collect();
         let snapshots: HashMap<String, PathBuf> = items

@@ -415,3 +415,60 @@ test("a plugin's page says Unverified at its top right when Zend can't vouch for
 	app:frames(20)
 	expect(app:has(`{PAGE} >> "Unverified"`)).to_be(true)
 end)
+
+-- What a plugin tells your agents (`session.instructions`): its page shows
+-- each entry whole under who it's for, read only, follows it as it
+-- changes, says when none of it reaches them, and goes when there's none.
+test("a plugin's page shows what it tells your agents, each entry whole and read only", function()
+	local app = open()
+	app:command("delegation_on")
+	app:frames(20)
+	app:scroll(NAV, 400)
+	app:frames(10)
+	app:click(`{NAV} >> role:tab "Delegation"`)
+	app:frames(30)
+	local page = app:tree(PAGE)
+	expect(page).to_contain('heading "What it tells your agents"')
+	expect(page).to_contain("Its instructions as your agents get them now")
+	expect(line(app, "Every chat")).never.to_be("")
+	expect(page).to_contain("Delegate parallel pieces with create_chats.")
+	expect(line(app, "Only in Fix the flaky test")).never.to_be("")
+	expect(page).to_contain("Here, run checks yourself.")
+	-- Read only: nothing in its section to type into or press.
+	local section = app:tree(`{PAGE} >> .plugin-instructions`)
+	expect(section).never.to_contain("textbox")
+	expect(section).never.to_contain("button")
+	expect(section).never.to_contain("switch")
+	-- Its rules set in its own setting: the plugin tells your agents the new
+	-- text, and the page shows it.
+	app:fill(`{PAGE} >> role:textbox "Rules"`, "Keep context for decisions.")
+	app:key("Enter")
+	app:frames(30)
+	expect(said(app, "set:delegation:rules:Keep context for decisions.")).to_be(true)
+	expect(app:tree(`{PAGE} >> .plugin-instructions`)).to_contain("Keep context for decisions.")
+	expect(app:tree(`{PAGE} >> .plugin-instructions`)).never.to_contain("Delegate parallel pieces")
+	-- Not allowed any more: said plainly.
+	app:command("delegation_disallowed")
+	app:frames(20)
+	expect(app:tree(PAGE)).to_contain("It isn't allowed to give your agents instructions")
+	-- Telling them nothing: the section goes, the page stays for its setting.
+	app:command("delegation_tells_nothing")
+	app:frames(20)
+	expect(app:tree(PAGE)).never.to_contain("What it tells your agents")
+	expect(app:has(`{PAGE} >> role:textbox "Rules"`)).to_be(true)
+	expect(app:error()).to_be_nil()
+end)
+
+test("search finds what a plugin tells your agents", function()
+	local app = open()
+	app:command("delegation_on")
+	app:frames(20)
+	app:type(`{NAV} >> role:textbox "Search settings"`, "system prompt")
+	app:frames(10)
+	expect(app:has('#settings-search-results >> role:option "What it tells your agents"')).to_be(true)
+	app:key("Enter")
+	app:frames(30)
+	expect(app:tree(PAGE)).to_contain('heading "Delegation"')
+	expect(app:has("#setting-instructions")).to_be(true)
+end)
+

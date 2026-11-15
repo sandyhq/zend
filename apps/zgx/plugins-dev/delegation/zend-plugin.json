@@ -1,0 +1,23 @@
+{
+  "id": "delegation",
+  "name": "Delegation",
+  "version": "1.0.0",
+  "description": "Tells every chat's agent how to delegate through Zend (create_chats, end the turn, one level deep), in its system prompt. The rules are yours to change in Settings → Delegation.",
+  "entry": "init.luau",
+  "service": "service.luau",
+  "permissions": [
+    "service",
+    "session.instructions"
+  ],
+  "settings_description": "What Delegation tells every chat's agent, child sessions and subagents too. Empty, it tells them nothing.",
+  "settings": [
+    {
+      "id": "rules",
+      "kind": "text",
+      "label": "Rules",
+      "description": "Given whole to every chat's agent, in its system prompt.",
+      "placeholder": "Nothing: your agents get no rules from it",
+      "default": "Delegate through Zend. Hand work to subagents with Zend's create_chats tool: one request per piece, each with its prompt, so they all start together (send_messages for chats you already have). Delegate parallel independent pieces, reading-heavy work you only need summarized, an independent check, or checkable work a cheaper model can do; not a handful of tool calls or tightly coupled steps. Keep your own context for decisions. Brief each child with the goal, observable done criteria, entry points, constraints and the shape of the answer you want. After launching, end your turn: Zend sends you a [Zend event: …] message as each child settles, so don't wait, sleep or poll. Delegation is one level deep: a child can't start chats of its own, so it does its piece itself. Writers start from your last commit: commit first or put the patch in the brief. A child's report is evidence, not proof: read its diff or rerun its check. Give checkers the intent (the person's words, the plan), never your reasoning; a finding about wrong behavior counts only with a run you reproduce. Have the work reviewed by another model family than the one that wrote it. After a failure, first add a check the child runs on its own work, then raise its effort one step, then try another model."
+    }
+  ]
+}

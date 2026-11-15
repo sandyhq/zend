@@ -1500,6 +1500,7 @@ impl SessionHandle {
                     mcp: None,
                     env: Default::default(),
                     extra_mcp: Vec::new(),
+                    instructions: Vec::new(),
                 };
                 self.send_command(
                     &client,

@@ -70,6 +70,7 @@ async fn quiet_acp_prompt_stays_working_until_response() {
                 resume: None,
                 env: Default::default(),
                 extra_mcp: Vec::new(),
+                instructions: Vec::new(),
             },
         },
     );

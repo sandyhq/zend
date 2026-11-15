@@ -960,6 +960,14 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zend_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // What this host's plugins tell the chat's agent
+        // (`session.instructions`), never what a sender put here. Stamped
+        // before routing, so a live runtime is compared with what holds now:
+        // a driver that reads them adopts a change in place (or is replaced).
+        request.instructions = match self.inner.plugins.get() {
+            Some(plugins) => plugins.agents().instructions_for(harness_id, chat_id).await,
+            None => Vec::new(),
+        };
         // A revival reaching a chat that has a run again (a message sent
         // since boot): that run owns the chat, and reviving the old turn into
         // it would deliver the old request a second time. Checked again as
@@ -2232,6 +2240,7 @@ impl SessionsEngine {
                     worktree: None,
                     env: Default::default(),
                     extra_mcp: Vec::new(),
+                    instructions: Vec::new(),
                 })
             })?;
         request.prompt = prompt.to_owned();
@@ -6212,6 +6221,7 @@ mod tests {
             worktree: None,
             env: Default::default(),
             extra_mcp: Vec::new(),
+            instructions: Vec::new(),
         }
     }
 

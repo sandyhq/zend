@@ -163,6 +163,7 @@ fn request(prompt: &str) -> RunRequest {
         worktree: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 fn rich_text(label: &str) -> (String, String) {

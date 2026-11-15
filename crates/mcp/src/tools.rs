@@ -1835,6 +1835,7 @@ impl Tools {
                     worktree: None,
                     env: Default::default(),
                     extra_mcp: Vec::new(),
+                    instructions: Vec::new(),
                 };
                 let id = self
                     .zend

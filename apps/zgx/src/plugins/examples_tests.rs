@@ -2096,7 +2096,7 @@ fn greeter_reads_its_settings_and_hears_each_change() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut book = settings::Book::new(Some(dir.clone()));
     let snapshot = PathBuf::from(items[0].json["snapshot"].as_str().unwrap());
-    book.sync(&[settings::On { id: "settings-demo".into(), name: "Greeter".into(), hash: "h1".into(), builtin: false }], |_| settings::manifest_in(&snapshot));
+    book.sync(&[settings::On { id: "settings-demo".into(), name: "Greeter".into(), hash: "h1".into(), ..settings::On::default() }], |_| settings::manifest_in(&snapshot));
     // Not one of Zend's own: its permission row is left out.
     assert!(!book.list().to_string().contains("screen-recording"), "{}", book.list());
     let own = app.host.shared("plugin.settings-demo.settings", zgx_script::Value::Nil);
@@ -4110,6 +4110,63 @@ fn keep_going_says_what_its_service_sent() {
     assert_eq!(toasts.len(), 1, "{toasts:?}");
     assert!(toasts[0].contains("Sent \\\"continue\\\" to"), "{toasts:?}");
     assert_eq!(app.error(), None);
+}
+
+/// Delegation (plugins-dev/delegation) tells every chat's agent its rules
+/// setting, whole: the manifest's default first, then each change, and
+/// nothing once emptied. Its service seeds the same text (rules.luau).
+#[test]
+fn delegation_tells_your_agents_its_rules_setting() {
+    use super::settings;
+    let items = vec![example("delegation")];
+    let answers = json!({ "set_instructions": { "key": "default", "set": true, "changed": true } });
+    let (mut app, heard) = shell_with_agents(items.clone(), answers);
+    assert_eq!(app.error(), None, "the shell with Delegation failed");
+    let told = |heard: &Heard| -> Vec<serde_json::Value> {
+        said(heard, "agents")
+            .iter()
+            .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+            .filter(|a| a["op"] == "set_instructions")
+            .collect()
+    };
+    // Its values not published yet: it says nothing.
+    assert!(told(&heard).is_empty(), "{:?}", told(&heard));
+    let dir = std::env::temp_dir().join(format!("zgx-delegation-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut book = settings::Book::new(Some(dir.clone()));
+    let snapshot = PathBuf::from(items[0].json["snapshot"].as_str().unwrap());
+    let manifest = settings::manifest_in(&snapshot).unwrap();
+    book.sync(&[settings::On { id: "delegation".into(), name: "Delegation".into(), hash: "h1".into(), ..settings::On::default() }], |_| Some(manifest.clone()));
+    let own = app.host.shared("plugin.delegation.settings", zgx_script::Value::Nil);
+    let publish = |book: &settings::Book| own.set(json_value(&serde_json::Value::Object(book.values("delegation"))));
+    // The default: the rules, the same as its service's (rules.luau).
+    let default = manifest["settings"][0]["default"].as_str().unwrap().to_owned();
+    let rules_luau = std::fs::read_to_string(snapshot.join("rules.luau")).unwrap();
+    let literal = rules_luau.lines().find_map(|l| l.strip_prefix("return ")).expect("rules.luau returns its text");
+    assert_eq!(serde_json::from_str::<String>(literal).unwrap(), default, "the service's rules are the setting's default");
+    assert!(default.contains("create_chats") && default.contains("[Zend event") && default.contains("one level deep"), "{default}");
+    assert!(default.chars().count() <= settings::MAX_TEXT, "fits a text setting");
+    publish(&book);
+    app.frames(10);
+    let first = told(&heard);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0]["args"]["text"].as_str(), Some(default.as_str()));
+    // Changed on its page: told the new text, once.
+    book.set("delegation", "rules", &json!("Delegate reviews to another model.")).unwrap();
+    publish(&book);
+    app.frames(10);
+    let now = told(&heard);
+    assert_eq!(now.len(), 2, "{now:?}");
+    assert_eq!(now[1]["args"]["text"].as_str(), Some("Delegate reviews to another model."));
+    // Emptied: its entry goes (no text).
+    book.set("delegation", "rules", &json!("  ")).unwrap();
+    publish(&book);
+    app.frames(10);
+    let now = told(&heard);
+    assert_eq!(now.len(), 3, "{now:?}");
+    assert!(now[2]["args"]["text"].is_null(), "{now:?}");
+    assert_eq!(app.error(), None);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

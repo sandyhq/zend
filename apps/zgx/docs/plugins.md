@@ -68,6 +68,7 @@ Your own plugins are signed as yours, and re-signed and reloaded each time you s
 | `models.read` | read each harness's models, efforts and options, and a chat's model |
 | `models.set` | set a chat's model, effort and options, and what new chats start with. Always asked, even for your own plugins |
 | `messages.send` | send a chat a message, start a chat, answer a chat's question, as you would from the composer. Always asked, even for your own plugins. See [Sending messages](#sending-messages) |
+| `session.instructions` | tell your chats' agents instructions, whole, in their system prompt: every chat, child session and subagent (Pi chats for now). Always asked, even for your own plugins. See [Telling your agents](#telling-your-agents) |
 
 ## Reaching the network
 
@@ -431,7 +432,7 @@ They're told as Zend learns of a change, never by polling: when Settings, the co
 | `account.switched` | `{ provider, account, from?, by? }` | `accounts.read` |
 | `account.pinned` | `{ provider, account, from?, by?, chat? }`: a chat now runs on `account` | `accounts.read` |
 | `account.unpinned` | `{ provider, account, by?, reason?, chat? }`: a pin was taken back, or (`reason = "removed"`) its account is gone | `accounts.read` |
-| `run.preparing` | `{ provider, chat? }`, asked of a service right before a chat's first run: what its listener returns is the answer. See [Pinning chats](#pinning-chats-to-accounts) | `accounts.pin` |
+| `run.preparing` | `{ provider, chat?, project?, parent? }`, asked of a service right before a chat's first run: what its listener returns is the answer (`{ account }`, `{ instructions }`). See [Pinning chats](#pinning-chats-to-accounts), [Telling your agents](#telling-your-agents) | `accounts.pin` or `session.instructions` |
 | `account.signed_out`, `login.expired` | `{ provider, account?, chat? }` | `accounts.read` |
 | `model.changed` | `{ chat, provider, model, effort, options, by? }`, or `{ default = true, provider, model, effort, by }` | `models.read` |
 | `models.updated` | `{ provider, models }`: a catalog changed | `models.read` |
@@ -510,6 +511,29 @@ end)
 ```
 
 `plugins-dev/keep-going` is this whole: its service sends "continue" to a chat whose turn ends with the line `[continue]`, with no window open, and its window says so in a toast.
+
+## Telling your agents
+
+With `session.instructions`, a plugin tells your agents how to work: its text goes, whole, into the system prompt of your chats' agents, as a section of its own named `plugin-<id>`. Not a tool's description and not an MCP server's instructions, which agents may see shortened: the model reads every word, on every turn.
+
+| call | what | needs |
+|---|---|---|
+| `zend.set_instructions { text, key?, chat?, project?, device? }` | sets one entry: for every chat on the device, or only `project`'s (a project's id) or only `chat`'s. `key` (default `"default"`; letters, digits, `.`, `-`, `_`) names it, so a plugin can hold several; the same key set again replaces it, and no `text` takes it away. A promise of `{ key, set, changed, chat?, project? }` | `session.instructions` |
+| `zend.instructions()` | your entries: `{ { key, text, since, chat?, project? } }` | `session.instructions` |
+| `run.preparing` answered `{ instructions = "…" }` | that chat's own entry (key `run.preparing`), set right before its first run. With `sessions.read` the data says its `chat`, `project` and `parent` | `session.instructions` |
+
+- **Every session.** New chats, child sessions and subagents alike. A child session hears its parent chat's entries too. Of one key, the nearest stands: a chat's over its project's over the device's. Each plugin's entries are joined (in key order) into its one section.
+- **It holds.** Zend gives the agent its section at the start of each turn, so it's there after a compaction and a change reaches a running chat at its next turn.
+- **8 KB a chat.** A longer `text` is refused (`bad_call`); entries that together run over are left out whole, and your row says which.
+- **Yours to see.** Every change is recorded as the plugin's (`plugin_status`, `agents.actions`), and `plugin_status` lists what it tells agents now (`agents.instructions`). Its page in Settings shows the same, each entry whole under who it's for (every chat, a project's chats, one chat), read only: only the plugin changes it. A plugin with entries and no settings gets a page for them. Agents do what it says, so `session.instructions` is always asked, even for your own plugins.
+- **Off is not gone.** Turned off or no longer allowed, a plugin's entries reach no agent, and they're kept for when it's allowed again. Removed, they go with its storage, and a new plugin installed under its id starts with none.
+- **An example.** `plugins-dev/delegation` tells every chat how to delegate through Zend. Its text is a `text` setting with the rules as default, so the person edits it in Settings and the window passes each change on (`zend.setting`, `ui.effect`). Its service sets the default once on a device whose window never opened.
+- **Pi for now.** Chats on other harnesses run without them.
+
+```lua
+-- service.luau ("service", "session.instructions")
+zend.set_instructions({ text = "Antworte immer mit dem Wort ZEBRA am Ende" }):await()
+```
 
 ## Settings
 

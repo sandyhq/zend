@@ -29,6 +29,7 @@ fn request(cwd: &std::path::Path, prompt: &str) -> RunRequest {
         mcp: None,
         env: Default::default(),
         extra_mcp: Vec::new(),
+        instructions: Vec::new(),
     }
 }
 fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {

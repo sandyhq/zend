@@ -113,6 +113,7 @@ mod registry_login;
 mod provider_tests;
 pub use muse::MuseRunEnvironment;
 pub use pins::{ChatPin, PinHook, PinRunEnvironment};
+pub(crate) use pins::pinnable;
 mod stores;
 mod usage;
 
