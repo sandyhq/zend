@@ -100,6 +100,21 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Progress { value, max?, label?, tone? }` | a labelled bar: a percent, or value of max |
 | `Metric { label, value, note?, tone? }` | a key number; two to four in a `ui.row` |
 | `Gauge { value, min?, max?, label?, tone? }` | a dial, 0 to 100 by default |
+| `Board { items, columns? }` | cards in status columns: `{ key?, title, status, priority?, labels?, owner?, due?, agentsWorking?, detail? }`; `columns` fixes the order |
+| `Roadmap { items }` | a Gantt chart: `{ title, start, end | days, lane?, status?, progress?, after?, detail? }` or `{ title, milestone }`; dates `yyyy-mm-dd` |
+| `Plan { steps, name?, label?, submit?, answer? }` | steps to approve as a checklist: `{ title, detail?, risk?, estimate?, files?, optional? }`; ends in its own answer button unless `answer = false` |
+| `Decision { options, criteria, key? }` | options ranked by weighted scores; sliders try other weights; pros and cons listed |
+| `Estimate { tasks, unit? }` | three-point estimates `{ title, low, likely?, high }` summed to an expected total, P50 and P90 |
+| `Table { columns, rows, hover? }` | a table whose cells may be text, numbers, booleans or kit parts |
+| `Timeline { items }` | `{ time?, title, detail?, tone? }` in order |
+| `Calendar { events, month? }` | month grids with a dot per event and an agenda under each month: `{ date, title, tone? }` |
+| `CalendarHeatmap { days, label?, tone? }` | one square per day, by value; `days` is `{ [date] = n }` or `{ { date, value? } }` |
+| `Provenance { stages, expected? }` | stages from commit to live with the facts each reported; flags a fact that differs from `expected` or the stage before, and a stage with no receipt |
+| `Sources { links }` | numbered links: urls or `{ url, title?, note? }` |
+| `Entity { name, kind?, facts?, url?, note? }` | one product, place, person or the like with its facts |
+| `Transcript { tracks }` | tracks `{ name, text | words }` compared word by word with the first; word error rate and coloured differences |
+| `Walkthrough { steps, key? }` | one step at a time with Back and Next: `{ title, body?, code?, language? }` |
+| `Flashcards { cards, key? }` | click a card to turn it; `{ front, back }` |
 
 ## What a visual cannot do yet
 Kit kinds still to come: Slider, Rating, ListEditor, EditableTable, Quiz, Stepper, Timer (G6 leftovers), and the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).

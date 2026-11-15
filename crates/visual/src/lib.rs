@@ -236,6 +236,14 @@ impl Visual {
             .set_name("=kit")
             .set_mode(mlua::chunk::ChunkMode::Text)
             .call(ui.clone())?;
+        // Kinds in files of their own, added before the kit is frozen.
+        for (name, source) in [("=kit_b", include_str!("kit_b.luau"))] {
+            lua.load(source)
+                .set_name(name)
+                .set_mode(mlua::chunk::ChunkMode::Text)
+                .call::<()>((ui.clone(), kit.clone()))?;
+        }
+        kit.set_readonly(true);
         ui.set("kit", kit)?;
         globals.set("ui", ui)?;
         let math: Table = globals.get("math")?;
@@ -799,3 +807,5 @@ pub fn seed_for(id: &str) -> u64 {
 mod tests;
 #[cfg(test)]
 mod kit_tests;
+#[cfg(test)]
+mod kit_b_tests;
