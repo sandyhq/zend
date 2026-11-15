@@ -657,3 +657,74 @@ fn an_answered_input_carries_its_answer() {
     let tree = visual.render().unwrap();
     assert_eq!(input(&tree, "db").answered.as_deref(), Some("Postgres (child session)"));
 }
+
+const ANSWER_FORM: &str = r#"return ui.column {
+    ui.field { name = "goal", label = "Goal" },
+    ui.area { name = "notes", label = "Notes" },
+    ui.check { name = "downtime", label = "Downtime is fine" },
+    ui.checklist { name = "steps", label = "Steps", options = { "Back up", { value = "verify", label = "Verify" }, "Announce" } },
+    ui.choice { name = "when", label = "When", options = { "Tonight", "This weekend" }, value = "Tonight" },
+    ui.choice { name = "who", label = "Who", many = true, options = { "Ana", "Ben", "Cy" } },
+    ui.select { name = "region", options = { { value = "eu", label = "Europe" }, { value = "us", label = "US" } } },
+    ui.field { name = "db", label = "Database", answered = "Postgres 16 (from the research chat)" },
+    ui.answer {},
+}"#;
+
+#[test]
+fn the_answer_text_is_the_title_then_a_line_per_input() {
+    let mut visual = Visual::load(ANSWER_FORM, 1).unwrap();
+    visual.set_entry("goal", Some(EntryValue::Text("Move the database".into())));
+    visual.set_entry("notes", Some(EntryValue::Text("after 22:00\nnot on Friday".into())));
+    visual.set_entry("downtime", Some(EntryValue::Bool(true)));
+    visual.set_entry("steps", Some(EntryValue::List(vec!["Back up".into(), "verify".into()])));
+    visual.set_entry("who", Some(EntryValue::List(vec!["Ana".into(), "Cy".into()])));
+    visual.set_entry("region", Some(EntryValue::Text("eu".into())));
+    let tree = visual.render().unwrap();
+    assert!(find(&tree, &|n| matches!(n.kind, NodeKind::Answer { label: None })).is_some());
+    assert_eq!(
+        answer_text("Migration plan", &tree),
+        [
+            "### Migration plan",
+            "Goal: Move the database",
+            "Notes: after 22:00",
+            "  not on Friday",
+            "Downtime is fine: yes",
+            "Steps:",
+            "- [x] Back up",
+            "- [x] Verify",
+            "- [ ] Announce",
+            "When: Tonight",
+            "Who: Ana, Cy",
+            "region: Europe",
+            "Database: Postgres 16 (from the research chat)",
+        ]
+        .join("\n")
+    );
+}
+
+#[test]
+fn an_empty_answer_says_so_and_the_reader_overrules_a_decided_one() {
+    let mut visual = Visual::load(ANSWER_FORM, 1).unwrap();
+    visual.set_entry("db", Some(EntryValue::Text("MySQL".into())));
+    let text = answer_text("  ", &visual.render().unwrap());
+    assert!(text.starts_with("### Answers\nGoal: (no answer)\n"), "{text}");
+    assert!(text.contains("Downtime is fine: no\n"), "{text}");
+    assert!(text.ends_with("Database: MySQL"), "{text}");
+}
+
+#[test]
+fn the_answer_text_stops_at_4000_characters() {
+    let mut visual = Visual::load(ANSWER_FORM, 1).unwrap();
+    visual.set_entry("notes", Some(EntryValue::Text("é".repeat(5000))));
+    let text = answer_text("Long", &visual.render().unwrap());
+    assert_eq!(text.chars().count(), MAX_ANSWER_CHARS);
+    assert!(text.ends_with('…'));
+}
+
+#[test]
+fn an_answer_button_takes_only_a_label() {
+    let tree = Visual::load(r#"return ui.answer { label = "Use these" }"#, 1).unwrap().render().unwrap();
+    assert!(matches!(&tree.kind, NodeKind::Answer { label: Some(l) } if l == "Use these"));
+    let wrong = check(r#"return ui.answer { on_click = function() end }"#, 1).unwrap_err();
+    assert!(wrong.message.contains("on_click"), "{}", wrong.message);
+}

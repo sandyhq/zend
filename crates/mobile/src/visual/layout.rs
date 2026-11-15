@@ -261,6 +261,7 @@ impl Layouter<'_, '_> {
             | NodeKind::Scene(_)
             | NodeKind::Shader(_)
             | NodeKind::Input(_)
+            | NodeKind::Answer { .. }
             | NodeKind::Slider { .. } => None,
         }
     }
@@ -425,6 +426,8 @@ impl Layouter<'_, '_> {
                     .paint
                     .para(self.ctx, &para, x, y, width, Align::Start, false)
             }
+            // The composer it fills is zgx's: nothing here.
+            NodeKind::Answer { .. } => 0.0,
         }
     }
 

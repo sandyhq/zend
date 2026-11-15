@@ -810,6 +810,8 @@ impl VisualFrame {
                 .text_color(theme.text)
                 .child(input_line(input))
                 .into_any_element(),
+            // The composer it fills is zgx's: nothing here.
+            NodeKind::Answer { .. } => div().id(self.element_id(path)).into_any_element(),
         }
     }
 

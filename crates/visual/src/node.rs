@@ -88,6 +88,11 @@ pub enum NodeKind {
     },
     /// A named input whose value Zend keeps ([`crate::Entries`]).
     Input(Box<Input>),
+    /// `ui.answer`: a button that puts the visual's inputs, as words
+    /// ([`crate::answer_text`]), into the composer of its chat, under
+    /// what's there. It never sends: the reader edits and sends. No label:
+    /// the renderer's own.
+    Answer { label: Option<String> },
 }
 
 impl Input {
@@ -773,6 +778,12 @@ impl Parser {
                 self.input(&props, InputKind::Choice { many })?
             }
             "select" => self.input(&props, InputKind::Select)?,
+            "answer" => {
+                props.allow(&["label"])?;
+                NodeKind::Answer {
+                    label: props.string("label")?.filter(|l| !l.trim().is_empty()),
+                }
+            }
             "span" => {
                 return Err(VisualError::script(
                     "ui.span goes inside ui.text { ... }, not directly in a layout",

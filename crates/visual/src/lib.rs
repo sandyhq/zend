@@ -470,6 +470,49 @@ pub fn inputs(node: &Node) -> Vec<&Input> {
     out
 }
 
+/// The most characters [`answer_text`] gives (plans/live-visuals D8).
+pub const MAX_ANSWER_CHARS: usize = 4000;
+
+/// A visual's inputs as words for the composer (`ui.answer`, design D8):
+/// its title as a heading line, then one line per input, "label: value",
+/// a checklist's options each "- [x] item" or "- [ ] item" under its
+/// label. An input decided elsewhere (`answered`) and not changed by the
+/// reader says what was decided. At most [`MAX_ANSWER_CHARS`] characters.
+pub fn answer_text(title: &str, tree: &Node) -> String {
+    let title = title.trim();
+    let mut lines = vec![format!("### {}", if title.is_empty() { "Answers" } else { title })];
+    for input in inputs(tree) {
+        let label = input.title().trim();
+        if input.kind == InputKind::Checklist {
+            let chosen: &[String] = match &input.value {
+                EntryValue::List(items) => items,
+                _ => &[],
+            };
+            lines.push(format!("{label}:"));
+            for option in &input.options {
+                let mark = if chosen.contains(&option.value) { 'x' } else { ' ' };
+                lines.push(format!("- [{mark}] {}", option.label));
+            }
+            continue;
+        }
+        let value = match (&input.answered, input.kept) {
+            (Some(answered), false) => answered.clone(),
+            _ => input.value_text(),
+        };
+        let value = value.trim();
+        let value = if value.is_empty() { "(no answer)" } else { value };
+        // A text of several lines stays under its label.
+        lines.push(format!("{label}: {}", value.replace('\n', "\n  ")));
+    }
+    let text = lines.join("\n");
+    if text.chars().count() <= MAX_ANSWER_CHARS {
+        return text;
+    }
+    let mut cut: String = text.chars().take(MAX_ANSWER_CHARS - 1).collect();
+    cut.push('…');
+    cut
+}
+
 /// Round tick values covering `lo..=hi`, about `count` of them.
 pub fn nice_ticks(lo: f64, hi: f64, count: usize) -> Vec<f64> {
     let (lo, hi) = if hi < lo { (hi, lo) } else { (lo, hi) };

@@ -39,6 +39,8 @@ for _, kind in
 		"checklist",
 		"choice",
 		"select",
+		-- Puts the inputs, as words, into the chat's composer (never sends).
+		"answer",
 	}
 do
 	ui[kind] = constructor(kind)
