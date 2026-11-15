@@ -1020,7 +1020,11 @@
       "loading": "Loading {title}…",
       "unavailable": "{title} couldn't be shown",
       "stopped": "The visual stopped",
-      "copy_error": "Copy error"
+      "copy_error": "Copy error",
+      "input": {
+        "new": "New",
+        "change": "Change"
+      }
     },
     "links": {
       "open": "Open",

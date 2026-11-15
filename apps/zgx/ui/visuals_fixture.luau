@@ -177,6 +177,26 @@ return function() return ui.text { tostring(n) } end
 ]],
 	},
 	{
+		name = "form",
+		title = "Before I start",
+		source = [[
+return function()
+  return ui.column { gap = 16,
+    ui.text { "A few things to settle before the migration.", color = "muted" },
+    ui.field { name = "goal", label = "Goal", placeholder = "One line", value = "Move sessions to Postgres" },
+    ui.area { name = "notes", label = "Notes", description = "Anything I should know", placeholder = "Constraints, people, dates" },
+    ui.check { name = "downtime", label = "Downtime is fine", description = "Up to ten minutes at night" },
+    ui.checklist { name = "steps", label = "Steps to run", options = { "Back up", "Migrate", { value = "verify", label = "Verify", description = "Row counts match" } }, value = { "Back up" } },
+    ui.choice { name = "when", label = "When", options = { "Tonight", "This weekend", "Next week" }, value = "Tonight" },
+    ui.choice { name = "notify", label = "Tell", many = true, options = { "Team channel", "On-call", "Nobody" } },
+    ui.select { name = "region", label = "Region", placeholder = "Pick one", options = { "eu-west", "us-east", "ap-south" } },
+    ui.field { name = "db", label = "Database", answered = "Postgres 16 (from the research chat)" },
+    ui.text { "Goal so far: ", ui.span { ui.entry("goal") or "(none)", weight = 600 } },
+  }
+end
+]],
+	},
+	{
 		name = "handler",
 		title = "Divide",
 		source = [[

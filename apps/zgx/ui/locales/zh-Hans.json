@@ -1020,7 +1020,11 @@
       "loading": "正在加载{title}…",
       "unavailable": "无法显示{title}",
       "stopped": "可视化已停止",
-      "copy_error": "拷贝错误"
+      "copy_error": "拷贝错误",
+      "input": {
+        "new": "New",
+        "change": "Change"
+      }
     },
     "links": {
       "open": "打开",

@@ -669,6 +669,20 @@ pub fn versions(id: &str) -> (u64, u64) {
 
 /// (For tests: a control's handler, as `visuals.event` runs it.)
 #[cfg(test)]
+/// (For tests: what the reader entered in visual `id`.)
+pub fn entries_of(id: &str) -> Value {
+    VISUALS.with(|v| v.with(id, |e| entries_value(&e.kept))).unwrap_or(Value::Nil)
+}
+
+/// (For tests: a new script for visual `id`, as `visuals.swap` gives one.)
+pub fn swap_source(id: &str, source: &str) -> Result<(), String> {
+    VISUALS.with(|v| {
+        let swapped = v.with(id, |e| e.swap(id, source.into())).ok_or("no visual")?;
+        v.publish();
+        swapped
+    })
+}
+
 pub fn event(id: &str, handler: u32) {
     VISUALS.with(|v| v.with(id, |e| e.event(handler, zv::HandlerArg::None)));
 }

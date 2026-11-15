@@ -103,6 +103,59 @@ fn a_value_changing_keeps_what_is_drawn() {
 }
 
 #[test]
+fn a_form_draws_every_input_kind_and_keeps_what_is_entered() {
+    let mut app = mount(Some("form"));
+    let mut missing = Vec::new();
+    for target in [
+        "#visual-form >> role:textbox \"Goal\"",
+        "#visual-form >> role:textbox \"Notes\"",
+        "#visual-form >> role:checkbox \"Downtime is fine\"",
+        "#visual-form >> role:checkbox \"Verify\"",
+        "#visual-form >> role:radio \"This weekend\"",
+        "#visual-form >> role:checkbox \"On-call\"",
+        "#visual-form >> role:button \"Region\"",
+        "#visual-form >> \"Database: Postgres 16 (from the research chat)\"",
+        "#visual-form >> role:button \"Change\"",
+        "#visual-form >> \"Goal so far: (none)\"",
+    ] {
+        if !has(&mut app, target) {
+            missing.push(target);
+        }
+    }
+    assert!(missing.is_empty(), "missing: {missing:#?}\n{}", app.tree());
+    // A box ticked and a choice made reach the entries, outside the script.
+    app.click("#visual-form >> role:checkbox \"Downtime is fine\"");
+    app.click("#visual-form >> role:radio \"This weekend\"");
+    app.type_text("#visual-form >> role:textbox \"Notes\"", "after 22:00");
+    app.wait_until(|app| app.find("#visual-form >> \"Goal so far: (none)\"").is_some());
+    app.frames(10);
+    let entries = crate::visuals::entries_of("v:fixture-form");
+    assert_eq!(entries.field("downtime"), Some(&zgx_script::Value::Bool(true)), "{entries:?}");
+    assert_eq!(
+        entries.field("when").map(crate::auth::text).as_deref(),
+        Some("This weekend"),
+        "{entries:?}"
+    );
+    assert_eq!(entries.field("notes").map(crate::auth::text).as_deref(), Some("after 22:00"), "{entries:?}");
+    // An answered input opens again on Change.
+    app.click("#visual-form >> role:button \"Change\"");
+    app.wait_until(|app| app.find("#visual-form >> role:textbox \"Database\"").is_some());
+    // A new script for the visual keeps them, and draws them.
+    crate::visuals::swap_source(
+        "v:fixture-form",
+        r#"return function() return ui.column {
+            ui.check { name = "downtime", label = "Downtime is fine" },
+            ui.field { name = "owner", label = "Owner" },
+            ui.text { "when: " .. (ui.entry("when") or "-") },
+        } end"#,
+    )
+    .unwrap();
+    app.wait_until(|app| app.find("#visual-form >> \"when: This weekend\"").is_some());
+    assert!(has(&mut app, "#visual-form >> .visual-input-new"), "the new field says so:\n{}", app.tree());
+    assert_eq!(app.error(), None);
+}
+
+#[test]
 fn a_failing_handler_is_contained_with_its_message() {
     let mut app = mount(Some("handler"));
     assert!(has(&mut app, "\"100 / 2 = 50\""));
