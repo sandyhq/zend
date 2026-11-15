@@ -534,6 +534,16 @@ impl Render for VisualFrame {
     }
 }
 
+/// An input as one line: "Label: value" ("Label: —" while empty).
+fn input_line(input: &zend_visual::Input) -> String {
+    let value = input.value_text();
+    let value = if value.is_empty() { "—".into() } else { value };
+    match &input.answered {
+        Some(answer) => format!("{}: {answer}", input.title()),
+        None => format!("{}: {value}", input.title()),
+    }
+}
+
 fn status_line(message: SharedString, color: Hsla) -> AnyElement {
     div()
         .text_size(crate::typography::ui_rems(12.0))
@@ -792,6 +802,14 @@ impl VisualFrame {
                     }))
                     .into_any_element()
             }
+            // Read-only in this app: what's entered so far, as a line.
+            NodeKind::Input(input) => div()
+                .id(self.element_id(path))
+                .text_size(crate::typography::ui_rems(14.0))
+                .line_height(crate::typography::ui_rems(22.0))
+                .text_color(theme.text)
+                .child(input_line(input))
+                .into_any_element(),
         }
     }
 
@@ -2744,6 +2762,24 @@ fn dot(center: Point<Pixels>, radius: f32) -> Vec<Point<Pixels>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_input_reads_as_its_label_and_kept_value() {
+        let mut visual = zend_visual::Visual::load(
+            r#"return ui.column {
+                ui.field { name = "goal", label = "Goal", value = "start" },
+                ui.choice { name = "size", options = { { value = "m", label = "Medium" } } },
+                ui.check { name = "ok" },
+            }"#,
+            1,
+        )
+        .unwrap();
+        visual.set_entry("goal", Some(zend_visual::EntryValue::Text("kept".into())));
+        visual.set_entry("size", Some(zend_visual::EntryValue::Text("m".into())));
+        let tree = visual.render().unwrap();
+        let lines: Vec<String> = zend_visual::inputs(&tree).into_iter().map(input_line).collect();
+        assert_eq!(lines, ["Goal: kept", "size: Medium", "ok: no"]);
+    }
 
     #[test]
     fn chart_series_drops_the_fixed_hue_nearest_the_accent() {

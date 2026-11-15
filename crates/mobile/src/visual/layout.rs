@@ -260,6 +260,7 @@ impl Layouter<'_, '_> {
             | NodeKind::Canvas(_)
             | NodeKind::Scene(_)
             | NodeKind::Shader(_)
+            | NodeKind::Input(_)
             | NodeKind::Slider { .. } => None,
         }
     }
@@ -415,6 +416,14 @@ impl Layouter<'_, '_> {
                     Action::Link,
                 );
                 h
+            }
+            // Read-only here: what's entered so far, said as a line.
+            NodeKind::Input(input) => {
+                let line = format!("{}: {}", input.title(), input.value_text());
+                let para = self.plain(&line, TextSize::Body, Weight::Regular, self.palette.text);
+                self.out
+                    .paint
+                    .para(self.ctx, &para, x, y, width, Align::Start, false)
             }
         }
     }

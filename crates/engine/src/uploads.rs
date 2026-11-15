@@ -799,6 +799,34 @@ mod tests {
         assert_eq!(std::fs::read_dir(uploads.dir()).unwrap().count(), 0);
     }
 
+    #[test]
+    fn visual_entries_sit_beside_the_script_and_only_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploads = Uploads::from_root(dir.path());
+        let script = uploads.store_visual("v:abc", "return ui.text 'hi'").unwrap();
+        assert_eq!(uploads.visual_entries("v:abc"), None);
+        uploads
+            .store_visual_entries(&script, r#"{"values":{"goal":"x"}}"#)
+            .unwrap();
+        assert_eq!(
+            uploads.visual_entries("v:abc").as_deref(),
+            Some(r#"{"values":{"goal":"x"}}"#)
+        );
+        // Not a visual's script, or one kept elsewhere: refused.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let other = elsewhere.path().join("v_abc-visual.luau");
+        std::fs::write(&other, "").unwrap();
+        for path in [
+            other.to_string_lossy().to_string(),
+            script.replace("-visual.luau", ".png"),
+            script.replace("v_abc", "v_none"),
+        ] {
+            assert!(uploads.store_visual_entries(&path, "{}").is_err(), "{path}");
+        }
+        uploads.remove_visual("v:abc");
+        assert_eq!(std::fs::read_dir(uploads.dir()).unwrap().count(), 0);
+    }
+
     fn encoded(width: u32, height: u32, format: image::ImageFormat) -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(width, height)
@@ -1515,10 +1543,51 @@ impl Uploads {
         stored
     }
 
+    /// Keep what the reader entered in a visual's inputs beside its script
+    /// (`script`, a `{id}-visual.luau` in these uploads), as
+    /// `{id}-entries.json`: read back with the script as the chat opens
+    /// again, and by [`Uploads::visual_entries`].
+    pub fn store_visual_entries(&self, script: &str, json: &str) -> Result<(), EngineError> {
+        use std::io::Write;
+        const MAX_ENTRIES_BYTES: usize = 512 * 1024;
+        if json.len() > MAX_ENTRIES_BYTES {
+            return Err(EngineError::Other("a visual's entries are at most 512 KB".into()));
+        }
+        let script = Path::new(script);
+        let stem = script
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix("-visual.luau"))
+            .filter(|stem| !stem.is_empty() && sanitize(stem) == *stem)
+            .ok_or_else(|| EngineError::Other("that isn't a visual's script".into()))?;
+        let dir = std::fs::canonicalize(self.dir())?;
+        let parent = script
+            .parent()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .filter(|p| *p == dir)
+            .ok_or_else(|| EngineError::Other("that visual isn't kept here".into()))?;
+        if !parent.join(format!("{stem}-visual.luau")).is_file() {
+            return Err(EngineError::Other("no such visual".into()));
+        }
+        let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
+        temporary.write_all(json.as_bytes())?;
+        temporary
+            .persist(parent.join(format!("{stem}-entries.json")))
+            .map_err(|err| EngineError::Other(err.to_string()))?;
+        Ok(())
+    }
+
+    /// What the reader entered in visual `id`'s inputs (JSON, crates/visual
+    /// `Entries`), if anything.
+    pub fn visual_entries(&self, id: &str) -> Option<String> {
+        std::fs::read_to_string(self.dir().join(format!("{}-entries.json", sanitize(id)))).ok()
+    }
+
     /// Remove a visual's script and its assets.
     pub fn remove_visual(&self, id: &str) {
         let id = sanitize(id);
         let _ = std::fs::remove_file(self.dir().join(format!("{id}-visual.luau")));
+        let _ = std::fs::remove_file(self.dir().join(format!("{id}-entries.json")));
         let manifest = self.dir().join(format!("{id}-assets.json"));
         if let Some(names) = std::fs::read(&manifest)
             .ok()

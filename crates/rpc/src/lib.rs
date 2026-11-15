@@ -349,6 +349,11 @@ pub mod methods {
     /// Store an agent's HTML page and show it inline in that chat's live
     /// turn (`show_visual`). Local only: the calling agent runs on this device.
     pub const PUBLISH_VISUAL: &str = "PublishVisual";
+    /// Save what the reader entered in a visual's inputs beside its script
+    /// (`{path}` a `…-visual.luau` in the uploads; `{entries}` as
+    /// crates/visual `Entries` saves them). Relay-forwardable: the chat's
+    /// host keeps them. Not an agent's: entries are the reader's.
+    pub const SAVE_VISUAL_ENTRIES: &str = "SaveVisualEntries";
     /// Store an image file an agent shows and fold it into that chat's live
     /// turn as an image part (`show_image`). Local only, like `PublishVisual`.
     pub const PUBLISH_IMAGE: &str = "PublishImage";

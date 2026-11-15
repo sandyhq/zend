@@ -643,6 +643,14 @@ struct PublishVisualParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SaveVisualEntriesParams {
+    /// The visual's script, as its part names it.
+    path: String,
+    entries: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PublishImageParams {
     chat_id: String,
     /// The file name shown with the image.
@@ -2597,6 +2605,8 @@ fn forwardable(method: &str) -> bool {
             | methods::UPLOAD_COMMIT
             | methods::READ_ATTACHMENT_CHUNK
             | methods::READ_CHAT_IMAGE_CHUNK
+            // A visual's entries live beside its script on the chat's host.
+            | methods::SAVE_VISUAL_ENTRIES
             // A command's whole output lives in its host's run journal.
             | methods::READ_TOOL_OUTPUT
             // Updates report/apply on the device whose binary they concern.
@@ -5801,6 +5811,19 @@ impl RpcService for EngineRpc {
                     "checkedInteractions": report.interactions,
                     "printed": report.logs,
                 }))
+            }
+            methods::SAVE_VISUAL_ENTRIES => {
+                let p: SaveVisualEntriesParams = parse_params(params)?;
+                let entries: zend_visual::Entries = serde_json::from_value(p.entries)
+                    .map_err(|e| RpcError::BadParams(format!("entries: {e}")))?;
+                let uploads = self.uploads.clone();
+                tokio::task::spawn_blocking(move || {
+                    uploads.store_visual_entries(&p.path, &entries.to_json())
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::BadParams(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "saved": true }))
             }
             methods::PUBLISH_IMAGE => {
                 use base64::Engine as _;

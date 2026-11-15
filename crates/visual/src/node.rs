@@ -90,6 +90,31 @@ pub enum NodeKind {
     Input(Box<Input>),
 }
 
+impl Input {
+    /// What it's called: its label, else its name.
+    pub fn title(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Its value in words: the text, "yes" or "no", the chosen options'
+    /// labels joined with commas.
+    pub fn value_text(&self) -> String {
+        let label = |value: &str| {
+            self.options
+                .iter()
+                .find(|o| o.value == value)
+                .map_or(value, |o| o.label.as_str())
+                .to_owned()
+        };
+        match &self.value {
+            EntryValue::Bool(b) => if *b { "yes" } else { "no" }.into(),
+            EntryValue::Text(t) if self.kind.has_options() => label(t),
+            EntryValue::Text(t) => t.clone(),
+            EntryValue::List(items) => items.iter().map(|i| label(i)).collect::<Vec<_>>().join(", "),
+        }
+    }
+}
+
 /// The kinds of named input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
