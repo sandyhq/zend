@@ -643,6 +643,39 @@ struct PublishVisualParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct UpdateVisualParams {
+    chat_id: String,
+    id: String,
+    script: String,
+    #[serde(default)]
+    title: Option<String>,
+    /// Files the new script uses, base64 by name; absent keeps the old ones.
+    #[serde(default)]
+    assets: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadVisualParams {
+    chat_id: String,
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkVisualSentParams {
+    /// The visual's script, as its part names it.
+    path: String,
+    #[serde(default = "yes")]
+    sent: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SaveVisualEntriesParams {
     /// The visual's script, as its part names it.
     path: String,
@@ -1562,6 +1595,113 @@ impl EngineRpc {
             }
         }
         Err(unknown())
+    }
+
+    /// The visuals chat `chat_id` showed that Zend keeps meta for.
+    fn chat_visuals(&self, chat_id: &str) -> Vec<crate::live_visuals::VisualMeta> {
+        self.uploads
+            .visual_metas()
+            .iter()
+            .filter_map(|m| crate::live_visuals::VisualMeta::from_json(m))
+            .filter(|m| m.chat_id == chat_id)
+            .collect()
+    }
+
+    /// Visual `id`'s meta, if chat `chat_id` showed it: only that chat may
+    /// update or read it.
+    fn own_visual(&self, chat_id: &str, id: &str) -> Result<crate::live_visuals::VisualMeta, RpcError> {
+        let meta = self
+            .uploads
+            .visual_meta(id)
+            .and_then(|m| crate::live_visuals::VisualMeta::from_json(&m))
+            .filter(|m| m.id == id)
+            .ok_or_else(|| {
+                RpcError::BadParams(format!(
+                    "No visual {id} that can be updated: use the id show_visual gave you."
+                ))
+            })?;
+        if meta.chat_id != chat_id {
+            return Err(RpcError::BadParams(format!(
+                "Visual {id} belongs to another chat: only the chat that showed it may update or read it."
+            )));
+        }
+        Ok(meta)
+    }
+
+    /// `UpdateVisual`: a new script for one of this chat's visuals, in
+    /// place. Checked as `PublishVisual` checks, then swapped over the
+    /// person's entries the way the window swaps it (live_visuals.rs), the
+    /// script rewritten at the same path and the part's `rev` raised so
+    /// every window reads it again.
+    async fn update_visual(&self, p: UpdateVisualParams) -> Result<RpcReply, RpcError> {
+        let mut meta = self.own_visual(&p.chat_id, &p.id)?;
+        if p.script.trim().is_empty() || p.script.len() > zend_proto::VISUAL_MAX_BYTES {
+            return Err(RpcError::BadParams(format!(
+                "script must be 1 to {} bytes",
+                zend_proto::VISUAL_MAX_BYTES
+            )));
+        }
+        if let Some(title) = p.title.as_deref() {
+            let title: String = title.trim().chars().take(zend_proto::VISUAL_MAX_TITLE_CHARS).collect();
+            if !title.is_empty() {
+                meta.title = title;
+            }
+        }
+        let new_assets = p.assets.as_ref().map(decode_visual_assets).transpose()?;
+        let uploads = self.uploads.clone();
+        let script = p.script;
+        let (meta, swapped, report) = tokio::task::spawn_blocking(move || {
+            use crate::live_visuals as lv;
+            let seed = zend_visual::seed_for(&meta.id);
+            let (_, old) = uploads
+                .visual_script(&meta.id)
+                .ok_or_else(|| RpcError::BadParams("that visual's script is gone".into()))?;
+            let assets = new_assets.clone().unwrap_or_else(|| uploads.visual_assets(&meta.id));
+            let report = zend_visual::check_with_assets(&script, seed, {
+                zend_visual::Assets::new(
+                    assets.iter().map(|(n, b)| (n.clone(), b.as_slice().into())).collect(),
+                )
+            })
+            .map_err(|e| RpcError::BadParams(format!("visual script failed: {e}")))?;
+            let _held = lv::ENTRIES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let saved = uploads.visual_entries(&meta.id);
+            let entries = zend_visual::Entries::from_json(saved.as_deref().unwrap_or(""));
+            let swapped = lv::swap(&old, &script, seed, &assets, entries.clone(), &meta.inputs)
+                .map_err(|e| RpcError::BadParams(format!("visual script failed: {e}")))?;
+            let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+            if let Some(assets) = &new_assets {
+                uploads.replace_visual_assets(&meta.id, assets).map_err(failed)?;
+            }
+            let path = uploads.replace_visual(&meta.id, &script).map_err(failed)?;
+            // Only the fresh marks change; the values are the person's.
+            if swapped.entries != entries {
+                uploads
+                    .store_visual_entries(&path, &swapped.entries.to_json())
+                    .map_err(failed)?;
+            }
+            let mut meta = meta;
+            meta.rev += 1;
+            meta.inputs = swapped.inputs.clone();
+            uploads.store_visual_meta(&meta.id, &meta.to_json()).map_err(failed)?;
+            Ok::<_, RpcError>((meta, swapped, report))
+        })
+        .await
+        .map_err(|e| RpcError::Failed(e.to_string()))??;
+        // Every window holding it reads it again as its part's `rev` grows.
+        let in_transcript = self
+            .doc_host
+            .open(&p.chat_id)
+            .ok()
+            .and_then(|handle| handle.doc().update_visual_part(&meta.id, &meta.title, meta.rev).ok())
+            .unwrap_or(false);
+        let mut told = crate::live_visuals::describe(&meta, &swapped.entries);
+        told["added"] = serde_json::json!(swapped.added);
+        told["droppedWithEntries"] = serde_json::json!(swapped.dropped_with_entries);
+        told["checkedInteractions"] = serde_json::json!(report.interactions);
+        told["printed"] = serde_json::json!(report.logs);
+        told["inTranscript"] = in_transcript.into();
+        told["note"] = crate::live_visuals::ENTRIES_NOTE.into();
+        RpcReply::value(&told)
     }
 
     /// Most-recent-first paths the current chat actually touched, followed by
@@ -2607,6 +2747,7 @@ fn forwardable(method: &str) -> bool {
             | methods::READ_CHAT_IMAGE_CHUNK
             // A visual's entries live beside its script on the chat's host.
             | methods::SAVE_VISUAL_ENTRIES
+            | methods::MARK_VISUAL_SENT
             // A command's whole output lives in its host's run journal.
             | methods::READ_TOOL_OUTPUT
             // Updates report/apply on the device whose binary they concern.
@@ -5763,6 +5904,20 @@ impl RpcService for EngineRpc {
                 if !self.sessions.has_run(&p.chat_id) {
                     return Err(no_turn_for_visual());
                 }
+                // An open visual of this chat under this title is updated,
+                // not shown again (plans/live-visuals D7).
+                if let Some(open) = self
+                    .chat_visuals(&p.chat_id)
+                    .into_iter()
+                    .find(|m| m.is_open() && m.title.trim().eq_ignore_ascii_case(&title))
+                {
+                    return Err(RpcError::BadParams(format!(
+                        "The visual \"{}\" ({}) is open in this chat already: the person may be \
+                         filling it in. Update it with update_visual {{ id = \"{}\" }} instead of \
+                         showing it again.",
+                        open.title, open.id, open.id
+                    )));
+                }
                 let id = format!("v:{}", crate::new_id());
                 let assets = decode_visual_assets(&p.assets)?;
                 // Run the script the way the desktop will (setup, render,
@@ -5770,6 +5925,7 @@ impl RpcService for EngineRpc {
                 // agent gets its errors with line numbers and can fix them.
                 let uploads = self.uploads.clone();
                 let (stored_id, script) = (id.clone(), p.script);
+                let (meta_chat, meta_title) = (p.chat_id.clone(), title.clone());
                 let (path, report) = tokio::task::spawn_blocking(move || {
                     let files = zend_visual::Assets::new(
                         assets
@@ -5789,6 +5945,22 @@ impl RpcService for EngineRpc {
                         .store_visual_assets(&stored_id, &assets)
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                     let path = uploads.store_visual(&stored_id, &script).map_err(|e| {
+                        uploads.remove_visual(&stored_id);
+                        RpcError::Failed(e.to_string())
+                    })?;
+                    let meta = crate::live_visuals::VisualMeta {
+                        id: stored_id.clone(),
+                        chat_id: meta_chat,
+                        title: meta_title,
+                        inputs: crate::live_visuals::inputs_of(
+                            &script,
+                            zend_visual::seed_for(&stored_id),
+                            &assets,
+                        )
+                        .unwrap_or_default(),
+                        ..Default::default()
+                    };
+                    uploads.store_visual_meta(&stored_id, &meta.to_json()).map_err(|e| {
                         uploads.remove_visual(&stored_id);
                         RpcError::Failed(e.to_string())
                     })?;
@@ -5812,12 +5984,46 @@ impl RpcService for EngineRpc {
                     "printed": report.logs,
                 }))
             }
+            methods::UPDATE_VISUAL => self.update_visual(parse_params(params)?).await,
+            methods::READ_VISUAL => {
+                let p: ReadVisualParams = parse_params(params)?;
+                let meta = self.own_visual(&p.chat_id, &p.id)?;
+                let entries = zend_visual::Entries::from_json(
+                    &self.uploads.visual_entries(&meta.id).unwrap_or_default(),
+                );
+                let mut told = crate::live_visuals::describe(&meta, &entries);
+                told["note"] = crate::live_visuals::ENTRIES_NOTE.into();
+                RpcReply::value(&told)
+            }
+            methods::MARK_VISUAL_SENT => {
+                let p: MarkVisualSentParams = parse_params(params)?;
+                let uploads = self.uploads.clone();
+                tokio::task::spawn_blocking(move || {
+                    let (_, stem) = uploads.visual_stem(&p.path)?;
+                    let _held = crate::live_visuals::ENTRIES_LOCK
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let mut meta = uploads
+                        .visual_meta(&stem)
+                        .and_then(|m| crate::live_visuals::VisualMeta::from_json(&m))
+                        .ok_or_else(|| crate::EngineError::Other("that visual has no inputs Zend keeps".into()))?;
+                    meta.sent = p.sent;
+                    uploads.store_visual_meta(&stem, &meta.to_json())
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::BadParams(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "sent": p.sent }))
+            }
             methods::SAVE_VISUAL_ENTRIES => {
                 let p: SaveVisualEntriesParams = parse_params(params)?;
                 let entries: zend_visual::Entries = serde_json::from_value(p.entries)
                     .map_err(|e| RpcError::BadParams(format!("entries: {e}")))?;
                 let uploads = self.uploads.clone();
                 tokio::task::spawn_blocking(move || {
+                    let _held = crate::live_visuals::ENTRIES_LOCK
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     uploads.store_visual_entries(&p.path, &entries.to_json())
                 })
                 .await

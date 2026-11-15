@@ -213,6 +213,8 @@ name (default: the local engine's device).
 | `respond_to_input` | `QueueCommand` RespondInput                               |
 | `archive_chat`     | `Mutate setChatArchived`                                  |
 | `show_visual`      | `PublishVisual {chatId, title, script, assets}` (origin chat only; assets base64 by name, read by the MCP server from the agent's cwd) |
+| `update_visual`    | `UpdateVisual {chatId, id, script, title?, assets?}` (origin chat only, its own visuals only) |
+| `read_visual`      | `ReadVisual {chatId, id}` (origin chat only, its own visuals only) |
 | `show_image`       | `PublishImage {chatId, name, data}` (origin chat only; the file base64, read by the MCP server from the agent's cwd) |
 
 Watch streams are the engine's only read surface (there is no one-shot "get
@@ -313,6 +315,38 @@ read back like a scene's image. Nothing foreign is hosted, so a visual scrolls, 
 the glass composer, and takes input like any other row, identically on Linux,
 macOS, and Windows, and it follows theme, appearance, and text-size changes
 without rerunning the script.
+
+### Updating a visual and reading its entries
+
+`show_visual` returns the visual's `id`. The visual's named inputs (`ui.field`,
+`ui.area`, `ui.check`, `ui.checklist`, `ui.choice`, `ui.select`) keep what the
+person enters as their *entries*: the window saves them beside the script
+(`SaveVisualEntries`, `{id}-entries.json`). The engine keeps a meta file
+beside it too (`{id}-visual-meta.json`: the chat that showed it, its title,
+its update count `rev`, its inputs, and `sent`; crates/engine
+`live_visuals.rs`).
+
+- `update_visual {id, script, title?, assets?}` replaces the script in place:
+  the same id, the same spot in the transcript. The engine checks the script as
+  `show_visual` does (a broken one changes nothing), swaps it over the entries
+  the way the window does (`zend_visual::Visual::swap`), rewrites the script at
+  the same path and raises the visual part's `rev`. Each window holding it
+  reads it again when that grows (apps/zgx `visuals.rs` `seen_rev`). Entries
+  stay by input name, whatever the new script's `value` says; an input new with
+  the script is marked `new` until the person touches it; a dropped input's
+  entry is kept and comes back with its name. The reply lists `added`,
+  `droppedWithEntries`, the inputs with each one's `entry`, and `entries`.
+- `read_visual {id}` returns the inputs, the entries, `open` (it has inputs and
+  isn't sent) and `sent`.
+- Only the chat that showed a visual may update or read it. While a visual of
+  the chat is open, `show_visual` with its title is refused and names
+  `update_visual`.
+- The entries are the person's draft: read-only for the agent (there is no
+  tool to write one), and not answers until `sent` is true. The tool
+  descriptions and every reply say so.
+- `sent` is the window's to set: `MarkVisualSent {path, sent}` when the person
+  sends a message holding the visual's answers (`path` is the script's, as the
+  part names it). It is not an agent method.
 
 ### Image replies
 

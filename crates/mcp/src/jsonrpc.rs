@@ -71,7 +71,9 @@ content sits directly on the chat with no cards or boxed panels, text uses the i
 and type scale, and colors are theme tokens that work on frosted glass or opaque, light or dark. \
 The reader sees the visual above that reply, so don't announce or restate it. To show the \
 reader an image file (a screenshot, a rendered PNG), call `show_image` with its path; don't \
-draw images through `show_visual`.";
+draw images through `show_visual`. To change a visual you showed (new facts for a form the \
+person is filling in), call `update_visual` with its id instead of showing it again; \
+`read_visual` shows what they entered so far, their unsent draft: read-only, not answers.";
 
 /// Appended to [`INSTRUCTIONS`] where the agent is offered
 /// `wait_on_background` ([`zend_proto::McpServer::WAITS_ON_BACKGROUND_ENV`]).

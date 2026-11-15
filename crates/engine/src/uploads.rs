@@ -726,6 +726,17 @@ fn next_free_seq(dir: &Path) -> Result<u64, EngineError> {
         .unwrap_or(0))
 }
 
+/// Write `name` in `dir` whole or not at all.
+fn write_atomically(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), EngineError> {
+    use std::io::Write;
+    let mut temporary = tempfile::NamedTempFile::new_in(dir)?;
+    temporary.write_all(bytes)?;
+    temporary
+        .persist(dir.join(name))
+        .map_err(|err| EngineError::Other(err.to_string()))?;
+    Ok(())
+}
+
 fn sanitize(file_name: &str) -> String {
     let base = Path::new(file_name)
         .file_name()
@@ -1548,11 +1559,18 @@ impl Uploads {
     /// `{id}-entries.json`: read back with the script as the chat opens
     /// again, and by [`Uploads::visual_entries`].
     pub fn store_visual_entries(&self, script: &str, json: &str) -> Result<(), EngineError> {
-        use std::io::Write;
         const MAX_ENTRIES_BYTES: usize = 512 * 1024;
         if json.len() > MAX_ENTRIES_BYTES {
             return Err(EngineError::Other("a visual's entries are at most 512 KB".into()));
         }
+        let (parent, stem) = self.visual_stem(script)?;
+        write_atomically(&parent, &format!("{stem}-entries.json"), json.as_bytes())
+    }
+
+    /// The stem (`{id}` sanitized) of a visual's script `script`, a
+    /// `{id}-visual.luau` in these uploads, and the folder it is in.
+    /// Anything else, or one that isn't there, is refused.
+    pub fn visual_stem(&self, script: &str) -> Result<(PathBuf, String), EngineError> {
         let script = Path::new(script);
         let stem = script
             .file_name()
@@ -1569,12 +1587,76 @@ impl Uploads {
         if !parent.join(format!("{stem}-visual.luau")).is_file() {
             return Err(EngineError::Other("no such visual".into()));
         }
-        let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
-        temporary.write_all(json.as_bytes())?;
-        temporary
-            .persist(parent.join(format!("{stem}-entries.json")))
-            .map_err(|err| EngineError::Other(err.to_string()))?;
-        Ok(())
+        Ok((parent, stem.to_owned()))
+    }
+
+    /// Keep what Zend knows of visual `id` beyond its script (who showed
+    /// it, its inputs, whether its entries were sent: crates/engine
+    /// live_visuals.rs `VisualMeta`), as `{id}-visual-meta.json`.
+    pub fn store_visual_meta(&self, id: &str, json: &str) -> Result<(), EngineError> {
+        std::fs::create_dir_all(self.dir())?;
+        write_atomically(self.dir(), &format!("{}-visual-meta.json", sanitize(id)), json.as_bytes())
+    }
+
+    /// Visual `id`'s meta (JSON), if it has one: visuals shown before
+    /// `update_visual` existed have none.
+    pub fn visual_meta(&self, id: &str) -> Option<String> {
+        std::fs::read_to_string(self.dir().join(format!("{}-visual-meta.json", sanitize(id)))).ok()
+    }
+
+    /// Every visual's meta kept here (JSON each), in no order.
+    pub fn visual_metas(&self) -> Vec<String> {
+        let Ok(dir) = std::fs::read_dir(self.dir()) else {
+            return Vec::new();
+        };
+        dir.flatten()
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with("-visual-meta.json")))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect()
+    }
+
+    /// Visual `id`'s script: its path and its source.
+    pub fn visual_script(&self, id: &str) -> Option<(String, String)> {
+        let path = self.dir().join(format!("{}-visual.luau", sanitize(id)));
+        let source = std::fs::read_to_string(&path).ok()?;
+        Some((path.to_string_lossy().to_string(), source))
+    }
+
+    /// The files visual `id`'s script uses, as [`Self::store_visual_assets`]
+    /// kept them.
+    pub fn visual_assets(&self, id: &str) -> Vec<(String, Vec<u8>)> {
+        let id = sanitize(id);
+        let names = std::fs::read(self.dir().join(format!("{id}-assets.json")))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+            .unwrap_or_default();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let bytes = std::fs::read(self.dir().join(format!("{id}-asset-{}", sanitize(&name)))).ok()?;
+                Some((name, bytes))
+            })
+            .collect()
+    }
+
+    /// Replace visual `id`'s script in place (`update_visual`): the same
+    /// path, so its entries and its part in the transcript stay its own.
+    pub fn replace_visual(&self, id: &str, script: &str) -> Result<String, EngineError> {
+        if self.visual_script(id).is_none() {
+            return Err(EngineError::Other("no such visual".into()));
+        }
+        self.store_visual(id, script)
+    }
+
+    /// Replace the files visual `id` uses: the old ones go first.
+    pub fn replace_visual_assets(&self, id: &str, assets: &[(String, Vec<u8>)]) -> Result<(), EngineError> {
+        let sid = sanitize(id);
+        let manifest = self.dir().join(format!("{sid}-assets.json"));
+        for (name, _) in self.visual_assets(id) {
+            let _ = std::fs::remove_file(self.dir().join(format!("{sid}-asset-{}", sanitize(&name))));
+        }
+        let _ = std::fs::remove_file(manifest);
+        self.store_visual_assets(id, assets)
     }
 
     /// What the reader entered in visual `id`'s inputs (JSON, crates/visual
@@ -1588,6 +1670,7 @@ impl Uploads {
         let id = sanitize(id);
         let _ = std::fs::remove_file(self.dir().join(format!("{id}-visual.luau")));
         let _ = std::fs::remove_file(self.dir().join(format!("{id}-entries.json")));
+        let _ = std::fs::remove_file(self.dir().join(format!("{id}-visual-meta.json")));
         let manifest = self.dir().join(format!("{id}-assets.json"));
         if let Some(names) = std::fs::read(&manifest)
             .ok()

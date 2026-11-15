@@ -1744,6 +1744,7 @@ pub fn rows_for_entry(
                         id: part_id,
                         path,
                         title,
+                        ..
                     } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
