@@ -197,6 +197,24 @@ end
 ]],
 	},
 	{
+		name = "form_e",
+		title = "Kickoff",
+		source = [[
+return function()
+  return ui.column { gap = 16,
+    ui.kit.Rating { name = "fit", label = "Fit" },
+    ui.kit.Stepper { name = "seats", label = "Seats", min = 1, max = 9 },
+    ui.kit.Slider { name = "hours", label = "Hours", min = 0, max = 20, value = 9 },
+    ui.kit.ListEditor { name = "risks", label = "Risks", value = { "Scope creep" }, placeholder = "Add a risk" },
+    ui.kit.EditableTable { name = "budget", label = "Budget",
+      columns = { "Item", { key = "ok", label = "Approved", type = "boolean" } },
+      value = { { "Laptops", true } } },
+    ui.text { "Seats so far: " .. (ui.entry("seats") or "-") },
+  }
+end
+]],
+	},
+	{
 		name = "handler",
 		title = "Divide",
 		source = [[

@@ -334,21 +334,333 @@ end)
 
 -- ---- named inputs ---------------------------------------------------------------
 
+-- (Deep: a `ui.rows` value is a list of rows, each a list of cells.)
 local function same(a: any, b: any): boolean
 	if type(a) == "table" and type(b) == "table" then
-		return #a == #b and table.concat(a, "\0") == table.concat(b, "\0")
+		if #a ~= #b then
+			return false
+		end
+		for i, v in a do
+			if not same(v, b[i]) then
+				return false
+			end
+		end
+		return true
 	end
 	return a == b
 end
 
-local function copy(list: any): { string }
+local function copy(list: any): { any }
 	local out = {}
 	if type(list) == "table" then
 		for _, v in list do
-			table.insert(out, v)
+			table.insert(out, if type(v) == "table" then copy(v) else v)
 		end
 	end
 	return out
+end
+
+local IconButton = require("@self/icon_button").IconButton
+
+-- A number as its entry holds it: no more places than its step has.
+local function number_text(v: number, step: number?): string
+	local places = 0
+	if step then
+		local s = tostring(step)
+		local dot = string.find(s, ".", 1, true)
+		if dot then
+			places = math.min(#s - dot, 6)
+		end
+	end
+	local t = string.format("%." .. places .. "f", v)
+	if places > 0 then
+		t = (string.gsub(t, "0+$", ""))
+		t = (string.gsub(t, "%.$", ""))
+	end
+	return t
+end
+
+-- One text of a list input: an item of `ui.items`, or a cell (`j`) of a
+-- row of `ui.rows`; its field's own state kept in step with the list.
+local Cell = ui.component(function(props: {
+	list: State<any>,
+	i: number,
+	j: number?,
+	kind: string?,
+	name: string,
+	on_focus: (on: boolean) -> (),
+}): Node
+	local list, i, j = props.list, props.i, props.j
+	local function at(l: any): string
+		local v = if type(l) == "table" then l[i] else nil
+		if j then
+			v = if type(v) == "table" then v[j] else nil
+		end
+		return if type(v) == "string" then v else ""
+	end
+	local text = ui.use_state(at(list:peek()))
+	ui.effect(function()
+		local now = at(list:get())
+		if now ~= text:peek() then
+			text:set(now)
+		end
+	end)
+	ui.effect(function()
+		local v = text:get()
+		local l = list:peek()
+		if v ~= at(l) and type(l) == "table" and l[i] ~= nil then
+			local next = copy(l)
+			if j then
+				next[i][j] = v
+			else
+				next[i] = v
+			end
+			list:set(next)
+		end
+	end)
+	if props.kind == "boolean" then
+		return Checkbox {
+			value = function(): boolean
+				return text:get() == "true"
+			end,
+			on_change = function(on: boolean)
+				text:set(if on then "true" else "false")
+			end,
+			name = props.name,
+			bare = true,
+		}
+	end
+	return TextField {
+		value = text,
+		name = props.name,
+		size = "sm",
+		w_full = true,
+		inputmode = if props.kind == "number" then "decimal" else nil,
+		on_focus_change = props.on_focus,
+	}
+end)
+
+-- Indices 1..#list, for `ui.each` over a list input's items or rows.
+local function indices(list: State<any>): any
+	return ui.computed(function(): { number }
+		local out = {}
+		for i = 1, #(list:get() or {}) do
+			table.insert(out, i)
+		end
+		return out
+	end)
+end
+
+-- `ui.number`: a slider, a stepper, or stars. Its entry is the number's
+-- digits ("" for stars not picked yet).
+local function number_control(n: any, value: State<any>): Node
+	local step = n.step or 1
+	local lo, hi = n.min, n.max
+	local function now(): number?
+		return tonumber(value:get())
+	end
+	local function put(v: number)
+		if lo then
+			v = math.max(v, lo)
+		end
+		if hi then
+			v = math.min(v, hi)
+		end
+		value:set(number_text(v, step))
+	end
+	if n.style == "rating" then
+		local stars = {}
+		for k = 1, hi or 5 do
+			table.insert(stars, IconButton {
+				icon = function(): any
+					return if (now() or 0) >= k then "star-bold" else "star"
+				end,
+				lit = function(): boolean
+					return (now() or 0) >= k
+				end,
+				label = (n.label or n.name) .. ": " .. k .. " / " .. (hi or 5),
+				size = "sm",
+				on_click = function()
+					put(k)
+				end,
+			})
+		end
+		return ui.row { items = "center", gap = "$space.1", table.unpack(stars) }
+	elseif n.style == "stepper" then
+		return ui.row {
+			items = "center",
+			gap = "$space.2",
+			IconButton {
+				icon = "minus",
+				label = locale.s("ds.visual.input.less"),
+				size = "sm",
+				on_click = function()
+					put((now() or lo or 0) - step)
+				end,
+			},
+			ui.text {
+				function(): string
+					local v = value:get()
+					return if v == nil or v == "" then "–" else v
+				end,
+				literal = true,
+				min_w = 24,
+				align = "center",
+				text_size = "$zend.visual.text.body.size",
+				line_height = "$zend.visual.text.body.line",
+				weight = "$font.weight.medium",
+				color = "$text.primary",
+			},
+			IconButton {
+				icon = "plus",
+				label = locale.s("ds.visual.input.more"),
+				size = "sm",
+				on_click = function()
+					put((now() or lo or 0) + step)
+				end,
+			},
+		}
+	end
+	local num = ui.use_state(tonumber(value:peek()) or lo or 0)
+	ui.effect(function()
+		local v = tonumber(value:get())
+		if v and v ~= num:peek() then
+			num:set(v)
+		end
+	end)
+	ui.effect(function()
+		local v = num:get()
+		if tonumber(value:peek()) ~= v then
+			value:set(number_text(v, step))
+		end
+	end)
+	return Slider {
+		value = num,
+		min = lo or 0,
+		max = hi or 100,
+		step = step,
+		label = n.label or n.name,
+		w_full = true,
+		format = function(v: number): string
+			return number_text(v, step)
+		end,
+	}
+end
+
+-- `ui.items`: a field per item with a way to remove it, and one to add.
+local function items_control(n: any, value: State<any>, on_focus: (boolean) -> ()): Node
+	local new = ui.use_state("")
+	local function add()
+		local text = new:peek()
+		if string.gsub(text, "%s", "") ~= "" then
+			local next = copy(value:peek())
+			table.insert(next, text)
+			value:set(next)
+			new:set("")
+		end
+	end
+	return ui.column {
+		gap = "$space.1",
+		w_full = true,
+		ui.each(indices(value), function(i: number): Node
+			return ui.row {
+				items = "center",
+				gap = "$space.1",
+				w_full = true,
+				Cell { list = value, i = i, name = (n.label or n.name) .. " " .. i, on_focus = on_focus },
+				IconButton {
+					icon = "close",
+					label = locale.s("ds.visual.input.remove"),
+					size = "sm",
+					tone = "quiet",
+					on_click = function()
+						local next = copy(value:peek())
+						table.remove(next, i)
+						value:set(next)
+					end,
+				},
+			}
+		end, { w_full = true, gap = "$space.1" }),
+		ui.row {
+			items = "center",
+			gap = "$space.1",
+			w_full = true,
+			TextField {
+				value = new,
+				placeholder = n.placeholder or locale.s("ds.visual.input.add"),
+				name = n.placeholder or locale.s("ds.visual.input.add"),
+				size = "sm",
+				w_full = true,
+				on_commit = function()
+					add()
+				end,
+			},
+			IconButton { icon = "plus", label = locale.s("ds.visual.input.add"), size = "sm", on_click = add },
+		},
+	}
+end
+
+-- `ui.rows`: the columns' names, a row of fields (a box for a yes/no
+-- column) per row with a way to remove it, and a way to add one.
+local function rows_control(n: any, value: State<any>, on_focus: (boolean) -> ()): Node
+	local columns = n.columns or {}
+	local head = { items = "center", gap = "$space.1", w_full = true }
+	for _, c in columns do
+		table.insert(head, ui.text {
+			c.label,
+			literal = true,
+			truncate = true,
+			grow = if c.type == "boolean" then nil else 1,
+			min_w = if c.type == "boolean" then 56 else 0,
+			text_size = "$zend.visual.text.sm.size",
+			line_height = "$zend.visual.text.sm.line",
+			color = "$text.secondary",
+		})
+	end
+	table.insert(head, ui.row { w = 22 })
+	return ui.column {
+		gap = "$space.1",
+		w_full = true,
+		ui.row(head),
+		ui.each(indices(value), function(i: number): Node
+			local cells = { items = "center", gap = "$space.1", w_full = true }
+			for j, c in columns do
+				table.insert(cells, ui.row {
+					grow = if c.type == "boolean" then nil else 1,
+					min_w = if c.type == "boolean" then 56 else 0,
+					Cell { list = value, i = i, j = j, kind = c.type, name = c.label .. " " .. i, on_focus = on_focus },
+				})
+			end
+			table.insert(cells, IconButton {
+				icon = "close",
+				label = locale.s("ds.visual.input.remove_row"),
+				size = "sm",
+				tone = "quiet",
+				on_click = function()
+					local next = copy(value:peek())
+					table.remove(next, i)
+					value:set(next)
+				end,
+			})
+			return ui.row(cells)
+		end, { w_full = true, gap = "$space.1" }),
+		ui.row {
+			Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = function()
+					local next = copy(value:peek())
+					local row = {}
+					for _, c in columns do
+						table.insert(row, if c.type == "boolean" then "false" else "")
+					end
+					table.insert(next, row)
+					value:set(next)
+				end,
+				locale.s("ds.visual.input.add_row"),
+			},
+		},
+	}
 end
 
 -- Words over a group of options: its label, "New" while it's new since
@@ -468,6 +780,19 @@ local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			name = n.label or name,
 			size = "sm",
 		}
+	elseif kind == "number" then
+		control = ui.column { gap = "$space.2", w_full = true, heading(n, get), number_control(n, value) }
+	elseif kind == "items" or kind == "rows" then
+		local function on_focus(on: boolean)
+			focused = on
+			ctx.focus(if on then name else nil)
+		end
+		control = ui.column {
+			gap = "$space.2",
+			w_full = true,
+			heading(n, get),
+			if kind == "items" then items_control(n, value, on_focus) else rows_control(n, value, on_focus),
+		}
 	elseif n.many then
 		-- A checklist, or a choice of several: a box per option.
 		local boxes = { gap = "$space.1" }
@@ -500,7 +825,11 @@ local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
 		}
 	end
 	-- One with no heading of its own says it's new beside it.
-	local own_heading = kind == "checklist" or kind == "choice"
+	local own_heading = kind == "checklist"
+		or kind == "choice"
+		or kind == "number"
+		or kind == "items"
+		or kind == "rows"
 	local body = if own_heading
 		then control
 		else ui.column {

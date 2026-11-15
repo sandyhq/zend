@@ -15,6 +15,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - `docs/features.md`, `docs/roadmap.md`, this file; plugin tools listed in `docs/mcp.md`.
 - Visuals that ask: input nodes and `ui.answer` (the inputs as words into the composer); `update_visual` and `read_visual`; a message holding a visual's answers marks it sent (`MarkVisualSent`); open visuals pinned above the composer; child events name the parent's open visuals.
 - Visual kit `ui.kit`: 22 components (Form and its inputs, Card, Callout, KeyValue, List, Steps, Status, Progress, Metric and more), each one call with data; examples in `visuals/`.
+- Named inputs `ui.number` (slider, stepper, stars), `ui.items`, `ui.rows`, and kit kinds Slider, Stepper, Rating, ListEditor, EditableTable, Quiz, Timer.
 
 ### Changed
 - `zend.run` without a `cwd` runs in the plugin's own folder.

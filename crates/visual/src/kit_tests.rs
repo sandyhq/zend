@@ -29,6 +29,14 @@ const KINDS: &[&str] = &[
     "Steps",
     "TextArea",
     "Toggle",
+    // Batch e (kit_e.luau, G7e).
+    "EditableTable",
+    "ListEditor",
+    "Quiz",
+    "Rating",
+    "Slider",
+    "Stepper",
+    "Timer",
 ];
 
 fn tree(script: &str) -> Node {

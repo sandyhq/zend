@@ -1023,7 +1023,13 @@
       "copy_error": "拷贝错误",
       "input": {
         "new": "New",
-        "change": "Change"
+        "change": "Change",
+        "less": "Less",
+        "more": "More",
+        "add": "Add",
+        "remove": "Remove",
+        "add_row": "Add row",
+        "remove_row": "Remove row"
       },
       "answer": {
         "add": "Add to message",

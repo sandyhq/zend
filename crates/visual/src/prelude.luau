@@ -39,6 +39,9 @@ for _, kind in
 		"checklist",
 		"choice",
 		"select",
+		"number",
+		"items",
+		"rows",
 		-- Puts the inputs, as words, into the chat's composer (never sends).
 		"answer",
 	}

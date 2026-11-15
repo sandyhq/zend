@@ -13,7 +13,7 @@ An agent's visual can ask: text fields, checkboxes, choices and a button that pu
 How to use: [visuals.md](visuals.md), section "Asking the reader"; [mcp.md](mcp.md), "Child events".
 
 ### Visual kit (`ui.kit`)
-Ready-made components for visuals, each one call with data instead of a hundred lines of nodes: `ui.kit.Form` with `Input`, `TextArea`, `Checklist`, `Choice`, `Radio`, `Select`, `Toggle`, `OptionCards`, `FollowUps` asks the reader and ends in the answer button; `Card`, `Callout`, `KeyValue`, `List`, `Steps`, `Status`, `Progress`, `Metric` and a few more show things. Built from the existing nodes in Zend's style; every renderer has them. How to use: [visuals.md](visuals.md), section "Kit"; examples in `visuals/`.
+Ready-made components for visuals, each one call with data instead of a hundred lines of nodes: `ui.kit.Form` with `Input`, `TextArea`, `Checklist`, `Choice`, `Radio`, `Select`, `Toggle`, `OptionCards`, `FollowUps` asks the reader and ends in the answer button; `Slider`, `Stepper`, `Rating`, `ListEditor`, `EditableTable` and `Quiz` ask for numbers, lists, rows and quiz picks; `Timer` counts down; `Card`, `Callout`, `KeyValue`, `List`, `Steps`, `Status`, `Progress`, `Metric` and a few more show things. Built from the existing nodes in Zend's style; every renderer has them. How to use: [visuals.md](visuals.md), section "Kit"; examples in `visuals/`.
 
 ### Instructions from plugins (`session.instructions`)
 A plugin can give text to the agents of your chats: for every chat on the device, one project's chats, or one chat. The text goes whole into the agent's system prompt as its own section and is renewed every turn. 8 KB per chat. Settings shows each plugin's text, read only. Works for chats on Pi; other harnesses run without it.

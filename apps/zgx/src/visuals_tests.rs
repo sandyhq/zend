@@ -156,6 +156,50 @@ fn a_form_draws_every_input_kind_and_keeps_what_is_entered() {
 }
 
 #[test]
+fn numbers_lists_and_rows_are_drawn_and_what_is_entered_is_kept() {
+    use zgx_script::Value;
+    let mut app = mount(Some("form_e"));
+    let mut missing = Vec::new();
+    for target in [
+        "#visual-form_e >> role:button \"Fit: 5 / 5\"",
+        "#visual-form_e >> role:button \"More\"",
+        "#visual-form_e >> role:slider \"Hours, 9\"",
+        "#visual-form_e >> role:textbox \"Risks 1\"",
+        "#visual-form_e >> role:textbox \"Add a risk\"",
+        "#visual-form_e >> role:textbox \"Item 1\"",
+        "#visual-form_e >> role:checkbox \"Approved 1\"",
+        "#visual-form_e >> \"Seats so far: -\"",
+    ] {
+        if !has(&mut app, target) {
+            missing.push(target);
+        }
+    }
+    assert!(missing.is_empty(), "missing: {missing:#?}\n{}", app.tree());
+    app.click("#visual-form_e >> role:button \"Fit: 4 / 5\"");
+    app.click("#visual-form_e >> role:button \"More\"");
+    app.click("#visual-form_e >> role:button \"More\"");
+    app.wait_until(|app| app.find("#visual-form_e >> \"Seats so far: 3\"").is_some());
+    app.type_text("#visual-form_e >> role:textbox \"Add a risk\"", "Vendor late");
+    app.frames(5);
+    app.click("#visual-form_e >> role:button \"Add\"");
+    app.click("#visual-form_e >> role:button \"Add row\"");
+    app.wait_until(|app| app.find("#visual-form_e >> role:textbox \"Item 2\"").is_some());
+    app.type_text("#visual-form_e >> role:textbox \"Item 2\"", "Desks");
+    app.click("#visual-form_e >> role:checkbox \"Approved 2\"");
+    app.click("#visual-form_e >> role:button \"Remove\"[1]");
+    app.frames(10);
+    let entries = crate::visuals::entries_of("v:fixture-form_e");
+    let texts = |v: Option<&Value>| v.map(|v| v.items().iter().map(crate::auth::text).collect::<Vec<_>>());
+    assert_eq!(entries.field("fit").map(crate::auth::text).as_deref(), Some("4"), "{entries:?}");
+    assert_eq!(entries.field("seats").map(crate::auth::text).as_deref(), Some("3"), "{entries:?}");
+    assert_eq!(texts(entries.field("risks")), Some(vec!["Vendor late".to_owned()]), "{entries:?}");
+    let rows: Vec<Vec<String>> =
+        entries.field("budget").expect("budget").items().iter().map(|r| texts(Some(r)).unwrap()).collect();
+    assert_eq!(rows, [["Laptops", "true"], ["Desks", "true"]], "{entries:?}");
+    assert_eq!(app.error(), None);
+}
+
+#[test]
 fn a_failing_handler_is_contained_with_its_message() {
     let mut app = mount(Some("handler"));
     assert!(has(&mut app, "\"100 / 2 = 50\""));

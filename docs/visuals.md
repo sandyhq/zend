@@ -66,6 +66,9 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `ui.check` | a boolean |
 | `ui.checklist`, `ui.choice { many = true }` | the options picked |
 | `ui.choice`, `ui.select` | one option |
+| `ui.number { min?, max?, step?, style? }` | a number as its digits; `style` `slider` (0 to 100 unless given), `stepper` (− and +) or `rating` (stars 1 to `max`, 5 unless given, unrated until picked) |
+| `ui.items { placeholder? }` | a list of short texts the reader adds, edits and removes |
+| `ui.rows { columns }` | rows of cells under `columns` (`"key"` or `{ key, label?, type? = text, number, boolean }`); `value` rows by key or in column order; `ui.entry` reads a list of lists of strings, a boolean cell `"true"`/`"false"` |
 | `ui.answer { label? }` | the button "Add to message" |
 
 - **Entries are the reader's.** Zend keeps them beside the script, by input name, across reloads and updates.
@@ -100,6 +103,13 @@ Input nodes take `name` (required, unique), `label`, `description`, `value` (the
 | `Progress { value, max?, label?, tone? }` | a labelled bar: a percent, or value of max |
 | `Metric { label, value, note?, tone? }` | a key number; two to four in a `ui.row` |
 | `Gauge { value, min?, max?, label?, tone? }` | a dial, 0 to 100 by default |
+| `Slider { name, label?, min?, max?, step?, value? }` | a number dragged in a range (`ui.number`), 0 to 100 unless given |
+| `Stepper { name, label?, min?, max?, step?, value? }` | a count with − and + |
+| `Rating { name, label?, max?, value? }` | stars, 1 to `max` (5 unless given); "4 of 5" in the answer |
+| `ListEditor { name, label?, value?, placeholder? }` | a list the reader adds to, edits and trims (`ui.items`) |
+| `EditableTable { name, columns, label?, value? }` | rows the reader edits, adds and removes (`ui.rows`); a Markdown table in the answer |
+| `Quiz { name, questions, label? }` | `{ q, options, answer, why? }`: `answer` a 1-based index or the option's text; after each pick it says right or not (and `why`), then the score; picks are inputs `<name>.1`, `<name>.2`, … and stay changeable |
+| `Timer { seconds?, label? }` | a countdown with Start, Pause and Reset, or a stopwatch without `seconds`; it keeps no entry |
 
 ## What a visual cannot do yet
-Kit kinds still to come: Slider, Rating, ListEditor, EditableTable, Quiz, Stepper, Timer (G6 leftovers), and the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).
+Kit kinds still to come: the rest of the genui catalogue. An example gallery and `visual_examples` are being built (plan `live-visuals`, [roadmap.md](roadmap.md)).

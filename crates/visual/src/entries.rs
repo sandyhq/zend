@@ -21,23 +21,39 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-/// One input's value: a text (field, area, select, single choice), a
-/// checkbox, or a list of option values (checklist, multiple choice).
+/// One input's value: a text (field, area, select, single choice, a
+/// number as its digits), a checkbox, a list (checklist and multiple
+/// choice: option values; an item list: its items), or rows of cells (an
+/// editable table, a cell per column in the columns' order).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EntryValue {
     Bool(bool),
     Text(String),
     List(Vec<String>),
+    Rows(Vec<Vec<String>>),
 }
 
 impl EntryValue {
     /// Whether this is the shape an input of `kind` takes.
     pub fn fits(&self, shape: Shape) -> bool {
-        matches!(
-            (self, shape),
-            (Self::Bool(_), Shape::Bool) | (Self::Text(_), Shape::Text) | (Self::List(_), Shape::List)
-        )
+        match (self, shape) {
+            (Self::Bool(_), Shape::Bool)
+            | (Self::Text(_), Shape::Text)
+            | (Self::List(_), Shape::List)
+            | (Self::Rows(_), Shape::Rows) => true,
+            // No rows saved reads back as an empty list.
+            (Self::List(items), Shape::Rows) => items.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// As `shape` takes it: an empty list read back for rows is no rows.
+    fn shaped(self, shape: Shape) -> Self {
+        match (self, shape) {
+            (Self::List(items), Shape::Rows) if items.is_empty() => Self::Rows(Vec::new()),
+            (value, _) => value,
+        }
     }
 }
 
@@ -47,6 +63,7 @@ pub enum Shape {
     Bool,
     Text,
     List,
+    Rows,
 }
 
 /// The longest text one entry keeps.
@@ -148,12 +165,12 @@ impl Entries {
     /// The second is whether the reader's entry is what shows.
     pub fn resolve(&self, name: &str, shape: Shape, script: EntryValue) -> (EntryValue, bool) {
         if let Some(kept) = self.values.get(name).filter(|v| v.fits(shape)) {
-            return (kept.clone(), true);
+            return (kept.clone().shaped(shape), true);
         }
         if let Some((_, Some(held))) = self.focus.as_ref().filter(|(n, _)| n == name)
             && held.fits(shape)
         {
-            return (held.clone(), false);
+            return (held.clone().shaped(shape), false);
         }
         (script, false)
     }
@@ -173,6 +190,12 @@ fn clip_value(value: EntryValue) -> EntryValue {
     match value {
         EntryValue::Text(text) => EntryValue::Text(clip(text)),
         EntryValue::List(items) => EntryValue::List(items.into_iter().take(200).map(clip).collect()),
+        EntryValue::Rows(rows) => EntryValue::Rows(
+            rows.into_iter()
+                .take(200)
+                .map(|row| row.into_iter().take(20).map(clip).collect())
+                .collect(),
+        ),
         other => other,
     }
 }
