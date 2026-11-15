@@ -111,6 +111,14 @@ return function()
 end
 ]],
 	},
+	-- (Read as a chat's visual is, with its files: the test serves them.
+	-- Shown alone only.)
+	{
+		name = "picture",
+		title = "A picture",
+		path = "/served/v_picture-visual.luau",
+		alone = true,
+	},
 	{
 		name = "code",
 		title = "Source lines",
@@ -261,13 +269,13 @@ end
 
 local blocks: { Node } = {}
 for _, v in VISUALS do
-	if only == nil or only == v.name then
+	if (only == nil and not v.alone) or only == v.name then
 		table.insert(blocks, ui.column {
 			id = `visual-{v.name}`,
 			w_full = true,
 			gap = "$space.3",
 			Markdown { text = `**{v.title}**: what the agent showed.` },
-			Visual { id = `v:fixture-{v.name}`, title = v.title, source = v.source },
+			Visual { id = `v:fixture-{v.name}`, title = v.title, source = v.source, path = v.path },
 		})
 	end
 end

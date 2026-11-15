@@ -683,6 +683,8 @@ fn a_visual_being_read_says_so() {
 /// saying it stopped: for checking a chat's worth of real visuals. Run on
 /// purpose:
 /// `VISUALS_DIR=… cargo test --bin zend-zgx visuals_tests::scripts_in -- --ignored --nocapture`
+/// With an `assets` folder in it, each visual is read as a chat's is, with
+/// those files as its `assets` (pictures, models, textures).
 #[test]
 #[ignore = "run on purpose, on a folder of visual scripts"]
 fn scripts_in_a_folder_draw_without_errors() {
@@ -691,15 +693,32 @@ fn scripts_in_a_folder_draw_without_errors() {
     let mut paths: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
     paths.retain(|p| p.to_string_lossy().ends_with("-visual.luau"));
     paths.sort();
+    let assets: Vec<(String, Vec<u8>)> = match std::fs::read_dir(dir.join("assets")) {
+        Ok(files) => files
+            .flatten()
+            .map(|f| (f.file_name().to_string_lossy().into_owned(), std::fs::read(f.path()).unwrap()))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
     let sources: Vec<Value> = paths
         .iter()
         .map(|path| {
             let name = path.file_name().unwrap().to_string_lossy();
             let id = format!("v:{}", name.trim_end_matches("-visual.luau").trim_start_matches("v_"));
-            Value::record([
-                ("id", Value::from(id.as_str())),
-                ("source", Value::from(std::fs::read_to_string(path).unwrap().as_str())),
-            ])
+            let source = std::fs::read_to_string(path).unwrap();
+            if assets.is_empty() {
+                return Value::record([("id", Value::from(id.as_str())), ("source", Value::from(source.as_str()))]);
+            }
+            let served = format!("/folder/{name}");
+            let stem = served.trim_end_matches("-visual.luau").to_owned();
+            crate::visuals::serve_file(&served, Some(&source));
+            crate::visuals::serve_file(&format!("{stem}-entries.json"), None);
+            let names: Vec<&str> = assets.iter().map(|(n, _)| n.as_str()).collect();
+            crate::visuals::serve_file(&format!("{stem}-assets.json"), Some(&serde_json::to_string(&names).unwrap()));
+            for (asset, bytes) in &assets {
+                crate::visuals::serve_bytes(&format!("{stem}-asset-{asset}"), Some(bytes.clone()));
+            }
+            Value::record([("id", Value::from(id.as_str())), ("path", Value::from(served.as_str()))])
         })
         .collect();
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/visuals_folder_fixture.luau");
@@ -1138,4 +1157,98 @@ fn a_show_visual_call_leaves_no_tool_row_and_its_visual_sits_in_place() {
     assert!(app.find("\"Couldn't show this visual\"").is_some(), "{tree}");
     assert!(!tree.contains("attempt to index"), "the script's error in the reply:\n{tree}");
     assert_eq!(tree.matches("Ran 1 command").count(), 2, "each command its own group, split by the visual:\n{tree}");
+}
+
+/// The picture's script, its files' manifest and the files, as the engine
+/// keeps a visual shown with `assets` (uploads `store_visual_assets`).
+fn serve_picture(script: &str, assets: &[(&str, Option<Vec<u8>>)]) {
+    let stem = "/served/v_picture";
+    crate::visuals::serve_file(&format!("{stem}-visual.luau"), Some(script));
+    crate::visuals::serve_file(&format!("{stem}-entries.json"), None);
+    let names: Vec<&str> = assets.iter().map(|(n, _)| *n).collect();
+    crate::visuals::serve_file(&format!("{stem}-assets.json"), Some(&serde_json::to_string(&names).unwrap()));
+    for (name, bytes) in assets {
+        crate::visuals::serve_bytes(&format!("{stem}-asset-{name}"), bytes.clone());
+    }
+}
+
+/// The repository's example pictures (visuals/assets).
+fn example_asset(name: &str) -> Vec<u8> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../visuals/assets").join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The pictures drawn under `target`: each one's size in pixels.
+fn drawn_images(app: &mut TestApp, target: &str) -> Vec<(u32, u32)> {
+    app.ui.prepare_frame();
+    let root = app.target(target).unwrap_or_else(|e| panic!("{e}"));
+    let scene = app.ui.scene.borrow();
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if let zgx::scene::NodeKind::Image(image) = scene.kind(id) {
+            out.push((image.width(), image.height()));
+        }
+        stack.extend(scene.children(id).iter().rev());
+    }
+    out
+}
+
+#[test]
+fn a_picture_shows_the_file_shipped_with_its_visual() {
+    serve_picture(
+        r#"
+local picked = 0
+return function()
+  return ui.column { gap = 8,
+    ui.image { src = "dashboard.png", alt = "The dashboard", marks = {
+      { x = 0.25, y = 0.16, w = 0.7, h = 0.2, label = "Stat cards" },
+      { x = 0.92, y = 0.48, label = "Latest point", tone = "warning" },
+    }, selected = picked > 0 and picked or nil, on_click = function(i) picked = i end },
+    ui.image { src = "after.png", before = "before.png", split = 0.4, height = 160 },
+    ui.text { "Picked " .. picked },
+  }
+end
+"#,
+        &[
+            ("dashboard.png", Some(example_asset("dashboard.png"))),
+            ("before.png", Some(example_asset("before.png"))),
+            ("after.png", Some(example_asset("after.png"))),
+        ],
+    );
+    let mut app = mount(Some("picture"));
+    // The file itself, at its own size (320 by 200): the marked one, and the
+    // wipe's two.
+    assert_eq!(drawn_images(&mut app, "#visual-picture"), [(320, 200), (320, 200), (320, 200)], "{}", app.tree());
+    assert!(has(&mut app, "#visual-picture >> .visual-image[2]"), "{}", app.tree());
+    // As wide as the reply, its own shape: 320 by 200.
+    let bounds = app.bounds("#visual-picture >> .visual-image[1]");
+    assert!((bounds.width / bounds.height - 1.6).abs() < 0.02, "{bounds:?}");
+    // A click on the second mark is the script's.
+    let (x, y) = (bounds.x + bounds.width * 0.92, bounds.y + bounds.height * 0.48);
+    zgx_script::driver::hover_at(&mut app.ui, (x, y));
+    app.frames(4);
+    // (The pointer's mark is named in its corner.)
+    assert!(has(&mut app, "#visual-picture >> \"2. Latest point\""), "{}", app.tree());
+    zgx_script::driver::click_at(&mut app.ui, zgx::scene::Rect::new(x - 1., y - 1., 2., 2.));
+    app.frames(10);
+    assert!(has(&mut app, "#visual-picture >> \"Picked 2\""), "{}", app.tree());
+}
+
+#[test]
+fn a_picture_that_is_missing_or_not_one_says_so_by_name() {
+    serve_picture(
+        r#"return function() return ui.column { ui.image { src = "shot.png" }, ui.image { src = "notes.png" } } end"#,
+        &[("shot.png", None), ("notes.png", Some(b"just words".to_vec()))],
+    );
+    let mut app = mount(Some("picture"));
+    // Each in its place, as a visual that failed says it: why, as its
+    // tooltip (and Copy error), nothing raw in the reply.
+    for (n, why) in [(1, "no asset named 'shot.png'"), (2, "'notes.png' is not a picture")] {
+        let at = format!("#visual-picture >> \"Couldn't show this visual\"[{n}]");
+        assert!(has(&mut app, &at), "{}", app.tree());
+        app.hover(&at);
+        let shown = app.wait_until(|app| app.find(&format!("~\"{why}\"")).is_some());
+        assert!(shown, "{why}:\n{}", app.tree());
+    }
 }

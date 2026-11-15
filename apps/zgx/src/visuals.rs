@@ -153,6 +153,9 @@ struct Entry {
     scenes: HashMap<String, (u64, Arc<zv::Scene>)>,
     /// Shaders' frame counts and last times, by node path.
     shaders: HashMap<String, (u32, f64)>,
+    /// Its pictures (`ui.image`) shown so far, by asset name: their
+    /// size, or why one can't show.
+    pictures: HashMap<String, Result<(u32, u32), String>>,
     /// What the reader entered in its inputs: the runtime's, copied after
     /// each render, so they outlive a sleep.
     kept: zv::Entries,
@@ -191,6 +194,7 @@ impl Entry {
             generation: 0,
             scenes: HashMap::new(),
             shaders: HashMap::new(),
+            pictures: HashMap::new(),
             kept: zv::Entries::default(),
             file: None,
             saving: false,
@@ -512,7 +516,7 @@ pub fn register_plugin(host: &ScriptHost, plugin: &str) {
 }
 
 /// The names a plugin's own visuals are called by (for exposing them).
-pub const PLUGIN_CALLS: &[&str] = &["open", "get", "event", "draw", "frame", "release"];
+pub const PLUGIN_CALLS: &[&str] = &["open", "get", "event", "draw", "frame", "picture", "release"];
 
 /// `arg` with its `id` in `scope` (a record's field, or `arg` itself as text).
 fn scoped(arg: Value, scope: &Option<String>) -> Value {
@@ -587,6 +591,12 @@ fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<S
         let (v, host) = (v.clone(), frames_host.clone());
         let arg = scoped(arg, &sc);
         async move { frame(v, host, arg).await }
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
+    let pictures_host = host.clone();
+    host.function(name("picture"), move |arg| {
+        let arg = scoped(arg, &sc);
+        picture(&v, &pictures_host, &text(arg.field("id")), &text(arg.field("name")))
     });
     let (v, sc) = (visuals.clone(), scope.clone());
     host.async_action(name("input"), move |arg| {
@@ -701,7 +711,13 @@ thread_local! {
 /// place of the engine's `ReadAttachmentChunk`.)
 #[cfg(test)]
 pub fn serve_file(path: &str, text: Option<&str>) {
-    SERVED.with(|s| s.borrow_mut().insert(path.into(), text.map(|t| t.as_bytes().to_vec())));
+    serve_bytes(path, text.map(|t| t.as_bytes().to_vec()));
+}
+
+/// (For tests: [`serve_file`] with any bytes, a picture's.)
+#[cfg(test)]
+pub fn serve_bytes(path: &str, bytes: Option<Vec<u8>>) {
+    SERVED.with(|s| s.borrow_mut().insert(path.into(), bytes));
 }
 
 /// (For tests: what a window going idle does here.)
@@ -1361,6 +1377,51 @@ fn node_value(node: &zv::Node, path: &str) -> Value {
                 .collect();
             f.push(("lines", list(lines)));
         }
+        zv::NodeKind::Image(picture) => {
+            // `src` (and `before`): asset names, shown through
+            // `visuals.picture`; `marks`: { x, y, w?, h?, label?, c? } in
+            // shares of the picture; `sel`: the chosen mark, from 1.
+            f.push(("k", Value::from("image")));
+            f.push(("src", Value::from(picture.src.as_str())));
+            if let Some(alt) = &picture.alt {
+                f.push(("alt", Value::from(alt.as_str())));
+            }
+            if let Some(h) = picture.height {
+                f.push(("h", num(h)));
+            }
+            f.push(("fit", Value::from(picture.fit.name())));
+            if let Some(before) = &picture.before {
+                f.push(("before", Value::from(before.as_str())));
+                f.push(("split", num(picture.split)));
+            }
+            if !picture.marks.is_empty() {
+                let marks = picture
+                    .marks
+                    .iter()
+                    .map(|m| {
+                        let mut r: Vec<(&str, Value)> = vec![("x", num(m.x)), ("y", num(m.y))];
+                        if m.is_region() {
+                            r.push(("w", num(m.w)));
+                            r.push(("h", num(m.h)));
+                        }
+                        if let Some(label) = &m.label {
+                            r.push(("label", Value::from(label.as_str())));
+                        }
+                        if let Some(tone) = m.tone {
+                            r.push(("c", color_value(tone)));
+                        }
+                        Value::record(r)
+                    })
+                    .collect();
+                f.push(("marks", list(marks)));
+            }
+            if let Some(sel) = picture.selected {
+                f.push(("sel", num(sel as f64)));
+            }
+            if let Some(h) = picture.on_click {
+                f.push(("click", handler(h)));
+            }
+        }
         zv::NodeKind::Link { label, url } => {
             f.push(("k", Value::from("link")));
             f.push(("label", Value::from(label.as_str())));
@@ -1795,6 +1856,48 @@ struct Rendered {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
+}
+
+/// `visuals.picture`: one of visual `id`'s own image assets, shown at
+/// `host:visual/<id>/img/<name>` from the bytes the window read with its
+/// script (so a visual on another device shows it as well, and no file is
+/// opened for it). Its pixels decode as it's drawn, off this thread.
+/// `{ src, w, h }`, or `{ error }` naming the asset.
+fn picture(v: &Visuals, host: &ScriptHost, id: &str, name: &str) -> Value {
+    let key = picture_key(id, name);
+    let shown = v.with(id, |e| {
+        if let Some(known) = e.pictures.get(name) {
+            return known.clone();
+        }
+        let decoded = e
+            .assets
+            .get(name)
+            .ok_or_else(|| format!("no asset named '{name}'"))
+            .and_then(|bytes| {
+                zv::picture_size(&bytes).map_err(|why| format!("'{name}' {why}"))?;
+                zgx_gpu::assets::decode_image_kept(bytes).map_err(|why| format!("'{name}': {}", why.0))
+            })
+            .map(|image| {
+                let size = (image.width(), image.height());
+                host.image(&key, Some(image));
+                size
+            });
+        e.pictures.insert(name.to_owned(), decoded.clone());
+        decoded
+    });
+    match shown {
+        Some(Ok((w, h))) => Value::record([
+            ("src", Value::from(format!("host:{key}").as_str())),
+            ("w", num(w)),
+            ("h", num(h)),
+        ]),
+        Some(Err(why)) => Value::record([("error", Value::from(why.as_str()))]),
+        None => Value::record([("error", Value::from("no such visual"))]),
+    }
+}
+
+fn picture_key(id: &str, name: &str) -> String {
+    format!("visual/{id}/img/{name}")
 }
 
 fn surface_key(id: &str, path: &str) -> String {

@@ -101,7 +101,7 @@ local FRAME = 33
 
 -- What can be built at a size of its own in a row; the rest fill its spare
 -- width there (the shipping app's "fluid" nodes).
-local FLUID = { slider = true, chart = true, canvas = true, scene = true, shader = true, table = true, rule = true, input = true }
+local FLUID = { slider = true, chart = true, canvas = true, scene = true, shader = true, image = true, table = true, rule = true, input = true }
 
 local function raw(n: number?, why: string): any
 	return if n == nil then nil else ui.raw(n, why)
@@ -1404,6 +1404,243 @@ local Surface = ui.component(function(props: { n: any, ctx: Ctx }): Node
 	}
 end)
 
+-- ---- picture ----------------------------------------------------------------
+
+-- A `ui.image`: one of the visual's own assets, from the bytes the window
+-- read with its script (`visuals.picture`). With `before`, a wipe the
+-- reader drags; with `marks`, points and boxes over it (a click is the
+-- script's, the pointer's mark named in the corner).
+local Picture = ui.component(function(props: { n: any, ctx: Ctx }): Node
+	local n, ctx = props.n, props.ctx
+	local get = ctx.at(n.p)
+	local function shown(name: string?): any
+		if not name then
+			return nil
+		end
+		local ok, got = pcall(ui.call_sync, ctx.api .. ".picture", { id = ctx.id, name = name })
+		if not ok then
+			return { error = tostring(got) }
+		end
+		return got
+	end
+	local after, before = shown(n.src) or {}, shown(n.before)
+	local failed = after.error or (before and before.error)
+	if failed then
+		return problem(function(): string
+			return failed
+		end)
+	end
+	local size = ui.use_state({ w = 0, h = 0 })
+	local split = ui.use_state(n.split or 0.5)
+	local hover = ui.use_state(0)
+	local dragging = false
+	-- Where the picture sits in its box, in points: all of it (contain) or
+	-- the box filled (cover), the middle kept.
+	local function frame(): (number, number, number, number)
+		local s = size:get()
+		local iw, ih = math.max(after.w or 1, 1), math.max(after.h or 1, 1)
+		if s.w <= 0 or s.h <= 0 then
+			return 0, 0, 0, 0
+		end
+		local scale = if n.fit == "cover" then math.max(s.w / iw, s.h / ih) else math.min(s.w / iw, s.h / ih)
+		local w, h = iw * scale, ih * scale
+		return (s.w - w) / 2, (s.h - h) / 2, w, h
+	end
+	local function mark_at(px: number, py: number): number
+		local now = ctx.peek(n.p)
+		local ox, oy, w, h = frame()
+		local found, nearest = 0, math.huge
+		for i, m in (now and now.marks) or {} do
+			local x, y = ox + m.x * w, oy + m.y * h
+			if m.w then
+				if px >= x and px <= x + m.w * w and py >= y and py <= y + m.h * h then
+					local area = m.w * m.h
+					if area < nearest then
+						found, nearest = i, area
+					end
+				end
+			else
+				local d = (px - x) ^ 2 + (py - y) ^ 2
+				if d <= 14 ^ 2 and d - 1 < nearest then
+					found, nearest = i, d - 1
+				end
+			end
+		end
+		return found
+	end
+	local pressed = 0
+	local function set_split(px: number)
+		local ox, _, w = frame()
+		if w > 0 then
+			split:set(math.clamp((px - ox) / w, 0, 1))
+		end
+	end
+	local function image(src: string, fixed: boolean): Node
+		return ui.image {
+			src = src,
+			w = if fixed then function(): any
+				return raw(size:get().w, "the picture under a wipe, as wide as its box")
+			end else nil,
+			h = if fixed then function(): any
+				return raw(size:get().h, "the picture under a wipe, as tall as its box")
+			end else nil,
+			w_full = not fixed,
+			h_full = not fixed,
+			fit = n.fit,
+			label = n.alt or ctx.title(),
+		}
+	end
+	local size_xs = text_size("xs")
+	local layers: { Node } = { image(after.src, false) }
+	if before then
+		table.insert(
+			layers,
+			ui.div {
+				absolute = true,
+				left = 0,
+				top = 0,
+				h_full = true,
+				overflow = "hidden",
+				w = function(): any
+					local ox, _, w = frame()
+					return raw(math.max(ox + split:get() * w, 0), "how much of a wipe shows the picture before")
+				end,
+				image(before.src, true),
+			}
+		)
+	end
+	table.insert(
+		layers,
+		ui.canvas {
+			w_full = true,
+			h_full = true,
+			pointer_events = "none",
+			draw = function(c: any)
+				local now = get()
+				local ox, oy, w, h = frame()
+				if w <= 0 then
+					return
+				end
+				if before then
+					local x = ox + split:get() * w
+					c:line(x, oy, x, oy + h, ink.canvas("surface"), 3)
+					c:line(x, oy, x, oy + h, ink.canvas("text"), 1)
+					c:circle(x, oy + h / 2, 11, ink.canvas("surface"))
+					c:circle(x, oy + h / 2, 9, ink.canvas("text"))
+					c:line(x - 4, oy + h / 2, x + 4, oy + h / 2, ink.canvas("surface"), 2)
+				end
+				local over = hover:get()
+				for i, m in (now and now.marks) or {} do
+					local tone = ink.canvas(m.c or "accent")
+					local chosen = now.sel == i or over == i
+					local x, y = ox + m.x * w, oy + m.y * h
+					if m.w then
+						local mw, mh = m.w * w, m.h * h
+						local width = if chosen then 3 else 2
+						for _, l in { { x, y, x + mw, y }, { x + mw, y, x + mw, y + mh }, { x + mw, y + mh, x, y + mh }, { x, y + mh, x, y } } do
+							c:line(l[1], l[2], l[3], l[4], tone, width)
+						end
+						-- Its number on a pin at its top left corner, as a point's.
+						c:circle(x, y, 10, ink.canvas("surface"))
+						c:circle(x, y, 8, tone)
+						c:text(tostring(i), x, y, { size = size_xs, color = ink.canvas("surface"), align = "center", baseline = "middle" })
+					else
+						c:circle(x, y, if chosen then 13 else 11, ink.canvas("surface"))
+						c:circle(x, y, if chosen then 11 else 9, tone)
+						c:text(tostring(i), x, y, { size = size_xs, color = ink.canvas("surface"), align = "center", baseline = "middle" })
+					end
+				end
+			end,
+		}
+	)
+	table.insert(
+		layers,
+		ui.show(
+			function(): boolean
+				return hover:get() > 0
+			end,
+			-- (On a chip of the surface: the picture under it may be any colour.)
+			ui.div {
+				absolute = true,
+				left = 6,
+				top = 6,
+				px = 6,
+				py = 2,
+				rounded = "$radius.sm",
+				bg = "$surface.overlay",
+				pointer_events = "none",
+				ui.text {
+					function(): string
+						local now = ctx.peek(n.p)
+						local m = now and now.marks and now.marks[hover:get()]
+						return if m then `{hover:get()}. {m.label or ""}` else ""
+					end,
+					literal = true,
+					text_size = size_xs,
+					weight = "$font.weight.medium",
+					color = "$text.primary",
+				},
+			}
+		)
+	)
+	local aspect = math.max(after.w or 1, 1) / math.max(after.h or 1, 1)
+	local overlay: { [any]: any } = {
+		class = "visual-image",
+		w_full = true,
+		h = if n.h then n.h else nil,
+		aspect = if n.h then nil else aspect,
+		rounded = "$radius.md",
+		overflow = "hidden",
+		label = n.alt or ctx.title(),
+		cursor = if before then "ew-resize" elseif n.click then "pointer" else nil,
+		on_resize = function(s: any)
+			size:set({ w = s.w, h = s.h })
+		end,
+		-- (A click carries no point: the mark is the one pressed on.)
+		on_press = if before or n.click
+			then function(e: any)
+				pressed = if n.marks then mark_at(e.local_x, e.local_y) else 0
+				if before then
+					dragging = true
+					set_split(e.local_x)
+				end
+			end
+			else nil,
+		on_release = if before
+			then function()
+				dragging = false
+			end
+			else nil,
+		on_pointer_move = function(e: any)
+			if dragging then
+				set_split(e.local_x)
+			end
+			if n.marks then
+				hover:set(mark_at(e.local_x, e.local_y))
+			end
+		end,
+		on_hover = function(inside: boolean)
+			if not inside then
+				hover:set(0)
+			end
+		end,
+		on_click = if n.click
+			then function()
+				local now = ctx.peek(n.p)
+				local i = pressed
+				pressed = 0
+				if now and now.click and i > 0 then
+					ctx.event(now.click, i)
+				end
+			end
+			else nil,
+	}
+	for _, layer in layers do
+		table.insert(overlay, layer)
+	end
+	return ui.overlay(overlay)
+end)
+
 -- ---- layout -------------------------------------------------------------------
 
 local ITEMS = { start = "start", center = "center", ["end"] = "end" }
@@ -1645,6 +1882,8 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 		return ui.column(place({ w_full = parent ~= "row", min_w = 0, Canvas { n = n, ctx = ctx } }, n, parent))
 	elseif k == "scene" or k == "shader" then
 		return ui.column(place({ w_full = parent ~= "row", min_w = 0, Surface { n = n, ctx = ctx } }, n, parent))
+	elseif k == "image" then
+		return ui.column(place({ w_full = parent ~= "row", min_w = 0, Picture { n = n, ctx = ctx } }, n, parent))
 	elseif k == "button" then
 		local get = ctx.at(n.p)
 		return Button(place({
