@@ -1024,6 +1024,9 @@
       "input": {
         "new": "New",
         "change": "Change"
+      },
+      "answer": {
+        "add": "Add to message"
       }
     },
     "links": {

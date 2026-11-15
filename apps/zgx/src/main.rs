@@ -134,6 +134,8 @@ mod i18n_tests;
 mod updates;
 #[cfg(test)]
 mod visuals_tests;
+#[cfg(test)]
+mod visual_answer_tests;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 

@@ -4412,23 +4412,25 @@ fn apply_counted(entries: &mut Vec<Entry>, frame: &mut Json, counted: bool) -> R
 }
 
 /// `entry` with what its parts read from the chat's host: each visual names
+/// `chat`, the doc it is in (its answers go to that chat's composer), and
 /// `device`, its host, when that isn't this one; each command whose output
 /// the doc cut to its last lines names `doc`, the doc it is in, so its row
 /// can ask the host for the rest (`chat.tool_output`). Nil when it has
 /// neither: the entry as it is.
 fn with_host(entry: &Json, doc: &str, device: Option<&str>) -> Option<Json> {
     let parts = entry["parts"].as_array()?;
-    let visual = |p: &Json| device.is_some() && p["kind"].as_str() == Some("visual");
+    let visual = |p: &Json| p["kind"].as_str() == Some("visual");
     let cut = |p: &Json| p["kind"].as_str() == Some("tool") && p["outputTruncated"].as_bool() == Some(true);
     if !parts.iter().any(|p| visual(p) || cut(p)) {
         return None;
     }
     let mut entry = entry.clone();
     for part in entry["parts"].as_array_mut().into_iter().flatten() {
-        if visual(part)
-            && let Some(device) = device
-        {
-            part["device"] = Json::String(device.to_owned());
+        if visual(part) {
+            part["chat"] = Json::String(doc.to_owned());
+            if let Some(device) = device {
+                part["device"] = Json::String(device.to_owned());
+            }
         }
         if cut(part) {
             part["chat"] = Json::String(doc.to_owned());
@@ -4965,6 +4967,7 @@ fn visual_block(part: &Json) -> Value {
         ("path", field("path")),
         ("title", field("title")),
         ("device", field("device")),
+        ("chat", field("chat")),
     ])
 }
 
@@ -7366,10 +7369,13 @@ mod tests {
         assert_eq!(list[1].field("id"), Some(&Value::from("v:1")));
         assert!(list[1].field("device").is_none_or(|d| *d == Value::Nil), "this device's: no device");
         // A chat on another device: its visuals are read from there.
-        assert!(with_host(&entry, "c1", None).is_none());
+        // Each names its chat, whose composer its answers go to.
+        let here = with_host(&entry, "c1", None).expect("it has a visual");
+        assert_eq!(blocks(&here).list()[1].field("chat"), Some(&Value::from("c1")));
         let remote = with_host(&entry, "c1", Some("dev-2")).expect("it has a visual");
         let shown = blocks(&remote);
         assert_eq!(shown.list()[1].field("device"), Some(&Value::from("dev-2")));
+        assert_eq!(shown.list()[1].field("chat"), Some(&Value::from("c1")));
     }
 
     /// A command whose output the doc cut names the doc it is in (its row

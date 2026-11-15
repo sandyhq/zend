@@ -34,6 +34,7 @@ local ds = require("@ds")
 local shared = require("@app/screens/chat/shared")
 local prefs = require("@app/screens/settings/prefs")
 local route = require("@app/screens/shell/route")
+local VisualAnswer = require("@ds/visual_answer")
 
 local M = {}
 
@@ -267,6 +268,26 @@ function M.insert(text: string, inline: boolean?)
 	local sep = if now == "" or inline or string.sub(now, -1) == "\n" then "" else "\n"
 	shared.text:set(now .. sep .. text)
 	shared.focus:add(1)
+end
+
+-- A visual's answers (`ui.answer`, ds/visual_answer) go into the draft of
+-- the chat it's in, wherever that draft is (the composer, or kept for a
+-- chat not shown); a subagent's doc is its root chat's. Never sent.
+local function answer_key(chat: string?): string
+	if not chat or chat == "" then
+		return shared.showing()
+	end
+	return string.match(chat, "^(.-)%-%-sub%-%-") or chat
+end
+VisualAnswer.read = function(chat: string?): string
+	return shared.draft_of(answer_key(chat)).text
+end
+VisualAnswer.write = function(chat: string?, text: string)
+	local key = answer_key(chat)
+	shared.set_draft_of(key, "text", text)
+	if key == shared.showing() then
+		shared.focus:add(1)
+	end
 end
 
 function M.load_catalog()

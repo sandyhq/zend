@@ -826,6 +826,7 @@ return {
 	["ds.visual.copy_error"] = "Copy error",
 	["ds.visual.input.new"] = "New",
 	["ds.visual.input.change"] = "Change",
+	["ds.visual.answer.add"] = "Add to message",
 	["ds.links.open"] = "Open",
 	["ds.links.open_in_panel"] = "Open in browser panel",
 	["ds.links.open_outside"] = "Open in default browser",

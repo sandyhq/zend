@@ -41,6 +41,9 @@
 //!       a new script doesn't change what it shows.
 //!   visuals.entries id                                     (`ui.call_sync`)
 //!       what the reader entered, `{ [name] = value }`.
+//!   visuals.answer id                                      (`ui.call_sync`)
+//!       its inputs as they show, as words for the composer (crates/visual
+//!       `answer_text`: the title, a line per input), for `ui.answer`.
 //!   visuals.swap { id, source }                            (`ui.call`)
 //!       a new script for a visual that's open, its entries kept (an error
 //!       leaves the old one running). (For plans/live-visuals G3.)
@@ -318,6 +321,12 @@ impl Entry {
         Ok(())
     }
 
+    /// Its inputs as words for the composer (`ui.answer`, D8), as they
+    /// show now: none before it has drawn.
+    fn answer(&self) -> Option<String> {
+        self.tree.as_ref().map(|tree| zv::answer_text(&self.title, tree))
+    }
+
     fn snapshot(&self) -> Value {
         let state = match &self.load {
             Load::Loading => "loading",
@@ -591,6 +600,11 @@ fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<S
     host.function(name("entries"), move |arg| {
         let id = crate::auth::text(&scoped(arg, &sc));
         v.with(&id, |e| entries_value(&e.kept)).unwrap_or(Value::Nil)
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
+    host.function(name("answer"), move |arg| {
+        let id = crate::auth::text(&scoped(arg, &sc));
+        v.with(&id, |e| e.answer()).flatten().map_or(Value::Nil, |t| Value::from(t.as_str()))
     });
     let (v, sc) = (visuals.clone(), scope.clone());
     host.async_action(name("swap"), move |arg| {
@@ -1132,6 +1146,12 @@ fn node_value(node: &zv::Node, path: &str) -> Value {
             }
             f.push(("change", handler(*on_change)));
             f.push(("fmt", format_value(format)));
+        }
+        zv::NodeKind::Answer { label } => {
+            f.push(("k", Value::from("answer")));
+            if let Some(label) = label {
+                f.push(("label", Value::from(label.as_str())));
+            }
         }
         zv::NodeKind::Link { label, url } => {
             f.push(("k", Value::from("link")));

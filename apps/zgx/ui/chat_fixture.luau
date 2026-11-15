@@ -1246,6 +1246,30 @@ TRANSCRIPTS.s6 = {
 	line("f5", "assistant", 5, "Done. The table is in the release notes."),
 }
 META.s6 = { title = "Switched agents", project = "atlas", model = "sonnet", effort = "medium", access = "full", plan = false }
+-- A visual asking questions, with an answer button (plans/live-visuals G2,
+-- src/visual_answer_tests.rs): its answers go into this chat's composer,
+-- under what's written there, and are never sent.
+META.sv = { title = "A question visual", project = "atlas", model = "sonnet", effort = "medium", access = "full", plan = false }
+TRANSCRIPTS.sv = {
+	line("q0", "user", 0, "Plan the database move."),
+	line("q1", "assistant", 1, "Two things to settle first:", {
+		blocks = {
+			{ id = "qt", kind = "text", text = "Two things to settle first:" },
+			{
+				id = "v:fixture-answer",
+				kind = "visual",
+				title = "Migration plan",
+				chat = "sv",
+				source = [[return function() return ui.column { gap = 12,
+					ui.field { name = "goal", label = "Goal" },
+					ui.checklist { name = "steps", label = "Steps", options = { "Back up", "Verify" } },
+					ui.choice { name = "when", label = "When", options = { "Tonight", "This weekend" } },
+					ui.answer {},
+				} end]],
+			},
+		},
+	}),
+}
 seed()
 ui.command {
 	id = "group_grows",
@@ -2037,7 +2061,7 @@ ui.command {
 		require("@app/screens/chat/shared").mention_chat("s1")
 	end,
 }
-for _, id in { "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9" } do
+for _, id in { "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sv" } do
 	ui.command {
 		id = `go_{id}`,
 		title = `Open {id}`,

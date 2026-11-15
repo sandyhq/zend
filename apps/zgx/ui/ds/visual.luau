@@ -15,6 +15,9 @@
 --   button, toggle,     ds Button, Switch, Slider; tabs a Segmented control
 --   slider, tabs        (a Select for many or long options)
 --   link                the accent, opened where the app opens links
+--   answer              a Button: the inputs as words into the chat's
+--                       composer, under its draft (ds/visual_answer); never
+--                       sends
 --   input               a named input (field, area, check, checklist,
 --                       choice, select): ds TextField, TextArea, Checkbox,
 --                       Radio, Select. What the reader enters is kept
@@ -59,9 +62,12 @@ local status = require("@self/status")
 local locale = require("@self/locale")
 local Links = require("@ds/links")
 local ReplyPicture = require("@self/reply_picture")
+local VisualAnswer = require("@self/visual_answer")
 
 export type Props = {
 	id: string,
+	-- The chat (its doc) it's in: where `ui.answer` writes.
+	chat: string?,
 	path: string?,
 	title: string?,
 	device: string?,
@@ -183,6 +189,8 @@ type Ctx = {
 	-- input that has focus (nil: none).
 	input: (name: string, value: any) -> (),
 	focus: (name: string?) -> (),
+	-- Its inputs as words into its chat's composer (`ui.answer`).
+	answer: () -> (),
 	-- A failure while drawing (a canvas's, a scene's), shown under it.
 	drew: (error: string?) -> (),
 }
@@ -1191,6 +1199,26 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 				literal = true,
 			},
 		}, n, parent))
+	elseif k == "answer" then
+		if not VisualAnswer.available() then
+			return ui.div {}
+		end
+		local get = ctx.at(n.p)
+		return Button(place({
+			class = "visual-answer",
+			tone = "primary",
+			size = "sm",
+			on_click = function()
+				ctx.answer()
+			end,
+			ui.text {
+				function(): string
+					local now = get()
+					return if now and now.label then now.label else locale.s("ds.visual.answer.add")
+				end,
+				literal = true,
+			},
+		}, n, parent))
 	elseif k == "tabs" then
 		return ui.row(place({ min_w = 0, Tabs { n = n, ctx = ctx } }, n, parent))
 	elseif k == "toggle" then
@@ -1316,6 +1344,12 @@ return ui.component(function(props: Props): Node
 		end,
 		focus = function(name: string?)
 			pcall(ui.invoke, api .. ".focus", { id = id, name = name })
+		end,
+		answer = function()
+			local ok, text = pcall(ui.call_sync, api .. ".answer", id)
+			if ok and type(text) == "string" then
+				VisualAnswer.put(props.chat, id, text)
+			end
 		end,
 		drew = function(error: string?)
 			local message = error or ""
