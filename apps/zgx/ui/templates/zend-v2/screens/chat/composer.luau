@@ -36,6 +36,10 @@ local files = require("@app/screens/files/api")
 local Where = require("@app/screens/chat/where")
 local DropOverlay = require("@ds/drop_overlay")
 local mentions = require("@ds/composer_mentions")
+local VisualAnswer = require("@ds/visual_answer")
+local VisualPin = require("@ds/visual_pin")
+local Visual = require("@ds/visual")
+local glass = require("@ds/glass")
 local Invocations = require("@app/screens/chat/invocations")
 local ZendCommands = require("@app/screens/chat/zend_commands")
 -- (Loaded with the chat page: captures land on its composer.)
@@ -121,6 +125,53 @@ end
 -- The tray open behind the composer (its todos, tasks or queue), kept
 -- across a reload.
 local TRAY = ui.state("chat_tray", nil :: ("todos" | "tasks" | "queue")?)
+
+-- The pinned visual: on the composer's glass, its height capped (it
+-- scrolls), the same visual the transcript had (the host keeps it).
+local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> number }): Node
+	local key = ui.computed(function(): string
+		local b = props.block:get()
+		return if b then b.id else ""
+	end)
+	local tall = ui.use_state(0)
+	return glass.Panel {
+		kind = "island",
+		id = "chat-pinned-visual",
+		class = "visual-pinned",
+		w_full = true,
+		mb = "$space.2",
+		overflow = "hidden",
+		-- As tall as the visual, up to the cap; past it the visual scrolls.
+		h = function(): number
+			return math.max(1, math.min(tall:get(), props.max_h())) + 2
+		end,
+		ui.scroll {
+			w_full = true,
+			grow = 1,
+			min_h = 1,
+			overscroll = "contain",
+			ui.column {
+				w_full = true,
+				shrink = 0,
+				p = "$space.3",
+				on_resize = function(size: { w: number, h: number })
+					if math.abs(tall:peek() - size.h) >= 1 then
+						tall:set(size.h)
+					end
+				end,
+				ui.presence(function(): string
+					return key:get()
+				end, function(id: string): Node
+					local b = props.block:peek()
+					if id == "" or not b then
+						return ui.div {}
+					end
+					return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent }
+				end),
+			},
+		},
+	}
+end)
 
 local function Composer(): Node
 	-- The session shown, or nil on a new chat.
@@ -914,6 +965,8 @@ local function Composer(): Node
 			local function deliver(message_id: string?)
 				req.message_id = message_id
 				store.send(req :: any):after(function()
+					-- A visual's answers went with it: it's answered.
+					VisualAnswer.sending(text_out .. "\n" .. words)
 					-- Sent with it: the session has it now; no pick left.
 					if req.model or req.effort or req.fast ~= nil or req.options then
 						local all = table.clone(shared.picks:peek())
@@ -1463,6 +1516,24 @@ local function Composer(): Node
 		}
 	end
 
+	-- The newest open visual of the chat shown (ds/visual_pin): pinned, its
+	-- place in the transcript a line.
+	local revs = ui.shared("visuals", {} :: { [string]: any })
+	local pinned = ui.computed(function(): any
+		if not session_id:get() then
+			return nil
+		end
+		return VisualPin.pick(store.messages:get(), revs:get())
+	end)
+	ui.effect(function()
+		local b = pinned:get()
+		local id = if b then b.id else nil
+		local was = next(VisualPin.pinned:peek())
+		if was ~= id then
+			VisualPin.pinned:set(if id then { [id] = true } else {})
+		end
+	end)
+
 	local page = ui.ref()
 	-- The page's height as last laid out, kept (a reload keeps state): a
 	-- composer made again reads it until its own page is measured, so its
@@ -1711,6 +1782,17 @@ local function Composer(): Node
 				-- the pane, left a box over the transcript taking its wheel.)
 				-- (And not over a plugin's page: the chat's page is kept unseen
 				-- under it, and so is this.)
+				-- The chat's open visual, pinned over the pill while the
+				-- transcript moves on (ds/visual_pin).
+				ui.show(function(): boolean
+					return not new_chat() and pinned:get() ~= nil and route.current:get().name ~= "plugin"
+				end, PinnedVisual {
+					block = pinned,
+					-- (Up to under half the page: the transcript stays in view.)
+					max_h = function(): number
+						return math.clamp((page.height or 0) * 0.45, 180, 520)
+					end,
+				}),
 				ui.show(function(): boolean
 					return not route.needs_project:get() and route.current:get().name ~= "plugin"
 				end, composer()),

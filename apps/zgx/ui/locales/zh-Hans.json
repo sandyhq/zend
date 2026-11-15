@@ -1026,8 +1026,10 @@
         "change": "Change"
       },
       "answer": {
-        "add": "Add to message"
-      }
+        "add": "Add to message",
+        "sent": "回答已发送"
+      },
+      "pinned": "{title}：在消息框上方打开"
     },
     "links": {
       "open": "打开",
