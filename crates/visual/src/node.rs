@@ -6,6 +6,7 @@
 use mlua::{Function, Table, Value};
 
 use crate::VisualError;
+use crate::entries::{EntryValue, Shape};
 use crate::style::{Align, Color, Justify, TextSize, Token, Weight};
 
 /// A Lua function a node calls back (an event handler or a draw function),
@@ -85,6 +86,81 @@ pub enum NodeKind {
         label: String,
         url: String,
     },
+    /// A named input whose value Zend keeps ([`crate::Entries`]).
+    Input(Box<Input>),
+}
+
+/// The kinds of named input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputKind {
+    /// `ui.field`: one line of text.
+    Field,
+    /// `ui.area`: several lines of text.
+    Area,
+    /// `ui.check`: one checkbox.
+    Check,
+    /// `ui.checklist`: a checkbox per option, its value the checked ones.
+    Checklist,
+    /// `ui.choice`: options to pick one of, or several (`many = true`).
+    Choice { many: bool },
+    /// `ui.select`: one of many options, in a menu.
+    Select,
+}
+
+impl InputKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Field => "field",
+            Self::Area => "area",
+            Self::Check => "check",
+            Self::Checklist => "checklist",
+            Self::Choice { .. } => "choice",
+            Self::Select => "select",
+        }
+    }
+
+    pub fn shape(self) -> Shape {
+        match self {
+            Self::Check => Shape::Bool,
+            Self::Checklist | Self::Choice { many: true } => Shape::List,
+            _ => Shape::Text,
+        }
+    }
+
+    pub fn has_options(self) -> bool {
+        matches!(self, Self::Checklist | Self::Choice { .. } | Self::Select)
+    }
+}
+
+/// One option of a checklist, choice, or select.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InputOption {
+    /// What the entry holds when it's chosen.
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Input {
+    pub kind: InputKind,
+    /// Fixed by the script, unique in it: the entry's key.
+    pub name: String,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub placeholder: Option<String>,
+    pub options: Vec<InputOption>,
+    /// What it shows: the reader's entry, or the script's start value.
+    pub value: EntryValue,
+    /// The script's start value.
+    pub start: EntryValue,
+    /// `value` is the reader's entry.
+    pub kept: bool,
+    /// New with the latest script and not touched yet.
+    pub fresh: bool,
+    /// Decided elsewhere (a child session's answer): shown, collapsed, with
+    /// a way to reopen it.
+    pub answered: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -277,6 +353,8 @@ const MAX_TEXT: usize = 8000;
 pub(crate) struct Parser {
     pub handlers: Vec<Function>,
     nodes: usize,
+    /// Every input's name, in tree order.
+    pub inputs: Vec<String>,
 }
 
 /// Field names every node accepts.
@@ -304,6 +382,7 @@ impl Parser {
         Self {
             handlers: Vec::new(),
             nodes: 0,
+            inputs: Vec::new(),
         }
     }
 
@@ -660,6 +739,15 @@ impl Parser {
                     url,
                 }
             }
+            "field" => self.input(&props, InputKind::Field)?,
+            "area" => self.input(&props, InputKind::Area)?,
+            "check" => self.input(&props, InputKind::Check)?,
+            "checklist" => self.input(&props, InputKind::Checklist)?,
+            "choice" => {
+                let many = props.bool("many")?.unwrap_or(false);
+                self.input(&props, InputKind::Choice { many })?
+            }
+            "select" => self.input(&props, InputKind::Select)?,
             "span" => {
                 return Err(VisualError::script(
                     "ui.span goes inside ui.text { ... }, not directly in a layout",
@@ -673,6 +761,109 @@ impl Parser {
             grow: props.bool("grow")?.unwrap_or(false),
             key: props.string("key")?,
         })
+    }
+
+    /// A named input. Its value here is the script's; the visual puts the
+    /// reader's entry in after parsing ([`crate::Visual::render`]).
+    fn input(&mut self, props: &Props, kind: InputKind) -> Result<NodeKind, VisualError> {
+        let mut known = vec!["name", "label", "description", "value", "answered"];
+        match kind {
+            InputKind::Field | InputKind::Area => known.push("placeholder"),
+            InputKind::Select => known.extend(["options", "placeholder"]),
+            InputKind::Checklist => known.push("options"),
+            InputKind::Choice { .. } => known.extend(["options", "many"]),
+            InputKind::Check => {}
+        }
+        props.allow(&known)?;
+        let name = match props.string("name")? {
+            Some(name) if !name.trim().is_empty() => name,
+            _ => {
+                return Err(props.error(
+                    "needs name = \"...\": a fixed name, unique in the visual, that Zend keeps \
+                     the reader's entry under",
+                ));
+            }
+        };
+        if name.len() > 80 {
+            return Err(props.error("'name' is over 80 characters"));
+        }
+        if self.inputs.contains(&name) {
+            return Err(props.error(&format!(
+                "name '{name}' is used twice: every input needs its own name"
+            )));
+        }
+        let mut options = Vec::new();
+        if kind.has_options() {
+            for option in props.get::<Option<Vec<Value>>>("options")?.unwrap_or_default() {
+                options.push(match option {
+                    Value::Table(t) => {
+                        let value = t
+                            .raw_get::<Value>("value")
+                            .map(|v| value_text(&v))
+                            .unwrap_or_default();
+                        let label = t
+                            .raw_get::<Option<String>>("label")
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| value.clone());
+                        let value = if value.is_empty() { label.clone() } else { value };
+                        InputOption {
+                            value: clip(value),
+                            label: clip(label),
+                            description: t
+                                .raw_get::<Option<String>>("description")
+                                .ok()
+                                .flatten()
+                                .map(clip),
+                        }
+                    }
+                    other => {
+                        let text = clip(value_text(&other));
+                        InputOption {
+                            value: text.clone(),
+                            label: text,
+                            description: None,
+                        }
+                    }
+                });
+            }
+            if options.is_empty() {
+                return Err(props.error("needs options = { \"...\", ... }"));
+            }
+            if options.len() > 100 {
+                return Err(props.error("has more than 100 options"));
+            }
+            let mut seen = std::collections::HashSet::new();
+            if let Some(twice) = options.iter().find(|o| !seen.insert(o.value.clone())) {
+                return Err(props.error(&format!("has option '{}' twice", twice.value)));
+            }
+        }
+        let start = match kind.shape() {
+            Shape::Bool => EntryValue::Bool(props.bool("value")?.unwrap_or(false)),
+            Shape::Text => EntryValue::Text(props.text_value("value")?.unwrap_or_default()),
+            Shape::List => EntryValue::List(match props.table.raw_get::<Value>("value")? {
+                Value::Nil => Vec::new(),
+                Value::Table(t) => t
+                    .sequence_values::<Value>()
+                    .map(|v| v.map(|v| value_text(&v)))
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(props.error("'value' is a list of option values")),
+            }),
+        };
+        self.inputs.push(name.clone());
+        Ok(NodeKind::Input(Box::new(Input {
+            kind,
+            name,
+            label: props.string("label")?,
+            description: props.string("description")?,
+            placeholder: props.string("placeholder")?,
+            options,
+            value: start.clone(),
+            start,
+            kept: false,
+            fresh: false,
+            answered: props.string("answered")?.filter(|a| !a.trim().is_empty()),
+        })))
     }
 
     fn required_function(&mut self, props: &Props, name: &str) -> Result<HandlerId, VisualError> {

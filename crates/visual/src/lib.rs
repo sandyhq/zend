@@ -19,6 +19,7 @@
 
 pub mod assets;
 mod draw;
+pub mod entries;
 pub mod image;
 mod model;
 mod node;
@@ -35,9 +36,10 @@ use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value, VmState};
 
 pub use assets::Assets;
 pub use draw::{DrawCmd, DrawText, Pointer};
+pub use entries::{Entries, EntryValue, Shape};
 pub use node::{
-    Axis, Canvas, Chart, ChartKind, Column, HandlerId, Node, NodeKind, NumberFormat, SceneNode,
-    Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
+    Axis, Canvas, Chart, ChartKind, Column, HandlerId, Input, InputKind, InputOption, Node,
+    NodeKind, NumberFormat, SceneNode, Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
 };
 pub use raster::{Quality, Raster, RasterLabel};
 pub use scene::{
@@ -129,6 +131,10 @@ pub struct Visual {
     deadline: Rc<Cell<Option<Instant>>>,
     logs: Rc<RefCell<Vec<String>>>,
     assets: Assets,
+    /// What the reader entered, by input name (`ui.entry` reads it).
+    entries: Rc<RefCell<Entries>>,
+    /// What each input showed at the last render.
+    shown: std::collections::BTreeMap<String, EntryValue>,
 }
 
 const MAX_LOG_LINES: usize = 200;
@@ -209,6 +215,21 @@ impl Visual {
                 Ok(nice_ticks(lo, hi, count.unwrap_or(5)))
             })?,
         )?;
+        let entries: Rc<RefCell<Entries>> = Rc::default();
+        let read = entries.clone();
+        ui.set(
+            "entry",
+            lua.create_function(move |lua, name: String| {
+                Ok(match read.borrow().get(&name) {
+                    None => Value::Nil,
+                    Some(EntryValue::Bool(b)) => Value::Boolean(*b),
+                    Some(EntryValue::Text(t)) => Value::String(lua.create_string(t)?),
+                    Some(EntryValue::List(items)) => {
+                        Value::Table(lua.create_sequence_from(items.iter().cloned())?)
+                    }
+                })
+            })?,
+        )?;
         globals.set("ui", ui)?;
         let math: Table = globals.get("math")?;
         let randomseed: Function = math.get("randomseed")?;
@@ -249,7 +270,46 @@ impl Visual {
             deadline,
             logs,
             assets: Assets::default(),
+            entries,
+            shown: Default::default(),
         })
+    }
+
+    /// Start with entries kept from before (saved, or another VM's).
+    pub fn with_entries(self, entries: Entries) -> Self {
+        *self.entries.borrow_mut() = entries;
+        self
+    }
+
+    /// What the reader entered so far.
+    pub fn entries(&self) -> Entries {
+        self.entries.borrow().clone()
+    }
+
+    /// The reader entered `value` in input `name` (`None` clears it). The
+    /// caller renders again afterwards.
+    pub fn set_entry(&mut self, name: &str, value: Option<EntryValue>) {
+        self.entries.borrow_mut().set(name, value);
+    }
+
+    /// Input `name` took focus (`None`: focus left). It keeps showing what
+    /// it shows now until focus leaves, whatever a new script says.
+    pub fn focus(&mut self, name: Option<&str>) {
+        let shown = name.and_then(|n| self.shown.get(n).cloned());
+        self.entries.borrow_mut().focus(name, shown);
+    }
+
+    /// Replace the script, keeping every entry and the focus: the agent
+    /// updating its visual in place. On an error the old script runs on.
+    pub fn swap(&mut self, source: &str) -> Result<(), VisualError> {
+        // The same seed: its random data is what the agent's check saw.
+        let mut next = Visual::load(source, self.seed as u64)?.with_assets(self.assets.clone());
+        let mut entries = self.entries.borrow().clone();
+        entries.mark_swap();
+        *next.entries.borrow_mut() = entries;
+        next.shown = std::mem::take(&mut self.shown);
+        *self = next;
+        Ok(())
     }
 
     /// Give the script its asset files (textures, models).
@@ -283,8 +343,12 @@ impl Visual {
         self.deadline.set(Some(deadline));
         let tree = parser.root(value);
         self.deadline.set(None);
-        let tree = tree?;
+        let mut tree = tree?;
         self.handlers = parser.handlers;
+        let mut entries = self.entries.borrow_mut();
+        entries.saw(&parser.inputs);
+        self.shown.clear();
+        resolve_inputs(&mut tree, &entries, &mut self.shown);
         Ok(tree)
     }
 
@@ -360,6 +424,52 @@ impl Visual {
     }
 }
 
+/// Put the reader's entries into the tree's inputs.
+fn resolve_inputs(
+    node: &mut Node,
+    entries: &Entries,
+    shown: &mut std::collections::BTreeMap<String, EntryValue>,
+) {
+    match &mut node.kind {
+        NodeKind::Input(input) => {
+            let (value, kept) =
+                entries.resolve(&input.name, input.kind.shape(), input.start.clone());
+            input.value = value;
+            input.kept = kept;
+            input.fresh = entries.is_fresh(&input.name);
+            shown.insert(input.name.clone(), input.value.clone());
+        }
+        NodeKind::Stack(stack) => stack
+            .children
+            .iter_mut()
+            .for_each(|c| resolve_inputs(c, entries, shown)),
+        NodeKind::Grid { children, .. } => children
+            .iter_mut()
+            .for_each(|c| resolve_inputs(c, entries, shown)),
+        NodeKind::Table(table) => table
+            .rows
+            .iter_mut()
+            .flatten()
+            .for_each(|c| resolve_inputs(c, entries, shown)),
+        _ => {}
+    }
+}
+
+/// Every input in a tree, in order.
+pub fn inputs(node: &Node) -> Vec<&Input> {
+    fn walk<'a>(node: &'a Node, out: &mut Vec<&'a Input>) {
+        if let NodeKind::Input(input) = &node.kind {
+            out.push(input);
+        }
+        for child in children(node) {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
 /// Round tick values covering `lo..=hi`, about `count` of them.
 pub fn nice_ticks(lo: f64, hi: f64, count: usize) -> Vec<f64> {
     let (lo, hi) = if hi < lo { (hi, lo) } else { (lo, hi) };
@@ -431,6 +541,24 @@ pub fn check_with_assets(source: &str, seed: u64, assets: Assets) -> Result<Repo
                 exercise_draws(&mut visual, &tree, &mut Report::default())
             })
             .map_err(|e| VisualError::script(format!("after {describe}: {}", e.message)))?;
+        report.interactions += 1;
+    }
+    // Each input once with something entered, and the view again.
+    let names: Vec<(String, InputKind, Option<String>)> = inputs(&visual.render()?)
+        .into_iter()
+        .map(|i| (i.name.clone(), i.kind, i.options.first().map(|o| o.value.clone())))
+        .collect();
+    for (name, kind, first) in names.into_iter().take(24) {
+        let value = match kind.shape() {
+            Shape::Bool => EntryValue::Bool(true),
+            Shape::Text => EntryValue::Text(first.unwrap_or_else(|| "An answer".into())),
+            Shape::List => EntryValue::List(first.into_iter().collect()),
+        };
+        visual.set_entry(&name, Some(value));
+        visual
+            .render()
+            .and_then(|tree| exercise_draws(&mut visual, &tree, &mut Report::default()))
+            .map_err(|e| VisualError::script(format!("after entering '{name}': {}", e.message)))?;
         report.interactions += 1;
     }
     report.logs = visual.logs();

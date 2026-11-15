@@ -32,10 +32,20 @@ for _, kind in
 		"toggle",
 		"slider",
 		"link",
+		-- Named inputs: Zend keeps what the reader enters by `name`.
+		"field",
+		"area",
+		"check",
+		"checklist",
+		"choice",
+		"select",
 	}
 do
 	ui[kind] = constructor(kind)
 end
+
+-- (`ui.entry(name)`, set by Zend: what the reader entered in the input
+-- named `name`, or nil. Read-only: entries belong to the reader.)
 
 -- A theme token at an opacity.
 function ui.color(token, alpha)

@@ -15,5 +15,8 @@ gltf = { version = "1", default-features = false, features = ["import", "utils",
 # Texture and environment-map assets.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "hdr", "webp"] }
 thiserror.workspace = true
+# Entries saved beside a visual's script.
+serde.workspace = true
+serde_json.workspace = true
 # Images embedded in glTF models as data URIs.
 base64 = "0.22"

@@ -483,3 +483,177 @@ fn missing_and_broken_assets_fail_the_check_with_their_names() {
         error.message
     );
 }
+
+// ---- named inputs and kept entries (plans/live-visuals G1) ---------------
+
+const FORM: &str = r#"
+    return function()
+      return ui.column {
+        ui.field { name = "goal", label = "Goal", placeholder = "One line", value = "ship it" },
+        ui.area { name = "notes", label = "Notes" },
+        ui.check { name = "agree", label = "Agree" },
+        ui.checklist { name = "steps", label = "Steps", options = { "build", "test" }, value = { "build" } },
+        ui.choice { name = "size", options = { "S", "M", "L" }, value = "M" },
+        ui.choice { name = "tags", many = true, options = { { value = "a", label = "Alpha" }, "b" } },
+        ui.select { name = "who", options = { "me", "you" } },
+        ui.text { "goal is ", ui.entry("goal") or "-" },
+      }
+    end
+"#;
+
+fn input<'a>(tree: &'a Node, name: &str) -> &'a Input {
+    inputs(tree)
+        .into_iter()
+        .find(|i| i.name == name)
+        .unwrap_or_else(|| panic!("no input {name}"))
+}
+
+fn text(value: &str) -> EntryValue {
+    EntryValue::Text(value.into())
+}
+
+#[test]
+fn every_input_kind_parses_with_its_start_value() {
+    let mut visual = Visual::load(FORM, 1).unwrap();
+    let tree = visual.render().unwrap();
+    let kinds: Vec<_> = inputs(&tree).iter().map(|i| (i.name.as_str(), i.kind)).collect();
+    assert_eq!(
+        kinds,
+        [
+            ("goal", InputKind::Field),
+            ("notes", InputKind::Area),
+            ("agree", InputKind::Check),
+            ("steps", InputKind::Checklist),
+            ("size", InputKind::Choice { many: false }),
+            ("tags", InputKind::Choice { many: true }),
+            ("who", InputKind::Select),
+        ]
+    );
+    assert_eq!(input(&tree, "goal").value, text("ship it"));
+    assert_eq!(input(&tree, "goal").placeholder.as_deref(), Some("One line"));
+    assert_eq!(input(&tree, "agree").value, EntryValue::Bool(false));
+    assert_eq!(input(&tree, "steps").value, EntryValue::List(vec!["build".into()]));
+    assert_eq!(input(&tree, "tags").options[0].label, "Alpha");
+    assert_eq!(input(&tree, "tags").value, EntryValue::List(vec![]));
+    assert!(!input(&tree, "goal").kept);
+    check(FORM, 1).unwrap();
+}
+
+#[test]
+fn a_kept_entry_beats_the_scripts_value() {
+    let mut visual = Visual::load(FORM, 1).unwrap();
+    visual.render().unwrap();
+    visual.set_entry("goal", Some(text("fix the bug")));
+    visual.set_entry("steps", Some(EntryValue::List(vec!["test".into()])));
+    let tree = visual.render().unwrap();
+    let goal = input(&tree, "goal");
+    assert_eq!(goal.value, text("fix the bug"));
+    assert_eq!(goal.start, text("ship it"));
+    assert!(goal.kept);
+    assert_eq!(input(&tree, "steps").value, EntryValue::List(vec!["test".into()]));
+    // The script reads it, read-only.
+    assert!(text_of(&tree).contains("goal is fix the bug"));
+    // Cleared, the script's value shows again.
+    visual.set_entry("goal", None);
+    assert_eq!(input(&visual.render().unwrap(), "goal").value, text("ship it"));
+}
+
+#[test]
+fn an_entry_survives_a_script_swap_and_a_dropped_input_keeps_its_own() {
+    let mut visual = Visual::load(FORM, 1).unwrap();
+    visual.render().unwrap();
+    visual.set_entry("goal", Some(text("mine")));
+    visual.set_entry("notes", Some(text("typed")));
+    // The agent's new script gives goal another value, drops notes, adds due.
+    visual
+        .swap(
+            r#"return function() return ui.column {
+                ui.field { name = "goal", label = "Goal", value = "the agent's" },
+                ui.field { name = "due", label = "Due" },
+            } end"#,
+        )
+        .unwrap();
+    let tree = visual.render().unwrap();
+    assert_eq!(input(&tree, "goal").value, text("mine"));
+    assert!(!input(&tree, "goal").fresh);
+    assert!(input(&tree, "due").fresh, "new since the last script");
+    assert_eq!(visual.entries().get("notes"), Some(&text("typed")));
+    // Touched, it isn't new any more; renders don't make it new again.
+    visual.set_entry("due", Some(text("Friday")));
+    assert!(!input(&visual.render().unwrap(), "due").fresh);
+    // The dropped input comes back with its entry.
+    visual.swap(FORM).unwrap();
+    let tree = visual.render().unwrap();
+    assert_eq!(input(&tree, "notes").value, text("typed"));
+    assert!(!input(&tree, "notes").fresh, "known from before");
+    // A broken script leaves the old one running, entries untouched.
+    assert!(visual.swap("return 5").is_err());
+    assert_eq!(input(&visual.render().unwrap(), "goal").value, text("mine"));
+}
+
+#[test]
+fn the_focused_input_keeps_what_it_shows_across_a_swap() {
+    let mut visual = Visual::load(FORM, 1).unwrap();
+    visual.render().unwrap();
+    // The reader is in "goal" but hasn't typed yet.
+    visual.focus(Some("goal"));
+    visual
+        .swap(r#"return function() return ui.field { name = "goal", value = "changed" } end"#)
+        .unwrap();
+    let tree = visual.render().unwrap();
+    assert_eq!(input(&tree, "goal").value, text("ship it"), "focused input untouched");
+    assert!(!input(&tree, "goal").kept, "not an entry of the reader's");
+    // Focus gone, the script's value shows.
+    visual.focus(None);
+    assert_eq!(input(&visual.render().unwrap(), "goal").value, text("changed"));
+}
+
+#[test]
+fn entries_round_trip_as_json_for_a_restart() {
+    let mut visual = Visual::load(FORM, 1).unwrap();
+    visual.render().unwrap();
+    visual.set_entry("agree", Some(EntryValue::Bool(true)));
+    visual.set_entry("tags", Some(EntryValue::List(vec!["a".into(), "b".into()])));
+    visual.set_entry("goal", Some(text("x")));
+    let saved = visual.entries().to_json();
+    let mut again = Visual::load(FORM, 1).unwrap().with_entries(Entries::from_json(&saved));
+    let tree = again.render().unwrap();
+    assert_eq!(input(&tree, "agree").value, EntryValue::Bool(true));
+    assert_eq!(input(&tree, "tags").value, EntryValue::List(vec!["a".into(), "b".into()]));
+    assert_eq!(input(&tree, "goal").value, text("x"));
+    assert_eq!(Entries::from_json("not json"), Entries::default());
+}
+
+#[test]
+fn an_entry_of_the_wrong_shape_is_not_shown() {
+    let mut visual = Visual::load(FORM, 1).unwrap();
+    visual.set_entry("agree", Some(text("yes")));
+    assert_eq!(input(&visual.render().unwrap(), "agree").value, EntryValue::Bool(false));
+}
+
+#[test]
+fn inputs_need_a_name_of_their_own() {
+    let missing = check(r#"return ui.field { label = "Goal" }"#, 1).unwrap_err();
+    assert!(missing.message.contains("ui.field needs name"), "{}", missing.message);
+    let twice = check(
+        r#"return ui.column { ui.field { name = "a" }, ui.check { name = "a" } }"#,
+        1,
+    )
+    .unwrap_err();
+    assert!(twice.message.contains("name 'a' is used twice"), "{}", twice.message);
+    let no_options = check(r#"return ui.choice { name = "c" }"#, 1).unwrap_err();
+    assert!(no_options.message.contains("needs options"), "{}", no_options.message);
+    let unknown = check(r#"return ui.check { name = "c", options = { "x" } }"#, 1).unwrap_err();
+    assert!(unknown.message.contains("has no 'options'"), "{}", unknown.message);
+}
+
+#[test]
+fn an_answered_input_carries_its_answer() {
+    let mut visual = Visual::load(
+        r#"return ui.field { name = "db", label = "Database", answered = "Postgres (child session)" }"#,
+        1,
+    )
+    .unwrap();
+    let tree = visual.render().unwrap();
+    assert_eq!(input(&tree, "db").answered.as_deref(), Some("Postgres (child session)"));
+}
