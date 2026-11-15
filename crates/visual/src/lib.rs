@@ -237,25 +237,24 @@ impl Visual {
             .set_mode(mlua::chunk::ChunkMode::Text)
             .call(ui.clone())?;
         // Batches of kinds, each in a file of its own, join the kit before it
-        // is frozen again.
-        let merged = lua.create_table()?;
-        for pair in kit.pairs::<Value, Value>() {
+        // is frozen. Batch a returns its kinds; batch b adds them itself.
+        let extra: Table = lua
+            .load(include_str!("kit_a.luau"))
+            .set_name("=kit_a")
+            .set_mode(mlua::chunk::ChunkMode::Text)
+            .call(ui.clone())?;
+        for pair in extra.pairs::<Value, Value>() {
             let (k, v) = pair?;
-            merged.set(k, v)?;
+            kit.set(k, v)?;
         }
-        for (name, source) in [("kit_a", include_str!("kit_a.luau"))] {
-            let extra: Table = lua
-                .load(source)
-                .set_name(format!("={name}"))
+        for (name, source) in [("=kit_b", include_str!("kit_b.luau"))] {
+            lua.load(source)
+                .set_name(name)
                 .set_mode(mlua::chunk::ChunkMode::Text)
-                .call(ui.clone())?;
-            for pair in extra.pairs::<Value, Value>() {
-                let (k, v) = pair?;
-                merged.set(k, v)?;
-            }
+                .call::<()>((ui.clone(), kit.clone()))?;
         }
-        merged.set_readonly(true);
-        ui.set("kit", merged)?;
+        kit.set_readonly(true);
+        ui.set("kit", kit)?;
         globals.set("ui", ui)?;
         let math: Table = globals.get("math")?;
         let randomseed: Function = math.get("randomseed")?;
@@ -820,3 +819,5 @@ mod tests;
 mod kit_a_tests;
 #[cfg(test)]
 mod kit_tests;
+#[cfg(test)]
+mod kit_b_tests;

@@ -549,4 +549,5 @@ define("Gauge", { "value", "min", "max", "label", "tone" }, function(p)
 	})
 end)
 
-return table.freeze(kit)
+-- lib.rs loads the batches after this one, then freezes the table.
+return kit

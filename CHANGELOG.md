@@ -16,6 +16,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - Visuals that ask: input nodes and `ui.answer` (the inputs as words into the composer); `update_visual` and `read_visual`; a message holding a visual's answers marks it sent (`MarkVisualSent`); open visuals pinned above the composer once their place scrolls out of view, back in place when it scrolls into view; child events name the parent's open visuals.
 - Visual kit batch a (dev): Acceptance, Findings, StackTrace, Dependencies, Benchmark, Pipeline, Tests, Logs, Coverage, Changes, Commits, Diff, PullRequest, Environments, Snippet, Code, Json, File (`crates/visual/src/kit_a.luau`), each with an example in `visuals/`.
 - Visual kit `ui.kit`: 22 components (Form and its inputs, Card, Callout, KeyValue, List, Steps, Status, Progress, Metric and more), each one call with data; examples in `visuals/`.
+- Visual kit, planning and data kinds: Board, Roadmap, Plan, Decision, Estimate, Table, Timeline, Calendar, CalendarHeatmap, Provenance, Sources, Entity, Transcript, Walkthrough, Flashcards (`crates/visual/src/kit_b.luau`).
 
 ### Changed
 - `zend.run` without a `cwd` runs in the plugin's own folder.

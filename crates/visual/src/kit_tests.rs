@@ -67,6 +67,7 @@ fn the_kit_has_exactly_the_listed_kinds() {
     ));
     let mut kinds = KINDS.to_vec();
     kinds.extend(super::kit_a_tests::KINDS_A); // batch a
+    kinds.extend(super::kit_b_tests::KINDS_B);
     kinds.sort();
     assert_eq!(listed, kinds.join(","));
 }
@@ -309,12 +310,12 @@ fn every_example_passes_the_show_visual_check_and_each_kind_has_one() {
         );
         // The same check show_visual runs, with a visual id's seed.
         check(&source, seed_for(&shown)).unwrap_or_else(|e| panic!("{shown}: {}", e.message));
-        for kind in KINDS.iter().chain(super::kit_a_tests::KINDS_A) {
+        for kind in KINDS.iter().chain(super::kit_a_tests::KINDS_A).chain(super::kit_b_tests::KINDS_B) {
             if source.contains(&format!("ui.kit.{kind} ")) {
                 used.insert(*kind);
             }
         }
     }
-    let missing: Vec<_> = KINDS.iter().chain(super::kit_a_tests::KINDS_A).filter(|k| !used.contains(*k)).collect();
+    let missing: Vec<_> = KINDS.iter().chain(super::kit_a_tests::KINDS_A).chain(super::kit_b_tests::KINDS_B).filter(|k| !used.contains(*k)).collect();
     assert!(missing.is_empty(), "kinds without an example: {missing:?}");
 }
