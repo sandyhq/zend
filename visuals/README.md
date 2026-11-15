@@ -15,7 +15,9 @@ return function()
 end
 ```
 
-`category` is the folder's name. Every file must pass the check `show_visual` runs: `cargo nextest run -p zend-visual kit_tests` checks all of them, their headers, and that each kit kind has an example.
+`category` is the folder's name. `visuals/assets/` is no category: it holds the files examples show (`ui.image "dashboard.png"`, a model, a texture), small ones (the PNGs here are 320×200, under 2 KB). An example names them by file name; the tests and `check-visuals.mjs` pass that folder as the visual's `assets`, and a name with no file there fails.
+
+Every file must pass the check `show_visual` runs: `cargo nextest run -p zend-visual kit_tests` checks all of them, their headers, and that each kit kind has an example.
 
 ## The kit
 `ui.kit` (`crates/visual/src/kit.luau`) holds ready-made components. Every script sees it, in every renderer, because it is plain Luau loaded right after the `ui` prelude. A kit function follows these rules:

@@ -89,6 +89,7 @@ fn the_kit_has_exactly_the_listed_kinds() {
     let mut kinds = KINDS.to_vec();
     kinds.extend(super::kit_a_tests::KINDS_A); // batch a
     kinds.extend(super::kit_b_tests::KINDS_B);
+    kinds.extend(super::kit_f_tests::KINDS_F); // pictures
     kinds.sort();
     assert_eq!(listed, kinds.join(","));
 }
@@ -301,6 +302,22 @@ fn examples(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The files the examples use (show_visual's `assets`): visuals/assets,
+/// by file name.
+fn example_assets() -> Assets {
+    let dir = visuals_dir().join("assets");
+    Assets::new(
+        std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                (name, std::fs::read(&path).unwrap().into())
+            })
+            .collect(),
+    )
+}
+
 /// The header G5's gallery reads: title, category (its folder), description
 /// and tags, as the file's leading comments.
 fn header(source: &str) -> Vec<(&str, &str)> {
@@ -329,14 +346,16 @@ fn every_example_passes_the_show_visual_check_and_each_kind_has_one() {
             file.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             "{shown}: category is its folder"
         );
-        // The same check show_visual runs, with a visual id's seed.
-        check(&source, seed_for(&shown)).unwrap_or_else(|e| panic!("{shown}: {}", e.message));
-        for kind in KINDS.iter().chain(super::kit_a_tests::KINDS_A).chain(super::kit_b_tests::KINDS_B) {
+        // The same check show_visual runs, with a visual id's seed, and the
+        // pictures in visuals/assets as its files (as `assets` passes them).
+        check_with_assets(&source, seed_for(&shown), example_assets())
+            .unwrap_or_else(|e| panic!("{shown}: {}", e.message));
+        for kind in KINDS.iter().chain(super::kit_a_tests::KINDS_A).chain(super::kit_b_tests::KINDS_B).chain(super::kit_f_tests::KINDS_F) {
             if source.contains(&format!("ui.kit.{kind} ")) {
                 used.insert(*kind);
             }
         }
     }
-    let missing: Vec<_> = KINDS.iter().chain(super::kit_a_tests::KINDS_A).chain(super::kit_b_tests::KINDS_B).filter(|k| !used.contains(*k)).collect();
+    let missing: Vec<_> = KINDS.iter().chain(super::kit_a_tests::KINDS_A).chain(super::kit_b_tests::KINDS_B).chain(super::kit_f_tests::KINDS_F).filter(|k| !used.contains(*k)).collect();
     assert!(missing.is_empty(), "kinds without an example: {missing:?}");
 }

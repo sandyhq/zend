@@ -39,7 +39,7 @@ pub use draw::{DrawCmd, DrawText, Pointer};
 pub use entries::{Entries, EntryValue, Shape};
 pub use node::{
     Axis, Canvas, Chart, ChartKind, Code, CodeLine, CodeMark, Column, ColumnKind, HandlerId, Input, InputColumn, InputKind,
-    InputOption, Node, NodeKind, NumberFormat, NumberRange, NumberStyle, number_words, SceneNode, Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
+    InputOption, Fit, Mark, Node, NodeKind, Picture, NumberFormat, NumberRange, NumberStyle, number_words, SceneNode, Series, ShaderNode, Span, Stack, Table_ as TableNode, Text,
 };
 pub use raster::{Quality, Raster, RasterLabel};
 pub use scene::{
@@ -266,7 +266,7 @@ impl Visual {
             .set_mode(mlua::chunk::ChunkMode::Text)
             .call::<()>((ui.clone(), kit.clone(), helpers))?;
         // Batch e returns its kinds; a name used twice is an error.
-        for (name, source) in [("=kit_e", include_str!("kit_e.luau"))] {
+        for (name, source) in [("=kit_e", include_str!("kit_e.luau")), ("=kit_f", include_str!("kit_f.luau"))] {
             let more: Table = lua
                 .load(source)
                 .set_name(name)
@@ -764,6 +764,15 @@ fn exercise_draws(
                     .map_err(|e| VisualError::script(format!("shader textures: {e}")))?;
             }
         }
+        NodeKind::Image(picture) => {
+            for name in std::iter::once(&picture.src).chain(&picture.before) {
+                visual
+                    .assets
+                    .require(name)
+                    .and_then(|bytes| picture_size(&bytes).map_err(|e| format!("'{name}': {e}")))
+                    .map_err(|e| VisualError::script(format!("ui.image: {e}")))?;
+            }
+        }
         _ => {}
     }
     for child in children(node) {
@@ -835,6 +844,11 @@ fn collect_interactions(node: &Node, out: &mut Vec<Interaction>) {
             }) => {
                 out.push(("clicking a row".into(), path.clone(), HandlerArg::None));
             }
+            NodeKind::Image(picture) if picture.on_click.is_some() => {
+                for n in 1..=picture.marks.len().min(4) {
+                    out.push((format!("clicking mark {n}"), path.clone(), HandlerArg::Number(n as f64)));
+                }
+            }
             _ => {}
         }
         for (ix, child) in children(node).enumerate() {
@@ -857,7 +871,23 @@ fn handler_at(node: &Node, path: &[usize]) -> Option<HandlerId> {
         | NodeKind::Slider { on_change, .. } => Some(*on_change),
         NodeKind::Button { on_click, .. } => Some(*on_click),
         NodeKind::Stack(Stack { on_click, .. }) => *on_click,
+        NodeKind::Image(picture) => picture.on_click,
         _ => None,
+    }
+}
+
+/// A `ui.image` asset's size in pixels: a PNG, JPEG or WebP the window can
+/// show (a model or an `.hdr` is for scenes and shaders, not for this).
+pub fn picture_size(bytes: &[u8]) -> Result<(u32, u32), String> {
+    match ::image::guess_format(bytes) {
+        Ok(::image::ImageFormat::Png | ::image::ImageFormat::Jpeg | ::image::ImageFormat::WebP) => {
+            crate::image::dimensions(bytes)
+        }
+        Ok(::image::ImageFormat::Hdr) => {
+            Err("is a Radiance HDR image (for scenes and shaders), not a picture ui.image shows (PNG, JPEG or WebP)".into())
+        }
+        Ok(_) => Err("is not a picture ui.image shows (PNG, JPEG or WebP)".into()),
+        Err(_) => Err("is not a picture (ui.image shows PNG, JPEG or WebP)".into()),
     }
 }
 
@@ -880,3 +910,5 @@ mod kit_tests;
 mod kit_b_tests;
 #[cfg(test)]
 mod kit_e_tests;
+#[cfg(test)]
+mod kit_f_tests;

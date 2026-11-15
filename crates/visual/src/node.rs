@@ -91,6 +91,8 @@ pub enum NodeKind {
     /// `ui.code`: source lines in mono, coloured by the renderer's own
     /// highlighter for its language (plain when it knows none).
     Code(Box<Code>),
+    /// `ui.image`: one of the visual's own image assets, by name.
+    Image(Box<Picture>),
     /// `ui.answer`: a button that puts the visual's inputs, as words
     /// ([`crate::answer_text`]), into the composer of its chat, under
     /// what's there. It never sends: the reader edits and sends. No label:
@@ -438,6 +440,106 @@ impl Code {
 
 /// The most lines one `ui.code` shows.
 pub const MAX_CODE_LINES: usize = 2000;
+
+/// `ui.image { src, alt?, height?, fit?, before?, split?, marks?, selected?,
+/// on_click? }`: a picture shipped with the visual (show_visual's
+/// `assets`), named by its asset name. With `before`, a wipe: `before`
+/// shows left of `split` (a share of the width), `src` right of it. With
+/// `marks`, regions on the picture, in shares of its width and height.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Picture {
+    /// The asset it shows.
+    pub src: String,
+    /// What it shows, in words: read aloud, and shown where the picture
+    /// can't be.
+    pub alt: Option<String>,
+    /// Its height in pixels; without one, its own aspect at the width.
+    pub height: Option<f32>,
+    pub fit: Fit,
+    /// A second asset, shown left of `split` over `src`.
+    pub before: Option<String>,
+    /// How much of the width shows `before`, 0-1.
+    pub split: f32,
+    pub marks: Vec<Mark>,
+    /// The mark drawn as chosen, from 1.
+    pub selected: Option<usize>,
+    /// Called with a mark's number (from 1) when the reader clicks it.
+    pub on_click: Option<HandlerId>,
+}
+
+/// How a picture fills a box of another aspect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fit {
+    /// All of it, with room on two sides.
+    #[default]
+    Contain,
+    /// The box filled, the picture cut on two sides.
+    Cover,
+}
+
+impl Fit {
+    pub fn name(self) -> &'static str {
+        match self {
+            Fit::Contain => "contain",
+            Fit::Cover => "cover",
+        }
+    }
+}
+
+/// A region on a picture: a point (`x`, `y` its middle) or, with `w` and
+/// `h`, a box from its top left, all in shares (0-1) of the picture.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Mark {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// Shown as its tooltip and read aloud.
+    pub label: Option<String>,
+    pub tone: Option<Color>,
+}
+
+impl Picture {
+    /// The picture in words, for a renderer that can't show it: a faint
+    /// line naming it ("Picture: <alt>", or its asset), and its marks.
+    pub fn placeholder(&self) -> Node {
+        let node = |kind| Node {
+            kind,
+            width: None,
+            grow: false,
+            key: None,
+        };
+        let line = |text: String| {
+            node(NodeKind::Text(Text {
+                spans: vec![Span { text, ..Default::default() }],
+                size: TextSize::Sm,
+                color: Some(Color::token(Token::Muted)),
+                ..Default::default()
+            }))
+        };
+        let what = self.alt.clone().unwrap_or_else(|| self.src.clone());
+        let mut children = vec![line(match &self.before {
+            Some(before) => format!("Picture (before and after): {what} ({before} → {})", self.src),
+            None => format!("Picture: {what}"),
+        })];
+        for (i, mark) in self.marks.iter().enumerate() {
+            if let Some(label) = &mark.label {
+                children.push(line(format!("{}. {label}", i + 1)));
+            }
+        }
+        node(NodeKind::Stack(Stack { children, ..Default::default() }))
+    }
+}
+
+impl Mark {
+    /// A box rather than a point.
+    pub fn is_region(&self) -> bool {
+        self.w > 0.0 && self.h > 0.0
+    }
+}
+
+/// The most marks one picture takes.
+pub const MAX_MARKS: usize = 64;
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1004,6 +1106,7 @@ impl Parser {
             }
             "items" => self.input(&props, InputKind::Items)?,
             "code" => NodeKind::Code(Box::new(code(&props)?)),
+            "image" => NodeKind::Image(Box::new(self.picture(&props)?)),
             "rows" => self.input(&props, InputKind::Rows)?,
             "answer" => {
                 props.allow(&["label"])?;
@@ -1023,6 +1126,153 @@ impl Parser {
             width: props.number("width")?.map(|w| w.clamp(0.0, 2000.0) as f32),
             grow: props.bool("grow")?.unwrap_or(false),
             key: props.string("key")?,
+        })
+    }
+
+    fn picture(&mut self, props: &Props) -> Result<Picture, VisualError> {
+        props.allow(&[
+            "src", "alt", "height", "fit", "before", "split", "marks", "selected", "on_click",
+        ])?;
+        let src = match props.table.raw_get::<Value>("src")? {
+            Value::Nil => props.table.raw_get::<Value>(1)?,
+            v => v,
+        };
+        let asset = |value: Value, prop: &str| -> Result<String, VisualError> {
+            match value {
+                Value::String(s) => {
+                    let name = s.to_string_lossy();
+                    if name.contains("://") || name.contains('/') || name.contains('\\') {
+                        Err(props.error(&format!(
+                            "'{prop}' names one of the visual's assets (\"shot.png\"), not a \
+                             path or a link: pass the file in show_visual's assets"
+                        )))
+                    } else {
+                        Ok(name)
+                    }
+                }
+                _ => Err(props.error(&format!(
+                    "needs {prop} = \"<an asset's name>\" (a file passed in show_visual's assets)"
+                ))),
+            }
+        };
+        let src = asset(src, "src")?;
+        let before = match props.table.raw_get::<Value>("before")? {
+            Value::Nil => None,
+            v => Some(asset(v, "before")?),
+        };
+        let height = match props.number("height")? {
+            None => None,
+            Some(h) => Some((h as f32).clamp(MIN_HEIGHT, MAX_HEIGHT)),
+        };
+        let fit = match props.string("fit")?.as_deref() {
+            None | Some("contain") => Fit::Contain,
+            Some("cover") => Fit::Cover,
+            Some(other) => {
+                return Err(props.error(&format!("has fit '{other}': use contain or cover")));
+            }
+        };
+        let share = |v: f64, what: &str| -> Result<f32, VisualError> {
+            if (0.0..=1.0).contains(&v) {
+                Ok(v as f32)
+            } else {
+                Err(props.error(&format!(
+                    "{what} must be a share of the picture, 0 to 1 (not {})",
+                    number_text(&Value::Number(v))
+                )))
+            }
+        };
+        let split = match props.number("split")? {
+            None => 0.5,
+            Some(v) => share(v, "'split'")?,
+        };
+        let mut marks = Vec::new();
+        if let Some(list) = props.get::<Option<Table>>("marks")? {
+            for (i, item) in list.sequence_values::<Value>().enumerate() {
+                let Value::Table(m) = item? else {
+                    return Err(props.error("'marks' takes tables: { x = 0.4, y = 0.3, label = \"...\" }"));
+                };
+                if i >= MAX_MARKS {
+                    return Err(props.error(&format!("has more than {MAX_MARKS} marks")));
+                }
+                let n = i + 1;
+                let num = |k: &str| -> Result<Option<f64>, VisualError> {
+                    match m.raw_get::<Value>(k)? {
+                        Value::Nil => Ok(None),
+                        Value::Integer(v) => Ok(Some(v as f64)),
+                        Value::Number(v) => Ok(Some(v)),
+                        _ => Err(props.error(&format!("mark {n}: '{k}' must be a number"))),
+                    }
+                };
+                for pair in m.pairs::<Value, Value>() {
+                    let (key, _) = pair?;
+                    let known = matches!(&key, Value::String(s)
+                        if matches!(&*s.to_string_lossy(), "x" | "y" | "w" | "h" | "label" | "tone"));
+                    if !known {
+                        return Err(props.error(&format!(
+                            "mark {n} has no '{}' (a mark takes x, y, w, h, label, tone)",
+                            value_text(&key)
+                        )));
+                    }
+                }
+                let (Some(x), Some(y)) = (num("x")?, num("y")?) else {
+                    return Err(props.error(&format!(
+                        "mark {n} needs x and y, shares of the picture's width and height (0-1)"
+                    )));
+                };
+                let mut mark = Mark {
+                    x: share(x, &format!("mark {n}'s x"))?,
+                    y: share(y, &format!("mark {n}'s y"))?,
+                    w: num("w")?.map(|v| share(v, &format!("mark {n}'s w"))).transpose()?.unwrap_or(0.0),
+                    h: num("h")?.map(|v| share(v, &format!("mark {n}'s h"))).transpose()?.unwrap_or(0.0),
+                    label: match m.raw_get::<Value>("label")? {
+                        Value::Nil => None,
+                        v @ (Value::String(_) | Value::Integer(_) | Value::Number(_)) => {
+                            Some(clip(value_text(&v)))
+                        }
+                        _ => return Err(props.error(&format!("mark {n}: 'label' must be a string"))),
+                    },
+                    tone: parse_color(m.raw_get::<Value>("tone")?)
+                        .map_err(|e| props.error(&format!("mark {n}: {}", e.message)))?,
+                };
+                if (mark.w > 0.0) != (mark.h > 0.0) {
+                    return Err(props.error(&format!(
+                        "mark {n} needs both w and h for a box (or neither for a point)"
+                    )));
+                }
+                if mark.x + mark.w > 1.001 || mark.y + mark.h > 1.001 {
+                    return Err(props.error(&format!(
+                        "mark {n} runs off the picture: a box's x + w and y + h are at most 1"
+                    )));
+                }
+                mark.w = mark.w.min(1.0 - mark.x);
+                mark.h = mark.h.min(1.0 - mark.y);
+                marks.push(mark);
+            }
+        }
+        let selected = match props.number("selected")? {
+            None => None,
+            Some(s) if s.fract() == 0.0 && s >= 1.0 && (s as usize) <= marks.len() => Some(s as usize),
+            Some(_) => {
+                return Err(props.error(&format!(
+                    "'selected' must be a mark's number, 1 to {}",
+                    marks.len()
+                )));
+            }
+        };
+        let on_click = props.function("on_click")?;
+        if on_click.is_some() && marks.is_empty() {
+            return Err(props.error("has on_click but no marks: on_click hears a mark's number"));
+        }
+        Ok(Picture {
+            src,
+            alt: props.string("alt")?.filter(|a| !a.trim().is_empty()),
+            height,
+            fit,
+            before,
+            split,
+            marks,
+            selected,
+            on_click: on_click.map(|f| self.handler(f)),
         })
     }
 

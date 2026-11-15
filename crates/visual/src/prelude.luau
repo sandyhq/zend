@@ -34,6 +34,8 @@ for _, kind in
 		"link",
 		-- Source lines, coloured by the reader's highlighter for `language`.
 		"code",
+		-- One of the visual's own image assets, by name.
+		"image",
 		-- Named inputs: Zend keeps what the reader enters by `name`.
 		"field",
 		"area",

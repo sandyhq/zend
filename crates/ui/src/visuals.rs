@@ -653,6 +653,8 @@ impl VisualFrame {
             NodeKind::Text(text) => text_element(text, theme, palette),
             // (Plain mono lines: the colours are zend-zgx's highlighter.)
             NodeKind::Code(code) => self.node(&code.plain(), path, theme, palette, window, cx),
+            // (Named in words: the picture itself is zend-zgx's.)
+            NodeKind::Image(picture) => self.node(&picture.placeholder(), path, theme, palette, window, cx),
             NodeKind::Rule => div()
                 .h(px(1.0))
                 .w_full()
