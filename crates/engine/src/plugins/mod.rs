@@ -720,6 +720,11 @@ impl Plugins {
         let (tx, rx) = mpsc::unbounded_channel();
         *lock(&self.inner.kick) = Some(tx.clone());
         let worker = runtime.spawn(Self::worker(Arc::downgrade(&self.inner), rx));
+        // A preview's engine ends with the engine that started it.
+        if staging::is_preview(&self.inner.data_dir) {
+            let leash = runtime.spawn(staging::leash(self.inner.data_dir.clone()));
+            lock(&self.inner.tasks).push(leash);
+        }
         let this = self.clone();
         let setup = runtime.spawn(async move {
             let plugins_dir = this.inner.plugins_dir.clone();
@@ -1790,6 +1795,22 @@ impl Plugins {
         }))
     }
 
+    /// Something was asked of `preview` (a plugin's preview, staging): its
+    /// idle time starts again, and once nothing asks anything of it for
+    /// `staging::idle_limit` it's stopped, its log saying so.
+    fn preview_asked(&self, preview: &staging::Running) {
+        let (weak, id) = (Arc::downgrade(&self.inner), preview.id.clone());
+        staging::keep_alive(&self.inner.data_dir, preview, move |idle| {
+            let Some(inner) = weak.upgrade() else { return };
+            let idle = match idle.as_secs() {
+                60 => "a minute".to_string(),
+                s if s > 60 && s % 60 == 0 => format!("{} minutes", s / 60),
+                s => format!("{s} s"),
+            };
+            inner.logs.push(&id, "engine", "info", &format!("Its preview stopped: nothing asked anything of it for {idle}. `zend plugin preview` (MCP preview_plugin) starts it again"));
+        });
+    }
+
     pub async fn dispatch(
         &self,
         method: &str,
@@ -1817,6 +1838,7 @@ impl Plugins {
                 return Err(RpcError::BadParams("id: a plugin's id".into()));
             }
             let preview = staging::need(&self.inner.data_dir, &id).map_err(failed)?;
+            self.preview_asked(&preview);
             let client = staging::connect(&self.inner.data_dir, &preview).await.map_err(failed)?;
             let mut reply = client.call(method, params).await?;
             if let Some(object) = reply.as_object_mut() {
@@ -1880,6 +1902,7 @@ impl Plugins {
                 let source = source.unwrap_or_default();
                 let binaries = staging::Binaries::here().map_err(failed)?;
                 let (running, started) = staging::start(&data_dir, &source, binaries).await.map_err(failed)?;
+                self.preview_asked(&running);
                 let preview_data = running.data_dir(&data_dir);
                 RpcReply::value(&serde_json::json!({
                     "id": running.id,
