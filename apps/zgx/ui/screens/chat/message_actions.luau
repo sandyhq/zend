@@ -18,7 +18,9 @@ local M = {}
 
 export type Acts = {
 	on_fork: (id: string) -> (),
-	on_edit: (id: string, text: string, attachments: { any }) -> (),
+	-- `done(nil)` once the old prompt is gone, `done(why)` when it stays
+	-- (the editor keeps the words and says why).
+	on_edit: (id: string, text: string, attachments: { any }, done: (string?) -> ()) -> (),
 	edit_blocked: () -> string?,
 }
 
@@ -44,9 +46,15 @@ function M.of(chat: () -> string?, session: () -> any, home: (() -> string?)?): 
 			end
 		end,
 		edit_blocked = blocked,
-		on_edit = function(id: string, text: string, attachments: { any })
+		on_edit = function(id: string, text: string, attachments: { any }, done: (string?) -> ())
 			local c = chat()
-			if not c or blocked() then
+			if not c then
+				done(locale.s("chat.message_actions.couldnt_edit"))
+				return
+			end
+			local busy = blocked()
+			if busy then
+				done(busy)
 				return
 			end
 			-- (What it carried, sent again from where it is on the host.)
@@ -56,19 +64,26 @@ function M.of(chat: () -> string?, session: () -> any, home: (() -> string?)?): 
 					table.insert(carried, { path = a.path, name = a.name, kind = a.kind, on_host = true })
 				end
 			end
-			-- (Failing, the edited words wait in the chat's message box: the
-			-- editor has closed, and they're not lost.)
-			local function failed(err: any)
-				Shared.set_draft_of(c, "text", text)
-				local why = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
-				ds.toast.show { title = locale.s("chat.message_actions.couldnt_edit"), body = why, tone = "warning" }
+			local function reason(err: any): string
+				return if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
+			end
+			-- (The old prompt is gone, so the editor with it: words that then
+			-- don't go wait in the chat's message box, after whatever it
+			-- holds, never in its place.)
+			local function unsent(err: any)
+				local now = Shared.draft_of(c).text
+				Shared.set_draft_of(c, "text", if string.find(now, "%S") then `{now}\n\n{text}` else text)
+				ds.toast.show { title = locale.s("chat.message_actions.couldnt_edit"), body = reason(err), tone = "warning" }
 			end
 			sessions.rewind(c, id):after(function()
+				done(nil)
 				local sent = store.send({ session = c, text = text, attachments = carried } :: any)
 				if type(sent) == "table" and sent.after then
-					sent:after(function() end, failed)
+					sent:after(function() end, unsent)
 				end
-			end, failed)
+			end, function(err: any)
+				done(reason(err))
+			end)
 		end,
 	}
 end

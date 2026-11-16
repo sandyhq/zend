@@ -5,10 +5,12 @@
 -- caller's `on_send`): with anything below, a dialog asks once, saying how
 -- many messages go and that files the agent changed stay as they are.
 -- While a turn runs it can't go (`blocked` says why, under the field).
--- Escape is Cancel, ⌘Enter Save & send.
+-- Escape is Cancel, ⌘Enter Save & send. It stays open till the caller's
+-- `done` says it went: a turn that started meanwhile, or an engine that
+-- refused, leaves the words here with why.
 --
 -- `MessageEditor { id = "u3", text = "…", attachments = {…}, below = fn,
---   blocked = fn, on_send = fn(text, attachments), on_cancel = fn }`.
+--   blocked = fn, on_send = fn(text, attachments, done), on_cancel = fn }`.
 
 local locale = require("@self/locale")
 local Button = require("@self/button")
@@ -27,7 +29,8 @@ export type Props = {
 	below: () -> number,
 	-- Why it can't be sent now, nil when it can.
 	blocked: (() -> string?)?,
-	on_send: (text: string, attachments: { Attachment }) -> (),
+	-- `done(nil)` once it went, `done(why)` when it didn't.
+	on_send: (text: string, attachments: { Attachment }, done: (failure: string?) -> ()) -> (),
 	on_cancel: () -> (),
 }
 
@@ -79,17 +82,32 @@ return ui.component(function(props: Props): Node
 	local text = ui.use_state(props.text)
 	local carried = ui.use_state(sendable(props.attachments))
 	local asking = ui.use_state(false)
+	local busy = ui.use_state(false)
+	local failure = ui.use_state(nil :: string?)
 	local function why(): string?
-		return if props.blocked then props.blocked() else nil
+		local blocked = if props.blocked then props.blocked() else nil
+		return blocked or failure:get()
 	end
 	local function has_words(s: string): boolean
 		return string.find(s, "%S") ~= nil
 	end
+	-- (Asked again as it goes: a turn may have started while the dialog
+	-- was open. Then nothing goes and the words stay here.)
 	local function go()
-		props.on_send(text:peek(), carried:peek())
+		asking:set(false)
+		if busy:peek() or (props.blocked and props.blocked()) ~= nil then
+			return
+		end
+		busy:set(true)
+		failure:set(nil)
+		props.on_send(text:peek(), carried:peek(), function(err: string?)
+			busy:set(false)
+			failure:set(err)
+		end)
 	end
 	local function save()
-		if why() ~= nil or not has_words(text:peek()) then
+		failure:set(nil)
+		if (props.blocked and props.blocked()) ~= nil or busy:peek() or not has_words(text:peek()) then
 			return
 		end
 		if props.below() > 0 then
@@ -169,7 +187,7 @@ return ui.component(function(props: Props): Node
 				locale.t("ds.transcript.edit_save"),
 				size = "sm",
 				disabled = function(): boolean
-					return why() ~= nil or not has_words(text:get())
+					return (props.blocked and props.blocked()) ~= nil or busy:get() or not has_words(text:get())
 				end,
 				on_click = save,
 			},

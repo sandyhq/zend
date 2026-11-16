@@ -132,7 +132,12 @@ export type Props = {
 	-- A prompt of the person's edited and sent again (ds/message_editor):
 	-- its id, its new words and what it still carries; the caller removes
 	-- it and everything below it first. None: no Edit in its lane.
-	on_edit: ((id: string, text: string, attachments: { UserMessage.Attachment }) -> ())?,
+	on_edit: ((
+		id: string,
+		text: string,
+		attachments: { UserMessage.Attachment },
+		done: (failure: string?) -> ()
+	) -> ())?,
 	-- Why a prompt can't be edited now (a turn running), nil when it can.
 	edit_blocked: (() -> string?)?,
 	-- What an unfinished turn's foot says in its working word's place, when
@@ -1974,9 +1979,14 @@ local function Transcript(props: Props): Node
 								on_cancel = function()
 									EDITING:set("")
 								end,
-								on_send = function(text: string, attachments: { UserMessage.Attachment })
-									EDITING:set("")
-									on_edit(m.id, text, attachments)
+								-- (Closed once it went; else open with why.)
+								on_send = function(text: string, attachments: { UserMessage.Attachment }, done: (string?) -> ())
+									on_edit(m.id, text, attachments, function(err: string?)
+										if err == nil and EDITING:peek() == m.id then
+											EDITING:set("")
+										end
+										done(err)
+									end)
 								end,
 							}
 						end),
