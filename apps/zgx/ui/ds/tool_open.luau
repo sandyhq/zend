@@ -90,13 +90,18 @@ local function put(state: any, key: string, value: any)
 end
 
 local versions = 0
+-- Asked again while a request was out (the tool settled meanwhile): once
+-- that one lands, it's asked again if it still says the tool runs.
+local again: { [string]: boolean } = {}
 
 local function request(chat: string, id: string)
 	local key = key_of(chat, id)
 	local was = EXCHANGES:peek()[key]
 	if was and was.state == "loading" then
+		again[key] = true
 		return
 	end
+	again[key] = nil
 	put(EXCHANGES, key, { state = "loading", value = if was then was.value else nil })
 	local ok, promise = pcall(M.fetch, chat, id)
 	if not ok or not promise then
@@ -107,42 +112,71 @@ local function request(chat: string, id: string)
 		if type(got) == "table" and type(got.sections) == "table" then
 			versions += 1
 			put(EXCHANGES, key, { state = "ready", value = got, version = versions })
+			if again[key] and got.done == false then
+				request(chat, id)
+			end
 		else
 			put(EXCHANGES, key, { state = "failed", error = "failed" })
 		end
+		again[key] = nil
 	end, function(err: any)
+		again[key] = nil
 		put(EXCHANGES, key, { state = "failed", error = word(err) })
 	end)
 end
 
--- The pictures tools read, as ds/reply_picture asks for them: by
--- "chat\0id", read once.
+-- A failed picture is read again after these many ms, then no more (as a
+-- reply's pictures are, screens/chat/reply_images).
+local BACKOFF = { 3000, 10000, 30000, 90000 }
+
+-- The pictures tools' results gave, as ds/reply_picture asks for them: by
+-- "chat\0id", read once; a failed read again when its retry is due.
 local pictures: ReplyPicture.Pictures = {
 	resolve = function(src: string): any
 		return PICTURES:get()[src] or { state = "loading" }
 	end,
 	fetch = function(src: string)
-		if PICTURES:peek()[src] then
+		local was = PICTURES:peek()[src]
+		-- (Read, or being read; failed, read again once its retry is due:
+		-- ds/reply_picture asks then.)
+		if was and not (was.state == "failed" and was.retry and ui.now() >= was.retry) then
 			return
 		end
 		local chat, id = string.match(src, "^(.-)%z(.*)$")
 		if not chat or not id then
 			return
 		end
-		put(PICTURES, src, { state = "loading" })
+		local tries = if was then was.tries or 0 else 0
+		if not was then
+			put(PICTURES, src, { state = "loading" })
+		else
+			-- (Its failure stays shown until the retry lands.)
+			local still = table.clone(was)
+			still.retry = nil
+			put(PICTURES, src, still)
+		end
+		local function failed(error: string?)
+			local wait = BACKOFF[tries + 1]
+			put(PICTURES, src, {
+				state = "failed",
+				error = error,
+				tries = tries + 1,
+				retry = if wait then ui.now() + wait else nil,
+			})
+		end
 		local ok, promise = pcall(M.fetch_image, chat, id)
 		if not ok or not promise then
-			put(PICTURES, src, { state = "failed", error = if ok then nil else word(promise) })
+			failed(if ok then nil else word(promise))
 			return
 		end
 		promise:after(function(got: any)
 			if type(got) == "table" and type(got.src) == "string" then
 				put(PICTURES, src, { state = "ready", src = got.src })
 			else
-				put(PICTURES, src, { state = "failed" })
+				failed(nil)
 			end
 		end, function(err: any)
-			put(PICTURES, src, { state = "failed", error = word(err) })
+			failed(word(err))
 		end)
 	end,
 }
@@ -427,7 +461,12 @@ M.ToolOpen = ui.component(function(props: { tool: () -> Tool, chat: (() -> strin
 	ui.effect(function()
 		local t = now()
 		local was = EXCHANGES:peek()[key()]
-		if t.chat and (was == nil or (not t.live and was.state == "ready" and was.value.done == false)) then
+		-- (Settled while it was being asked: asked again once that lands,
+		-- if it still said running; `request` keeps that.)
+		local stale = was ~= nil
+			and not t.live
+			and (was.state == "loading" or (was.state == "ready" and was.value.done == false))
+		if t.chat and (was == nil or stale) then
 			request(t.chat, t.id)
 		end
 	end)

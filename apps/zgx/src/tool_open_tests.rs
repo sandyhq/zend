@@ -162,3 +162,118 @@ fn an_unknown_mcp_tool_opens_to_its_args_and_its_result() {
     let result = lines_with(&mut f.app, &["shipped", "2026-11-20"]);
     assert!(result.contains("shipped") && result.contains("2026-11-20"), "its result isn't shown:\n{}", f.app.tree());
 }
+
+/// One tool's row alone (ui/tool_open_one_fixture.luau), its host's answers
+/// the test's: `exchange` answers each ReadToolExchange in turn, the first
+/// held until `release` (as a slow host does), `image` each picture read.
+struct One {
+    app: TestApp,
+    asked: Rc<RefCell<Vec<String>>>,
+    release: Rc<RefCell<Option<tokio::sync::oneshot::Sender<()>>>>,
+}
+
+fn mount_one(exchanges: Vec<Json>, hold_first: bool, images: Vec<Result<(), String>>) -> One {
+    let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/tool_open_one_fixture.luau");
+    let picture = std::env::temp_dir().join(format!("zgx-tool-open-one-{}.png", std::process::id()));
+    {
+        use base64::Engine as _;
+        std::fs::write(&picture, base64::engine::general_purpose::STANDARD.decode(PNG_1X1).unwrap()).unwrap();
+    }
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let release = Rc::new(RefCell::new(None));
+    let (heard, held) = (asked.clone(), release.clone());
+    let app = TestApp::new(move |runtime| {
+        let host = ScriptHost::new(runtime, entry);
+        let answers = Rc::new(RefCell::new(std::collections::VecDeque::from(exchanges)));
+        let heard_exchange = heard.clone();
+        host.async_action("chat.tool_exchange", move |arg| {
+            let chat = crate::auth::text(&arg.field("chat").cloned().unwrap_or(Value::Nil));
+            let id = crate::auth::text(&arg.field("id").cloned().unwrap_or(Value::Nil));
+            let first = heard_exchange.borrow().iter().all(|a: &String| !a.starts_with("exchange"));
+            heard_exchange.borrow_mut().push(format!("exchange:{id}"));
+            let answer = answers.borrow_mut().pop_front().unwrap_or(Json::Null);
+            let gate = (first && hold_first).then(|| {
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                *held.borrow_mut() = Some(tx);
+                rx
+            });
+            async move {
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                Ok(crate::tool_open::exchange_value(&answer, &chat, &id))
+            }
+        });
+        let reads = Rc::new(RefCell::new(std::collections::VecDeque::from(images)));
+        let heard_image = heard.clone();
+        let src = picture.to_string_lossy().into_owned();
+        host.async_action("files.tool_image", move |_arg| {
+            heard_image.borrow_mut().push("image".into());
+            let answer = reads.borrow_mut().pop_front().unwrap_or(Ok(()));
+            let src = src.clone();
+            async move {
+                answer?;
+                Ok(Value::record([("src", Value::from(src.as_str())), ("size", Value::Num(70.))]))
+            }
+        });
+        host
+    });
+    app.ui.scene.borrow_mut().resize(900., 1400.);
+    app.frames(5);
+    assert_eq!(app.error(), None, "the fixture failed");
+    One { app, asked, release }
+}
+
+fn set_tool(app: &TestApp, live: bool) {
+    let tool = Value::record([
+        ("id", Value::from("x1")),
+        ("chat", Value::from("doc-7")),
+        ("kind", Value::from("tool")),
+        ("call_kind", Value::from("unknown")),
+        ("live", Value::Bool(live)),
+    ]);
+    app.host.shared("test.tool_open.tool", Value::Nil).set(tool);
+}
+
+/// Opened while the tool runs; it settles while that first request is still
+/// out, whose answer then says it runs: the row asks again and shows the
+/// result, not "hasn't finished yet" forever.
+#[test]
+fn a_tool_that_settles_while_its_first_request_is_out_is_asked_again() {
+    let running = json!({ "call": { "kind": "unknown", "name": "slow_tool" }, "done": false });
+    let finished = json!({ "call": { "kind": "unknown", "name": "slow_tool" }, "done": true, "output": "finished-output-42" });
+    let mut one = mount_one(vec![running, finished], true, vec![]);
+    set_tool(&one.app, true);
+    one.app.frames(10);
+    assert_eq!(*one.asked.borrow(), ["exchange:x1"], "asked as it opens");
+    // It settles; the first answer hasn't come.
+    set_tool(&one.app, false);
+    one.app.frames(10);
+    let _ = one.release.borrow_mut().take().expect("the first request is held").send(());
+    let shown = one.app.wait_until(|app| app.find(r#""finished-output-42""#).is_some());
+    assert!(shown, "asked {:?}\n{}", one.asked.borrow(), one.app.tree());
+    assert_eq!(*one.asked.borrow(), ["exchange:x1", "exchange:x1"]);
+}
+
+/// A picture whose first read failed (the host was busy, offline a moment)
+/// is read again when its retry is due, and then shows.
+#[test]
+fn a_picture_whose_read_failed_is_read_again() {
+    let read = json!({ "call": { "kind": "readFile", "path": "/home/me/m1.png" }, "done": true, "output": "Read image file [image/png]", "image": "image/png" });
+    let mut one = mount_one(vec![read], false, vec![Err("the device is busy".into())]);
+    set_tool(&one.app, false);
+    let failed = one.app.wait_until(|app| app.tree().contains("the device is busy") || app.find(".tool-open-image").is_some());
+    assert!(failed, "{}", one.app.tree());
+    assert_eq!(one.asked.borrow().iter().filter(|a| *a == "image").count(), 1);
+    // Past the first wait (3 s, on the clock `ui.now()` reads, the wall's),
+    // it's read again.
+    std::thread::sleep(std::time::Duration::from_millis(3100));
+    one.app.skip_frames(4 * 60);
+    let shown = one.app.wait_until(|app| {
+        let tree = app.tree();
+        let mut lines = tree.lines().skip_while(|l| !l.contains(r#"button "Open m1.png""#));
+        lines.next().is_some() && lines.next().is_some_and(|l| l.trim_start().split(' ').nth(1) == Some("img"))
+    });
+    assert!(shown, "asked {:?}\n{}", one.asked.borrow(), one.app.tree());
+    assert_eq!(one.asked.borrow().iter().filter(|a| *a == "image").count(), 2);
+}
