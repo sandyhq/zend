@@ -61,7 +61,15 @@ Stops new whales being born. No protocol changes; additive on the existing s2 ro
   not open to agents' scoped token) reads the call and result from the journal and
   serves the output's last 1 MB in 48 KB chunks, through the same withholding and
   redaction as the tail (`zend_doc::command_output_end`). Commands only; a chat
-  whose journal is gone answers that the output isn't kept.
+  whose journal is gone answers that the output isn't kept. Any other tool's row
+  opened asks the same way, under the same rules: `ReadToolExchange {chatId,
+  toolId}` (`crates/engine/src/tool_exchange.rs`) answers its whole call (input
+  keys named like secrets withheld, `zend_proto::redact`) and its result from
+  the journal (redacted, bounded; a secret file's contents and a secret
+  command's output withheld), plus its diff and, for a read of a picture, its
+  type; `ReadToolImageChunk {chatId, toolId, offset}` serves that picture, the
+  file the journal says the tool read, in 45 KB chunks with the same checks as
+  a reply's pictures. Nothing new is stored: both read what the journal keeps.
 
 **A2. Output sidecar.** *[PARKED 2026-08-10 (v0.1.30): product call — no R2
 uploads for now. The fold keeps small outputs inline (≤160 chars,

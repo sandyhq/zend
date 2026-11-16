@@ -4416,7 +4416,8 @@ fn apply_counted(entries: &mut Vec<Entry>, frame: &mut Json, counted: bool) -> R
 /// `device`, its host, when that isn't this one; each command whose output
 /// the doc cut to its last lines names `doc`, the doc it is in, so its row
 /// can ask the host for the rest (`chat.tool_output`). Nil when it has
-/// neither: the entry as it is.
+/// neither: the entry as it is. (Any other tool's row opened asks the chat
+/// its transcript shows, ds/activity's `chat`.)
 fn with_host(entry: &Json, doc: &str, device: Option<&str>) -> Option<Json> {
     let parts = entry["parts"].as_array()?;
     let visual = |p: &Json| p["kind"].as_str() == Some("visual");
@@ -5415,6 +5416,11 @@ fn tool_row(part: &Json, live: bool) -> Option<Value> {
         ("kind", Value::from(kind)),
         ("verb", Value::from(verb.as_str())),
     ];
+    // What it was, as the harness said (`readFile`, `mcp`, `unknown`): what
+    // its row opened shows (ds/tool_open).
+    if let Some(call_kind) = part["call"]["kind"].as_str() {
+        fields.push(("call_kind", Value::from(call_kind)));
+    }
     // Its line is one line, whatever the agent wrote (the shipping app's
     // `tool_chip_content`: a command's lines, a pattern's newlines, joined).
     let target = target.map(|t| single_line(&t)).filter(|t| !t.is_empty());
