@@ -22,8 +22,10 @@ local tree_line = require("@self/tree_line")
 local control = require("@self/control")
 local Icon = require("@self/icon")
 local FadeText = require("@self/fade_text")
+local look = require("@self/look")
 local status = require("@self/status")
 local ToolDetail = require("@self/tool_detail")
+local ToolOpen = require("@self/tool_open")
 local Markdown = require("@self/markdown")
 local locale = require("@self/locale")
 local FoldButton = require("@self/fold_button")
@@ -62,6 +64,11 @@ export type Tool = {
 	diff_ref: string?,
 	stats: { ToolDetail.Stat }?,
 	diff: ToolDetail.Diff?,
+	-- What the harness called it (readFile, mcp, unknown…), and the doc it
+	-- is in: the row opens to its whole call and result from that doc's
+	-- host (ds/tool_open).
+	call_kind: string?,
+	chat: string?,
 }
 
 export type Writing = { words: (id: string) -> string?, seeded: () -> boolean }
@@ -92,6 +99,9 @@ export type Props = {
 	-- Where it shows (a transcript's list and its scroll): its rows built
 	-- only near the view (`Window`).
 	window: Window?,
+	-- The chat it is in, whose host keeps what its tools did: a row opened
+	-- asks it for a tool's whole call and result (ds/tool_open).
+	chat: (() -> string?)?,
 }
 
 -- A transcript's view, for a group windowed in it: `key` names the group
@@ -230,50 +240,76 @@ end
 -- map each, holding only what's open (or, for a group, chosen), not a
 -- state per tool.
 -- A row's call and what it did, as it opens (`row`): `now`, its tool.
-local Opened = ui.component(function(props: { now: () -> Tool }): Node
+local Opened = ui.component(function(props: { now: () -> Tool, chat: (() -> string?)? }): Node
 	local now = props.now
+	local function chat_now(): string?
+		return if props.chat then props.chat() else nil
+	end
 	return ui.column {
 		w_full = true,
 		ui.show(function(): boolean
 			return now().call ~= nil
 		end, call_block(now)),
+		-- What it did: any tool's whole call and result from the device
+		-- that ran it (ds/tool_open), a command's output as the chat keeps
+		-- it (ds/tool_detail).
 		ui.show(
 			function(): boolean
-				return ToolDetail.has(now() :: any)
+				return ToolOpen.wants(now() :: any, chat_now()) or ToolDetail.has(now() :: any)
 			end,
 			ui.div {
 				ml = ui.raw(GUTTER, "under the line's words, past the tree's gutter"),
 				mb = "$space.1",
-				ToolDetail.ToolDetail { tool = now :: any },
+				if ToolOpen.wants(now() :: any, chat_now())
+					then ToolOpen.ToolOpen { tool = now :: any, chat = props.chat }
+					else ToolDetail.ToolDetail { tool = now :: any },
 			}
 		),
 	}
 end)
 
--- A row's line, as FadeText makes it (ds/fade_text: a box that clips the
--- text at its own width, fading its end while it overflows), built here
+-- How many lines a row's words may take before they fade out at the foot
+-- (the whole call is one press away: `call_block`). One line stays one line:
+-- a row is as tall as the lines its words really need, never more.
+local LINE_COUNT = 2
+-- A row's text line (its size and its line height, which the tree's
+-- rhythm hangs on): the words and the glyph start on the first.
+-- (The window's text size scales it: read as the row lays out.)
+local function line_h(): number
+	local scaled = look.text_theme() or {}
+	return (scaled["font.line.sm"] or ui.theme.get("font.line.sm") :: number?) or 16
+end
+local LINE: number = line_h()
+
+-- A row's line: wrapped, up to `LINE_COUNT` lines, fading out at the foot of
+-- the last while it runs on (measured as it lays out: the words laid out at
+-- the box's width are taller than the box that clips them), built here
 -- directly: a long group makes thousands.
 local function target_line(now: () -> Tool): Node
 	local clip, text = ui.ref(), ui.ref()
-	return ui.row {
+	return ui.column {
 		ref = clip,
+		grow = 1,
 		shrink = 1,
 		min_w = 0,
+		max_h = function(): number
+			return line_h() * LINE_COUNT
+		end,
 		overflow = "hidden",
-		items = "center",
-		fade_x = function()
-			local over = (text.width or 0) > (clip.width or 0) + 0.5
-			return { 0, if over then 24 else 0 }
+		fade = function()
+			local over = (text.height or 0) > (clip.height or 0) + 0.5
+			return { 0, if over then line_h() else 0 }
 		end,
 		ui.text {
 			function(): string
 				return line_of(now())
 			end,
 			ref = text,
-			shrink = 0,
 			literal = true,
+			wrap = true,
 			font = "$font.mono",
 			text_size = "$font.size.sm",
+			line_height = "$font.line.sm",
 			color = "$text.primary",
 		},
 	}
@@ -293,6 +329,8 @@ local function branch_of(h: number, on: boolean): any
 end
 
 local CALLS_OPEN = ui.state("activity_calls_open", {} :: { [string]: boolean })
+-- The row under the pointer, by its tool's id: its chevron shows.
+local HOVERED = ui.state("activity_row_hovered", nil :: string?)
 local GROUPS_CHOSEN = ui.state("activity_groups_chosen", {} :: { [string]: boolean })
 
 -- A thought's row: no glyph, no branch, no header, its words themselves
@@ -555,9 +593,13 @@ local function row(
 	writing: Writing?,
 	group: string?,
 	resized: ((size: { w: number, h: number }) -> ())?,
-	settled: boolean?
+	settled: boolean?,
+	chat: (() -> string?)?
 ): Node
 	local t = now()
+	local function chat_now(): string?
+		return if chat then chat() else nil
+	end
 	if t.kind == "thought" then
 		return thought_row(now, below, writing, group, resized)
 	end
@@ -571,7 +613,7 @@ local function row(
 	-- Opens to what it did, too: an edit's diff, a command's output, a
 	-- read's or a search's result (ds/tool_detail), once it has some.
 	local function has_detail(): boolean
-		return ToolDetail.has(now() :: any)
+		return ToolOpen.wants(now() :: any, chat_now()) or ToolDetail.has(now() :: any)
 	end
 	-- Open as the reader left it (opened or closed), else closed.
 	local function showing(): boolean
@@ -584,7 +626,7 @@ local function row(
 	local function lane(): any
 		return if open_subagent then (now() :: any).subagent else nil
 	end
-	local opens = t.call ~= nil or lane() ~= nil or OPENS[t.kind] == true
+	local opens = t.call ~= nil or lane() ~= nil or OPENS[t.kind] == true or ToolOpen.wants(t :: any, chat_now())
 	-- (Only a subagent's spawn says more than its line: one that may open
 	-- its lane follows it.)
 	local label: string | () -> string = if t.target then `{t.verb} {line_of(t)}` else t.verb
@@ -626,7 +668,7 @@ local function row(
 		},
 		ui.button {
 			w_full = true,
-			h = ROW,
+			min_h = ROW,
 			p = 0,
 			items = "center",
 			relative = true,
@@ -644,6 +686,15 @@ local function row(
 			-- row is made.)
 			expanded = if opens then showing else nil,
 			cursor = if opens then "pointer" else nil,
+			on_hover = if opens
+				then function(inside: boolean)
+					if inside then
+						HOVERED:set(id)
+					elseif HOVERED:peek() == id then
+						HOVERED:set(nil)
+					end
+				end
+				else nil,
 			on_click = function()
 				local sub = lane()
 				if sub and open_subagent then
@@ -679,15 +730,19 @@ local function row(
 				},
 			ui.row {
 				pl = ui.raw(GUTTER, "past the tree's gutter"),
+				py = ui.raw((ROW - LINE) / 2, "a one-line row is ROW tall, its line's middle on the branch"),
 				grow = 1,
 				min_w = 0,
 				gap = "$space.1",
-				items = "center",
+				-- (The first line: the verb and the counts sit on it, the words
+				-- running on under themselves.)
+				items = "start",
 				ui.text {
 					verb,
 					literal = true,
 					shrink = 0,
 					text_size = "$font.size.sm",
+					line_height = "$font.line.sm",
 					color = "$text.secondary",
 				},
 				-- (Its line as the tool goes on: a command's input may still
@@ -698,16 +753,7 @@ local function row(
 					function(): boolean
 						return now().target ~= nil
 					end,
-					FadeText {
-						function(): string
-							return line_of(now())
-						end,
-						literal = true,
-						shrink = 1,
-						font = "$font.mono",
-						text_size = "$font.size.sm",
-						color = "$text.primary",
-					}
+					target_line(now)
 				),
 				-- An edit's lines, added and removed, in their hues.
 				if COUNTS[t.kind] or t.added ~= nil
@@ -723,6 +769,7 @@ local function row(
 						tabular = true,
 						font = "$font.mono",
 						text_size = "$font.size.xs",
+						line_height = "$font.line.sm",
 						color = "$success",
 					}
 				)
@@ -741,15 +788,39 @@ local function row(
 						tabular = true,
 						font = "$font.mono",
 						text_size = "$font.size.xs",
+						line_height = "$font.line.sm",
 						color = "$danger",
 					}
 				)
 					else nil,
 			},
 		},
+		-- That it opens: a chevron at the row's end, under the pointer or
+		-- while it's open, pointing down once open.
+		if opens
+			then ui.show(
+				function(): boolean
+					return showing() or HOVERED:get() == id
+				end,
+				ui.div {
+					absolute = true,
+					right = 0,
+					top = (ROW - 12) / 2,
+					class = "activity-row-chevron",
+					pointer_events = "none",
+					Icon {
+						name = function(): any
+							return if showing() then "alt-arrow-down" else "alt-arrow-right"
+						end,
+						size = 12,
+						color = "$text.tertiary",
+					},
+				}
+			)
+			else nil,
 		-- What it opens to, made only once it's opened (a component's body
 		-- runs as it mounts: closed, nothing of it is made).
-		ui.show(showing, Opened { now = now }),
+		ui.show(showing, Opened { now = now, chat = chat }),
 	}
 end
 
@@ -852,7 +923,8 @@ return ui.component(function(props: Props): Node
 		local h = MEASURED[`{own_key}:{t.id}`]
 		local open = CALLS_OPEN:peek()[t.id] == true
 		if t.kind ~= "thought" then
-			return if open and h then h else ROW
+			-- (As last laid out: two lines for a long command, as it was.)
+			return h or ROW
 		end
 		if h and (open or h <= first_folded) then
 			return h
@@ -907,7 +979,7 @@ return ui.component(function(props: Props): Node
 				return place() < last_branch:get()
 			end, function(): boolean
 				return live() and place() == count:get()
-			end, props.open_subagent, props.thought, props.key, resized, place() < count:peek())
+			end, props.open_subagent, props.thought, props.key, resized, place() < count:peek(), props.chat)
 		end
 		-- (A call arriving joins as a row joining a `ui.each` does; the rest
 		-- are made as they come into view, as they were.)

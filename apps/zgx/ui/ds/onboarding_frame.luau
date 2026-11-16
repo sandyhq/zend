@@ -474,6 +474,7 @@ local ScrollStep = ui.component(function(props: ScrollStepProps): Node
 					line_height = "$font.line.md",
 					weight = "$font.weight.medium",
 					color = "$text.primary",
+					wrap = true,
 				},
 			},
 		},

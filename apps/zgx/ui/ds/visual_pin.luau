@@ -79,6 +79,7 @@ function M.Marker(props: { id: string, title: string? }): Node
 		class = "visual-pinned-marker",
 		locale.s("ds.visual.pinned", { title = props.title or locale.s("ds.visual.untitled") }),
 		literal = true,
+		-- one line: the pinned visual's strip over the composer
 		truncate = true,
 		text_size = "$zend.visual.text.sm.size",
 		line_height = "$zend.visual.text.sm.line",
@@ -135,6 +136,7 @@ M.Header = ui.component(function(props: { block: any }): Node
 			class = "visual-pinned-title",
 			title,
 			literal = true,
+			-- one line: the pinned visual's strip over the composer
 			truncate = true,
 			grow = 1,
 			min_w = 0,

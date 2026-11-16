@@ -6,10 +6,13 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ### Added
 - Chats: Edit on your own prompt (removes it and everything below, after one confirmation, then sends the edited words; the agent starts a fresh session fed the kept history) and Fork from here on any prompt or reply (`RewindChat`, `ForkSideChat` `messageId`).
+- Transcript: every tool's row opens to what it did, by kind (a read's picture or coloured lines, an edit's diff, codemode's script and result, an MCP tool's args and result), read from the host's run journal (`ReadToolExchange`, `ReadToolImageChunk`); a chevron shows a row opens; pi's edits carry their diff, codex's one-file changes their patch (`FileUpdateChange.diff`, v2's `kind: {type}` read too).
+- Engine: a read's picture is the bytes its result gave the agent (`AgentEvent::ToolImage` from pi and Claude Code, ≤10 MB, kept beside the journal), never the file at its path when the row opens.
 
 ## 2026-11-15
 
 ### Added
+- Window: words people read now wrap instead of being cut off (field labels, a visual form's questions, settings, dialogs); a tool row in the activity rail shows up to two lines of its command and fades after, a press opens the whole call. A text that stays on one line says why (`-- one line:`), checked by `wrap_lint_tests`.
 - Visuals: `ui.image` shows a picture passed in show_visual's `assets` (a wipe between two with `before`, numbered marks with `marks`); kit Image, Gallery, Compare and Hotspots use it, with examples in `visuals/media` and their pictures in `visuals/assets`.
 - Visuals: `ui.code` (source lines coloured by the window's own highlighter, gutter, added/removed/focus marks); kit Code, Snippet, File and Diff use it. `ui.null` and `ui.kit.Json { text = "<json>" }`.
 - Visual kit, batch c: `ui.kit` Chart (10 types), Sparkline, SegmentedBar, Waterfall, Treemap, Tree, Diagram (Mermaid), Map, Scene, Shader, Carousel, Icon, with examples in `visuals/{charts,drawing,media,3d}`.
@@ -32,6 +35,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ### Changed
 - `zend.run` without a `cwd` runs in the plugin's own folder.
 - Removing a plugin forgets its log and its instructions.
+- A message that was not delivered (files over the 24 MB cap, a file that can't be read) stays where it was sent instead of sticking to the end of the chat; it says why, offers Send again and Discard, and is replaced when the same words are sent again. Files over the cap are found before anything is uploaded.
 
 ## Earlier
 - Child sessions and child events (PR #1).

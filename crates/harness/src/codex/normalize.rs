@@ -6,7 +6,7 @@
 //! types) are accepted, and unknown item types map to nothing.
 
 use serde_json::Value;
-use zend_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall};
+use zend_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall, ToolDiff};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -356,6 +356,79 @@ fn file_change_call(changes: &[(String, String)]) -> ToolCall {
     }
 }
 
+/// One `fileChange` change's `diff` as the [`ToolDiff`] its row shows: an
+/// added file's is its content, a deleted one's what it held, an update's
+/// a unified diff (its hunks: context into both texts, `-` lines into the
+/// old, `+` into the new, `⋯` between hunks, headers dropped). `None`
+/// when it says nothing.
+fn file_change_diff(path: &str, kind: &str, diff: &str) -> Option<ToolDiff> {
+    const CAP: usize = 65536;
+    let (old, new) = match kind {
+        "add" => (None, diff.to_owned()),
+        "delete" => (Some(diff.to_owned()), String::new()),
+        _ => {
+            let (mut old, mut new) = (Vec::new(), Vec::new());
+            let (mut changed, mut hunks) = (false, 0);
+            for line in diff.lines() {
+                if line.starts_with("@@") {
+                    if hunks > 0 {
+                        old.push("⋯");
+                        new.push("⋯");
+                    }
+                    hunks += 1;
+                    continue;
+                }
+                if hunks == 0 || line.starts_with('\\') {
+                    // (`--- a/x`, `+++ b/x`, `diff --git`, `index`;
+                    // "\ No newline at end of file".)
+                    continue;
+                }
+                match line.chars().next() {
+                    Some('-') => {
+                        old.push(&line[1..]);
+                        changed = true;
+                    }
+                    Some('+') => {
+                        new.push(&line[1..]);
+                        changed = true;
+                    }
+                    Some(' ') => {
+                        old.push(&line[1..]);
+                        new.push(&line[1..]);
+                    }
+                    None => {
+                        old.push("");
+                        new.push("");
+                    }
+                    _ => {}
+                }
+            }
+            if !changed {
+                return None;
+            }
+            (Some(old.join("\n") + "\n"), new.join("\n") + "\n")
+        }
+    };
+    if old.as_deref().unwrap_or("").is_empty() && new.is_empty() {
+        return None;
+    }
+    let cap = |text: String| {
+        if text.len() <= CAP {
+            return text;
+        }
+        let mut at = CAP;
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        format!("{}\n… [truncated]", &text[..at])
+    };
+    Some(ToolDiff {
+        path: path.to_owned(),
+        old_text: old.map(cap),
+        new_text: cap(new),
+    })
+}
+
 /// `turn/plan/updated` → the live checklist chip. Steps carry
 /// `pending | inProgress | completed`; like ACP plans the update has no item
 /// id, so it refreshes the singleton [`zend_proto::LIVE_PLAN_TOOL_ID`] in place.
@@ -508,28 +581,41 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
             }
         },
         "fileChange" | "file_change" => {
-            let changes: Vec<(String, String)> = item
+            let listed = item
                 .get("changes")
                 .and_then(Value::as_array)
                 .map(|a| a.as_slice())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let changes: Vec<(String, String)> = listed
                 .iter()
                 .map(|c| {
-                    // Unknown kinds degrade to "update", like codex.ts.
+                    // Unknown kinds degrade to "update", like codex.ts. The
+                    // app-server's v2 sends `{"type": "add"}`, older ones
+                    // the bare word.
                     let kind = c
                         .get("kind")
-                        .and_then(Value::as_str)
+                        .and_then(|k| k.as_str().or_else(|| k.get("type")?.as_str()))
                         .filter(|k| matches!(*k, "add" | "delete" | "update"))
                         .unwrap_or("update");
                     (str_field(c, &["path"]), kind.to_owned())
                 })
                 .collect();
-            tool_lifecycle(
+            let mut events = tool_lifecycle(
                 phase,
                 id,
                 file_change_call(&changes),
                 status == "failed" || status == "declined",
-            )
+            );
+            // What one file's change did, so its row opens to a diff: each
+            // change carries its own (`FileUpdateChange.diff`). A patch
+            // over several files keeps none: a ToolDiff is one file's.
+            if let ([change], [(path, kind)]) = (listed, changes.as_slice()) {
+                let diff = change.get("diff").and_then(Value::as_str).and_then(|d| file_change_diff(path, kind, d));
+                if let Some(AgentEvent::ToolResult { diff: slot, .. }) = events.last_mut() {
+                    *slot = diff;
+                }
+            }
+            events
         }
         // `view_image`: the model looked at an image on disk. It reads like
         // any file read, so the chip opens the file and previews the image
@@ -1144,6 +1230,44 @@ mod tests {
                 call: ToolCall::ApplyPatch { path: None },
             }]
         );
+    }
+
+    /// A finished change carries its patch (the app-server's
+    /// `FileUpdateChange.diff`, v2's `kind: {type}`): its row opens to it.
+    #[test]
+    fn a_file_changes_patch_comes_with_its_result() {
+        let update = map_item(
+            Phase::Completed,
+            &json!({"type": "fileChange", "id": "p1", "status": "completed",
+                    "changes": [{"path": "/r/a.rs", "kind": {"type": "update", "move_path": null},
+                                 "diff": "--- a/a.rs\n+++ b/a.rs\n@@ -1,3 +1,3 @@\n fn a() {\n-    1\n+    2\n }\n@@ -9,2 +9,3 @@\n x\n+y\n z\n"}]}),
+        );
+        let [AgentEvent::ToolCall { call, .. }, AgentEvent::ToolResult { diff: Some(diff), is_error: false, .. }] = &update[..] else {
+            panic!("{update:?}");
+        };
+        assert!(matches!(call, ToolCall::EditFile { path, .. } if path == "/r/a.rs"), "{call:?}");
+        assert_eq!(diff.path, "/r/a.rs");
+        assert_eq!(diff.old_text.as_deref(), Some("fn a() {\n    1\n}\n⋯\nx\nz\n"));
+        assert_eq!(diff.new_text, "fn a() {\n    2\n}\n⋯\nx\ny\nz\n");
+
+        let add = map_item(
+            Phase::Completed,
+            &json!({"type": "fileChange", "id": "p2", "status": "completed",
+                    "changes": [{"path": "/r/new.md", "kind": {"type": "add"}, "diff": "# New\n"}]}),
+        );
+        let [AgentEvent::ToolCall { call: ToolCall::WriteFile { .. }, .. }, AgentEvent::ToolResult { diff: Some(diff), .. }] = &add[..] else {
+            panic!("{add:?}");
+        };
+        assert_eq!((diff.old_text.as_deref(), diff.new_text.as_str()), (None, "# New\n"));
+
+        // Several files: no one file's diff to give.
+        let multi = map_item(
+            Phase::Completed,
+            &json!({"type": "fileChange", "id": "p3", "status": "completed",
+                    "changes": [{"path": "/a", "kind": "update", "diff": "@@ -1 +1 @@\n-a\n+b\n"},
+                                {"path": "/b", "kind": "delete", "diff": "gone\n"}]}),
+        );
+        assert!(matches!(&multi[..], [_, AgentEvent::ToolResult { diff: None, .. }]), "{multi:?}");
     }
 
     #[test]

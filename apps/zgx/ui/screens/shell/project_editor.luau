@@ -330,6 +330,7 @@ local function head(): Node
 				select_on_focus = true,
 				w_full = true,
 			},
+			-- one line: a folder's path
 			ui.text { where, text_size = "$font.size.xs", color = "$text.tertiary", truncate = true, literal = true, w_full = true },
 		},
 	}
@@ -381,7 +382,7 @@ local function colours(): Node
 		h = 28,
 		items = "center",
 		gap = "$space.3",
-		ui.text { ui.t("shell.sidebar.project.edit.color"), text_size = "$font.size.sm", color = "$text.secondary", grow = 1 },
+		ui.text { ui.t("shell.sidebar.project.edit.color"), text_size = "$font.size.sm", color = "$text.secondary", grow = 1, wrap = true },
 		ui.row { role = "radiogroup", label = ui.t("shell.sidebar.project.edit.color"), gap = "$space.1", items = "center", table.unpack(swatches) },
 	}
 end
@@ -573,7 +574,7 @@ local function image_panel(): Node
 			text_size = "$font.size.md",
 			color = "$text.secondary",
 		},
-		ui.text { ui.t("shell.sidebar.project.edit.formats"), text_size = "$font.size.xs", color = "$text.tertiary" },
+		ui.text { ui.t("shell.sidebar.project.edit.formats"), text_size = "$font.size.xs", color = "$text.tertiary", wrap = true },
 		ui.div { pt = "$space.2", ds.Button { ui.t("shell.sidebar.project.edit.choose") :: any, tone = "secondary", size = "sm", on_click = choose } },
 	}
 	return ui.switch(function(): string

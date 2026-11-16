@@ -95,6 +95,9 @@ export type Message = {
 	-- reply's place.
 	waiting: ("sending" | "working" | "failed")?,
 	since: number?,
+	-- A failed one: why, when it is known ("too_large": `count` files over
+	-- `limit` MB, the largest `name` at `size` MB; "unreadable": `name`).
+	failure: { kind: string, count: number?, name: string?, size: number?, limit: number? }?,
 	-- Its blocks laid out compact (Settings' compact transcript): its work
 	-- folded into one group, the reply it ends on shown.
 	compact: { Block }?,
@@ -140,6 +143,8 @@ export type Props = {
 	) -> ())?,
 	-- Why a prompt can't be edited now (a turn running), nil when it can.
 	edit_blocked: (() -> string?)?,
+	-- A prompt that wasn't delivered, thrown away (by its id).
+	on_discard: ((id: string) -> ())?,
 	-- What an unfinished turn's foot says in its working word's place, when
 	-- there's no turn to speak of (its host gone, its machine asleep): the
 	-- caller's, for a message (nil: the working word). `sending`: a prompt
@@ -182,6 +187,9 @@ export type Props = {
 	-- What a reply's pictures (`![alt](path)`) are, read as they're asked
 	-- for (screens/chat/reply_images): without it, their alt text.
 	pictures: ReplyPicture.Pictures?,
+	-- The chat it shows, whose host keeps what its tools did: a tool's row
+	-- opened asks it (ds/activity's `chat`, ds/tool_open).
+	chat: (() -> string?)?,
 	-- Where the pictures sent with its messages show from (a chat on
 	-- another device reads them from there: screens/chat/reply_images'
 	-- `for_attachments`); without it, each path as it is.
@@ -426,6 +434,7 @@ local function switch_side(name: string?, mark: Mark.Name?): Node
 		items = "center",
 		min_w = 0,
 		if mark then ui.div { aria_hidden = true, Mark { name = mark, size = 14, bare = true } } else nil,
+		-- one line: a name in a message's header
 		ui.text { name or "", literal = true, truncate = true, weight = "$font.weight.medium" },
 	}
 end
@@ -493,6 +502,7 @@ local function sender_line(m: Message, props: Props): Node
 						return if live then live.title else from.title
 					end,
 					literal = true,
+					-- one line: a session's name in a message's header
 					truncate = true,
 					weight = "$font.weight.medium",
 				},
@@ -541,7 +551,7 @@ end
 -- word and clock, as Zend's working trailer (transcript.rs); not
 -- delivered, a line to send it again. The reply's own row takes over once
 -- it comes.
-local function waiting_line(row: State<Message>, on_retry: ((id: string) -> ())?, turn_state: ((m: Message, sending: boolean) -> TurnLine?)?): Node
+local function waiting_line(row: State<Message>, on_retry: ((id: string) -> ())?, on_discard: ((id: string) -> ())?, turn_state: ((m: Message, sending: boolean) -> TurnLine?)?): Node
 	local function said(): TurnLine?
 		local m = row:get()
 		return if turn_state and m.waiting and m.waiting ~= "failed" then turn_state(m, m.waiting == "sending") else nil
@@ -588,26 +598,48 @@ local function waiting_line(row: State<Message>, on_retry: ((id: string) -> ())?
 			}
 		end
 		if kind == "failed" then
-			return ui.button {
-				label = locale.t("ds.transcript.not_delivered"),
-				self = "start",
+			-- Not delivered: why (when it is known), and what to do about
+			-- it: send it again, or throw it away.
+			local function action(label: string, id: string, run: ((id: string) -> ())?): Node
+				return ui.button {
+					id = id,
+					label = label,
+					p = 0,
+					bg = "#00000000",
+					active = { bg = "#00000000" },
+					hover = { bg = "#00000000", underline = true },
+					cursor = "pointer",
+					selectable = false,
+					text_size = "$font.size.sm",
+					color = "$danger",
+					on_click = function()
+						if run then
+							run(row:peek().id)
+						end
+					end,
+					on_press = function() end,
+					on_release = function() end,
+					label,
+				}
+			end
+			local why = row:peek().failure
+			local line: any = nil
+			if why and why.kind == "too_large" then
+				line = locale.t("ds.transcript.failed_too_large", { count = why.count, name = why.name, size = why.size, limit = why.limit })
+			elseif why and why.kind == "unreadable" then
+				line = locale.t("ds.transcript.failed_unreadable", { name = why.name })
+			end
+			return ui.column {
+				w_full = true,
 				mt = "$space.4",
-				p = 0,
-				bg = "#00000000",
-				active = { bg = "#00000000" },
-				hover = { bg = "#00000000", underline = true },
-				cursor = "pointer",
-				selectable = false,
-				text_size = "$font.size.sm",
-				color = "$danger",
-				on_click = function()
-					if on_retry then
-						on_retry(row:peek().id)
-					end
-				end,
-				on_press = function() end,
-				on_release = function() end,
-				locale.t("ds.transcript.not_delivered"),
+				gap = "$space.2",
+				ui.row {
+					self = "start",
+					gap = "$space.6",
+					action(locale.t("ds.transcript.not_delivered"), "undelivered-retry", on_retry),
+					action(locale.t("ds.transcript.discard"), "undelivered-discard", on_discard),
+				},
+				if line then ui.text { id = "undelivered-why", line, text_size = "$font.size.sm", color = "$text.secondary" } else nil,
 			}
 		end
 		return ui.row {
@@ -695,6 +727,8 @@ type View = {
 	-- Where the pictures an agent showed are read from (Props'
 	-- `sent_pictures`: they're files on the chat's host, as sent ones are).
 	shown_pictures: ReplyPicture.Pictures?,
+	-- Props' `chat`.
+	chat: (() -> string?)?,
 	open: ((target: string) -> ())?,
 	link_menu: ((target: string) -> { Markdown.LinkEntry }?)?,
 	open_subagent: ((sub: any) -> ())?,
@@ -726,6 +760,7 @@ local function blocks_of(list: () -> { Block }, m: Message, now: () -> Message, 
 			return Activity {
 				key = `{m.id}:{b.id}`,
 				open_subagent = if view then view.open_subagent else nil,
+				chat = if view then view.chat else nil,
 				-- (A long group builds only what's near the view, as a long
 				-- reply does.)
 				window = if view
@@ -892,6 +927,7 @@ local function reply(
 			Activity {
 				key = m.id,
 				open_subagent = if view then view.open_subagent else nil,
+				chat = if view then view.chat else nil,
 				thought = thought_of(m, now, draft),
 				tools = function()
 					return now().tools or {}
@@ -2007,9 +2043,9 @@ local function Transcript(props: Props): Node
 							find = if find_for then find_for(`{m.id}:u`) else nil,
 						}),
 						strip(m, state, hovered, acts),
-						waiting_line(state, props.on_retry, props.turn_state),
+						waiting_line(state, props.on_retry, props.on_discard, props.turn_state),
 					}
-					else reply(m, state, props.draft, hovered, props.compact, { turn_state = props.turn_state, view = list, offset = offset, at_end = at_end, row = outer, pictures = props.pictures, shown_pictures = props.sent_pictures, open = props.open_link, link_menu = props.link_menu, link_chip = props.link_chip, open_subagent = props.on_open_subagent, find = find_for }, acts),
+					else reply(m, state, props.draft, hovered, props.compact, { turn_state = props.turn_state, view = list, offset = offset, at_end = at_end, row = outer, pictures = props.pictures, shown_pictures = props.sent_pictures, chat = props.chat, open = props.open_link, link_menu = props.link_menu, link_chip = props.link_chip, open_subagent = props.on_open_subagent, find = find_for }, acts),
 			},
 		}
 	end

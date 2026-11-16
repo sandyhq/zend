@@ -198,6 +198,11 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         async move { f.chat_image(arg).await }
     });
     let f = files.clone();
+    host.async_action("files.tool_image", move |arg| {
+        let f = f.clone();
+        async move { f.tool_image(arg).await }
+    });
+    let f = files.clone();
     host.async_action("files.attachment", move |arg| {
         let f = f.clone();
         async move { f.attachment(arg).await }
@@ -862,6 +867,25 @@ impl Files {
         self.picture(arg, "ReadChatImageChunk").await
     }
 
+    /// The picture a tool read (a harness's read of a PNG): its bytes read
+    /// from the chat's host by the tool's id (`ReadToolImageChunk`: the path
+    /// its run journal names, in the chat's folders), kept as `chat_image`'s
+    /// are. `{ chat, id }`, the tool part's.
+    async fn tool_image(&self, arg: Value) -> Result<Value, String> {
+        let chat = text(arg.field("chat"));
+        let id = text(arg.field("id"));
+        if chat.is_empty() || id.is_empty() {
+            return Err("no chat".into());
+        }
+        let mut params = Map::new();
+        params.insert("chatId".into(), Json::String(chat.clone()));
+        params.insert("toolId".into(), Json::String(id));
+        if let Some(device) = crate::chat::host_of(&chat) {
+            params.insert("targetDeviceId".into(), Json::String(device));
+        }
+        self.read_picture("ReadToolImageChunk", params).await
+    }
+
     /// A picture sent with a message in a chat on another device: its bytes
     /// read from that device (`ReadAttachmentChunk`, the shipping app's
     /// transcript thumbnails: only the uploads there and the chats' folders),
@@ -873,7 +897,6 @@ impl Files {
     /// A picture's bytes, a chunk at a time by `method`, kept as a file here
     /// named by a hash of them: `{ src, size }`.
     async fn picture(&self, arg: Value, method: &str) -> Result<Value, String> {
-        use std::hash::{Hash, Hasher};
         let mut params = self.params(arg.field("target")).await?;
         if !params.contains_key("chatId") {
             return Err("no chat".into());
@@ -887,6 +910,13 @@ impl Files {
             return Err("That picture isn't a path on the chat's device.".into());
         }
         params.insert("path".into(), Json::String(path));
+        self.read_picture(method, params).await
+    }
+
+    /// A picture's chunks by `method` with `params` (and each chunk's
+    /// offset), kept as a file here named by a hash of them.
+    async fn read_picture(&self, method: &str, mut params: Map<String, Json>) -> Result<Value, String> {
+        use std::hash::{Hash, Hasher};
         let mut read = PictureRead::default();
         loop {
             params.insert("offset".into(), json!(read.offset));

@@ -462,6 +462,7 @@ local function row(r: any, close: () -> ()): Node
 			grow = 1,
 			min_w = 0,
 			gap = ui.raw(1, "a name and its line, one thing"),
+			-- one line: a release's name in a list row
 			ds.FadeText { name_of(r), literal = true, w_full = true, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "$text.primary", truncate = true },
 			ds.FadeText {
 				line_of(r),

@@ -1011,7 +1011,7 @@ function M.InstallRow(p: { name: string, mark: string, manual: boolean? }, insta
 				items = "center",
 				color = "$text.tertiary",
 				progress.ProgressRing { size = 12, tone = "neutral", label = locale.s("ds.provider_card.installing_named", { name = p.name }) },
-				ui.text { locale.t("ds.provider_card.installing"), text_size = "$font.size.sm", line_height = "$font.line.sm" },
+				ui.text { locale.t("ds.provider_card.installing"), text_size = "$font.size.sm", line_height = "$font.line.sm", wrap = true },
 			}),
 			ui.show(function()
 				return not busy()

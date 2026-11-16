@@ -110,6 +110,7 @@ return function(props: Props): Node
 		return ds.Settings.Row {
 			label = email,
 			private_label = true,
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			lead = ds.Avatar { seed = email, size = 32, label = ui.t("onboarding.invite.invited_teammate") :: any },
 			control = ds.Badge { ui.t("onboarding.invite.invited"), tone = "info" },

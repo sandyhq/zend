@@ -152,7 +152,7 @@ function M.Page(props: PageProps): Node
 				basis = 0,
 				min_w = MIN_TEXT,
 				gap = "$space.1",
-				ui.text { props.title, heading = 1, text_size = "$font.size.xl", line_height = "$font.line.xl", weight = "$font.weight.semibold", color = "$text.primary" },
+				ui.text { props.title, heading = 1, text_size = "$font.size.xl", line_height = "$font.line.xl", weight = "$font.weight.semibold", color = "$text.primary", wrap = true },
 				if props.description
 					then ui.text { props.description, text_size = "$font.size.md", line_height = 20, color = "$text.secondary", wrap = true }
 					else nil,
@@ -531,7 +531,7 @@ function M.Row(props: RowProps): Node
 			items = "center",
 			shrink = 0,
 			color = "$text.tertiary",
-			if props.value then ui.text { props.value, text_size = "$font.size.md", color = "$text.secondary" } else nil,
+			if props.value then ui.text { props.value, text_size = "$font.size.md", color = "$text.secondary", wrap = true } else nil,
 			-- The chevron's stroke ends at 15/24 of its box (the icon's own
 			-- drawing), so the box is moved out by the rest: its ink, not its
 			-- box, sits on the edge the row's other controls end on.
@@ -707,7 +707,7 @@ function M.Nav(props: NavProps): Node
 					}
 					elseif item.icon then ui.div { shrink = 0, y = -0.5, Icon { name = item.icon, size = 16 } }
 					else nil,
-				ui.text { item.label or "", text_size = "$font.size.md" },
+				ui.text { item.label or "", text_size = "$font.size.md", wrap = true },
 			}
 		end
 	end

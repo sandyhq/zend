@@ -408,6 +408,7 @@ M.Diagram = ui.component(function(props: Props): Node
 						color = "$text.tertiary",
 						grow = 1,
 						min_w = 0,
+						wrap = true,
 					},
 				},
 			}

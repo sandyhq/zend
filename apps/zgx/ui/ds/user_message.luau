@@ -313,7 +313,9 @@ return ui.component(function(props: Props): Node
 					shrink = 0,
 					label = locale.t("ds.user_message.appshot_label", { app = shot.app, title = shot.title or shot.app }),
 					thumb(a, from, group, images, shown, pictures),
+					-- one line: an app shot's chip
 					ui.text { locale.t("ds.user_message.appshot", { app = shot.app }), literal = true, truncate = true, text_size = "$font.size.xs", color = "$text.tertiary" },
+					-- one line: an app shot's chip
 					ui.text { shot.title or shot.app, literal = true, truncate = true, text_size = "$font.size.sm", color = "$text.secondary" },
 				})
 			else

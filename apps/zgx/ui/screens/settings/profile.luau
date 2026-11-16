@@ -560,7 +560,7 @@ local function missing(): Node
 			border_color = "$border.strong",
 			ui.text { "zend", font = "$font.sans", weight = "$font.weight.bold", text_size = "$font.size.xs", color = "$text.disabled" },
 		},
-		ui.text { ui.t("settings.profile.card.none"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
+		ui.text { ui.t("settings.profile.card.none"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary", wrap = true },
 		ds.Button {
 			ui.t("settings.profile.claim.open"),
 			tone = "secondary",
@@ -633,6 +633,7 @@ local function signed_out(narrow: () -> boolean): Node
 				text_size = "$font.size.sm",
 				line_height = "$font.line.sm",
 				color = "$text.tertiary",
+				wrap = true,
 			},
 		},
 		aside_w = CARD_W,
@@ -721,6 +722,7 @@ function M.view(): Node
 							label = ui.t("settings.profile.photo.label"),
 							-- (Its buttons stay at the end beside it; a line too
 							-- long fades instead.)
+							-- one line: a list row: its words fade at the end, its controls stay beside them
 							truncate = true,
 							description = function(): string
 								return if own_photo()
@@ -838,6 +840,7 @@ function M.view(): Node
 										else ui.t("settings.profile.email.sync"):get()
 								end,
 								icon = "user-rounded",
+								-- one line: a list row: its words fade at the end, its controls stay beside them
 								truncate = true,
 							},
 						},

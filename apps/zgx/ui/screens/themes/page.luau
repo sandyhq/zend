@@ -324,6 +324,7 @@ local function row(e: state.Entry, _i: number, now: State<any>): Node
 				tone = "accent",
 				class = "theme-in-use",
 			}),
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			control = controls(e, now),
 		},

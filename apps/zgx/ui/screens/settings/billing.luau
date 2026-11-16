@@ -371,6 +371,7 @@ function M.view(): Node
 				line_height = "$font.line.sm",
 				color = "$text.primary",
 				pt = "$space.1",
+				wrap = true,
 			},
 			quiet(function(): string
 				return M.hours(p.monthly_credits)

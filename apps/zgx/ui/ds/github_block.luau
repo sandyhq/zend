@@ -224,8 +224,8 @@ local function second(p: Props): Node
 					gap = "$space.3",
 					ui.column {
 						gap = "$zend.space.hair",
-						ui.text { locale.t("ds.github_block.enter_code"), text_size = "$font.size.md", line_height = "$font.line.md", weight = "$font.weight.medium", color = "$text.primary" },
-						ui.text { locale.t("ds.github_block.approve"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" },
+						ui.text { locale.t("ds.github_block.enter_code"), text_size = "$font.size.md", line_height = "$font.line.md", weight = "$font.weight.medium", color = "$text.primary", wrap = true },
+						ui.text { locale.t("ds.github_block.approve"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary", wrap = true },
 					},
 					ui.row {
 						gap = "$space.2",
@@ -263,6 +263,7 @@ local function second(p: Props): Node
 					end
 					return if #list > 1 then locale.s("ds.github_block.and_more", { first = list[1], n = tostring(#list - 1) }) else list[1]
 				end,
+				-- one line: a settings row's value, its button stays at the end
 				truncate = true,
 				lead = spacer,
 				control = Button { locale.t("ds.github_block.choose"), tone = "ghost", size = "sm", on_click = p.on_choose, Icon { name = "arrow-up-right", size = 14 } },

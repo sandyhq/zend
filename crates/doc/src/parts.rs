@@ -752,7 +752,9 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         | AgentEvent::PlanUsage { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }
-        | AgentEvent::UserMessage { .. } => {}
+        | AgentEvent::UserMessage { .. }
+        // (A tool's picture stays on its host; its row asks for it.)
+        | AgentEvent::ToolImage { .. } => {}
     }
 }
 

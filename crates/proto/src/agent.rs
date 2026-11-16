@@ -1093,6 +1093,22 @@ pub enum AgentEvent {
         name: String,
         mime_type: String,
     },
+    /// A picture a tool's result gave the agent (a read of a PNG: what the
+    /// model saw), kept so the tool's row can show it. The harness sends its
+    /// bytes (`data`, base64, at most [`crate::TOOL_IMAGE_MAX_BYTES`]
+    /// decoded); the engine keeps them on the host before anything is
+    /// journaled or published, which then carry `stored` (the kept file's
+    /// name) and never `data`. A `stored` a harness sent is dropped.
+    #[serde(rename_all = "camelCase")]
+    ToolImage {
+        /// The tool call's id.
+        id: String,
+        mime_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stored: Option<String>,
+    },
     /// An agent-authored visual shown inline in the reply: a Luau script
     /// that builds native UI (`zend-visual`). The engine emits it when the
     /// agent calls Zend's `show_visual` MCP tool; `path` is the stored

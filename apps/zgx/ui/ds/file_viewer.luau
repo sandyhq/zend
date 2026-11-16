@@ -1607,7 +1607,7 @@ local function component(props: Props): Node
 				items = "center",
 				justify = "center",
 				gap = "$space.3",
-				ui.text { locale.t("ds.file_viewer.choose"), text_size = "$font.size.md", color = "$text.tertiary" },
+				ui.text { locale.t("ds.file_viewer.choose"), text_size = "$font.size.md", color = "$text.tertiary", wrap = true },
 			}
 		end
 		local doc_: Doc = d

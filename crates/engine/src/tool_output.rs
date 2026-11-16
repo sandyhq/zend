@@ -34,6 +34,8 @@ pub enum ToolOutputError {
     NotAvailable,
     #[error("That offset isn't inside the output.")]
     BadOffset,
+    #[error("That tool didn't read a picture.")]
+    NotAPicture,
     #[error(transparent)]
     Journal(#[from] JournalError),
 }

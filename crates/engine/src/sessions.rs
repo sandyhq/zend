@@ -695,6 +695,46 @@ impl SessionsEngine {
         })?
     }
 
+    /// One tool's call and result from this host's run journal, for its row
+    /// opened (`ReadToolExchange`, [`crate::tool_exchange`]).
+    pub async fn read_tool_exchange(
+        &self,
+        doc_id: &str,
+        tool_id: &str,
+    ) -> Result<zend_proto::ToolExchangeReply, crate::tool_output::ToolOutputError> {
+        let journal = self.inner.journal.clone();
+        let (doc_id, tool_id) = (doc_id.to_owned(), tool_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            crate::tool_exchange::read(&journal, &doc_id, &tool_id)
+        })
+        .await
+        .map_err(|e| {
+            crate::tool_output::ToolOutputError::Journal(crate::run_journal::JournalError::Io(
+                std::io::Error::other(e.to_string()),
+            ))
+        })?
+    }
+
+    /// The kept picture tool `tool_id`'s result gave the agent
+    /// (`ReadToolImageChunk`).
+    pub async fn tool_image_path(
+        &self,
+        doc_id: &str,
+        tool_id: &str,
+    ) -> Result<std::path::PathBuf, crate::tool_output::ToolOutputError> {
+        let journal = self.inner.journal.clone();
+        let (doc_id, tool_id) = (doc_id.to_owned(), tool_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            crate::tool_exchange::image_file(&journal, &doc_id, &tool_id)
+        })
+        .await
+        .map_err(|e| {
+            crate::tool_output::ToolOutputError::Journal(crate::run_journal::JournalError::Io(
+                std::io::Error::other(e.to_string()),
+            ))
+        })?
+    }
+
     /// What this engine's runs are doing, for the Cloud runner heartbeat:
     /// turns in flight, those parked on a question, and runs whose turn ended
     /// with background work still live. A runaway subagent can't hold the
@@ -2514,6 +2554,25 @@ impl Inner {
                     ]
                 }
             }
+        } else if let AgentEvent::ToolImage { id, data, .. } = leaf {
+            // A tool's picture: its bytes kept beside the journal before
+            // anything journals or publishes the event, which then names
+            // them; dropped when there are none to keep.
+            let key = std::iter::once(chat_id)
+                .chain(parents.iter().map(String::as_str))
+                .chain(std::iter::once(id.as_str()))
+                .collect::<Vec<_>>()
+                .join("\0");
+            let journal = self.journal.clone();
+            let chat = chat_id.to_owned();
+            tokio::task::spawn_blocking(move || {
+                crate::tool_exchange::keep_image(&journal, &chat, &key, id, data.as_deref())
+            })
+            .await
+            .ok()
+            .flatten()
+            .into_iter()
+            .collect()
         } else {
             vec![leaf]
         };

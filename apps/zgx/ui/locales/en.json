@@ -704,6 +704,17 @@
       "whole_running": "This command hasn't finished yet.",
       "whole_failed": "Couldn't load the rest of this output. Try again."
     },
+    "tool_open": {
+      "loading": "Loading what this tool did…",
+      "result": "Result",
+      "offline": "The device that ran this tool is offline. Tap to try again when it's back.",
+      "update": "Update Zend on the device that ran this tool to see what it did.",
+      "unavailable": "What this tool did wasn't kept on the device that ran it.",
+      "running": "This tool hasn't finished yet.",
+      "failed": "Couldn't load what this tool did. Tap to try again.",
+      "withheld": "Its result stays on the device that ran it: it may hold secrets.",
+      "nothing": "This tool gave no result."
+    },
     "activity": {
       "phrase": {
         "thought": "{n, plural, one {thought} other {thought # times}}",
@@ -753,7 +764,10 @@
       "edit_remove": "Remove {name}",
       "edit_confirm_title": "Edit and send again?",
       "edit_confirm_body": "{n, plural, one {Removes 1 message below.} other {Removes # messages below.}} Files the agent changed are not reverted.",
-      "edit_confirm": "Remove and send"
+      "edit_confirm": "Remove and send",
+      "discard": "Discard",
+      "failed_too_large": "{count, plural, one {Too large: {name} is {size} MB, the limit is {limit} MB per file.} other {Too large: {count} files are over the limit of {limit} MB per file; the largest, {name}, is {size} MB.}}",
+      "failed_unreadable": "Couldn't read {name}."
     },
     "user_message": {
       "open_named": "Open {name}",

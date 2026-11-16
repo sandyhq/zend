@@ -596,6 +596,7 @@ return ui.component(function(props: Props): Node
 							return if a then a.email else ""
 						end,
 						reveal = false,
+						-- one line: the account's address in a menu row
 						truncate = true,
 						text_size = "$font.size.md",
 						color = "$text.tertiary",

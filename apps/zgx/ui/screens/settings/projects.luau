@@ -550,6 +550,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 				return if where and where ~= "" then `{count} · {where}` else count
 			end,
 			lead = tile(),
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			control = ui.div { ref = trigger, menu },
 		},

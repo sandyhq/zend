@@ -292,6 +292,7 @@ function M.view(): Node
 				ui.column { w_full = true, row("worktrees", {
 					label = ui.t("settings.general.worktrees.label"),
 					-- (A folder's path runs long: it fades, the switch stays.)
+					-- one line: a list row: its words fade at the end, its controls stay beside them
 					truncate = true,
 					description = function()
 						if failed:get().worktrees then

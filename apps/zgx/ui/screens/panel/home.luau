@@ -523,6 +523,7 @@ local function actions(props: Props, sid: string): Node
 				literal = true,
 				grow = 1,
 				min_w = 0,
+				-- one line: an agent's name in the panel's list
 				truncate = true,
 				text_size = "$font.size.md",
 			},
@@ -600,6 +601,7 @@ local function actions(props: Props, sid: string): Node
 				literal = true,
 				grow = 1,
 				min_w = 0,
+				-- one line: a device's name in the panel's list
 				truncate = true,
 				text_size = "$font.size.md",
 				color = "$text.secondary",
@@ -1145,7 +1147,7 @@ local function lanes(props: Props, sid: string): Node
 					locale.t("panel.home.previews_unavailable"),
 					grow = 1,
 					min_w = 0,
-					truncate = true,
+					wrap = true,
 					text_size = "$font.size.sm",
 					color = "$zend.tone.warning.ink",
 				},

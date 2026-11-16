@@ -145,6 +145,7 @@ local VisitRow = ui.component(function(props: { visit: data.Visit, now: State<an
 			over:set(inside)
 		end,
 		ds.Settings.Row {
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			lead = ds.Tile {
 				size = 20,

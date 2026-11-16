@@ -828,6 +828,9 @@ M.Tab = ui.component(function(props: { tab: any }): Node
 		on_fork = if tab.kind == "subagent" then nil else lane_acts.on_fork,
 		on_edit = if tab.kind == "subagent" then nil else lane_acts.on_edit,
 		edit_blocked = lane_acts.edit_blocked,
+		on_discard = function(message: string)
+			store.discard(chat, message)
+		end,
 		-- (A split's pane: the keys stay with this chat, in the window's composer.)
 		on_jump = if split
 			then function()
@@ -838,6 +841,11 @@ M.Tab = ui.component(function(props: { tab: any }): Node
 			else nil,
 		pictures = pictures,
 		sent_pictures = sent_pictures,
+		-- (Whose host a tool's row opened asks.)
+		chat = function(): string?
+			local s = lane_session()
+			return if s then s.id else nil
+		end,
 		on_open_subagent = function(sub: any)
 			local home = home_session()
 			if home then

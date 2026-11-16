@@ -479,6 +479,7 @@ local function output_view(id: string, source: () -> Source, tool: () -> Tool): 
 				text_size = "$font.size.xs",
 				line_height = "$font.line.xs",
 				color = "$text.tertiary",
+				wrap = true,
 			}
 		),
 		ui.show(
@@ -600,6 +601,7 @@ local function stats_view(stats: { Stat }): Node
 			gap = "$space.2",
 			items = "center",
 			h = 24,
+			-- one line: a path in the list of what a call changed
 			ui.text { s.path, literal = true, truncate = true, font = "$font.mono", text_size = "$font.size.xs", color = "$text.primary", min_w = 0 },
 			ui.text { `+{s.added}`, shrink = 0, tabular = true, font = "$font.mono", text_size = "$font.size.xs", color = "$success" },
 			ui.text { `−{s.removed}`, shrink = 0, tabular = true, font = "$font.mono", text_size = "$font.size.xs", color = "$danger" },

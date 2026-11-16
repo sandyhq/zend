@@ -687,6 +687,7 @@ function M.Line(props: LineProps): Node
 		ui.text {
 			words,
 			literal = true,
+			-- one line: a picture's caption, on its link chip
 			truncate = true,
 			text_size = "$zend.prose.small.size",
 			line_height = "$zend.prose.small.line",

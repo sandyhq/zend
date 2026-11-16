@@ -440,7 +440,6 @@ local function account_row(first: github.Account, _i: number, now: State<github.
 				then ui.t("settings.cloud.github.needs_reconnect_description"):get()
 				else ui.t("settings.cloud.github.connected"):get()
 		end,
-		truncate = true,
 		badge = ui.show(needs_reconnect, ds.Badge { ui.t("settings.cloud.github.needs_reconnect"), tone = "warning", size = "sm" }),
 		control = ui.show(function(): boolean
 			return not github.connecting(github_now())
@@ -703,6 +702,7 @@ local function repositories(): Node
 								return r:get().name
 							end,
 							icon = "git-branch",
+							-- one line: a list row: its words fade at the end, its controls stay beside them
 							truncate = true,
 							badge = ui.show(function(): boolean
 								return r:get().private

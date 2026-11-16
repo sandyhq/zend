@@ -391,6 +391,7 @@ local Control = ui.component(function(props: { plugin: string, setting: Setting,
 				end,
 				text_size = "$font.size.sm",
 				color = "$text.secondary",
+				-- one line: a folder's name beside its button
 				truncate = true,
 				max_w = 160,
 			},

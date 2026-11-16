@@ -184,7 +184,7 @@ local Card = ui.component(function(props: { option: Option, on: () -> boolean, r
 		ui.row {
 			gap = "$space.2",
 			items = "center",
-			ui.text { o.title, text_size = "$font.size.md", line_height = "$font.line.md", weight = "$font.weight.medium", color = "$text.primary" },
+			ui.text { o.title, text_size = "$font.size.md", line_height = "$font.line.md", weight = "$font.weight.medium", color = "$text.primary", wrap = true },
 			o.badge,
 		},
 		if o.description

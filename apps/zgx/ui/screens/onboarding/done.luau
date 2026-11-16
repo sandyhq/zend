@@ -51,6 +51,7 @@ return function(props: Props): Node
 	if signed_in and org ~= "" then
 		table.insert(rows, ds.Settings.Row {
 			label = org,
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			lead = ds.Tile { label = org, hue = "violet", size = 32 },
 			badge = ds.Badge { if owner then ui.t("onboarding.done.owner") else ui.t("onboarding.done.member") },
