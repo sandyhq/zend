@@ -4355,17 +4355,33 @@ async fn chat_images_come_only_from_their_chats_own_folder() {
     core.shutdown().await;
 }
 
+fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// What a tool row opens to comes from the host's journal too
 /// (`ReadToolExchange`): a script's whole input, which the doc never kept,
-/// with its result; and a read picture's bytes (`ReadToolImageChunk`) from
-/// the path the journal recorded.
+/// with its result; and a read picture's bytes (`ReadToolImageChunk`): the
+/// ones the harness said its result gave the agent, kept on the host, never
+/// the file at the path (gone here by the time the row opens). A read with
+/// no bytes sent has no picture.
 #[tokio::test]
 async fn a_tools_whole_call_and_read_picture_come_from_its_hosts_journal() {
+    use base64::Engine as _;
     let dir = tempfile::tempdir().unwrap();
     let picture = dir.path().join("shot.png");
     let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
     png.extend(std::iter::repeat_n(7u8, 100_000));
-    std::fs::write(&picture, &png).unwrap();
+    let png_b64 = base64::engine::general_purpose::STANDARD.encode(&png);
     let code = "const r = await tools.read({ path: \"a.rs\" });\nreturn r;";
     let core = assemble(
         dir.path(),
@@ -4391,8 +4407,27 @@ async fn a_tools_whole_call_and_read_picture_come_from_its_hosts_journal() {
                         path: picture.to_string_lossy().into_owned(),
                     },
                 },
+                AgentEvent::ToolImage {
+                    id: "p1".into(),
+                    mime_type: "image/png".into(),
+                    data: Some(png_b64),
+                    stored: None,
+                },
                 AgentEvent::ToolResult {
                     id: "p1".into(),
+                    is_error: false,
+                    output: Some("Read image file [image/png]".into()),
+                    diff: None,
+                    exit_code: None,
+                },
+                AgentEvent::ToolCall {
+                    id: "p2".into(),
+                    call: ToolCall::ReadFile {
+                        path: picture.to_string_lossy().into_owned(),
+                    },
+                },
+                AgentEvent::ToolResult {
+                    id: "p2".into(),
                     is_error: false,
                     output: Some("Read image file [image/png]".into()),
                     diff: None,
@@ -4451,6 +4486,21 @@ async fn a_tools_whole_call_and_read_picture_come_from_its_hosts_journal() {
     let read: zend_proto::ToolExchangeReply =
         serde_json::from_value(exchange("p1").await.expect("the read")).unwrap();
     assert_eq!(read.image.as_deref(), Some("image/png"));
+    let unsent: zend_proto::ToolExchangeReply =
+        serde_json::from_value(exchange("p2").await.expect("the other read")).unwrap();
+    assert_eq!(unsent.image, None, "no bytes sent, no picture");
+    // The journal names the kept file; the bytes aren't in it.
+    let journal = walk_files(dir.path())
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| *n == *format!("{CHAT}.jsonl")))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .expect("the journal");
+    assert!(
+        walk_files(dir.path()).iter().any(|p| p.extension().is_some_and(|e| e == "png")
+            && p.parent().and_then(|d| d.file_name()).is_some_and(|d| *d == *format!("{CHAT}.images"))),
+        "the picture kept beside the journal"
+    );
+    assert!(journal.contains("\"stored\"") && !journal.contains("\"data\""), "{}", &journal[..journal.len().min(2000)]);
     let mut bytes = Vec::new();
     let mut offset = 0u64;
     loop {
@@ -4473,9 +4523,10 @@ async fn a_tools_whole_call_and_read_picture_come_from_its_hosts_journal() {
             break;
         }
     }
-    assert_eq!(bytes, png, "the picture the tool read, in chunks");
+    assert_eq!(bytes, png, "the picture the tool's result gave the agent, in chunks");
     for (tool, method, why) in [
         ("c1", zend_rpc::methods::READ_TOOL_IMAGE_CHUNK, "didn't read a picture"),
+        ("p2", zend_rpc::methods::READ_TOOL_IMAGE_CHUNK, "didn't read a picture"),
         ("nope", zend_rpc::methods::READ_TOOL_EXCHANGE, "tool_output.unavailable"),
     ] {
         let error = client

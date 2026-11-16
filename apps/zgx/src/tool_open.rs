@@ -80,6 +80,14 @@ pub fn exchange_value(reply: &Json, doc: &str, id: &str) -> Value {
                 ]));
                 // ("Read image file [image/png]": the picture says it.)
                 output_shown = true;
+            } else if !failed && !withheld && reply["done"].as_bool() != Some(false) && is_picture(path) {
+                // A picture its host kept no bytes of (read before Zend
+                // kept what a read gave the agent, or by a harness that
+                // doesn't say): its path, and why there's nothing to see.
+                // Never the file at that path now.
+                sections.push(fields(&[("path", &Json::String(path.to_owned()))]));
+                sections.push(note("nopicture"));
+                output_shown = true;
             } else if let Some(out) = output.filter(|_| !failed && !withheld) {
                 sections.push(code_section(out, path));
                 output_shown = true;
@@ -156,6 +164,13 @@ pub fn exchange_value(reply: &Json, doc: &str, id: &str) -> Value {
         ("failed", Value::Bool(failed)),
         ("done", Value::Bool(done)),
     ])
+}
+
+/// A PNG, JPEG, WebP or GIF by its name.
+fn is_picture(path: &str) -> bool {
+    path.trim().rsplit_once('.').is_some_and(|(_, ext)| {
+        matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif")
+    })
 }
 
 fn note(word: &str) -> Value {
@@ -369,6 +384,25 @@ mod tests {
         let plain = exchange_value(&json!({ "call": { "kind": "readFile", "path": "a.md" }, "output": "# T\n2026 notes" }), "c", "r");
         assert_eq!(s(section(&plain, "code"), "text"), "# T\n2026 notes");
         assert_eq!(kinds(&plain), ["code"]);
+    }
+
+    /// A read of a picture its host kept no bytes of (an old journal):
+    /// its path and a quiet line why, no picture asked for.
+    #[test]
+    fn a_read_picture_with_nothing_kept_shows_its_path_and_why() {
+        let old = exchange_value(
+            &json!({ "call": { "kind": "readFile", "path": "/home/me/.cache/sandy-phys/m1.png" }, "done": true, "output": "Read image file [image/png]" }),
+            "chat-1",
+            "p1",
+        );
+        assert_eq!(kinds(&old), ["fields", "note"]);
+        assert_eq!(s(section(&old, "note"), "text"), "nopicture");
+        let failed = exchange_value(
+            &json!({ "call": { "kind": "readFile", "path": "a.png" }, "done": true, "isError": true, "output": "ENOENT" }),
+            "c",
+            "p",
+        );
+        assert_eq!(kinds(&failed), ["output"]);
     }
 
     #[test]

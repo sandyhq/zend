@@ -135,6 +135,23 @@ impl Normalizer {
                         _ => None,
                     }
                 });
+                // The first picture the result gave the agent (a read of a
+                // PNG), for its row: the engine keeps its bytes, bounded,
+                // and journals only their file's name.
+                let image = result["content"].as_array().and_then(|items| {
+                    items.iter().find(|v| v["type"] == "image" && v["data"].is_string())
+                });
+                if let Some(image) = image.filter(|_| frame["isError"] != true) {
+                    let data = string(image, "data");
+                    if data.len() <= zend_proto::TOOL_IMAGE_MAX_BYTES.div_ceil(3) * 4 {
+                        events.push(AgentEvent::ToolImage {
+                            id: id.clone(),
+                            mime_type: string(image, "mimeType").into(),
+                            data: Some(data.into()),
+                            stored: None,
+                        });
+                    }
+                }
                 events.push(AgentEvent::ToolResult {
                     id,
                     is_error: frame["isError"].as_bool().unwrap_or(false),
@@ -327,6 +344,7 @@ mod tests {
         assert_eq!(n.map(&start).len(), 1);
         assert!(n.map(&start).is_empty());
         let events=n.map(&json!({"type":"tool_execution_end","toolCallId":"t","isError":false,"result":{"content":[{"type":"text","text":"ok"}]}}));
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::ToolImage { .. })));
         assert!(
             matches!(&events[0],AgentEvent::ToolResult{id,diff:Some(diff),..} if id=="t" && diff.new_text=="new")
         );
@@ -358,6 +376,25 @@ mod tests {
         let events = n.map(&json!({"type":"tool_execution_end","toolCallId":"e","isError":false,
             "result":{"content":[{"type":"text","text":"Successfully replaced 2 block(s) in a.md."}],"details":details}}));
         assert!(matches!(&events[0], AgentEvent::ToolResult { diff: Some(d), .. } if d.new_text.contains("three")));
+    }
+
+    /// A read of a picture: Pi's result carries the image the model was
+    /// given (`{type:"image",data,mimeType}`); it goes on, before the
+    /// result, for the engine to keep. Not after a failure.
+    #[test]
+    fn a_reads_picture_goes_on_with_its_result() {
+        let mut n = Normalizer::default();
+        let end = |id: &str, is_error: bool| json!({"type":"tool_execution_end","toolCallId":id,"isError":is_error,
+            "result":{"content":[{"type":"text","text":"Read image file [image/png]"},
+                {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}]}});
+        n.map(&json!({"type":"tool_execution_start","toolCallId":"r","toolName":"read","args":{"path":"/home/me/.cache/sandy-phys/m1.png"}}));
+        let events = n.map(&end("r", false));
+        assert!(matches!(&events[0], AgentEvent::ToolImage { id, mime_type, data: Some(d), stored: None }
+            if id == "r" && mime_type == "image/png" && d == "iVBORw0KGgo="), "{events:?}");
+        assert!(matches!(&events[1], AgentEvent::ToolResult { id, output: Some(o), .. }
+            if id == "r" && o == "Read image file [image/png]"));
+        n.map(&json!({"type":"tool_execution_start","toolCallId":"f","toolName":"read","args":{"path":"x.png"}}));
+        assert!(!n.map(&end("f", true)).iter().any(|e| matches!(e, AgentEvent::ToolImage { .. })));
     }
 
     #[test]

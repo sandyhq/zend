@@ -309,8 +309,43 @@ fn subagent_results(
     f.message
         .blocks()
         .filter(|b: &ContentBlock| b.kind == "tool_result")
-        .map(|b| tag(parent, tool_result(&b, commands)))
+        .flat_map(|b| tool_result_events(&b, commands))
+        .map(|event| tag(parent, event))
         .collect()
+}
+
+/// A `tool_result` block's events: the picture it gave the model, if any
+/// ([`tool_image`]), then its result.
+fn tool_result_events(
+    b: &ContentBlock,
+    commands: &mut std::collections::HashMap<String, bool>,
+) -> Vec<AgentEvent> {
+    tool_image(b).into_iter().chain([tool_result(b, commands)]).collect()
+}
+
+/// The first picture a successful `tool_result` gave the model (a Read of a
+/// PNG: `{type:"image",source:{type:"base64",data,media_type}}`), for its
+/// row; the engine keeps its bytes, bounded.
+fn tool_image(b: &ContentBlock) -> Option<AgentEvent> {
+    if b.is_error == Some(true) {
+        return None;
+    }
+    let source = b.content.as_array()?.iter().find_map(|block| {
+        (block.get("type").and_then(Value::as_str) == Some("image"))
+            .then(|| block.get("source"))
+            .flatten()
+            .filter(|s| s.get("type").and_then(Value::as_str) == Some("base64"))
+    })?;
+    let data = source.get("data").and_then(Value::as_str)?;
+    if data.len() > zend_proto::TOOL_IMAGE_MAX_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    Some(AgentEvent::ToolImage {
+        id: b.tool_use_id.clone(),
+        mime_type: source.get("media_type").and_then(Value::as_str).unwrap_or("").into(),
+        data: Some(data.into()),
+        stored: None,
+    })
 }
 
 /// Records `f`'s Bash calls, so their results carry the command's output.
@@ -1212,11 +1247,11 @@ impl Normalizer {
                 f.message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_result")
-                    .map(|b| {
+                    .flat_map(|b| {
                         // A skill whose result came back without a task
                         // start ran inline: it never forks now.
                         self.skill_calls.remove(&b.tool_use_id);
-                        tool_result(&b, &mut self.command_calls)
+                        tool_result_events(&b, &mut self.command_calls)
                     })
                     .collect()
             }
@@ -1562,6 +1597,29 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A Read of a picture: the image the model was given goes on before
+    /// the result, for the engine to keep; never after a failure; a
+    /// subagent's tagged like its result.
+    #[test]
+    fn a_reads_picture_goes_on_before_its_result() {
+        let image = |id: &str, error: bool, parent: &str| {
+            let mut result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"is_error":error,
+                "content":[{"type":"image","source":{"type":"base64","data":"iVBORw0KGgo=","media_type":"image/png"}}]}]}});
+            if !parent.is_empty() {
+                result["parent_tool_use_id"] = json!(parent);
+            }
+            let mut n = Normalizer::new();
+            n.normalize(crate::claude::wire::parse_frame(&result.to_string()).unwrap(), false)
+        };
+        let events = image("toolu_p", false, "");
+        assert!(matches!(&events[0], AgentEvent::ToolImage { id, mime_type, data: Some(d), stored: None }
+            if id == "toolu_p" && mime_type == "image/png" && d == "iVBORw0KGgo="), "{events:?}");
+        assert!(matches!(&events[1], AgentEvent::ToolResult { id, .. } if id == "toolu_p"));
+        assert!(!image("toolu_f", true, "").iter().any(|e| matches!(e, AgentEvent::ToolImage { .. })));
+        let sub = image("t1", false, "toolu_sub");
+        assert!(sub.iter().any(|e| matches!(e, AgentEvent::Subagent { event, .. } if matches!(**event, AgentEvent::ToolImage { .. }))), "{sub:?}");
     }
 
     /// A file read's result never reaches the event, let alone the doc.

@@ -9,10 +9,14 @@
 //! shutdown cut off closes normally, so a `{chat_id}.shutdown` marker beside the
 //! journal flags it for the same pick-up on the next boot.
 //!
+//! A picture a tool's result gave the agent ([`AgentEvent::ToolImage`]) is
+//! kept beside the journal, `{chat_id}.images/{hash}.{ext}`; its line names
+//! the file, never holds the bytes.
+//!
 //! Bounded-window compaction is deferred (whole file kept for now, per M2 scope); a torn
 //! trailing line from a crash mid-write is tolerated everywhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -48,7 +52,13 @@ struct ChatJournal {
 pub struct RunJournal {
     dir: PathBuf,
     open_files: Mutex<HashMap<String, ChatJournal>>,
+    /// The kept pictures last served, by (chat, tool id): a picture is read
+    /// in many chunks, and each would otherwise scan the journal again.
+    pictures: Mutex<VecDeque<((String, String), PathBuf)>>,
 }
+
+/// How many served pictures [`RunJournal`] remembers.
+const PICTURES_REMEMBERED: usize = 16;
 
 impl RunJournal {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, JournalError> {
@@ -57,7 +67,60 @@ impl RunJournal {
         Ok(Self {
             dir,
             open_files: Mutex::new(HashMap::new()),
+            pictures: Mutex::new(VecDeque::new()),
         })
+    }
+
+    fn images_dir(&self, chat_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.images", sanitize_id(chat_id)))
+    }
+
+    /// Keep a picture a tool's result gave the agent, under a name made
+    /// from `key` (the chat, any subagent, the tool id: the same picture
+    /// sent twice is kept once). Returns the name its line carries.
+    pub fn keep_tool_image(
+        &self,
+        chat_id: &str,
+        key: &str,
+        bytes: &[u8],
+        ext: &str,
+    ) -> Result<String, JournalError> {
+        use sha2::{Digest, Sha256};
+        let name = format!("{:x}.{ext}", Sha256::digest(key.as_bytes()));
+        let dir = self.images_dir(chat_id);
+        std::fs::create_dir_all(&dir)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&dir)?;
+        temporary.write_all(bytes)?;
+        temporary.persist(dir.join(&name)).map_err(|err| err.error)?;
+        Ok(name)
+    }
+
+    /// The file a kept picture is in. `None` for a name this journal
+    /// doesn't make (a line can't point anywhere else).
+    pub fn tool_image_file(&self, chat_id: &str, name: &str) -> Option<PathBuf> {
+        let (hash, ext) = name.split_once('.')?;
+        let made = hash.len() == 64
+            && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            && matches!(ext, "png" | "jpg" | "webp" | "gif");
+        made.then(|| self.images_dir(chat_id).join(name))
+    }
+
+    /// A picture served before, without scanning the journal again.
+    pub fn remembered_picture(&self, chat_id: &str, tool_id: &str) -> Option<PathBuf> {
+        let pictures = self.pictures.lock().unwrap_or_else(PoisonError::into_inner);
+        pictures
+            .iter()
+            .find(|((chat, tool), _)| chat == chat_id && tool == tool_id)
+            .map(|(_, path)| path.clone())
+    }
+
+    pub fn remember_picture(&self, chat_id: &str, tool_id: &str, path: PathBuf) {
+        let mut pictures = self.pictures.lock().unwrap_or_else(PoisonError::into_inner);
+        pictures.retain(|((chat, tool), _)| !(chat == chat_id && tool == tool_id));
+        if pictures.len() >= PICTURES_REMEMBERED {
+            pictures.pop_front();
+        }
+        pictures.push_back(((chat_id.to_owned(), tool_id.to_owned()), path));
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<String, ChatJournal>> {
@@ -269,6 +332,7 @@ impl RunJournal {
         // The id as it is written in a line: a JSON string.
         let needle = serde_json::to_string(tool_id)?;
         let mut result: Option<ToolResultRecord> = None;
+        let mut image: Option<KeptImage> = None;
         while let Some(raw) = lines.next_line()? {
             if !contains(&raw, needle.as_bytes()) {
                 continue;
@@ -297,8 +361,16 @@ impl RunJournal {
                         diff,
                     });
                 }
+                AgentEvent::ToolImage {
+                    id,
+                    mime_type,
+                    stored: Some(name),
+                    ..
+                } if id == tool_id && image.is_none() => {
+                    image = Some(KeptImage { name, mime_type });
+                }
                 AgentEvent::ToolCall { id, call } if id == tool_id => {
-                    return Ok(Some(ToolExchange { call, result }));
+                    return Ok(Some(ToolExchange { call, result, image }));
                 }
                 _ => {}
             }
@@ -332,6 +404,14 @@ impl RunJournal {
     /// Remove a chat's journal file entirely (tests / future compaction).
     pub fn discard(&self, chat_id: &str) -> Result<(), JournalError> {
         self.lock().remove(chat_id);
+        self.pictures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|((chat, _), _)| chat != chat_id);
+        let images = self.images_dir(chat_id);
+        if images.exists() {
+            std::fs::remove_dir_all(images)?;
+        }
         let path = self.path_for(chat_id);
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -347,6 +427,16 @@ pub struct ToolExchange {
     pub call: ToolCall,
     /// `None` while the tool is still running.
     pub result: Option<ToolResultRecord>,
+    /// The picture its result gave the agent, kept beside the journal.
+    pub image: Option<KeptImage>,
+}
+
+/// A kept picture's line ([`AgentEvent::ToolImage`] as journaled).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeptImage {
+    /// The file's name ([`RunJournal::tool_image_file`]).
+    pub name: String,
+    pub mime_type: String,
 }
 
 /// What a tool's [`AgentEvent::ToolResult`] carried.

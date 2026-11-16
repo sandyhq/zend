@@ -622,8 +622,9 @@ pub fn read_chat_image_chunk(
 /// One chunk of the picture at `resolved`: a PNG, JPEG, WebP, or GIF by its
 /// extension AND its first bytes, of at most [`zend_proto::IMAGE_MAX_BYTES`].
 /// Where it may be is the caller's: a reply's picture inside the chat's
-/// folder ([`read_chat_image_chunk`]), a read tool's at the path its host's
-/// journal recorded (`ReadToolImageChunk`, [`crate::tool_exchange`]).
+/// folder ([`read_chat_image_chunk`]), a tool's the picture its result gave
+/// the agent, kept beside the journal (`ReadToolImageChunk`,
+/// [`crate::tool_exchange`]).
 pub fn read_image_file_chunk(resolved: &Path, offset: u64) -> Result<AttachmentChunk, EngineError> {
     use std::io::{Read, Seek};
     let refused = |why: &str| EngineError::Other(why.into());
@@ -1372,7 +1373,7 @@ pub struct ImportedImage {
 
 const MAX_GENERATED_IMAGE_BYTES: u64 = 24 * 1024 * 1024;
 
-fn raster_signature(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+pub(crate) fn raster_signature(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some(("png", "image/png"))
     } else if bytes.starts_with(b"\xff\xd8\xff") {

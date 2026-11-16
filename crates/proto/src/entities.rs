@@ -746,6 +746,10 @@ pub const TOOL_EXCHANGE_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 /// Bytes of each side of a diff it keeps; a bigger diff isn't sent (its
 /// lines would end where the cut is, not where the change is).
 pub const TOOL_EXCHANGE_DIFF_MAX_BYTES: usize = 64 * 1024;
+/// The largest picture a tool's result keeps for its row
+/// ([`crate::AgentEvent::ToolImage`]), decoded; a larger one isn't kept.
+/// The most an image chunk read serves ([`crate::IMAGE_MAX_BYTES`]).
+pub const TOOL_IMAGE_MAX_BYTES: usize = crate::IMAGE_MAX_BYTES;
 
 /// One tool's call and result as its host's run journal recorded them
 /// (`ReadToolExchange {chatId, toolId}`): what a row opens to. The chat's
@@ -770,8 +774,10 @@ pub struct ToolExchangeReply {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<crate::ToolDiff>,
-    /// A read of a picture (PNG, JPEG, WebP, GIF by its name): its type.
-    /// Its bytes come from `ReadToolImageChunk`.
+    /// The picture the tool's result gave the agent (a read of a PNG), kept
+    /// on its host: its type. Its bytes come from `ReadToolImageChunk`.
+    /// None while running, after a failure, for a file that holds secrets by
+    /// its name, and for a tool journaled before pictures were kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// What it read, wrote or printed is a secret by nature (a `.env`, a

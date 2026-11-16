@@ -66,10 +66,17 @@ Stops new whales being born. No protocol changes; additive on the existing s2 ro
   toolId}` (`crates/engine/src/tool_exchange.rs`) answers its whole call (input
   keys named like secrets withheld, `zend_proto::redact`) and its result from
   the journal (redacted, bounded; a secret file's contents and a secret
-  command's output withheld), plus its diff and, for a read of a picture, its
-  type; `ReadToolImageChunk {chatId, toolId, offset}` serves that picture, the
-  file the journal says the tool read, in 45 KB chunks with the same checks as
-  a reply's pictures. Nothing new is stored: both read what the journal keeps.
+  command's output withheld), plus its diff and, when its result gave the agent
+  a picture, its type; `ReadToolImageChunk {chatId, toolId, offset}` serves
+  that picture in 45 KB chunks with the same checks as a reply's pictures. The
+  picture is the bytes the harness passed on with the result
+  (`AgentEvent::ToolImage`: pi's and Claude Code's read results carry the
+  image the model saw), at most 10 MB, kept beside the journal as
+  `journals/{chat}.images/{hash}.{ext}` before the event is journaled; the
+  journal line names the file, not the bytes. Never the file at the path when
+  the row opens: none while the tool runs, after it failed, for a secret file,
+  or for a read journaled before pictures were kept (the row shows its path and
+  says so). Codex's `view_image` passes no bytes on, so it has no picture.
 
 **A2. Output sidecar.** *[PARKED 2026-08-10 (v0.1.30): product call — no R2
 uploads for now. The fold keeps small outputs inline (≤160 chars,

@@ -709,17 +709,17 @@ impl SessionsEngine {
         })?
     }
 
-    /// The path of the picture tool `tool_id` read (`ReadToolImageChunk`).
+    /// The kept picture tool `tool_id`'s result gave the agent
+    /// (`ReadToolImageChunk`).
     pub async fn tool_image_path(
         &self,
         doc_id: &str,
         tool_id: &str,
-        cwd: Option<String>,
     ) -> Result<std::path::PathBuf, crate::tool_output::ToolOutputError> {
         let journal = self.inner.journal.clone();
         let (doc_id, tool_id) = (doc_id.to_owned(), tool_id.to_owned());
         tokio::task::spawn_blocking(move || {
-            crate::tool_exchange::image_path(&journal, &doc_id, &tool_id, cwd.as_deref())
+            crate::tool_exchange::image_file(&journal, &doc_id, &tool_id)
         })
         .await
         .map_err(|e| {
@@ -2468,6 +2468,25 @@ impl Inner {
                     ]
                 }
             }
+        } else if let AgentEvent::ToolImage { id, data, .. } = leaf {
+            // A tool's picture: its bytes kept beside the journal before
+            // anything journals or publishes the event, which then names
+            // them; dropped when there are none to keep.
+            let key = std::iter::once(chat_id)
+                .chain(parents.iter().map(String::as_str))
+                .chain(std::iter::once(id.as_str()))
+                .collect::<Vec<_>>()
+                .join("\0");
+            let journal = self.journal.clone();
+            let chat = chat_id.to_owned();
+            tokio::task::spawn_blocking(move || {
+                crate::tool_exchange::keep_image(&journal, &chat, &key, id, data.as_deref())
+            })
+            .await
+            .ok()
+            .flatten()
+            .into_iter()
+            .collect()
         } else {
             vec![leaf]
         };

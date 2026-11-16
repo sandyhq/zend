@@ -561,6 +561,7 @@ return {
 	["ds.tool_open.failed"] = "Couldn't load what this tool did. Tap to try again.",
 	["ds.tool_open.withheld"] = "Its result stays on the device that ran it: it may hold secrets.",
 	["ds.tool_open.nothing"] = "This tool gave no result.",
+	["ds.tool_open.nopicture"] = "No picture was kept for this read, so only its path shows. Zend keeps the picture a read gave the agent; older reads, and harnesses that don't pass it on, have none.",
 	["ds.activity.phrase.thought"] = "{n, plural, one {thought} other {thought # times}}",
 	["ds.activity.phrase.search"] = "{n, plural, one {searched once} other {searched # times}}",
 	["ds.activity.phrase.glob"] = "{n, plural, one {listed files} other {listed files # times}}",

@@ -324,7 +324,11 @@ local function fields_view(id: string, n: number, rows: { any }): Node
 	return ui.column { w_full = true, gap = "$space.1", class = "tool-open-fields", table.unpack(kids) }
 end
 
-local NOTES = { running = "ds.tool_open.running", withheld = "ds.tool_open.withheld" }
+local NOTES = {
+	running = "ds.tool_open.running",
+	withheld = "ds.tool_open.withheld",
+	nopicture = "ds.tool_open.nopicture",
+}
 
 -- One section of what the host sent (src/tool_open.rs), as it shows.
 local function section_view(t: Tool, n: number, s: any): Node?

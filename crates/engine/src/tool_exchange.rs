@@ -25,21 +25,24 @@
 //!   contents (`withheld`);
 //! - a diff whose sides fit [`TOOL_EXCHANGE_DIFF_MAX_BYTES`], redacted.
 //!
-//! A read of a picture says its type (`image`); its bytes come from
-//! `ReadToolImageChunk`, from the path the journal recorded (never one a
-//! client names), a PNG, JPEG, WebP or GIF whose first bytes say so
-//! ([`crate::uploads::read_image_file_chunk`]).
+//! A tool whose result gave the agent a picture (a read of a PNG) says its
+//! type (`image`); its bytes come from `ReadToolImageChunk`: the very bytes
+//! the agent was given, kept beside the journal as they came
+//! ([`keep_image`], at most [`TOOL_IMAGE_MAX_BYTES`]), never a file read at
+//! the path when the row opens. No picture for a tool still running, one
+//! that failed, or one whose file holds secrets by its name; none for a
+//! tool journaled before pictures were kept.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
 use zend_proto::{
     TOOL_EXCHANGE_DIFF_MAX_BYTES, TOOL_EXCHANGE_INPUT_MAX_BYTES,
-    TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES, TOOL_EXCHANGE_OUTPUT_MAX_BYTES, ToolCall, ToolDiff,
-    ToolExchangeReply, redact,
+    TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES, TOOL_EXCHANGE_OUTPUT_MAX_BYTES, TOOL_IMAGE_MAX_BYTES,
+    AgentEvent, ToolCall, ToolDiff, ToolExchangeReply, redact,
 };
 
-use crate::run_journal::{RunJournal, ToolResultRecord};
+use crate::run_journal::{KeptImage, RunJournal, ToolExchange};
 use crate::tool_output::{ToolOutputError, journal_chat};
 
 /// Tool `tool_id` of doc `doc_id` (a chat, or a subagent's doc in it), as
@@ -52,45 +55,70 @@ pub fn read(
     let exchange = journal
         .tool_exchange(journal_chat(doc_id), tool_id)?
         .ok_or(ToolOutputError::NotAvailable)?;
-    Ok(reply(&exchange.call, exchange.result.as_ref()))
+    Ok(reply(&exchange))
 }
 
-/// The picture tool `tool_id` read: its path, made absolute against the
-/// chat's folder `cwd` when the harness named it relative.
-pub fn image_path(
+/// The picture the exchange may show: its result's, kept, when the tool
+/// settled without failing and touched no secret file.
+fn shown_image(exchange: &ToolExchange) -> Option<&KeptImage> {
+    let settled = exchange.result.as_ref().is_some_and(|r| !r.is_error);
+    (settled && !withholds(&exchange.call)).then_some(exchange.image.as_ref()).flatten()
+}
+
+/// What a harness's [`AgentEvent::ToolImage`] becomes before it's journaled
+/// or published: its bytes kept beside the journal ([`RunJournal::keep_tool_image`])
+/// and the event naming them. `None`, dropped, for one with no bytes, past
+/// [`TOOL_IMAGE_MAX_BYTES`], or not a PNG, JPEG, WebP or GIF by its first
+/// bytes (whatever type the harness said).
+pub fn keep_image(
     journal: &RunJournal,
-    doc_id: &str,
-    tool_id: &str,
-    cwd: Option<&str>,
-) -> Result<PathBuf, ToolOutputError> {
-    let exchange = journal
-        .tool_exchange(journal_chat(doc_id), tool_id)?
-        .ok_or(ToolOutputError::NotAvailable)?;
-    let ToolCall::ReadFile { path } = &exchange.call else {
-        return Err(ToolOutputError::NotAPicture);
-    };
-    if image_type(path).is_none() {
-        return Err(ToolOutputError::NotAPicture);
+    chat_id: &str,
+    key: &str,
+    id: String,
+    data: Option<&str>,
+) -> Option<AgentEvent> {
+    use base64::Engine as _;
+    let data = data?.trim();
+    if data.len() > TOOL_IMAGE_MAX_BYTES.div_ceil(3) * 4 {
+        return None;
     }
-    let path = PathBuf::from(crate::repos::expand_home(path.trim()).map_err(|_| ToolOutputError::NotAPicture)?);
-    if path.is_absolute() {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+    if bytes.len() > TOOL_IMAGE_MAX_BYTES {
+        return None;
+    }
+    let (ext, mime) = crate::uploads::raster_signature(&bytes)?;
+    let name = journal
+        .keep_tool_image(chat_id, key, &bytes, ext)
+        .inspect_err(|err| tracing::warn!(chat = %chat_id, error = %err, "keeping a tool's picture failed"))
+        .ok()?;
+    Some(AgentEvent::ToolImage {
+        id,
+        mime_type: mime.into(),
+        data: None,
+        stored: Some(name),
+    })
+}
+
+/// The file of the picture tool `tool_id`'s result gave the agent, kept
+/// beside the journal ([`shown_image`] says when there is one). Resolved
+/// once: the chunks after the first don't scan the journal again.
+pub fn image_file(journal: &RunJournal, doc_id: &str, tool_id: &str) -> Result<PathBuf, ToolOutputError> {
+    let chat = journal_chat(doc_id);
+    if let Some(path) = journal.remembered_picture(chat, tool_id) {
         return Ok(path);
     }
-    let cwd = cwd
-        .and_then(|cwd| crate::repos::expand_home(cwd).ok())
-        .map(PathBuf::from)
-        .filter(|cwd| cwd.is_absolute())
-        .ok_or(ToolOutputError::NotAPicture)?;
-    Ok(cwd.join(path))
+    let exchange = journal.tool_exchange(chat, tool_id)?.ok_or(ToolOutputError::NotAvailable)?;
+    let kept = shown_image(&exchange).ok_or(ToolOutputError::NotAPicture)?;
+    let path = journal.tool_image_file(chat, &kept.name).ok_or(ToolOutputError::NotAPicture)?;
+    journal.remember_picture(chat, tool_id, path.clone());
+    Ok(path)
 }
 
-/// The reply for a call and (once settled) its result.
-pub fn reply(call: &ToolCall, result: Option<&ToolResultRecord>) -> ToolExchangeReply {
+/// The reply for a call and (once settled) its result and picture.
+pub fn reply(exchange: &ToolExchange) -> ToolExchangeReply {
+    let (call, result) = (&exchange.call, exchange.result.as_ref());
     let withheld = withholds(call);
-    let image = match call {
-        ToolCall::ReadFile { path } => image_type(path).map(str::to_owned),
-        _ => None,
-    };
+    let image = shown_image(exchange).map(|kept| kept.mime_type.clone());
     let (output, output_trimmed) = match result.and_then(|r| r.output.as_deref()) {
         None => (None, false),
         Some(text) if text.trim().is_empty() => (None, false),
@@ -115,18 +143,6 @@ pub fn reply(call: &ToolCall, result: Option<&ToolResultRecord>) -> ToolExchange
         diff,
         image,
         withheld,
-    }
-}
-
-/// A picture's type by its file's name.
-fn image_type(path: &str) -> Option<&'static str> {
-    let ext = path.trim().rsplit_once('.')?.1.to_ascii_lowercase();
-    match ext.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "webp" => Some("image/webp"),
-        "gif" => Some("image/gif"),
-        _ => None,
     }
 }
 
@@ -378,30 +394,132 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_brings_its_diff_and_a_read_its_text_and_whether_it_is_a_picture() {
+    fn an_edit_brings_its_diff_and_a_read_its_text() {
         let diff = ToolDiff { path: "src/a.rs".into(), old_text: Some("one\ntwo\n".into()), new_text: "one\n2\n".into() };
         let (_dir, journal) = journal(&[
             call("e1", ToolCall::EditFile { path: "src/a.rs".into(), old_string: Some("two".into()), new_string: Some("2".into()) }),
             result("e1", "Successfully replaced 1 block(s) in src/a.rs.", Some(diff.clone())),
             call("r1", ToolCall::ReadFile { path: "src/a.rs".into() }),
             result("r1", "one\n2\n", None),
-            call("p1", ToolCall::ReadFile { path: "shots/G11.PNG".into() }),
-            result("p1", "Read image file [image/png]", None),
         ]);
         let edit = read(&journal, "chat-1", "e1").unwrap();
         assert_eq!(edit.diff, Some(diff));
         assert!(matches!(&edit.call, ToolCall::EditFile { old_string: Some(o), .. } if o == "two"));
         let text = read(&journal, "chat-1", "r1").unwrap();
         assert_eq!((text.output.as_deref(), text.image.as_deref()), (Some("one\n2"), None));
-        let picture = read(&journal, "chat-1", "p1").unwrap();
-        assert_eq!(picture.image.as_deref(), Some("image/png"));
-        // Its bytes come from where the journal says, against the chat's
-        // folder when relative; another tool has no picture.
-        assert_eq!(image_path(&journal, "chat-1", "p1", Some("/w/app")).unwrap(), PathBuf::from("/w/app/shots/G11.PNG"));
-        assert!(matches!(image_path(&journal, "chat-1", "p1", None), Err(ToolOutputError::NotAPicture)));
-        assert!(matches!(image_path(&journal, "chat-1", "r1", Some("/w")), Err(ToolOutputError::NotAPicture)));
-        assert!(matches!(image_path(&journal, "chat-1", "e1", Some("/w")), Err(ToolOutputError::NotAPicture)));
         assert!(matches!(read(&journal, "chat-1", "nope"), Err(ToolOutputError::NotAvailable)));
+    }
+
+    /// A PNG's first bytes and a little more: what `raster_signature` takes.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDRpicture";
+
+    fn image(journal: &RunJournal, id: &str, bytes: &[u8]) -> Option<AgentEvent> {
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        keep_image(journal, "chat-1", &format!("chat-1\0{id}"), id.into(), Some(&data))
+    }
+
+    /// No picture without the bytes the tool gave the agent: a read of a
+    /// `.png` journaled before pictures were kept (or by a harness that
+    /// doesn't send them) says no image, and nothing is read at its path.
+    #[test]
+    fn a_read_of_a_picture_without_its_kept_bytes_shows_no_picture() {
+        let (_dir, journal) = journal(&[
+            call("p1", ToolCall::ReadFile { path: "/home/me/.cache/sandy-phys/m1.png".into() }),
+            result("p1", "Read image file [image/png]", None),
+        ]);
+        let reply = read(&journal, "chat-1", "p1").unwrap();
+        assert_eq!(reply.image, None, "{reply:?}");
+        assert!(reply.done && !reply.is_error);
+    }
+
+    /// The owner's case: pi reads a PNG outside the project; the row's
+    /// picture is the bytes pi gave the agent, kept beside the journal and
+    /// served from there, whatever is at the path now.
+    #[test]
+    fn a_reads_picture_is_the_bytes_its_result_gave_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        journal.append("chat-1", &call("p1", ToolCall::ReadFile { path: "~/.cache/sandy-phys/m1.png".into() })).unwrap();
+        let kept = image(&journal, "p1", PNG).expect("kept");
+        let AgentEvent::ToolImage { data, stored: Some(name), mime_type, .. } = &kept else { panic!("{kept:?}") };
+        assert!(data.is_none(), "the journal names the file, never holds the bytes");
+        assert_eq!(mime_type, "image/png");
+        journal.append("chat-1", &kept).unwrap();
+        journal.append("chat-1", &result("p1", "Read image file [image/png]", None)).unwrap();
+
+        let reply = read(&journal, "chat-1", "p1").unwrap();
+        assert_eq!(reply.image.as_deref(), Some("image/png"));
+        let file = image_file(&journal, "chat-1", "p1").unwrap();
+        assert_eq!(file, dir.path().join("chat-1.images").join(name));
+        assert_eq!(std::fs::read(&file).unwrap(), PNG);
+        let chunk = crate::uploads::read_image_file_chunk(&file, 0).unwrap();
+        assert_eq!(chunk.mime_type, "image/png");
+        // A subagent's doc reads its parent's journal, as for the call.
+        assert_eq!(image_file(&journal, "chat-1--sub--x", "p1").unwrap(), file);
+        // Another tool has no picture.
+        assert!(matches!(image_file(&journal, "chat-1", "nope"), Err(ToolOutputError::NotAvailable)));
+    }
+
+    /// The engine, not the window, holds back a picture: none while the read
+    /// runs, none when it failed, none for a file that holds secrets by its
+    /// name, even with bytes kept.
+    #[test]
+    fn no_picture_for_a_running_failed_or_secret_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        for (id, path) in [("run", "/w/a.png"), ("err", "/w/b.png"), ("sec", "/w/.ssh/id_ed25519")] {
+            journal.append("chat-1", &call(id, ToolCall::ReadFile { path: path.into() })).unwrap();
+            journal.append("chat-1", &image(&journal, id, PNG).unwrap()).unwrap();
+        }
+        journal
+            .append("chat-1", &AgentEvent::ToolResult { id: "err".into(), is_error: true, output: Some("EACCES".into()), diff: None, exit_code: None })
+            .unwrap();
+        journal.append("chat-1", &result("sec", "Read image file [image/png]", None)).unwrap();
+        for id in ["run", "err", "sec"] {
+            let reply = read(&journal, "chat-1", id).unwrap();
+            assert_eq!(reply.image, None, "{id}: {reply:?}");
+            assert!(matches!(image_file(&journal, "chat-1", id), Err(ToolOutputError::NotAPicture)), "{id}");
+        }
+    }
+
+    /// Only a real picture, at most 10 MB, is kept; its type is what its
+    /// first bytes say, not what the harness said.
+    #[test]
+    fn only_a_bounded_real_picture_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(image(&journal, "t", b"<svg onload=alert(1)>").is_none());
+        let mut big = PNG.to_vec();
+        big.resize(TOOL_IMAGE_MAX_BYTES + 1, 0);
+        assert!(image(&journal, "b", &big).is_none(), "past the cap");
+        big.truncate(TOOL_IMAGE_MAX_BYTES);
+        assert!(image(&journal, "m", &big).is_some(), "at the cap");
+        assert!(keep_image(&journal, "chat-1", "k", "n".into(), None).is_none());
+        assert!(keep_image(&journal, "chat-1", "k", "n".into(), Some("not base64!")).is_none());
+        let jpeg = image(&journal, "j", b"\xff\xd8\xff\xe0rest").unwrap();
+        assert!(matches!(jpeg, AgentEvent::ToolImage { mime_type, .. } if mime_type == "image/jpeg"));
+        // A line can't name a file outside the pictures' folder.
+        assert!(journal.tool_image_file("chat-1", "../../etc/passwd").is_none());
+        assert!(journal.tool_image_file("chat-1", &format!("{}.svg", "a".repeat(64))).is_none());
+    }
+
+    /// A picture's chunks after the first don't scan the journal again.
+    #[test]
+    fn a_pictures_later_chunks_dont_rescan_the_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        journal.append("chat-1", &call("p1", ToolCall::ReadFile { path: "/w/a.png".into() })).unwrap();
+        journal.append("chat-1", &image(&journal, "p1", PNG).unwrap()).unwrap();
+        journal.append("chat-1", &result("p1", "ok", None)).unwrap();
+        let first = image_file(&journal, "chat-1", "p1").unwrap();
+        // With the journal gone, only what the first resolved can answer.
+        std::fs::remove_file(dir.path().join("chat-1.jsonl")).unwrap();
+        assert_eq!(image_file(&journal, "chat-1", "p1").unwrap(), first);
+        // Discarding the chat forgets it, and its pictures with it.
+        journal.discard("chat-1").unwrap();
+        assert!(!first.exists());
+        assert!(image_file(&journal, "chat-1", "p1").is_err());
     }
 
     #[test]

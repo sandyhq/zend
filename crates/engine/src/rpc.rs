@@ -5897,7 +5897,7 @@ impl RpcService for EngineRpc {
                 }
                 let path = self
                     .sessions
-                    .tool_image_path(&p.chat_id, &p.tool_id, chat.cwd.clone())
+                    .tool_image_path(&p.chat_id, &p.tool_id)
                     .await
                     .map_err(mapped)?;
                 let offset = p.offset;
