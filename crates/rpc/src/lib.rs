@@ -102,7 +102,15 @@ pub mod methods {
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
     /// per pending command. Params `{chatId}`; IPC-only.
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
+    /// Params `{chatId, sourceChatId, parentChatId?, messageId?}`. With
+    /// `messageId` the copy ends at that message: through it for a reply,
+    /// before it for a prompt (whose text comes back as the reply's `draft`).
     pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
+    /// `{chatId, messageId}`: the person edited that prompt. The host removes
+    /// it and everything below it and drops the provider session (the next
+    /// turn starts fresh with the kept history). Refused while a turn runs.
+    /// Reply `{removed}`, the rows that went.
+    pub const REWIND_CHAT: &str = "RewindChat";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Explicit user navigation, `{chatId}`. Prioritizes this device's sync
     /// connection; automatic subscriptions and retries must not call it.

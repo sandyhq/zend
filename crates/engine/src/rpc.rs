@@ -2624,6 +2624,45 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// ControlRpc methods that honor `targetDeviceId` (feature-inventory §2.1). Extend this
 /// list (plus [`is_stream_method`] for streams) to make more of the surface
 /// device-addressable — the handlers themselves need no changes.
+/// Where a fork from message `id` ends: how many of `entries` it copies, and
+/// for a prompt the text it stops before (the fork's draft). A reply is
+/// copied through its last continuation row, and only once it finished.
+fn fork_boundary(
+    entries: &[zend_doc::SessionMessageEntry],
+    id: &str,
+) -> Result<(usize, Option<String>), RpcError> {
+    let at = entries
+        .iter()
+        .position(|entry| entry.id == id)
+        .ok_or_else(|| RpcError::Failed("That message is no longer in this chat".into()))?;
+    let entry = &entries[at];
+    if entry.role == zend_doc::MessageRole::User {
+        let text = entry
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                zend_doc::MessagePart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Ok((at, Some(text)));
+    }
+    let last = entries
+        .iter()
+        .rposition(|e| e.id == id || e.continuation_of.as_deref() == Some(id))
+        .unwrap_or(at);
+    if entries[at..=last]
+        .iter()
+        .any(|e| e.status == Some(zend_doc::MessageStatus::Streaming))
+    {
+        return Err(RpcError::Failed(
+            "Wait for this reply to finish before forking from it".into(),
+        ));
+    }
+    Ok((last + 1, None))
+}
+
 fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method) {
         return true;
@@ -2631,6 +2670,7 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::FORK_SIDE_CHAT
+            | methods::REWIND_CHAT
             | methods::LIST_HARNESSES
             | methods::LIST_ACP_REGISTRY
             | methods::ADD_ACP_AGENT
@@ -3682,6 +3722,10 @@ impl RpcService for EngineRpc {
                     /// side chat's parent so the copy lists as a sibling.
                     #[serde(default)]
                     parent_chat_id: Option<String>,
+                    /// Fork from this message instead of the last reply:
+                    /// through it for a reply, before it for a prompt.
+                    #[serde(default)]
+                    message_id: Option<String>,
                 }
                 let p: ForkParams = parse_params(params)?;
                 let parent_chat_id = p
@@ -3715,17 +3759,26 @@ impl RpcService for EngineRpc {
                     .doc()
                     .read_entries()
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let boundary = entries
-                    .iter()
-                    .rposition(|entry| {
-                        entry.role == zend_doc::MessageRole::Assistant
-                            && entry.status == Some(zend_doc::MessageStatus::Complete)
-                    })
-                    .ok_or_else(|| {
-                        RpcError::Failed(
-                            "Wait for a completed response before starting a side chat".into(),
-                        )
-                    })?;
+                // How many entries the copy takes, and the prompt it stops
+                // before (left for the fork's message box, never run).
+                let (copied, draft) = match p.message_id.as_deref().filter(|id| !id.is_empty()) {
+                    Some(id) => fork_boundary(&entries, id)?,
+                    None => {
+                        let last = entries
+                            .iter()
+                            .rposition(|entry| {
+                                entry.role == zend_doc::MessageRole::Assistant
+                                    && entry.status == Some(zend_doc::MessageStatus::Complete)
+                            })
+                            .ok_or_else(|| {
+                                RpcError::Failed(
+                                    "Wait for a completed response before starting a side chat"
+                                        .into(),
+                                )
+                            })?;
+                        (last + 1, None)
+                    }
+                };
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
                 chat.parent_chat_id = Some(parent_chat_id);
@@ -3750,7 +3803,7 @@ impl RpcService for EngineRpc {
                     .doc()
                     .read_entries()
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                for entry in entries[..=boundary]
+                for entry in entries[..copied]
                     .iter()
                     .filter(|entry| !existing.iter().any(|e| e.id == entry.id))
                 {
@@ -3815,7 +3868,41 @@ impl RpcService for EngineRpc {
                 }
                 self.doc_host.persist_fork(&target).map_err(failed)?;
                 self.workspace.import_chat_row(&chat).map_err(failed)?;
-                RpcReply::value(&chat)
+                match draft {
+                    Some(draft) => {
+                        let mut reply = serde_json::to_value(&chat)
+                            .map_err(|e| RpcError::Failed(e.to_string()))?;
+                        reply["draft"] = serde_json::Value::from(draft);
+                        RpcReply::value(&reply)
+                    }
+                    None => RpcReply::value(&chat),
+                }
+            }
+            methods::REWIND_CHAT => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct RewindParams {
+                    chat_id: String,
+                    message_id: String,
+                }
+                let p: RewindParams = parse_params(params)?;
+                let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+                let chat = self
+                    .workspace
+                    .chat(&p.chat_id)
+                    .map_err(failed)?
+                    .ok_or_else(|| RpcError::Failed("Chat no longer exists".into()))?;
+                if chat.device_id != self.doc_host.device_id() {
+                    return Err(RpcError::Failed(
+                        "Edit must happen on the chat's device".into(),
+                    ));
+                }
+                let removed = self
+                    .sessions
+                    .rewind(&p.chat_id, &p.message_id)
+                    .await
+                    .map_err(failed)?;
+                RpcReply::value(&serde_json::json!({ "removed": removed }))
             }
             methods::POST_NOTIFICATION => {
                 #[derive(serde::Deserialize)]

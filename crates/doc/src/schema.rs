@@ -852,6 +852,51 @@ impl SessionDoc {
         Ok(())
     }
 
+    /// Whether the person rewound this chat (edited an earlier prompt): its
+    /// transcript lost a tail its old provider session still holds, so the
+    /// next fresh session is owed the kept history, as a side chat is.
+    pub fn history_rewound(&self) -> bool {
+        matches!(
+            self.doc.get_map("meta").get("historyRewound"),
+            Some(loro::ValueOrContainer::Value(LoroValue::Bool(true)))
+        )
+    }
+
+    /// Remove the entry `message_id` and every entry after it (its
+    /// continuation rows included), and mark the chat [rewound](Self::history_rewound):
+    /// the per-provider session records go too, since each holds the removed
+    /// turns. Returns how many rows went; 0 (nothing changed) when no entry
+    /// has that id.
+    pub fn truncate_from(&self, message_id: &str) -> Result<usize, DocError> {
+        let messages = self.doc.get_list("messages");
+        let at = (0..messages.len()).find(|&i| {
+            matches!(
+                messages.get(i),
+                Some(loro::ValueOrContainer::Container(loro::Container::Map(map)))
+                    if matches!(
+                        map.get("id"),
+                        Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == message_id
+                    )
+            )
+        });
+        let Some(at) = at else {
+            return Ok(0);
+        };
+        let removed = messages.len() - at;
+        messages.delete(at, removed)?;
+        let meta = self.doc.get_map("meta");
+        meta.insert("historyRewound", true)?;
+        if !self.provider_sessions().is_empty() {
+            meta.insert("providerSessions", "{}")?;
+        }
+        // The fork history went to a session that now holds removed turns.
+        if self.fork_history_session().is_some() {
+            meta.insert("forkHistorySession", "")?;
+        }
+        self.commit();
+        Ok(removed)
+    }
+
     pub fn mark_provider_switched(&self) -> Result<(), DocError> {
         if !self.provider_switched() {
             self.doc.get_map("meta").insert("providerSwitched", true)?;
@@ -2972,6 +3017,33 @@ mod tests {
             }]
         );
         assert_eq!(doc.chat_id().as_deref(), Some("chat-1"));
+    }
+
+    #[test]
+    fn truncate_from_removes_the_entry_and_its_tail_and_survives_a_reload() {
+        let doc = SessionDoc::init("chat-1").unwrap();
+        for (id, text) in [("u1", "first"), ("a1", "reply"), ("u2", "second"), ("a2", "reply 2")] {
+            doc.push_message(&user_entry(id, text)).unwrap();
+        }
+        // A continuation row of the last reply goes with it.
+        let mut cont = user_entry("a2-c", "more");
+        cont.continuation_of = Some("a2".into());
+        doc.push_message(&cont).unwrap();
+        doc.set_provider_session("pi", &ProviderSessionMark::default()).unwrap();
+        assert!(!doc.history_rewound());
+
+        assert_eq!(doc.truncate_from("nope").unwrap(), 0, "unknown id changes nothing");
+        assert!(!doc.history_rewound());
+        assert_eq!(doc.truncate_from("u2").unwrap(), 3);
+        let ids = |d: &SessionDoc| d.read_entries().unwrap().into_iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(&doc), ["u1", "a1"]);
+        assert!(doc.history_rewound());
+        assert!(doc.provider_sessions().is_empty(), "provider records hold removed turns");
+
+        let reloaded = SessionDoc::from_doc(LoroDoc::new());
+        reloaded.import(&doc.export_snapshot().unwrap()).unwrap();
+        assert_eq!(ids(&reloaded), ["u1", "a1"]);
+        assert!(reloaded.history_rewound());
     }
 
     #[test]

@@ -1926,6 +1926,43 @@ impl SessionsEngine {
         Ok(true)
     }
 
+    /// The person edited the prompt `message_id`: remove it and everything
+    /// below it from the transcript, and make the provider forget them. No
+    /// harness keeps an id Zend could rewind its native history to, so the
+    /// chat's provider session is dropped instead (the empty-id tombstone,
+    /// on the chat row too, so it holds across a restart) and the doc marked
+    /// rewound: the next turn starts a fresh session that gets the kept
+    /// history in front of its prompt ([`Inner::fork_history_prompt`]).
+    /// Refused while a turn runs; a parked runtime is ended first, since its
+    /// process holds the removed turns. Returns how many rows went.
+    pub async fn rewind(&self, chat_id: &str, message_id: &str) -> Result<usize, EngineError> {
+        if self.turn_in_flight(chat_id) {
+            return Err(EngineError::Other(
+                "Stop the running turn before editing a message".into(),
+            ));
+        }
+        let handle = self.doc_handle(chat_id)?;
+        let present = handle.doc().read_entries()?.iter().any(|e| e.id == message_id);
+        if !present {
+            return Err(EngineError::Other("That message is no longer in this chat".into()));
+        }
+        self.terminate(chat_id).await?;
+        let removed = handle.doc().truncate_from(message_id)?;
+        let owner = self.inner.owned_session(chat_id);
+        let (cwd, harness) = owner
+            .map(|known| (known.cwd, known.harness))
+            .unwrap_or_default();
+        lock(&self.inner.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef { session_id: String::new(), cwd: cwd.clone(), harness },
+        );
+        if let Some(ws) = self.inner.workspace() {
+            ws.set_chat_harness_session(chat_id, "", &cwd, harness);
+        }
+        tracing::info!(chat = %chat_id, removed, "chat rewound to before an edited message");
+        Ok(removed)
+    }
+
     /// Whether the chat has a run on this device (one `inject_event` can reach).
     pub fn has_run(&self, chat_id: &str) -> bool {
         lock(&self.inner.runs).contains_key(chat_id)
@@ -3332,7 +3369,9 @@ impl Inner {
                     && chat.child_kind != Some(zend_proto::ChildKind::Session)
             });
         let switched = doc.provider_switched();
-        if native_command(prompt, harness_id) || !(side_chat || switched) {
+        // A rewound chat (an edited prompt) owes a fresh session what's kept.
+        let rewound = doc.history_rewound();
+        if native_command(prompt, harness_id) || !(side_chat || switched || rewound) {
             return None;
         }
         let mut entries = doc.read_entries().unwrap_or_default();

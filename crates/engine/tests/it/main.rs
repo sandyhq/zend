@@ -24,6 +24,7 @@ mod cursor_live;
 mod delete_ends_run;
 mod device_routing;
 mod diff_sync_churn;
+mod edit_fork;
 mod e2e;
 mod local_first;
 mod local_import;
