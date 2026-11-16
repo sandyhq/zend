@@ -155,7 +155,7 @@ function M.registry_page(nav: Nav): Node
 			-- Built in: said where a control goes (the row doesn't open).
 			-- Added, or with an update: said before the chevron.
 			control = if first.built_in
-				then ui.text { ui.t("settings.providers.add.built_in"), text_size = "$font.size.sm", color = "$text.tertiary" }
+				then ui.text { ui.t("settings.providers.add.built_in"), text_size = "$font.size.sm", color = "$text.tertiary", wrap = true }
 				else nil,
 			value = if first.built_in
 				then nil
@@ -496,7 +496,7 @@ function M.agent_page(id: string, nav: Nav): Node
 				justify = "end",
 				gap = "$space.3",
 				items = "center",
-				ui.show(busy, ui.text { ui.t("settings.providers.add.adding_hint"), text_size = "$font.size.sm", color = "$text.tertiary" }),
+				ui.show(busy, ui.text { ui.t("settings.providers.add.adding_hint"), text_size = "$font.size.sm", color = "$text.tertiary", wrap = true }),
 				ds.Button {
 					ui.t("settings.providers.add.add", { device = device }),
 					disabled = not ready,

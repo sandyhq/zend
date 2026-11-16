@@ -473,6 +473,7 @@ local function row(t: state.Template, _i: number, now: State<any>): Node
 				return if it.builtin then nil else words.update(it)
 			end,
 			detail_action = UpdateLink { now = now },
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			control = controls(t, now),
 		},

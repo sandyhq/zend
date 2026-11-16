@@ -345,6 +345,7 @@ local Toggle = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			on_click = function()
 				value:toggle()
 			end,
+			wrap = true,
 		},
 	}
 end)
@@ -626,7 +627,9 @@ local function rows_control(n: any, value: State<any>, on_focus: (boolean) -> ()
 		table.insert(head, ui.text {
 			c.label,
 			literal = true,
+			-- one line: a column's name in a dense table, its full name a tooltip
 			truncate = true,
+			tooltip = c.label,
 			grow = if c.type == "boolean" then nil else 1,
 			min_w = if c.type == "boolean" then 56 else 0,
 			text_size = "$zend.visual.text.sm.size",
@@ -695,6 +698,7 @@ local function heading(n: any, get: () -> any): Node
 				line_height = "$zend.visual.text.body.line",
 				weight = "$font.weight.medium",
 				color = "$text.primary",
+				wrap = true,
 			},
 			ui.show(function(): boolean
 				local now = get()
@@ -715,6 +719,7 @@ local function heading(n: any, get: () -> any): Node
 				text_size = "$zend.visual.text.sm.size",
 				line_height = "$zend.visual.text.sm.line",
 				color = "$text.secondary",
+				wrap = true,
 			}
 			else nil,
 	}
@@ -909,10 +914,10 @@ local Input = ui.component(function(props: { n: any, ctx: Ctx }): Node
 					return (n.label or name) .. ": " .. (if now and now.answered then now.answered else "")
 				end,
 				literal = true,
-				truncate = true,
 				text_size = "$zend.visual.text.body.size",
 				line_height = "$zend.visual.text.body.line",
 				color = "$text.secondary",
+				wrap = true,
 			},
 			ui.text {
 				locale.s("ds.visual.input.change"),
@@ -956,10 +961,10 @@ local VisualSlider = ui.component(function(props: { n: any, ctx: Ctx }): Node
 			ui.text {
 				label,
 				literal = true,
-				truncate = true,
 				text_size = "$zend.visual.text.sm.size",
 				line_height = "$zend.visual.text.sm.line",
 				color = "$text.secondary",
+				wrap = true,
 			}
 		),
 		Slider {

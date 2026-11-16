@@ -248,6 +248,7 @@ local Row = ui.component(function(props: { now: State<any> }): Node
 					description = function(): string
 						return M.where(c())
 					end,
+					-- one line: a list row: its words fade at the end, its controls stay beside them
 					truncate = true,
 					control = corner,
 				},

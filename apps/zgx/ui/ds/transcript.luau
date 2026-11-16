@@ -364,6 +364,7 @@ local function switch_side(name: string?, mark: Mark.Name?): Node
 		items = "center",
 		min_w = 0,
 		if mark then ui.div { aria_hidden = true, Mark { name = mark, size = 14, bare = true } } else nil,
+		-- one line: a name in a message's header
 		ui.text { name or "", literal = true, truncate = true, weight = "$font.weight.medium" },
 	}
 end
@@ -431,6 +432,7 @@ local function sender_line(m: Message, props: Props): Node
 						return if live then live.title else from.title
 					end,
 					literal = true,
+					-- one line: a session's name in a message's header
 					truncate = true,
 					weight = "$font.weight.medium",
 				},

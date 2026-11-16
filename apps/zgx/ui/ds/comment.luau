@@ -246,7 +246,7 @@ M.ReplyComposer = ui.component(function(props: ComposerProps): Node
 				ui.row {
 					gap = "$space.2",
 					items = "center",
-					ui.text { locale.t("ds.comment.send_hint", { key = ui.shortcut_text("cmd+enter") }), grow = 1, text_size = "$font.size.xs", color = "$text.tertiary" },
+					ui.text { locale.t("ds.comment.send_hint", { key = ui.shortcut_text("cmd+enter") }), grow = 1, text_size = "$font.size.xs", color = "$text.tertiary", wrap = true },
 					Button { locale.t("common.cancel"), tone = "ghost", size = "sm", on_click = cancel },
 					if props.secondary then Button { props.secondary.label, tone = "secondary", size = "sm", on_click = props.secondary.on_click } else nil,
 					Button {

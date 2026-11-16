@@ -867,6 +867,7 @@ local StageView = ui.component(function(st: Stage): Node
 			return if it then it.name else ""
 		end,
 		literal = true,
+		-- one line: the file's name in the viewer's bar
 		truncate = true,
 		max_w = 220,
 		px = "$space.2",

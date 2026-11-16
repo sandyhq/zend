@@ -368,8 +368,8 @@ return ui.component(function(props: Props): Node
 			items = "center",
 			justify = "center",
 			gap = "$space.1",
-			ui.text { locale.t("ds.emoji_picker.none"), text_size = "$font.size.md", color = "$text.secondary" },
-			ui.text { locale.t("ds.emoji_picker.none_hint"), text_size = "$font.size.sm", color = "$text.tertiary" },
+			ui.text { locale.t("ds.emoji_picker.none"), text_size = "$font.size.md", color = "$text.secondary", wrap = true },
+			ui.text { locale.t("ds.emoji_picker.none_hint"), text_size = "$font.size.sm", color = "$text.tertiary", wrap = true },
 		}),
 	}
 
@@ -554,7 +554,7 @@ return ui.component(function(props: Props): Node
 				local e = featured()
 				return if e then "$text.secondary" else "$text.tertiary"
 			end,
-			truncate = true,
+			wrap = true,
 			grow = 1,
 		},
 	}

@@ -153,6 +153,7 @@ local function title(label: string, query: string, keep_ext: boolean): Node
 		if cut then
 			r.shrink = 1
 			r.min_w = 0
+			-- one line: a launcher row's words
 			r.truncate = true
 		else
 			r.shrink = 0
@@ -261,6 +262,7 @@ function M.Panel(props: Props): Node
 				end, ui.text {
 					query,
 					min_w = 0,
+					-- one line: the launcher's query, in its one-line field
 					truncate = true,
 					text_size = "$font.size.md",
 					line_height = "$font.line.md",
@@ -268,6 +270,7 @@ function M.Panel(props: Props): Node
 				}, ui.text {
 					locale.t("ds.mention_launcher.placeholder"),
 					min_w = 0,
+					-- one line: the launcher's placeholder, in its one-line field
 					truncate = true,
 					text_size = "$font.size.md",
 					line_height = "$font.line.md",
@@ -383,6 +386,7 @@ function M.Panel(props: Props): Node
 				literal = true,
 				shrink = 1,
 				min_w = 0,
+				-- one line: a launcher row's detail
 				truncate = true,
 				text_size = "$font.size.sm",
 				color = "$text.tertiary",

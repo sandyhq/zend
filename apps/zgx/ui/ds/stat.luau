@@ -48,6 +48,7 @@ return function(props: Props): Node
 				end,
 				literal = true,
 				tabular = true,
+				-- one line: a stat's figure, as large as it is
 				truncate = true,
 				text_size = props.size or "$zend.visual.text.xxl.size",
 				line_height = props.line or "$zend.visual.text.xxl.line",
@@ -82,7 +83,7 @@ return function(props: Props): Node
 			ui.text {
 				label,
 				literal = true,
-				truncate = true,
+				wrap = true,
 				text_size = "$zend.visual.text.sm.size",
 				line_height = "$zend.visual.text.sm.line",
 				color = "$text.secondary",

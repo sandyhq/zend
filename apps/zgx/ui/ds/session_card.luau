@@ -51,6 +51,7 @@ local function line(icon: Icon.Name | () -> Icon.Name, text: () -> string): Node
 				end)
 				else Icon { name = icon :: Icon.Name, size = 12 },
 		},
+		-- one line: a session's line in its card
 		ui.text { text, grow = 1, min_w = 0, truncate = true, text_size = "$font.size.xs", color = "$text.secondary" },
 	}
 end

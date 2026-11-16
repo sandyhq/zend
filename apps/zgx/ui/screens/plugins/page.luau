@@ -453,6 +453,7 @@ local function row(p: state.Item, _i: number, now: State<any>): Node
 			return words.grants(it) or words.update(it)
 		end,
 		detail_action = UpdateLink { now = now },
+		-- one line: a list row: its words fade at the end, its controls stay beside them
 		truncate = true,
 		-- Its version, centred on the row beside its controls; before it,
 		-- Unverified for one whose maker Zend can't vouch for.

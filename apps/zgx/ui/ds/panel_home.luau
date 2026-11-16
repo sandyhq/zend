@@ -116,6 +116,7 @@ function M.Row(props: RowProps): Node
 		-- edit button.)
 		theme = { radius = { sm = control.nest(M.ROW_RADIUS, (h - 20) / 2) } },
 		glyph(props.icon, props.lead, muted),
+		-- one line: a row's name in the panel's list
 		ui.text { props.label, grow = 1, min_w = 0, truncate = true, text_size = "$font.size.md" },
 		props.trail,
 	}
@@ -165,6 +166,7 @@ function M.Heading(props: { label: string | Message | () -> string, trail: Node?
 		px = PAD,
 		items = "center",
 		gap = "$space.2",
+		-- one line: a section's name in the panel's list
 		ui.text { props.label, grow = 1, min_w = 0, truncate = true, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" },
 		props.trail,
 	}

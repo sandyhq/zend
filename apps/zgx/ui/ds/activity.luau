@@ -22,6 +22,7 @@ local tree_line = require("@self/tree_line")
 local control = require("@self/control")
 local Icon = require("@self/icon")
 local FadeText = require("@self/fade_text")
+local look = require("@self/look")
 local status = require("@self/status")
 local ToolDetail = require("@self/tool_detail")
 local Markdown = require("@self/markdown")
@@ -250,30 +251,48 @@ local Opened = ui.component(function(props: { now: () -> Tool }): Node
 	}
 end)
 
--- A row's line, as FadeText makes it (ds/fade_text: a box that clips the
--- text at its own width, fading its end while it overflows), built here
+-- How many lines a row's words may take before they fade out at the foot
+-- (the whole call is one press away: `call_block`). One line stays one line:
+-- a row is as tall as the lines its words really need, never more.
+local LINE_COUNT = 2
+-- A row's text line (its size and its line height, which the tree's
+-- rhythm hangs on): the words and the glyph start on the first.
+-- (The window's text size scales it: read as the row lays out.)
+local function line_h(): number
+	local scaled = look.text_theme() or {}
+	return (scaled["font.line.sm"] or ui.theme.get("font.line.sm") :: number?) or 16
+end
+local LINE: number = line_h()
+
+-- A row's line: wrapped, up to `LINE_COUNT` lines, fading out at the foot of
+-- the last while it runs on (measured as it lays out: the words laid out at
+-- the box's width are taller than the box that clips them), built here
 -- directly: a long group makes thousands.
 local function target_line(now: () -> Tool): Node
 	local clip, text = ui.ref(), ui.ref()
-	return ui.row {
+	return ui.column {
 		ref = clip,
+		grow = 1,
 		shrink = 1,
 		min_w = 0,
+		max_h = function(): number
+			return line_h() * LINE_COUNT
+		end,
 		overflow = "hidden",
-		items = "center",
-		fade_x = function()
-			local over = (text.width or 0) > (clip.width or 0) + 0.5
-			return { 0, if over then 24 else 0 }
+		fade = function()
+			local over = (text.height or 0) > (clip.height or 0) + 0.5
+			return { 0, if over then line_h() else 0 }
 		end,
 		ui.text {
 			function(): string
 				return line_of(now())
 			end,
 			ref = text,
-			shrink = 0,
 			literal = true,
+			wrap = true,
 			font = "$font.mono",
 			text_size = "$font.size.sm",
+			line_height = "$font.line.sm",
 			color = "$text.primary",
 		},
 	}
@@ -626,7 +645,7 @@ local function row(
 		},
 		ui.button {
 			w_full = true,
-			h = ROW,
+			min_h = ROW,
 			p = 0,
 			items = "center",
 			relative = true,
@@ -679,15 +698,19 @@ local function row(
 				},
 			ui.row {
 				pl = ui.raw(GUTTER, "past the tree's gutter"),
+				py = ui.raw((ROW - LINE) / 2, "a one-line row is ROW tall, its line's middle on the branch"),
 				grow = 1,
 				min_w = 0,
 				gap = "$space.1",
-				items = "center",
+				-- (The first line: the verb and the counts sit on it, the words
+				-- running on under themselves.)
+				items = "start",
 				ui.text {
 					verb,
 					literal = true,
 					shrink = 0,
 					text_size = "$font.size.sm",
+					line_height = "$font.line.sm",
 					color = "$text.secondary",
 				},
 				-- (Its line as the tool goes on: a command's input may still
@@ -698,16 +721,7 @@ local function row(
 					function(): boolean
 						return now().target ~= nil
 					end,
-					FadeText {
-						function(): string
-							return line_of(now())
-						end,
-						literal = true,
-						shrink = 1,
-						font = "$font.mono",
-						text_size = "$font.size.sm",
-						color = "$text.primary",
-					}
+					target_line(now)
 				),
 				-- An edit's lines, added and removed, in their hues.
 				if COUNTS[t.kind] or t.added ~= nil
@@ -723,6 +737,7 @@ local function row(
 						tabular = true,
 						font = "$font.mono",
 						text_size = "$font.size.xs",
+						line_height = "$font.line.sm",
 						color = "$success",
 					}
 				)
@@ -741,6 +756,7 @@ local function row(
 						tabular = true,
 						font = "$font.mono",
 						text_size = "$font.size.xs",
+						line_height = "$font.line.sm",
 						color = "$danger",
 					}
 				)
@@ -852,7 +868,8 @@ return ui.component(function(props: Props): Node
 		local h = MEASURED[`{own_key}:{t.id}`]
 		local open = CALLS_OPEN:peek()[t.id] == true
 		if t.kind ~= "thought" then
-			return if open and h then h else ROW
+			-- (As last laid out: two lines for a long command, as it was.)
+			return h or ROW
 		end
 		if h and (open or h <= first_folded) then
 			return h

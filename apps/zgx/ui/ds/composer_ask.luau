@@ -232,7 +232,7 @@ M.Question = ui.component(function(props: QuestionProps): Node
 				color = "$text.primary",
 			},
 			if q.multi
-				then ui.text { locale.t("ds.composer_ask.multi"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" }
+				then ui.text { locale.t("ds.composer_ask.multi"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary", wrap = true }
 				else nil,
 		},
 		ui.column { w_full = true, gap = "$zend.space.hair", role = if q.multi then "group" else "radiogroup", label = q.text, table.unpack(rows) },
@@ -288,6 +288,7 @@ M.Approval = ui.component(function(props: ApprovalProps): Node
 				gap = "$space.2",
 				items = "center",
 				if a.cwd
+					-- one line: a working folder's path in a list
 					then ui.text { a.cwd, literal = true, truncate = true, shrink = 1, min_w = 0, font = "$font.mono", text_size = "$font.size.xs", color = "$text.tertiary" }
 					else nil,
 				if a.detail

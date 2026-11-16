@@ -176,6 +176,7 @@ local function row(_k: Key, _i: number, now: State<Key>): Node
 				end
 				return ui.t("settings.profile.keys.added", { date = locale.date(x.created_at or 0) }):get()
 			end,
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			control = ui.row {
 				gap = "$space.3",

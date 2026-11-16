@@ -52,6 +52,7 @@ local sites = ui.computed(data.site_zoom_list)
 -- zoom it keeps, and the way back to the default.
 local function site_row(item: { host: string, zoom: number }, _i: number, now: State<any>): Node
 	return ds.Settings.Row {
+		-- one line: a list row: its words fade at the end, its controls stay beside them
 		truncate = true,
 		lead = ds.Tile {
 			size = 20,

@@ -149,6 +149,7 @@ function M.label(text: any, size: control.Size?): Node
 		line_height = if size == "lg" then "$font.line.md" else "$font.line.sm",
 		weight = "$font.weight.medium",
 		color = "$text.secondary",
+		wrap = true,
 	}
 end
 

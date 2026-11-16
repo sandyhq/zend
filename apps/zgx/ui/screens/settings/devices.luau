@@ -309,6 +309,7 @@ local function device_row(_d: sessions.Device, _i: number, d: State<sessions.Dev
 			end,
 			lead = rename.lead(icon),
 			badge = if d:peek().here then ds.Badge { ui.t("settings.devices.this_device"), size = "sm" } else nil,
+			-- one line: a list row: its words fade at the end, its controls stay beside them
 			truncate = true,
 			control = ui.div { ref = trigger, menu },
 		},

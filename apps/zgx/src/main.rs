@@ -80,6 +80,10 @@ mod shell_tests;
 #[cfg(test)]
 mod label_fade_tests;
 #[cfg(test)]
+mod wrap_lint_tests;
+#[cfg(test)]
+mod wrap_tests;
+#[cfg(test)]
 mod waiting_toast_tests;
 #[cfg(test)]
 mod split_tests;

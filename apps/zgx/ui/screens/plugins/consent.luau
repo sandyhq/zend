@@ -141,7 +141,7 @@ local function section(heading: string | Message, lines: { words.Line }): Node
 	return ui.column {
 		w_full = true,
 		gap = "$space.3",
-		ui.text { heading, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "$text.secondary" },
+		ui.text { heading, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "$text.secondary", wrap = true },
 		table.unpack(list),
 	}
 end
@@ -351,7 +351,7 @@ local Sheet = ui.component(function(props: { it: any, elsewhere: string? }): Nod
 							items = "center",
 							flex_wrap = true,
 							author(it),
-							if v then ui.text { v, font = "$font.mono", text_size = "$font.size.sm", color = "$text.secondary" } else nil,
+							if v then ui.text { v, font = "$font.mono", text_size = "$font.size.sm", color = "$text.secondary", wrap = true } else nil,
 							if elsewhere then ds.Badge { ui.t("plugins.consent.on_device", { device = elsewhere }), icon = "laptop" } else nil,
 						},
 					},
@@ -398,7 +398,7 @@ local Sheet = ui.component(function(props: { it: any, elsewhere: string? }): Nod
 										table.insert(out, ui.column {
 											w_full = true,
 											gap = "$zend.space.hair",
-											ui.text { d.title, text_size = "$font.size.sm", color = "$text.secondary" },
+											ui.text { d.title, text_size = "$font.size.sm", color = "$text.secondary", wrap = true },
 											literal(d.list),
 										})
 									end

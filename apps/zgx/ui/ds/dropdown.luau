@@ -1141,6 +1141,7 @@ return ui.component(function(props: Props): Node
 										then PrivateText {
 											item.label,
 											reveal = false,
+											-- one line: a menu item's name, one row to an item
 											truncate = true,
 											text_size = "$font.size.md",
 											line_height = "$font.line.md",

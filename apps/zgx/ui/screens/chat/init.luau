@@ -36,7 +36,7 @@ local function part(path: string, what: string): any
 			justify = "center",
 			ui.text { ui.t("chat.init.couldnt_show", { what = function(): string
 				return ui.t(what):get()
-			end }), literal = true, color = "$text.tertiary", text_size = "$font.size.sm" },
+			end }), literal = true, wrap = true, color = "$text.tertiary", text_size = "$font.size.sm" },
 		}
 	end
 end

@@ -423,6 +423,7 @@ function M.Field(): Node
 			py = "$space.2",
 			text_size = "$font.size.sm",
 			color = "$text.tertiary",
+			wrap = true,
 		}),
 	}
 	return ui.column {

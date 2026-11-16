@@ -405,7 +405,7 @@ local function comment_card(c: any): Node?
 			py = "$space.2",
 			gap = "$zend.space.hair",
 			if type(c.plugin) == "string"
-				then ui.text { locale.t("ds.composer_cargo.comment_from", { plugin = c.plugin }), text_size = "$font.size.xs", color = "$text.tertiary" }
+				then ui.text { locale.t("ds.composer_cargo.comment_from", { plugin = c.plugin }), text_size = "$font.size.xs", color = "$text.tertiary", wrap = true }
 				else nil,
 			ui.text { c.name or "", literal = true, text_size = "$font.size.sm", weight = "$font.weight.semibold", color = "$text.primary" },
 			if type(c.body) == "string" and c.body ~= ""

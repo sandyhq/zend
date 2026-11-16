@@ -103,6 +103,7 @@ local function lane(props: {
 			},
 			icon = ui.div { color = "$text.tertiary", Icon { name = props.fallback_icon, size = 14 } },
 		}),
+		-- one line: a session's name in a lane row
 		ui.text { props.name, grow = 1, min_w = 0, truncate = true, text_size = "$font.size.sm", color = "$text.primary" },
 		ui.text {
 			function(): string

@@ -5,6 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-15
 
 ### Added
+- Window: words people read now wrap instead of being cut off (field labels, a visual form's questions, settings, dialogs); a tool row in the activity rail shows up to two lines of its command and fades after, a press opens the whole call. A text that stays on one line says why (`-- one line:`), checked by `wrap_lint_tests`.
 - Visuals: `ui.image` shows a picture passed in show_visual's `assets` (a wipe between two with `before`, numbered marks with `marks`); kit Image, Gallery, Compare and Hotspots use it, with examples in `visuals/media` and their pictures in `visuals/assets`.
 - Visuals: `ui.code` (source lines coloured by the window's own highlighter, gutter, added/removed/focus marks); kit Code, Snippet, File and Diff use it. `ui.null` and `ui.kit.Json { text = "<json>" }`.
 - Visual kit, batch c: `ui.kit` Chart (10 types), Sparkline, SegmentedBar, Waterfall, Treemap, Tree, Diagram (Mermaid), Map, Scene, Shader, Carousel, Icon, with examples in `visuals/{charts,drawing,media,3d}`.
