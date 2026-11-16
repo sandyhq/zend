@@ -704,6 +704,17 @@
       "whole_running": "此命令尚未完成。",
       "whole_failed": "无法加载此输出的其余部分。请重试。"
     },
+    "tool_open": {
+      "loading": "正在加载此工具的执行内容…",
+      "result": "结果",
+      "offline": "运行此工具的设备已离线。设备恢复后点按重试。",
+      "update": "请在运行此工具的设备上更新 Zend，以查看它的执行内容。",
+      "unavailable": "运行此工具的设备没有保留它的执行内容。",
+      "running": "此工具尚未完成。",
+      "failed": "无法加载此工具的执行内容。点按重试。",
+      "withheld": "它的结果保留在运行它的设备上：其中可能含有机密信息。",
+      "nothing": "此工具没有返回结果。"
+    },
     "activity": {
       "phrase": {
         "thought": "{n, plural, =1 {思考了} other {思考了 # 次}}",

@@ -2,6 +2,12 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-16
+
+### Added
+- Transcript: every tool's row opens to what it did, by kind (a read's picture or coloured lines, an edit's diff, codemode's script and result, an MCP tool's args and result), read from the host's run journal (`ReadToolExchange`, `ReadToolImageChunk`); a chevron shows a row opens; pi's edits carry their diff, codex's one-file changes their patch (`FileUpdateChange.diff`, v2's `kind: {type}` read too).
+- Engine: a read's picture is the bytes its result gave the agent (`AgentEvent::ToolImage` from pi and Claude Code, ≤10 MB, kept beside the journal), never the file at its path when the row opens.
+
 ## 2026-11-15
 
 ### Added

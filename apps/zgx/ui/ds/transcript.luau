@@ -172,6 +172,9 @@ export type Props = {
 	-- What a reply's pictures (`![alt](path)`) are, read as they're asked
 	-- for (screens/chat/reply_images): without it, their alt text.
 	pictures: ReplyPicture.Pictures?,
+	-- The chat it shows, whose host keeps what its tools did: a tool's row
+	-- opened asks it (ds/activity's `chat`, ds/tool_open).
+	chat: (() -> string?)?,
 	-- Where the pictures sent with its messages show from (a chat on
 	-- another device reads them from there: screens/chat/reply_images'
 	-- `for_attachments`); without it, each path as it is.
@@ -662,6 +665,8 @@ type View = {
 	-- Where the pictures an agent showed are read from (Props'
 	-- `sent_pictures`: they're files on the chat's host, as sent ones are).
 	shown_pictures: ReplyPicture.Pictures?,
+	-- Props' `chat`.
+	chat: (() -> string?)?,
 	open: ((target: string) -> ())?,
 	link_menu: ((target: string) -> { Markdown.LinkEntry }?)?,
 	open_subagent: ((sub: any) -> ())?,
@@ -693,6 +698,7 @@ local function blocks_of(list: () -> { Block }, m: Message, now: () -> Message, 
 			return Activity {
 				key = `{m.id}:{b.id}`,
 				open_subagent = if view then view.open_subagent else nil,
+				chat = if view then view.chat else nil,
 				-- (A long group builds only what's near the view, as a long
 				-- reply does.)
 				window = if view
@@ -858,6 +864,7 @@ local function reply(
 			Activity {
 				key = m.id,
 				open_subagent = if view then view.open_subagent else nil,
+				chat = if view then view.chat else nil,
 				thought = thought_of(m, now, draft),
 				tools = function()
 					return now().tools or {}
@@ -1936,7 +1943,7 @@ local function Transcript(props: Props): Node
 						strip(m, state, hovered),
 						waiting_line(state, props.on_retry, props.on_discard, props.turn_state),
 					}
-					else reply(m, state, props.draft, hovered, props.compact, { turn_state = props.turn_state, view = list, offset = offset, at_end = at_end, row = outer, pictures = props.pictures, shown_pictures = props.sent_pictures, open = props.open_link, link_menu = props.link_menu, link_chip = props.link_chip, open_subagent = props.on_open_subagent, find = find_for }),
+					else reply(m, state, props.draft, hovered, props.compact, { turn_state = props.turn_state, view = list, offset = offset, at_end = at_end, row = outer, pictures = props.pictures, shown_pictures = props.sent_pictures, chat = props.chat, open = props.open_link, link_menu = props.link_menu, link_chip = props.link_chip, open_subagent = props.on_open_subagent, find = find_for }),
 			},
 		}
 	end

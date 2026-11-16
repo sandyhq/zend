@@ -329,6 +329,11 @@ local function Session(id: Id?): Node
 							on_attach = shared.attach_quote,
 							pictures = pictures,
 							sent_pictures = sent_pictures,
+							-- (Whose host a tool's row opened asks.)
+							chat = function(): string?
+								local s = store.session:get()
+								return if s and s.state ~= "missing" then s.id else nil
+							end,
 							-- A subagent's spawn opens its lane, a panel tab
 							-- (the shipping app's `OpenSubagent`).
 							on_open_subagent = function(sub: any)

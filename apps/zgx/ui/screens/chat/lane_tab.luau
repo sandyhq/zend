@@ -1178,6 +1178,11 @@ M.Tab = ui.component(function(props: { tab: any }): Node
 			else nil,
 		pictures = pictures,
 		sent_pictures = sent_pictures,
+		-- (Whose host a tool's row opened asks.)
+		chat = function(): string?
+			local s = lane_session()
+			return if s then s.id else nil
+		end,
 		on_open_subagent = function(sub: any)
 			local home = home_session()
 			if home then

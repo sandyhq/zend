@@ -540,6 +540,27 @@ fn segment_prints_secrets(words: Vec<&str>) -> bool {
     }
 }
 
+/// Whether a file's contents are secrets by its name ([`secret_file`]): a
+/// tool that read, wrote or edited it keeps none of it beyond its host
+/// (`ReadToolExchange`).
+pub fn file_holds_secrets(path: &str) -> bool {
+    secret_file(path.trim())
+}
+
+/// Whether a tool input's key names a secret (`password`, `api_key`,
+/// `authToken`, `client_secret`, `cookie`, `Authorization`): its value is
+/// never shown (`ReadToolExchange`). Narrower than a label in text
+/// ([`SECRET_KEYS`]): a tool's `code`, `keys` or `session_id` are its input,
+/// not secrets.
+pub fn input_key_is_secret(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    let flat: String = key.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    ["token", "secret", "password", "passwd", "passphrase", "credential", "cookie", "apikey", "privatekey"]
+        .iter()
+        .any(|k| flat.contains(k))
+        || matches!(flat.as_str(), "auth" | "authorization" | "key" | "pat" | "pwd" | "otp")
+}
+
 /// A file whose contents are secrets: `.env*`, `*credentials*`, `*.pem`,
 /// `*.key`, an ssh key (`id_*`), `.netrc`, `.pgpass`.
 fn secret_file(arg: &str) -> bool {
@@ -848,6 +869,20 @@ pub fn strip_ansi(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_tool_inputs_secret_keys_are_named_narrowly() {
+        use super::input_key_is_secret as secret;
+        for key in ["password", "api_key", "apiKey", "authToken", "client_secret", "Cookie", "Authorization", "auth", "key", "private_key", "GITHUB_TOKEN"] {
+            assert!(secret(key), "{key}");
+        }
+        // A tool's own input: codemode's script, keys to press, ids.
+        for key in ["code", "keys", "session_id", "chat", "path", "query", "keyword", "author", "state"] {
+            assert!(!secret(key), "{key}");
+        }
+        assert!(super::file_holds_secrets("/w/.env.local") && super::file_holds_secrets(" ~/.ssh/id_ed25519 "));
+        assert!(!super::file_holds_secrets("src/env.rs"));
+    }
 
     #[test]
     fn spaced_and_pretty_printed_labels_hide_their_values() {

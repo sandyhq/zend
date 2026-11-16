@@ -25,6 +25,7 @@ local FadeText = require("@self/fade_text")
 local look = require("@self/look")
 local status = require("@self/status")
 local ToolDetail = require("@self/tool_detail")
+local ToolOpen = require("@self/tool_open")
 local Markdown = require("@self/markdown")
 local locale = require("@self/locale")
 local FoldButton = require("@self/fold_button")
@@ -63,6 +64,11 @@ export type Tool = {
 	diff_ref: string?,
 	stats: { ToolDetail.Stat }?,
 	diff: ToolDetail.Diff?,
+	-- What the harness called it (readFile, mcp, unknown…), and the doc it
+	-- is in: the row opens to its whole call and result from that doc's
+	-- host (ds/tool_open).
+	call_kind: string?,
+	chat: string?,
 }
 
 export type Writing = { words: (id: string) -> string?, seeded: () -> boolean }
@@ -93,6 +99,9 @@ export type Props = {
 	-- Where it shows (a transcript's list and its scroll): its rows built
 	-- only near the view (`Window`).
 	window: Window?,
+	-- The chat it is in, whose host keeps what its tools did: a row opened
+	-- asks it for a tool's whole call and result (ds/tool_open).
+	chat: (() -> string?)?,
 }
 
 -- A transcript's view, for a group windowed in it: `key` names the group
@@ -231,21 +240,29 @@ end
 -- map each, holding only what's open (or, for a group, chosen), not a
 -- state per tool.
 -- A row's call and what it did, as it opens (`row`): `now`, its tool.
-local Opened = ui.component(function(props: { now: () -> Tool }): Node
+local Opened = ui.component(function(props: { now: () -> Tool, chat: (() -> string?)? }): Node
 	local now = props.now
+	local function chat_now(): string?
+		return if props.chat then props.chat() else nil
+	end
 	return ui.column {
 		w_full = true,
 		ui.show(function(): boolean
 			return now().call ~= nil
 		end, call_block(now)),
+		-- What it did: any tool's whole call and result from the device
+		-- that ran it (ds/tool_open), a command's output as the chat keeps
+		-- it (ds/tool_detail).
 		ui.show(
 			function(): boolean
-				return ToolDetail.has(now() :: any)
+				return ToolOpen.wants(now() :: any, chat_now()) or ToolDetail.has(now() :: any)
 			end,
 			ui.div {
 				ml = ui.raw(GUTTER, "under the line's words, past the tree's gutter"),
 				mb = "$space.1",
-				ToolDetail.ToolDetail { tool = now :: any },
+				if ToolOpen.wants(now() :: any, chat_now())
+					then ToolOpen.ToolOpen { tool = now :: any, chat = props.chat }
+					else ToolDetail.ToolDetail { tool = now :: any },
 			}
 		),
 	}
@@ -312,6 +329,8 @@ local function branch_of(h: number, on: boolean): any
 end
 
 local CALLS_OPEN = ui.state("activity_calls_open", {} :: { [string]: boolean })
+-- The row under the pointer, by its tool's id: its chevron shows.
+local HOVERED = ui.state("activity_row_hovered", nil :: string?)
 local GROUPS_CHOSEN = ui.state("activity_groups_chosen", {} :: { [string]: boolean })
 
 -- A thought's row: no glyph, no branch, no header, its words themselves
@@ -574,9 +593,13 @@ local function row(
 	writing: Writing?,
 	group: string?,
 	resized: ((size: { w: number, h: number }) -> ())?,
-	settled: boolean?
+	settled: boolean?,
+	chat: (() -> string?)?
 ): Node
 	local t = now()
+	local function chat_now(): string?
+		return if chat then chat() else nil
+	end
 	if t.kind == "thought" then
 		return thought_row(now, below, writing, group, resized)
 	end
@@ -590,7 +613,7 @@ local function row(
 	-- Opens to what it did, too: an edit's diff, a command's output, a
 	-- read's or a search's result (ds/tool_detail), once it has some.
 	local function has_detail(): boolean
-		return ToolDetail.has(now() :: any)
+		return ToolOpen.wants(now() :: any, chat_now()) or ToolDetail.has(now() :: any)
 	end
 	-- Open as the reader left it (opened or closed), else closed.
 	local function showing(): boolean
@@ -603,7 +626,7 @@ local function row(
 	local function lane(): any
 		return if open_subagent then (now() :: any).subagent else nil
 	end
-	local opens = t.call ~= nil or lane() ~= nil or OPENS[t.kind] == true
+	local opens = t.call ~= nil or lane() ~= nil or OPENS[t.kind] == true or ToolOpen.wants(t :: any, chat_now())
 	-- (Only a subagent's spawn says more than its line: one that may open
 	-- its lane follows it.)
 	local label: string | () -> string = if t.target then `{t.verb} {line_of(t)}` else t.verb
@@ -663,6 +686,15 @@ local function row(
 			-- row is made.)
 			expanded = if opens then showing else nil,
 			cursor = if opens then "pointer" else nil,
+			on_hover = if opens
+				then function(inside: boolean)
+					if inside then
+						HOVERED:set(id)
+					elseif HOVERED:peek() == id then
+						HOVERED:set(nil)
+					end
+				end
+				else nil,
 			on_click = function()
 				local sub = lane()
 				if sub and open_subagent then
@@ -763,9 +795,32 @@ local function row(
 					else nil,
 			},
 		},
+		-- That it opens: a chevron at the row's end, under the pointer or
+		-- while it's open, pointing down once open.
+		if opens
+			then ui.show(
+				function(): boolean
+					return showing() or HOVERED:get() == id
+				end,
+				ui.div {
+					absolute = true,
+					right = 0,
+					top = (ROW - 12) / 2,
+					class = "activity-row-chevron",
+					pointer_events = "none",
+					Icon {
+						name = function(): any
+							return if showing() then "alt-arrow-down" else "alt-arrow-right"
+						end,
+						size = 12,
+						color = "$text.tertiary",
+					},
+				}
+			)
+			else nil,
 		-- What it opens to, made only once it's opened (a component's body
 		-- runs as it mounts: closed, nothing of it is made).
-		ui.show(showing, Opened { now = now }),
+		ui.show(showing, Opened { now = now, chat = chat }),
 	}
 end
 
@@ -924,7 +979,7 @@ return ui.component(function(props: Props): Node
 				return place() < last_branch:get()
 			end, function(): boolean
 				return live() and place() == count:get()
-			end, props.open_subagent, props.thought, props.key, resized, place() < count:peek())
+			end, props.open_subagent, props.thought, props.key, resized, place() < count:peek(), props.chat)
 		end
 		-- (A call arriving joins as a row joining a `ui.each` does; the rest
 		-- are made as they come into view, as they were.)

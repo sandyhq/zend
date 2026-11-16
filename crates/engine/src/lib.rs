@@ -80,6 +80,7 @@ pub mod source_control;
 pub mod spaces;
 pub mod terminals;
 pub mod titles;
+pub mod tool_exchange;
 pub mod tool_output;
 mod transcript_history;
 mod update_trial;

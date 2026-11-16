@@ -98,7 +98,7 @@ fn whole_output_value(text: &str, last: &Json) -> Value {
 
 /// A failed whole-output read as the one word ds/tool_detail words for the
 /// reader.
-fn output_error(error: &str) -> String {
+pub(crate) fn output_error(error: &str) -> String {
     let word = if engine::outcome(error) == "offline" {
         "offline"
     } else if error.to_ascii_lowercase().contains("unknown method") {

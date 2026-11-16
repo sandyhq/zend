@@ -68,6 +68,7 @@ mod settings;
 mod system_sound;
 mod terminal;
 mod tool_details;
+mod tool_open;
 mod themes;
 mod transparency;
 mod visuals;
@@ -142,6 +143,8 @@ mod visuals_tests;
 mod undelivered_tests;
 #[cfg(test)]
 mod visual_answer_tests;
+#[cfg(test)]
+mod tool_open_tests;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
@@ -851,6 +854,7 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         completion::install(&host);
         // What a tool row opens to: its whole output or diff, fetched.
         tool_details::install(&host);
+        tool_open::install(&host);
         // Appshots: the frontmost window, captured on its shortcut.
         appshots::install(cx, &host);
         // The panel's terminal tabs (src/terminal.rs).

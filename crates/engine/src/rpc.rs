@@ -616,6 +616,16 @@ struct ReadToolOutputParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ReadToolExchangeParams {
+    /// The doc the tool part is in: a chat, or a subagent's doc in it.
+    chat_id: String,
+    tool_id: String,
+    #[serde(default)]
+    offset: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ReadChatImageChunkParams {
     chat_id: String,
     path: String,
@@ -2755,6 +2765,8 @@ fn forwardable(method: &str) -> bool {
             | methods::MARK_VISUAL_SENT
             // A command's whole output lives in its host's run journal.
             | methods::READ_TOOL_OUTPUT
+            | methods::READ_TOOL_EXCHANGE
+            | methods::READ_TOOL_IMAGE_CHUNK
             // Updates report/apply on the device whose binary they concern.
             | methods::UPDATE_STATUS
             | methods::APPLY_UPDATE
@@ -5856,6 +5868,47 @@ impl RpcService for EngineRpc {
                 .map_err(|e| RpcError::BadParams(e.to_string()))?;
                 RpcReply::value(&chunk)
             }
+            methods::READ_TOOL_EXCHANGE | methods::READ_TOOL_IMAGE_CHUNK => {
+                let p: ReadToolExchangeParams = parse_params(params)?;
+                // The host's journal, the same chat check as `ReadToolOutput`.
+                let chat = self
+                    .workspace
+                    .chat(crate::tool_output::journal_chat(&p.chat_id))
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .ok_or_else(|| RpcError::BadParams("chat not found".into()))?;
+                if chat.device_id != self.doc_host.device_id() {
+                    return Err(RpcError::BadParams("chat belongs to another device".into()));
+                }
+                use crate::tool_output::ToolOutputError as E;
+                let mapped = |e: E| match e {
+                    E::NotAvailable => {
+                        RpcError::Capability(capability_errors::TOOL_OUTPUT_UNAVAILABLE.into())
+                    }
+                    E::Journal(err) => RpcError::Failed(err.to_string()),
+                    other => RpcError::BadParams(other.to_string()),
+                };
+                if method == methods::READ_TOOL_EXCHANGE {
+                    let reply = self
+                        .sessions
+                        .read_tool_exchange(&p.chat_id, &p.tool_id)
+                        .await
+                        .map_err(mapped)?;
+                    return RpcReply::value(&reply);
+                }
+                let path = self
+                    .sessions
+                    .tool_image_path(&p.chat_id, &p.tool_id)
+                    .await
+                    .map_err(mapped)?;
+                let offset = p.offset;
+                let chunk = tokio::task::spawn_blocking(move || {
+                    crate::uploads::read_image_file_chunk(&path, offset)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&chunk)
+            }
             methods::READ_TOOL_OUTPUT => {
                 let p: ReadToolOutputParams = parse_params(params)?;
                 // Only the host has the journal; the same chat check as a
@@ -5876,7 +5929,9 @@ impl RpcService for EngineRpc {
                     .read_tool_output(&p.chat_id, &p.tool_id, p.offset)
                     .await
                     .map_err(|e| match e {
-                        E::NotACommand | E::BadOffset => RpcError::BadParams(e.to_string()),
+                        E::NotACommand | E::BadOffset | E::NotAPicture => {
+                            RpcError::BadParams(e.to_string())
+                        }
                         // Stable codes: a client words these for its reader.
                         E::NotAvailable => RpcError::Capability(
                             capability_errors::TOOL_OUTPUT_UNAVAILABLE.into(),

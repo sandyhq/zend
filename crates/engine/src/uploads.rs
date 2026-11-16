@@ -613,18 +613,29 @@ pub fn read_chat_image_chunk(
     offset: u64,
     root: &Path,
 ) -> Result<AttachmentChunk, EngineError> {
+    let resolved = jail_without_links(path, root).ok_or_else(|| {
+        EngineError::Other("Image is outside the chat's folder, or behind a link".into())
+    })?;
+    read_image_file_chunk(&resolved, offset)
+}
+
+/// One chunk of the picture at `resolved`: a PNG, JPEG, WebP, or GIF by its
+/// extension AND its first bytes, of at most [`zend_proto::IMAGE_MAX_BYTES`].
+/// Where it may be is the caller's: a reply's picture inside the chat's
+/// folder ([`read_chat_image_chunk`]), a tool's the picture its result gave
+/// the agent, kept beside the journal (`ReadToolImageChunk`,
+/// [`crate::tool_exchange`]).
+pub fn read_image_file_chunk(resolved: &Path, offset: u64) -> Result<AttachmentChunk, EngineError> {
     use std::io::{Read, Seek};
     let refused = |why: &str| EngineError::Other(why.into());
-    let resolved = jail_without_links(path, root)
-        .ok_or_else(|| refused("Image is outside the chat's folder, or behind a link"))?;
-    let meta = std::fs::metadata(&resolved)?;
+    let meta = std::fs::metadata(resolved)?;
     if !meta.is_file() {
         return Err(refused("Image is not a file"));
     }
     if meta.len() > zend_proto::IMAGE_MAX_BYTES as u64 {
         return Err(refused("Image is too large"));
     }
-    let mime_type = mime_by_ext(&resolved)
+    let mime_type = mime_by_ext(resolved)
         .filter(|mime| {
             matches!(
                 *mime,
@@ -632,7 +643,7 @@ pub fn read_chat_image_chunk(
             )
         })
         .ok_or_else(|| refused("Not a PNG, JPEG, WebP, or GIF image"))?;
-    let mut file = std::fs::File::open(&resolved)?;
+    let mut file = std::fs::File::open(resolved)?;
     let mut head = Vec::with_capacity(12);
     (&mut file).take(12).read_to_end(&mut head)?;
     if raster_signature(&head).map(|(_, mime)| mime) != Some(mime_type) {
@@ -1362,7 +1373,7 @@ pub struct ImportedImage {
 
 const MAX_GENERATED_IMAGE_BYTES: u64 = 24 * 1024 * 1024;
 
-fn raster_signature(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+pub(crate) fn raster_signature(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some(("png", "image/png"))
     } else if bytes.starts_with(b"\xff\xd8\xff") {

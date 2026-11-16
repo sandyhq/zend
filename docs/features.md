@@ -2,6 +2,11 @@
 
 What sandyhq/zend adds on top of the upstream app, one paragraph each, with where to read how to use it. Upstream's own features are in [README.md](../README.md) and the other files in this folder. What comes next: [roadmap.md](roadmap.md). What changed when: [CHANGELOG.md](../CHANGELOG.md).
 
+## For people reading a chat
+
+### Every tool's row opens to what it did
+A tool's row in a reply's work opens (a chevron at its end shows under the pointer) to what that call did, drawn for its kind: a read of a picture shows the picture the read gave the agent (the reply's frame, lightbox and copy; kept by the device that ran it, up to 10 MB, from pi and Claude Code; an older read shows its path and says no picture was kept); a read of text, its lines coloured by language; an edit, write or patch, its diff; codemode, its script as JavaScript, then its result; an MCP or other tool, its arguments key by key (JSON for nested ones) and its result (JSON as JSON); a web search, its answer as prose. Commands open as before. What it shows isn't in the chat's doc: the window asks the device that ran the tool, which reads its run journal (`ReadToolExchange`, `ReadToolImageChunk`), with secret inputs, secret files' contents and secret commands' output kept on that device. That last is by name: a codemode script that reads `.env` (`tools.read` inside it) is one call to Zend, so its result gets only the text redaction every output gets (private key blocks dropped, `KEY=value` values and token shapes hidden), not withheld whole. A device that is offline or runs an older Zend says so, and a press asks again. Pi's edits now carry their diff (from the tool's own numbered diff), Codex's a one-file change's patch (the app-server's `FileUpdateChange.diff`). In the zgx window.
+
 ## For agents working with other agents
 
 ### Child sessions and child events
