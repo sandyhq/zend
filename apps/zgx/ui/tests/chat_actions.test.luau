@@ -424,7 +424,7 @@ test("an attached passage's × takes it off, and nothing of it is sent", functio
 end)
 
 -- A tool's line holds to its row: a command of five lines (its newlines
--- left in, as the host once sent them) is one line in a row one line tall,
+-- left in, as the host once sent them) shows at most two lines in its row,
 -- nothing of it below the row, the next tool right under it. Opened, the
 -- whole command shows in its own block, all five lines, as tall as they are.
 
@@ -441,7 +441,7 @@ local function box_of(app: any, sel: string, pattern: string): { x: number, y: n
 	return nil
 end
 
-test("a command of five lines is one line in its row, and opened shows them all", function()
+test("a command of five lines shows two lines in its row, and opened shows them all", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(960, 700)
 	open(app, "s6")
@@ -451,10 +451,12 @@ test("a command of five lines is one line in its row, and opened shows them all"
 	local words = box_of(app, "#transcript", "text \"echo '--- extension-ish") :: any
 	local used = box_of(app, "#transcript", "button \"Used ToolSearch\"") :: any
 	expect(ran ~= nil and words ~= nil and used ~= nil).to_be(true)
-	expect(ran.h).to_be(28)
-	-- Its words: one line, inside the row.
-	expect(words.h < 24).to_be(true)
-	expect(words.y >= ran.y and words.y + words.h <= ran.y + ran.h).to_be(true)
+	-- Two lines at most (the wrap rule: up to 2 lines, then a press).
+	expect(ran.h).to_be(44)
+	-- Its words start inside the row; laid out whole behind the row's
+	-- clip (ds/activity FadeText), so the node may be taller than the row,
+	-- but nothing shows below it: the next tool sits right under the row.
+	expect(words.y >= ran.y and words.y < ran.y + ran.h).to_be(true)
 	-- The next tool, right under it.
 	expect(used.y).to_be(ran.y + ran.h)
 
@@ -469,6 +471,19 @@ test("a command of five lines is one line in its row, and opened shows them all"
 		end
 	end
 	expect(#rows).to_be(2)
+	-- Text nodes taller than a line before opening: the rows' own words,
+	-- laid out whole behind their two-line clip.
+	local function tall_count(): number
+		local n = 0
+		for line in app:tree("#transcript"):gmatch("[^\n]+") do
+			local h = line:match("text \"echo '%-%-%- extension%-ish.* %-?%d+,%-?%d+ %d+x(%d+)")
+			if h and (tonumber(h) or 0) > 28 then
+				n += 1
+			end
+		end
+		return n
+	end
+	local closed_tall = tall_count()
 	app:click(rows[2])
 	settle(app)
 	-- The block: the command's words taller than a line.
@@ -482,6 +497,8 @@ test("a command of five lines is one line in its row, and opened shows them all"
 		end
 	end
 	expect(block ~= nil).to_be(true)
+	-- Opening adds the call's own block beside the rows' clipped words.
+	expect(tall_count()).to_be(closed_tall + 1)
 	-- Five lines of the call's line height (xs: 14), and nothing cut.
 	local full = app:text(block.id)
 	expect(string.find(full, "--- issues", 1, true) ~= nil).to_be(true)
@@ -500,18 +517,11 @@ test("a command of five lines is one line in its row, and opened shows them all"
 		end
 	end
 	expect(after ~= nil and after >= block.y + block.h).to_be(true)
-	expect(ran2.h).to_be(28)
+	expect(ran2.h).to_be(44)
 	-- Closed again: the block goes.
 	app:click(rows[2])
 	settle(app)
-	local tall = false
-	for line in app:tree("#transcript"):gmatch("[^\n]+") do
-		local h = line:match("text \"echo '%-%-%- extension%-ish.* %-?%d+,%-?%d+ %d+x(%d+)")
-		if h and (tonumber(h) or 0) > 28 then
-			tall = true
-		end
-	end
-	expect(tall).to_be(false)
+	expect(tall_count()).to_be(closed_tall)
 end)
 
 -- The files pane's files, added to the chat (its "Add to chat", or a drag):
