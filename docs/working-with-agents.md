@@ -44,7 +44,7 @@ Plugins with the permission `session.instructions` put text into your agents' sy
 ## Editing a prompt, forking from a message
 Hover a message to see its actions beside Copy.
 
-- **Edit** (your own prompts): the prompt opens as an editor in place. Change the words, take off a file or picture with its ×, then Save & send (⌘Enter), or Cancel (Escape). If anything is below it, Zend asks once: everything below goes, for good. Files the agent changed on disk stay as they are; undo those yourself or ask the agent. The agent then works from a fresh session that gets the conversation up to your edited prompt. While the agent is still replying you can't send an edit: stop it or wait.
+- **Edit** (your own prompts): the prompt opens as an editor in place. Change the words, take off a file or picture with its ×, then Save & send (⌘Enter), or Cancel (Escape). If anything is below it, Zend asks once: everything below goes, for good. Files the agent changed on disk stay as they are; undo those yourself or ask the agent. The agent then works from a fresh session that gets the conversation up to your edited prompt. While the agent is still replying you can't send an edit: stop it or wait. An edit that can't go (a turn started meanwhile, Zend refused it) stays open in its editor with the reason; if the prompt is already removed and only the send fails, the words go into the message box after whatever you had there.
 - **Fork from here** (any prompt or reply): opens a side chat. From a reply it holds the conversation up to and including that reply; from a prompt, everything before it, with the prompt's words in the side chat's message box to change and send. The chat you forked from stays as it is.
 
 ## Usage and accounts
