@@ -16,6 +16,10 @@ return function()
   return ui.column { gap = 12,
     ui.checklist { name = "which", label = "Welche der Projekte gov-sess, chatgpt-intercom, zend-wrap und pi-setup sind für die Migration vorgesehen?", options = { "gov-sess", "zend-wrap" } },
     ui.field { name = "why", label = "Warum gerade diese Projekte jetzt und nicht erst nach dem Release im Herbst?" },
+    ui.choice { name = "inbox", label = "Ein Eingang für alles. Jeder Gedanke geht als eine Nachricht an eine Stelle, egal zu welchem Projekt. Der Agent ordnet ihn zu.", options = { "Ja", "Nein", "Anders" } },
+    ui.kit.Form { title = "Flow-Thesen", submit = "Add answers",
+      ui.kit.Radio { name = "capture", label = "Einfangen unterbricht nicht. Ein Gedanke zu Projekt B, während A läuft, wird nur festgehalten. A läuft weiter.", options = { "Ja", "Nein", "Anders" } },
+    },
   }
 end
 ]]

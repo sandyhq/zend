@@ -10,6 +10,8 @@ use zgx_script::{ScriptHost, testing::TestApp};
 
 const QUESTION: &str = "Welche der Projekte gov-sess, chatgpt-intercom, zend-wrap und pi-setup sind für die Migration vorgesehen?";
 const FIELD_LABEL: &str = "Warum gerade diese Projekte jetzt und nicht erst nach dem Release im Herbst?";
+const CHOICE_QUESTION: &str = "Ein Eingang für alles. Jeder Gedanke geht als eine Nachricht an eine Stelle, egal zu welchem Projekt. Der Agent ordnet ihn zu.";
+const FORM_RADIO: &str = "Einfangen unterbricht nicht. Ein Gedanke zu Projekt B, während A läuft, wird nur festgehalten. A läuft weiter.";
 const TWO: &str = "cd ~/Projects/zend-wrap && git log --oneline -5 && git status";
 
 fn mount() -> TestApp {
@@ -77,6 +79,13 @@ fn a_visual_form_s_question_and_labels_wrap() {
     let (w, h) = the_text(&mut app, "#wrap-visual", FIELD_LABEL);
     assert!(w <= 360., "the field's label runs past its column: {w}");
     assert!(h > LINE * 1.5, "the field's label is one line, cut off: {h} tall");
+    // A choice's question (kit Radio builds ui.choice), alone and in a kit
+    // Form: the owner's Flow-Thesen form ran past the chat's column.
+    for words in [CHOICE_QUESTION, FORM_RADIO] {
+        let (w, h) = the_text(&mut app, "#wrap-visual", words);
+        assert!(w <= 360., "a choice's question runs past its column: {w}");
+        assert!(h > LINE * 1.5, "a choice's question is one line, cut off: {h} tall");
+    }
 }
 
 /// Where a tool's row is: the one saying `words` (its box's height).
