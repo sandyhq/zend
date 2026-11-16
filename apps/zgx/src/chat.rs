@@ -596,9 +596,67 @@ struct Pending {
     row: bool,
     /// The files the engine delivers for it, for a run sent again.
     transfers: Vec<Json>,
+    /// When it was sent, in milliseconds: where a failed one stays in the
+    /// transcript, among the messages sent before and after it.
+    sent_ms: i64,
+    /// Its entry in the engine's outbox, to take it out again.
+    item: Option<String>,
+    /// The send as the page made it, to run again whole when it failed
+    /// before it was a run (a file that wouldn't upload).
+    req: Option<Value>,
+    /// Why it failed, when this window knows.
+    why: Option<Why>,
+}
+
+/// Why a prompt didn't go, said by the transcript in words.
+#[derive(Clone, Debug, PartialEq)]
+enum Why {
+    /// Files over the cap: each one's name and size in bytes.
+    TooLarge(Vec<(String, u64)>),
+    /// A file that couldn't be read: its name.
+    Unreadable(String),
+}
+
+impl Why {
+    fn value(&self) -> Value {
+        let mb = |bytes: u64| (bytes as f64 / (1024. * 1024.) * 10.).round() / 10.;
+        match self {
+            Why::TooLarge(files) => {
+                let (name, bytes) = files.iter().max_by_key(|(_, b)| *b).cloned().unwrap_or_default();
+                Value::record([
+                    ("kind", Value::from("too_large")),
+                    ("count", Value::Num(files.len() as f64)),
+                    ("name", Value::from(name.as_str())),
+                    ("size", Value::Num(mb(bytes))),
+                    ("limit", Value::Num(mb(MAX_ATTACHMENT_BYTES))),
+                ])
+            }
+            Why::Unreadable(name) => {
+                Value::record([("kind", Value::from("unreadable")), ("name", Value::from(name.as_str()))])
+            }
+        }
+    }
 }
 
 impl Pending {
+    fn new(id: String, words: String, paths: Vec<String>) -> Pending {
+        Pending {
+            id,
+            words,
+            paths,
+            waiting: "sending",
+            retry: None,
+            at: stamp(now_seconds()),
+            held: false,
+            row: false,
+            transfers: Vec::new(),
+            sent_ms: now_millis(),
+            item: None,
+            req: None,
+            why: None,
+        }
+    }
+
     fn value(&self) -> Value {
         // (Its passages as chips, as the sent message shows them.)
         let (words, chats) = split_chats(&self.words);
@@ -621,6 +679,8 @@ impl Pending {
             ("here", Value::Bool(true)),
             ("at", self.at.as_deref().map_or(Value::Nil, Value::from)),
             ("copy", copy_value(&words)),
+            // (Why a failed one did, as the line under it says.)
+            ("failure", self.why.as_ref().filter(|_| self.waiting == "failed").map_or(Value::Nil, Why::value)),
         ])
     }
 }
@@ -809,17 +869,7 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
         let mut pending = view.pending.borrow_mut();
         let prompts = pending.entry(id).or_default();
         prompts.retain(|p| p.id != message_id);
-        prompts.push(Pending {
-            id: message_id,
-            words: req.field("text").map(text).unwrap_or_default(),
-            paths: local_paths(&req),
-            waiting: "sending",
-            retry: None,
-            at: stamp(now_seconds()),
-            held: false,
-            row: false,
-            transfers: Vec::new(),
-        });
+        prompts.push(Pending::new(message_id, req.field("text").map(text).unwrap_or_default(), local_paths(&req)));
     });
     let c = chats.clone();
     host.action("chat.created", move |id| {
@@ -912,6 +962,12 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
     host.async_action("chat.queue", move |args| {
         let v = v.clone();
         async move { crate::plugins::preview::refuse("chat.queue")?; v.queue_op(args).await.map(|_| Value::Nil).map_err(String::from) }
+    });
+    // A prompt that didn't go, thrown away: `{ id, message }`.
+    let pick = which.clone();
+    host.async_action("chat.discard", move |args| {
+        let v = pick(&args);
+        async move { crate::plugins::preview::refuse("chat.discard")?; v.discard(args).await.map(|_| Value::Nil).map_err(String::from) }
     });
     let pick = which.clone();
     host.async_action("chat.retry", move |args| {
@@ -2279,7 +2335,13 @@ impl View {
             let Open { entries, older_todo, built, .. } = open;
             let mut list: Vec<Value> = Vec::with_capacity(entries.len());
             let mut seen = Subagents::default();
+            // Where each entry begins in the list, and when it was sent: a
+            // failed prompt takes its place among them by its time.
+            let mut begins: Vec<(f64, usize)> = Vec::new();
             for (at, e) in entries.iter_mut().enumerate() {
+                if let Some(sent) = e.json.as_ref().and_then(|json| json["createdAt"].as_f64()) {
+                    begins.push((sent, list.len()));
+                }
                 if e.id.is_empty() {
                     list.extend(e.json.as_ref().and_then(|json| message(json, context.model.as_deref())));
                     continue;
@@ -2338,7 +2400,25 @@ impl View {
                 }
             }
             if let Some(pending) = self.pending.borrow().get(&open.id) {
-                list.extend(pending.iter().map(Pending::value));
+                // One on its way is the newest, at the end. One that failed
+                // stays where it was sent: what came after it goes below it.
+                let mut among: Vec<(usize, Value)> = Vec::new();
+                let mut tail: Vec<Value> = Vec::new();
+                for p in pending {
+                    let place = (p.waiting == "failed")
+                        .then(|| begins.iter().find(|(sent, _)| *sent > p.sent_ms as f64).map(|(_, at)| *at))
+                        .flatten();
+                    match place {
+                        Some(at) => among.push((at, p.value())),
+                        None => tail.push(p.value()),
+                    }
+                }
+                // (From the last place back, so each index still holds.)
+                among.sort_by_key(|(at, _)| *at);
+                for (at, value) in among.into_iter().rev() {
+                    list.insert(at, value);
+                }
+                list.extend(tail);
             }
             list
         };
@@ -2397,23 +2477,22 @@ impl View {
             .map(text)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(new_id);
+        // What the person sends again (the same words) takes the place of the
+        // one that failed: it goes, and the engine's copy of it with it.
+        let again = self.take_failed_like(&id, &words, &message_id);
+        for item in again {
+            let _ = engine::get().call("RemoveHeldSend", json!({ "chatId": id, "id": item })).await;
+        }
         // Shown until the transcript has it (the page's own copy kept in
         // step as the list is published again meanwhile), sending.
         let mut pending = self.pending.borrow_mut();
         let prompts = pending.entry(id.clone()).or_default();
         // (Shown already while its chat was being made: `chat.creating`.)
         prompts.retain(|p| p.id != message_id);
-        prompts.push(Pending {
-            id: message_id.clone(),
-            words: words.clone(),
-            paths: local_paths(&req),
-            waiting: "sending",
-            retry: None,
-            at: stamp(now_seconds()),
-            held: false,
-            row: false,
-            transfers: Vec::new(),
-        });
+        let mut prompt = Pending::new(message_id.clone(), words.clone(), local_paths(&req));
+        // (Its own id kept, to run it whole again.)
+        prompt.req = Some(with_fields(req.clone(), [("message_id", Value::from(message_id.as_str()))]));
+        prompts.push(prompt);
         drop(pending);
         self.publish_messages();
         // To a chat Cloud is still making: after its first message, which
@@ -2421,6 +2500,13 @@ impl View {
         if !fresh && chats.creating.borrow().contains_key(&id) {
             chats.after_create.borrow_mut().entry(id).or_default().push(req);
             return Ok(());
+        }
+        // Files that can't go, found before any of them is uploaded: each
+        // one named, with its size, rather than a send that fails halfway.
+        if let Some(why) = unsendable(&req) {
+            let outcome = if matches!(why, Why::TooLarge(_)) { "too_large" } else { "failed" };
+            self.fail_with(&id, &message_id, None, Some(why));
+            return Err(outcome);
         }
         // What it carries, uploaded to the chat's host.
         let mut paths = Vec::new();
@@ -2631,21 +2717,19 @@ impl View {
                         p.row = row;
                         p.waiting = waiting;
                         p.retry = None;
+                        p.item = send["id"].as_str().map(str::to_owned);
                     }
                     None => {
                         let (words, paths) =
                             split_attachments(send["prompt"].as_str().unwrap_or_default());
-                        prompts.push(Pending {
-                            id: message,
-                            words,
-                            paths,
-                            waiting,
-                            retry: None,
-                            at: stamp(send["createdAt"].as_i64().unwrap_or(0) / 1000),
-                            held: true,
-                            row,
-                            transfers: Vec::new(),
-                        });
+                        let mut prompt = Pending::new(message, words, paths);
+                        prompt.waiting = waiting;
+                        prompt.at = stamp(send["createdAt"].as_i64().unwrap_or(0) / 1000);
+                        prompt.sent_ms = send["createdAt"].as_i64().unwrap_or_else(now_millis);
+                        prompt.held = true;
+                        prompt.row = row;
+                        prompt.item = send["id"].as_str().map(str::to_owned);
+                        prompts.push(prompt);
                         changed = true;
                     }
                 }
@@ -2659,13 +2743,77 @@ impl View {
     /// A pending prompt that didn't go: failed, with the command that sends
     /// it again (none: it never got that far, and is sent again whole).
     fn mark_failed(&self, id: &str, message_id: &str, retry: Option<Json>) {
+        self.fail_with(id, message_id, retry, None);
+    }
+
+    /// [`mark_failed`], saying why when it's known.
+    fn fail_with(&self, id: &str, message_id: &str, retry: Option<Json>, why: Option<Why>) {
         if let Some(pending) = self.pending.borrow_mut().get_mut(id)
             && let Some(p) = pending.iter_mut().find(|p| p.id == message_id)
         {
             p.waiting = "failed";
             p.retry = retry;
+            p.why = why;
         }
         self.publish_messages();
+    }
+
+    /// The failed prompts of a chat that say the same as `words` (not the
+    /// one being sent), taken off the list: what the person sends again
+    /// replaces them. The engine's outbox items among them, to be removed.
+    fn take_failed_like(&self, id: &str, words: &str, keep: &str) -> Vec<String> {
+        let words = words.trim();
+        let mut items = Vec::new();
+        let mut pending = self.pending.borrow_mut();
+        let Some(prompts) = pending.get_mut(id) else { return items };
+        if words.is_empty() {
+            return items;
+        }
+        let before = prompts.len();
+        prompts.retain(|p| {
+            let same = p.waiting == "failed" && p.id != keep && p.words.trim() == words;
+            if same {
+                items.extend(p.item.clone());
+            }
+            !same
+        });
+        let removed = prompts.len() != before;
+        if prompts.is_empty() {
+            pending.remove(id);
+        }
+        drop(pending);
+        if removed {
+            self.publish_messages();
+        }
+        items
+    }
+
+    /// A failed prompt thrown away: gone from the chat, its files with it,
+    /// and out of the engine's outbox if it was held there (so it doesn't
+    /// come back when the chat is opened again).
+    async fn discard(self: &Rc<Self>, args: Value) -> Result<(), Outcome> {
+        let id = args.field("id").map(text).unwrap_or_default();
+        let message_id = args.field("message").map(text).unwrap_or_default();
+        let item = {
+            let pending = self.pending.borrow();
+            let p = pending
+                .get(&id)
+                .and_then(|prompts| prompts.iter().find(|p| p.id == message_id))
+                .ok_or("missing")?;
+            if p.waiting != "failed" {
+                return Err("missing");
+            }
+            p.item.clone()
+        };
+        self.forget_pending(&id, &message_id);
+        self.publish_messages();
+        if let Some(item) = item {
+            engine::get()
+                .call("RemoveHeldSend", json!({ "chatId": id, "id": item }))
+                .await
+                .map_err(|e| held_removal_failure(&e))?;
+        }
+        Ok(())
     }
 
     fn forget_pending(&self, id: &str, message_id: &str) {
@@ -2719,11 +2867,20 @@ impl View {
                 .map_err(|e| engine::outcome(&e));
         }
         let Some(run) = run else {
-            // It never got as far as a run (an upload failed): the composer
-            // has the words; the row goes.
-            self.forget_pending(&id, &message_id);
-            self.publish_messages();
-            return Err("failed");
+            // It never got as far as a run (an upload failed): the whole
+            // send runs again, as the page made it.
+            let req = self
+                .pending
+                .borrow()
+                .get(&id)
+                .and_then(|prompts| prompts.iter().find(|p| p.id == message_id))
+                .and_then(|p| p.req.clone());
+            let Some(req) = req else {
+                self.forget_pending(&id, &message_id);
+                self.publish_messages();
+                return Err("failed");
+            };
+            return Box::pin(self.send(req)).await;
         };
         let sent = command_with(&id, run.clone(), &transfers).await;
         if sent.is_err() {
@@ -3049,6 +3206,36 @@ fn queued_attachment(path: &str) -> Value {
         fields.push(("src", Value::from(path)));
     }
     Value::record(fields)
+}
+
+/// What in a send's files can't go, found before any is uploaded: those over
+/// the cap (each with its size), else the first that can't be read.
+fn unsendable(req: &Value) -> Option<Why> {
+    let mut over = Vec::new();
+    let mut unreadable = None;
+    for a in req.field("attachments").map(Value::list).unwrap_or_default() {
+        let path = a.field("path").map(text).unwrap_or_default();
+        if path.is_empty() || a.field("on_host").is_some_and(Value::truthy) {
+            continue;
+        }
+        let name = a.field("name").map(text).filter(|n| !n.is_empty()).unwrap_or_else(|| path.clone());
+        let name = base_name(&name).to_owned();
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => {
+                if meta.len() > MAX_ATTACHMENT_BYTES {
+                    over.push((name, meta.len()));
+                }
+            }
+            _ => {
+                unreadable.get_or_insert(name);
+            }
+        }
+    }
+    if !over.is_empty() {
+        Some(Why::TooLarge(over))
+    } else {
+        unreadable.map(Why::Unreadable)
+    }
 }
 
 /// A command for a chat (`QueueCommand`): a run, an interrupt, an answer.
@@ -5884,6 +6071,10 @@ fn with_thought(draft: Value, parts: Option<&Vec<Json>>) -> Value {
 
 fn now_seconds() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
 /// A time as Unix seconds: milliseconds since 1970, or RFC 3339.

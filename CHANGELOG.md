@@ -28,6 +28,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ### Changed
 - `zend.run` without a `cwd` runs in the plugin's own folder.
 - Removing a plugin forgets its log and its instructions.
+- A message that was not delivered (files over the 24 MB cap, a file that can't be read) stays where it was sent instead of sticking to the end of the chat; it says why, offers Send again and Discard, and is replaced when the same words are sent again. Files over the cap are found before anything is uploaded.
 
 ## Earlier
 - Child sessions and child events (PR #1).
