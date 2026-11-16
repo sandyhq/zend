@@ -268,6 +268,11 @@ struct Inner {
     revivals: Mutex<HashMap<String, Revival>>,
     /// Chats whose revival hasn't returned from its dispatch yet.
     revivals_starting: Mutex<std::collections::HashSet<String>>,
+    /// Per chat: dispatches hold it shared from the moment they arrive till
+    /// their run is registered (or they return); a rewind holds it alone, so
+    /// it never removes a prompt a turn is starting from, nor races a
+    /// dispatch to the resume id ([`SessionsEngine::rewind`]).
+    chat_gates: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
     /// Per chat: messages a Stop cancelled while they were still on their
     /// way (see [`SessionsEngine::cancel_sent_messages`]).
     cancelled_sends: Mutex<HashMap<String, std::collections::HashSet<String>>>,
@@ -366,6 +371,7 @@ impl SessionsEngine {
                 revive_after_shutdown: std::sync::atomic::AtomicBool::new(true),
                 revivals: Mutex::new(HashMap::new()),
                 revivals_starting: Mutex::new(std::collections::HashSet::new()),
+                chat_gates: Mutex::new(HashMap::new()),
                 cancelled_sends: Mutex::new(HashMap::new()),
                 user_stops: Mutex::new(HashMap::new()),
                 ipc_port: std::sync::atomic::AtomicU16::new(0),
@@ -944,8 +950,37 @@ impl SessionsEngine {
         ))
     }
 
+    /// [`Self::dispatch_ungated`] holding the chat's gate shared: a rewind
+    /// waits for it (see [`Inner::chat_gates`]).
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_inner(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        request: RunRequest,
+        message_id: Option<String>,
+        startup_retry: bool,
+        spawn_attempt: u8,
+        stops_seen: Option<u64>,
+        idle: bool,
+    ) -> Result<String, EngineError> {
+        let gate = self.inner.chat_gate(chat_id);
+        let _shared = gate.read().await;
+        self.dispatch_ungated(
+            chat_id,
+            harness_id,
+            request,
+            message_id,
+            startup_retry,
+            spawn_attempt,
+            stops_seen,
+            idle,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_ungated(
         &self,
         chat_id: &str,
         harness_id: HarnessId,
@@ -1221,7 +1256,11 @@ impl SessionsEngine {
         // An id the provider has rejected is skipped wherever it comes from.
         let mut resume_injected = false;
         if request.resume.is_none() {
-            let live = |id: &String| !self.inner.resume_was_rejected(chat_id, id);
+            // Nor one a rewind took turns from: the doc says so alone, should
+            // the registry's tombstone never have been written.
+            let live = |id: &String| {
+                !self.inner.resume_was_rejected(chat_id, id) && !handle.doc().rewound_session(id)
+            };
             request.resume = self
                 .inner
                 .resume_for(chat_id, &request.cwd, harness_id)
@@ -1936,7 +1975,16 @@ impl SessionsEngine {
     /// Refused while a turn runs; a parked runtime is ended first, since its
     /// process holds the removed turns. Returns how many rows went.
     pub async fn rewind(&self, chat_id: &str, message_id: &str) -> Result<usize, EngineError> {
-        if self.turn_in_flight(chat_id) {
+        // Alone with the chat: a dispatch on its way (its prompt written, its
+        // run not yet registered) finishes first, and none starts until the
+        // removal and the tombstone are both in place. Checked under it.
+        let gate = self.inner.chat_gate(chat_id);
+        let _alone = tokio::time::timeout(std::time::Duration::from_secs(10), gate.write())
+            .await
+            .map_err(|_| {
+                EngineError::Other("A message is on its way to this chat; try again".into())
+            })?;
+        if self.turn_in_flight(chat_id) || self.revival_pending(chat_id) {
             return Err(EngineError::Other(
                 "Stop the running turn before editing a message".into(),
             ));
@@ -1947,8 +1995,9 @@ impl SessionsEngine {
             return Err(EngineError::Other("That message is no longer in this chat".into()));
         }
         self.terminate(chat_id).await?;
-        let removed = handle.doc().truncate_from(message_id)?;
         let owner = self.inner.owned_session(chat_id);
+        let forgotten: Vec<String> = owner.iter().map(|known| known.session_id.clone()).collect();
+        let removed = handle.doc().truncate_from(message_id, &forgotten)?;
         let (cwd, harness) = owner
             .map(|known| (known.cwd, known.harness))
             .unwrap_or_default();
@@ -3112,6 +3161,14 @@ impl Inner {
 
     /// Whether the provider has said it no longer has `chat_id`'s session
     /// `session_id` (see [`Self::reject_resume`]).
+    /// The chat's dispatch/rewind gate ([`Inner::chat_gates`]).
+    fn chat_gate(&self, chat_id: &str) -> Arc<tokio::sync::RwLock<()>> {
+        lock(&self.chat_gates)
+            .entry(chat_id.to_string())
+            .or_default()
+            .clone()
+    }
+
     fn resume_was_rejected(&self, chat_id: &str, session_id: &str) -> bool {
         lock(&self.rejected_resumes)
             .get(chat_id)

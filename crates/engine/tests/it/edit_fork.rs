@@ -56,6 +56,52 @@ impl Harness for Capture {
     }
 }
 
+/// A harness whose start can be held: the first dispatch armed stops in
+/// the engine's look at its CLI (after its prompt is written, before its run
+/// is registered) till the test lets it go; its turn then never ends.
+struct Held {
+    armed: std::sync::atomic::AtomicBool,
+    entered: Arc<tokio::sync::Notify>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+#[async_trait]
+impl Harness for Held {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Held"
+    }
+    fn supports_steering(&self) -> bool {
+        false
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    fn executable_path(&self) -> Option<std::path::PathBuf> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.notify_one();
+            let _ = self.release.lock().unwrap().recv();
+        }
+        None
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        _: RunRequest,
+        _: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        Ok(futures::stream::iter(vec![Ok(AgentEvent::TextDelta { text: "Working".into() })])
+            .chain(futures::stream::pending())
+            .boxed())
+    }
+}
+
 fn message(id: &str, role: MessageRole, text: &str, status: MessageStatus) -> SessionMessageEntry {
     SessionMessageEntry {
         duration_ms: None,
@@ -311,5 +357,127 @@ async fn pi_edit_end_to_end_next_turn_lacks_the_removed_messages() {
     let second_session = core.workspace.chat(chat).unwrap().unwrap().harness_session_id;
     assert!(second_session.as_deref().is_some_and(|s| !s.is_empty()));
     assert_ne!(first_session, second_session, "pi ran a new session, not the old one");
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_rewind_waits_for_a_turn_starting_and_never_removes_its_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (release, released) = std::sync::mpsc::channel();
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Held {
+        armed: true.into(),
+        entered: entered.clone(),
+        release: Mutex::new(released),
+    }));
+    let core = seeded(dir.path(), registry, false);
+
+    // A prompt on its way: written to the transcript, its run not yet
+    // registered (held in the engine's look at the CLI) when the edit of an
+    // earlier prompt arrives.
+    let starting = core.sessions.dispatch(
+        "main",
+        HarnessId::Mock,
+        request("Now say CHERRY", "/tmp"),
+        Some("u3".into()),
+    );
+    let go_edit = tokio::sync::Notify::new();
+    let edit = async {
+        go_edit.notified().await;
+        core.sessions.rewind("main", "u2").await
+    };
+    let let_go = async {
+        entered.notified().await;
+        go_edit.notify_one();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        release.send(()).unwrap();
+    };
+    let (started, edited, ()) =
+        tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(starting, edit, let_go) })
+            .await
+            .expect("the dispatch and the edit both settle");
+    started.unwrap();
+    let err = edited.expect_err("the turn that started first holds the chat");
+    assert!(err.to_string().contains("Stop the running turn"), "{err}");
+    assert_eq!(ids(&core, "main")[..5], ["u1", "a1", "u2", "a2", "u3"], "the starting turn's prompt stays");
+    core.sessions.terminate("main").await.unwrap();
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_rewind_holds_when_the_registry_tombstone_was_lost_in_a_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = seeded(dir.path(), registry, false);
+    core.workspace
+        .set_chat_harness_session("main", "old-provider-session", "/tmp", Some(HarnessId::Mock));
+    assert_eq!(core.sessions.rewind("main", "u2").await.unwrap(), 2);
+    core.shutdown().await;
+    drop(core);
+
+    // The crash came inside the registry's debounce: the doc lost the tail,
+    // the chat row still names the session that holds it.
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "old-provider-session", "/tmp", Some(HarnessId::Mock));
+    core.sessions
+        .dispatch("main", HarnessId::Mock, request("Now say CHERRY", "/tmp"), Some("u2b".into()))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while requests.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let sent = requests.lock().unwrap()[0].clone();
+    assert_eq!(sent.resume, None, "the doc alone says the old session holds removed turns");
+    assert!(sent.prompt.contains("PINEAPPLE") && !sent.prompt.contains("BANANA"), "{}", sent.prompt);
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_fork_at_a_steer_ends_the_reply_still_streaming_above_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = seeded(dir.path(), HarnessRegistry::new(), true);
+    // A steer sent while a2 was still being written.
+    core.doc_host
+        .open("main")
+        .unwrap()
+        .doc()
+        .push_message(&message("u3", MessageRole::User, "Also CHERRY", MessageStatus::Complete))
+        .unwrap();
+    let client = zend_rpc::memory_client(core.rpc_service());
+    let params = serde_json::json!({ "chatId": "side", "sourceChatId": "main", "messageId": "u3" });
+    let reply: serde_json::Value = client.call_as(methods::FORK_SIDE_CHAT, params).await.unwrap();
+    assert_eq!(reply["draft"], "Also CHERRY");
+    let copied = core.doc_host.open("side").unwrap().doc().read_entries().unwrap();
+    let a2 = copied.iter().find(|e| e.id == "a2").unwrap();
+    assert_eq!(a2.status, Some(MessageStatus::Aborted), "nothing in the fork would ever finish it");
+    let source = core.doc_host.open("main").unwrap().doc().read_entries().unwrap();
+    assert_eq!(source[3].status, Some(MessageStatus::Streaming), "the source's reply goes on");
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_retried_fork_at_a_prompt_gives_its_words_back_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = seeded(dir.path(), HarnessRegistry::new(), false);
+    let client = zend_rpc::memory_client(core.rpc_service());
+    let params = serde_json::json!({ "chatId": "side", "sourceChatId": "main", "messageId": "u2" });
+    let first: serde_json::Value =
+        client.call_as(methods::FORK_SIDE_CHAT, params.clone()).await.unwrap();
+    // Its reply lost on the way: the window asks again with the same id.
+    let again: serde_json::Value = client.call_as(methods::FORK_SIDE_CHAT, params).await.unwrap();
+    assert_eq!(first["draft"], "Now say BANANA");
+    assert_eq!(again["draft"], "Now say BANANA");
+    assert_eq!(again["id"], first["id"]);
+    assert_eq!(ids(&core, "side"), ["u1", "a1", "fork:side"]);
     core.shutdown().await;
 }

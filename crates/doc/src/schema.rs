@@ -862,12 +862,32 @@ impl SessionDoc {
         )
     }
 
+    /// Whether provider session `session_id` holds turns a rewind removed
+    /// ([`Self::truncate_from`]'s `forgotten`): never to be resumed. The
+    /// doc decides this alone, so it holds when the registry's do-not-resume
+    /// tombstone never got written (a crash inside its debounce).
+    pub fn rewound_session(&self, session_id: &str) -> bool {
+        !session_id.is_empty() && self.rewound_sessions().iter().any(|id| id == session_id)
+    }
+
+    fn rewound_sessions(&self) -> Vec<String> {
+        match self.doc.get_map("meta").get("rewoundSessions") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => {
+                serde_json::from_str(&s).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Remove the entry `message_id` and every entry after it (its
     /// continuation rows included), and mark the chat [rewound](Self::history_rewound):
     /// the per-provider session records go too, since each holds the removed
-    /// turns. Returns how many rows went; 0 (nothing changed) when no entry
-    /// has that id.
-    pub fn truncate_from(&self, message_id: &str) -> Result<usize, DocError> {
+    /// turns. `forgotten` names the provider sessions that saw the removed
+    /// turns (the chat's own and any recorded here): they're stored in the
+    /// same commit as the deletion and never resumed again
+    /// ([`Self::rewound_session`]). Returns how many rows went; 0 (nothing
+    /// changed) when no entry has that id.
+    pub fn truncate_from(&self, message_id: &str, forgotten: &[String]) -> Result<usize, DocError> {
         let messages = self.doc.get_list("messages");
         let at = (0..messages.len()).find(|&i| {
             matches!(
@@ -883,9 +903,28 @@ impl SessionDoc {
             return Ok(0);
         };
         let removed = messages.len() - at;
+        let mut dead = self.rewound_sessions();
+        for id in forgotten.iter().map(String::as_str).chain(
+            self.provider_sessions().values().map(|mark| mark.session_id.as_str()),
+        ) {
+            if !id.is_empty() && !dead.iter().any(|d| d == id) {
+                dead.push(id.to_string());
+            }
+        }
+        if let Some(id) = self.fork_history_session().filter(|id| !id.is_empty())
+            && !dead.contains(&id)
+        {
+            dead.push(id);
+        }
+        // (A handful a chat ever edits; the oldest are long out of reach.)
+        let excess = dead.len().saturating_sub(64);
+        dead.drain(..excess);
         messages.delete(at, removed)?;
         let meta = self.doc.get_map("meta");
         meta.insert("historyRewound", true)?;
+        if !dead.is_empty() {
+            meta.insert("rewoundSessions", serde_json::to_string(&dead)?.as_str())?;
+        }
         if !self.provider_sessions().is_empty() {
             meta.insert("providerSessions", "{}")?;
         }
@@ -3029,12 +3068,18 @@ mod tests {
         let mut cont = user_entry("a2-c", "more");
         cont.continuation_of = Some("a2".into());
         doc.push_message(&cont).unwrap();
-        doc.set_provider_session("pi", &ProviderSessionMark::default()).unwrap();
+        let mark = ProviderSessionMark { session_id: "pi-session".into(), ..Default::default() };
+        doc.set_provider_session("pi", &mark).unwrap();
         assert!(!doc.history_rewound());
+        let own = ["own-session".to_string()];
 
-        assert_eq!(doc.truncate_from("nope").unwrap(), 0, "unknown id changes nothing");
+        assert_eq!(doc.truncate_from("nope", &own).unwrap(), 0, "unknown id changes nothing");
         assert!(!doc.history_rewound());
-        assert_eq!(doc.truncate_from("u2").unwrap(), 3);
+        assert!(!doc.rewound_session("own-session"));
+        assert_eq!(doc.truncate_from("u2", &own).unwrap(), 3);
+        // The sessions that saw the removed turns are named in the doc itself.
+        assert!(doc.rewound_session("own-session") && doc.rewound_session("pi-session"));
+        assert!(!doc.rewound_session("later-session") && !doc.rewound_session(""));
         let ids = |d: &SessionDoc| d.read_entries().unwrap().into_iter().map(|e| e.id).collect::<Vec<_>>();
         assert_eq!(ids(&doc), ["u1", "a1"]);
         assert!(doc.history_rewound());
@@ -3044,6 +3089,7 @@ mod tests {
         reloaded.import(&doc.export_snapshot().unwrap()).unwrap();
         assert_eq!(ids(&reloaded), ["u1", "a1"]);
         assert!(reloaded.history_rewound());
+        assert!(reloaded.rewound_session("own-session"));
     }
 
     #[test]

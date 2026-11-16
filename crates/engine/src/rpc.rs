@@ -3750,7 +3750,26 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?
                 {
                     if existing.parent_chat_id.as_deref() == Some(parent_chat_id.as_str()) {
-                        return RpcReply::value(&existing);
+                        // A retry whose reply was lost: the same answer, the
+                        // prompt's words for the box included.
+                        let draft = p
+                            .message_id
+                            .as_deref()
+                            .filter(|id| !id.is_empty())
+                            .and_then(|id| {
+                                let source_doc = self.doc_host.open(&p.source_chat_id).ok()?;
+                                let entries = source_doc.doc().read_entries().ok()?;
+                                fork_boundary(&entries, id).ok()?.1
+                            });
+                        return match draft {
+                            Some(draft) => {
+                                let mut reply = serde_json::to_value(&existing)
+                                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                                reply["draft"] = serde_json::Value::from(draft);
+                                RpcReply::value(&reply)
+                            }
+                            None => RpcReply::value(&existing),
+                        };
                     }
                     return Err(RpcError::Failed("Chat id already exists".into()));
                 }
@@ -3808,6 +3827,12 @@ impl RpcService for EngineRpc {
                     .filter(|entry| !existing.iter().any(|e| e.id == entry.id))
                 {
                     let mut entry = entry.clone();
+                    // A reply still being written above a prompt forked from
+                    // mid-turn (a steer): nothing in the fork will ever finish
+                    // it, so the copy ends it where it got to.
+                    if entry.status == Some(zend_doc::MessageStatus::Streaming) {
+                        entry.status = Some(zend_doc::MessageStatus::Aborted);
+                    }
                     // Historical approvals belong to the source runtime; they
                     // must never block or send answers from the new composer.
                     // So does a subagent still running there: nothing in the
