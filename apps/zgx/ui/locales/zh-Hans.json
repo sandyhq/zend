@@ -744,7 +744,10 @@
       "new_reply": "新回复",
       "display_failed": "无法显示此内容",
       "image_failed": "无法显示这张图片",
-      "visual_failed": "无法显示这个可视化"
+      "visual_failed": "无法显示这个可视化",
+      "discard": "丢弃",
+      "failed_too_large": "{count, plural, =1 {文件过大：{name} 为 {size} MB，每个文件的上限是 {limit} MB。} other {文件过大：有 {count} 个文件超过每个文件 {limit} MB 的上限，最大的 {name} 为 {size} MB。}}",
+      "failed_unreadable": "无法读取 {name}。"
     },
     "user_message": {
       "open_named": "打开 {name}",

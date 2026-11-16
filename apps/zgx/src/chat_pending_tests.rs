@@ -259,3 +259,169 @@ fn a_stored_file_is_named_the_way_the_engine_resolves_it() {
     let prompt = with_attachments("look", std::slice::from_ref(&reference), 1);
     assert_eq!(split_attachments(&prompt), ("look".to_owned(), vec![reference]));
 }
+
+// --- A prompt that didn't go (undelivered) ---------------------------------
+
+fn poll_once<T>(future: impl Future<Output = T>) -> std::task::Poll<T> {
+    let mut future = Box::pin(future);
+    future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+}
+
+fn ids(view: &View) -> Vec<String> {
+    messages(view).as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_owned()).collect()
+}
+
+/// What the engine has of a chat that went on after the failed prompt: one
+/// that was delivered, and its answer, both sent after it.
+fn went_on() -> Vec<Json> {
+    let later = now_millis() + 60_000;
+    vec![
+        json!({ "id": "second", "role": "user", "createdAt": later,
+            "parts": [{ "id": "text", "kind": "text", "text": "Here is the folder path instead" }] }),
+        json!({ "id": "answer", "role": "assistant", "status": "done", "createdAt": later + 1000,
+            "parts": [{ "id": "text", "kind": "text", "text": "I read the folder." }] }),
+    ]
+}
+
+#[test]
+fn a_failed_prompt_stays_where_it_was_sent_not_at_the_end() {
+    let (_app, view, _sending) = pending_chat();
+    view.mark_failed("new-chat", "first-message", None);
+    view.heard_frame(json!({ "reset": went_on() }));
+    assert_eq!(ids(&view), ["first-message", "second", "answer"], "newer messages go below the failed one");
+    assert_eq!(messages(&view)[0]["waiting"], "failed");
+    assert!(messages(&view)[1]["waiting"].is_null());
+}
+
+#[test]
+fn a_prompt_still_on_its_way_stays_the_newest() {
+    let (_app, view, _sending) = pending_chat();
+    view.heard_frame(json!({ "reset": went_on() }));
+    assert_eq!(ids(&view), ["second", "answer", "first-message"]);
+}
+
+#[test]
+fn discarding_a_failed_prompt_takes_it_away_for_good() {
+    let (_app, view, _sending) = pending_chat();
+    view.mark_failed("new-chat", "first-message", None);
+    view.heard_frame(json!({ "reset": went_on() }));
+    let args = || {
+        Value::record([("id", Value::from("new-chat")), ("message", Value::from("first-message"))])
+    };
+    // One still on its way isn't a failed one: nothing to discard.
+    assert!(matches!(poll_once(view.discard(Value::record([("id", Value::from("new-chat")), ("message", Value::from("second"))]))), std::task::Poll::Ready(Err(_))));
+    assert!(matches!(poll_once(view.discard(args())), std::task::Poll::Ready(Ok(()))));
+    assert_eq!(ids(&view), ["second", "answer"]);
+    // The chat opened again (away and back, or its transcript heard anew):
+    // it doesn't come back.
+    view.open_chat(Some("other-chat".into()));
+    view.open_chat(Some("new-chat".into()));
+    view.heard_frame(json!({ "reset": went_on() }));
+    assert_eq!(ids(&view), ["second", "answer"]);
+    assert!(!view.pending.borrow().contains_key("new-chat"));
+}
+
+#[test]
+fn a_failed_send_held_by_the_engine_is_found_again_to_take_out() {
+    let (_app, view, _sending) = pending_chat();
+    view.open_chat(Some("other-chat".into()));
+    view.heard_frame(json!({ "reset": [] }));
+    view.follow_held(&[held_send("m1", Some("the file is too large"))]);
+    assert_eq!(view.pending.borrow()["other-chat"][0].item.as_deref(), Some("send-m1"));
+}
+
+fn big_file(name: &str, bytes: u64) -> String {
+    let path = std::env::temp_dir().join(format!("zgx-undelivered-{}-{name}", std::process::id()));
+    std::fs::File::create(&path).unwrap().set_len(bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn send_of(message: &str, text: &str, files: &[(&str, &str)]) -> Value {
+    Value::record([
+        ("session", Value::from("new-chat")),
+        ("message_id", Value::from(message)),
+        ("text", Value::from(text)),
+        ("fresh", Value::Bool(true)),
+        ("harness", Value::from("codex")),
+        (
+            "attachments",
+            Value::List(
+                files
+                    .iter()
+                    .map(|(path, name)| Value::record([("path", Value::from(*path)), ("name", Value::from(*name))]))
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+        ),
+    ])
+}
+
+#[test]
+fn a_send_with_a_file_over_the_cap_fails_at_once_naming_it() {
+    let (_app, view, _sending) = pending_chat();
+    let mb = 1024 * 1024;
+    let (small, large, larger) = (big_file("small.json", 2 * mb), big_file("large.json", 32 * mb), big_file("larger.json", 45 * mb));
+    let sent = poll_once(view.send(send_of(
+        "big",
+        "all my conversations",
+        &[(&small, "small.json"), (&large, "large.json"), (&larger, "larger.json")],
+    )));
+    for path in [&small, &large, &larger] {
+        let _ = std::fs::remove_file(path);
+    }
+    assert!(matches!(sent, std::task::Poll::Ready(Err("too_large"))), "{sent:?}");
+    let shown = messages(&view);
+    let failed = shown.as_array().unwrap().iter().find(|m| m["id"] == "big").unwrap();
+    assert_eq!(failed["waiting"], "failed");
+    assert_eq!(
+        failed["failure"],
+        json!({ "kind": "too_large", "count": 2, "name": "larger.json", "size": 45, "limit": 24 })
+    );
+}
+
+#[test]
+fn a_file_that_cant_be_read_is_named_too() {
+    let (_app, view, _sending) = pending_chat();
+    let sent = poll_once(view.send(send_of("gone", "look", &[("/nonexistent/zgx/notes.txt", "notes.txt")])));
+    assert!(matches!(sent, std::task::Poll::Ready(Err("failed"))));
+    let shown = messages(&view);
+    let failed = shown.as_array().unwrap().iter().find(|m| m["id"] == "gone").unwrap();
+    assert_eq!(failed["failure"], json!({ "kind": "unreadable", "name": "notes.txt" }));
+}
+
+#[test]
+fn send_again_on_a_prompt_whose_files_failed_runs_the_send_again() {
+    let (_app, view, _sending) = pending_chat();
+    let large = big_file("again.json", 30 * 1024 * 1024);
+    let first = poll_once(view.send(send_of("big", "files", &[(&large, "again.json")])));
+    assert!(matches!(first, std::task::Poll::Ready(Err("too_large"))));
+    let args = Value::record([("id", Value::from("new-chat")), ("message", Value::from("big"))]);
+    let again = poll_once(view.retry(args));
+    let _ = std::fs::remove_file(&large);
+    // (It ran again, and failed the same way, saying so: the row isn't
+    // thrown away by asking for it to be sent.)
+    assert!(matches!(again, std::task::Poll::Ready(Err("too_large"))), "{again:?}");
+    let shown = messages(&view);
+    let failed = shown.as_array().unwrap().iter().find(|m| m["id"] == "big").unwrap();
+    assert_eq!(failed["waiting"], "failed");
+    assert_eq!(failed["failure"]["kind"], "too_large");
+}
+
+#[test]
+fn sending_the_same_words_again_replaces_the_failed_prompt() {
+    let (_app, view, _sending) = pending_chat();
+    view.mark_failed("new-chat", "first-message", None);
+    // The words as they were, the files taken off: sent again.
+    let again = view.send(send_of("second-try", "Find the startup bug", &[]));
+    let _ = poll_once(again);
+    assert_eq!(ids(&view), ["second-try"], "the failed one is gone");
+}
+
+#[test]
+fn other_words_leave_the_failed_prompt_in_place() {
+    let (_app, view, _sending) = pending_chat();
+    view.mark_failed("new-chat", "first-message", None);
+    let _ = poll_once(view.send(send_of("other", "Something else", &[])));
+    assert_eq!(ids(&view), ["first-message", "other"]);
+}
+

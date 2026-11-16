@@ -382,6 +382,20 @@ end
 stub.retry = function(id: string, message: string)
 	note(`retry:{id}:{message}`)
 end
+-- A prompt that wasn't delivered, thrown away: gone from the transcript.
+stub.discard = function(id: string, message: string)
+	note(`discard:{id}:{message}`)
+	local kept = {}
+	for _, m in TRANSCRIPTS[id] or {} do
+		if m.id ~= message then
+			table.insert(kept, m)
+		end
+	end
+	TRANSCRIPTS[id] = kept
+	if opened == id then
+		store.messages:set(kept)
+	end
+end
 -- This device's outbox, as the engine takes a send out of it (#1256's
 -- RemoveHeldSend): gone from the chat's waiting list, or not there. An
 -- engine from before it refuses.
@@ -2122,7 +2136,21 @@ ui.command {
 		require("@app/screens/chat/shared").mention_chat("s1")
 	end,
 }
-for _, id in { "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sv" } do
+-- A chat whose first message didn't go (files over the cap), then another
+-- that did, and its answer: the failed one stays where it was sent.
+META.uf = { title = "Undelivered", project = "atlas", model = "sonnet", effort = "medium", access = "full", plan = false }
+TRANSCRIPTS.uf = {
+	{
+		id = "uf1",
+		role = "user",
+		text = "These are all my conversations",
+		waiting = "failed",
+		failure = { kind = "too_large", count = 2, name = "conversations-017.json", size = 44.8, limit = 24 },
+	},
+	{ id = "uf2", role = "user", text = "Here is the folder path instead" },
+	{ id = "uf3", role = "assistant", text = "I read the folder.", model = "Sonnet", at = "Sep 8, 4:11 PM", copy = "I read the folder." },
+}
+for _, id in { "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sv", "uf" } do
 	ui.command {
 		id = `go_{id}`,
 		title = `Open {id}`,
