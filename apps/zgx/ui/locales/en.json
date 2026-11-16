@@ -1035,7 +1035,10 @@
         "add": "Add to message",
         "sent": "Answers sent"
       },
-      "pinned": "{title}: open above the message box"
+      "pinned": "{title}: open above the message box",
+      "minimise": "Minimise",
+      "expand": "Expand",
+      "close": "Close"
     },
     "links": {
       "open": "Open",

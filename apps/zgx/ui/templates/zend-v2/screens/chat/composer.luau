@@ -143,10 +143,19 @@ local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> num
 		mb = "$space.2",
 		overflow = "hidden",
 		-- As tall as the visual, up to the cap; past it the visual scrolls.
+		-- (Minimised: its bar alone.)
 		h = function(): number
-			return math.max(1, math.min(tall:get(), props.max_h())) + 2
+			local b = props.block:get()
+			if b and VisualPin.minimised:get()[b.id] == true then
+				return VisualPin.BAR + 2
+			end
+			return math.max(1, math.min(tall:get() + VisualPin.BAR, props.max_h())) + 2
 		end,
-		ui.scroll {
+		VisualPin.Header { block = props.block },
+		ui.show(function(): boolean
+			local b = props.block:get()
+			return not (b and VisualPin.minimised:get()[b.id] == true)
+		end, ui.scroll {
 			w_full = true,
 			grow = 1,
 			min_h = 1,
@@ -170,7 +179,7 @@ local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> num
 					return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent }
 				end),
 			},
-		},
+		}),
 	}
 end)
 

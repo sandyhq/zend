@@ -1035,7 +1035,10 @@
         "add": "Add to message",
         "sent": "回答已发送"
       },
-      "pinned": "{title}：在消息框上方打开"
+      "pinned": "{title}：在消息框上方打开",
+      "minimise": "Minimise",
+      "expand": "Expand",
+      "close": "Close"
     },
     "links": {
       "open": "打开",

@@ -1260,6 +1260,8 @@ TRANSCRIPTS.sv = {
 				kind = "visual",
 				title = "Migration plan",
 				chat = "sv",
+				path = "/fixture/answer.luau",
+				device = "fixture-device",
 				source = [[return function() return ui.column { gap = 12,
 					ui.field { name = "goal", label = "Goal" },
 					ui.checklist { name = "steps", label = "Steps", options = { "Back up", "Verify" } },
@@ -1284,6 +1286,44 @@ ui.command {
 			end
 			store.messages:push(line(`qm{n + i}`, "assistant", 2 + i, table.concat(paragraphs, "\n\n")))
 		end
+	end,
+}
+-- What the visual's answer module marks sent, noted in `calls` as
+-- "mark:<id>:<path>:<device>" (src/visual_answer_tests.rs): the
+-- host still gets the call, so the visual shows sent.
+ui.command {
+	id = "sv_spy",
+	title = "Note what is marked sent",
+	run = function()
+		local answers = require("@ds/visual_answer") :: any
+		local was = answers.mark
+		answers.mark = function(id: string, file: any)
+			note(`mark:{id}:{if file then file.path else ""}:{if file then file.device else ""}`)
+			if was then
+				was(id, file)
+			end
+		end
+	end,
+}
+-- Two visuals under one title, as the answer module tells them apart
+-- (src/visual_answer_tests.rs): what it makes of messages is noted in
+-- `calls` as "dup:<case>:<ids>".
+ui.command {
+	id = "sv_dup",
+	title = "Two visuals with one title",
+	run = function()
+		local answers = require("@ds/visual_answer") :: any
+		answers.put(nil, "a", "### T\nA")
+		answers.put(nil, "b", "### T\nB")
+		local function say(name: string, text: string)
+			note(`dup:{name}:{table.concat(answers.held_in(text), "+")}`)
+		end
+		say("one", "My words\n### T\nsomething else")
+		say("two", "### T\nx\n### T\ny")
+		say("trimmed", "   ### T  \nx")
+		say("inline", "see ### T above")
+		say("whole", "### T\nA")
+		say("none", "no heading here")
 	end,
 }
 seed()

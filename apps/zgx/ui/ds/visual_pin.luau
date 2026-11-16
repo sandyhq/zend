@@ -11,13 +11,28 @@
 --   VisualPin.pinned          ui.shared { [id] = true }: what's pinned now
 --   VisualPin.away            ui.shared { [id] = true }: places out of view
 --   VisualPin.Place { id, title, visual }   the transcript's place
+--   VisualPin.Header { block }   the pinned visual's bar: its title line,
+--                            a minimise button and a × (fix2)
+--   VisualPin.minimised       ui.shared { [id] = true }: folded to its line
+--
+-- Minimised, the pinned visual is its one title line above the composer
+-- (the line or its button opens it again); this window's, kept per
+-- visual, and it doesn't answer anything. The × closes it by hand: it
+-- is marked sent as a message holding its answers marks it, and stays
+-- answered across reloads.
 
 local locale = require("@self/locale")
+local IconButtons = require("@self/icon_button")
+local VisualAnswer = require("@self/visual_answer")
 
 local M = {}
 
 M.pinned = ui.shared("visual.pinned", {} :: { [string]: boolean })
 M.away = ui.shared("visual.away", {} :: { [string]: boolean })
+M.minimised = ui.shared("visual.minimised", {} :: { [string]: boolean })
+
+-- The pinned bar's height, in points.
+M.BAR = 28
 
 -- Each place's height as last laid out with its visual in it: a row the
 -- list lets go and builds again while pinned keeps its height.
@@ -70,6 +85,86 @@ function M.Marker(props: { id: string, title: string? }): Node
 		color = "$text.tertiary",
 	}
 end
+
+-- Fold the pinned visual `id` to its line, or open it again.
+function M.toggle(id: string)
+	local now = M.minimised:peek()[id] == true
+	M.minimised:set_key({ id }, if now then nil else true)
+end
+
+-- The pinned visual's bar: `block` is a state holding its transcript block
+-- (nil when nothing is pinned).
+M.Header = ui.component(function(props: { block: any }): Node
+	local folded = ui.computed(function(): boolean
+		local b = props.block:get()
+		return b ~= nil and M.minimised:get()[b.id] == true
+	end)
+	local function title(): string
+		local b = props.block:get()
+		local t = if b and b.title then b.title else ""
+		return if t ~= "" then t else locale.s("ds.visual.untitled")
+	end
+	local function toggle()
+		local b = props.block:peek()
+		if b then
+			M.toggle(b.id)
+		end
+	end
+	return ui.row {
+		id = "chat-pinned-visual-bar",
+		class = "visual-pinned-bar",
+		w_full = true,
+		h = M.BAR,
+		shrink = 0,
+		items = "center",
+		gap = "$space.1",
+		px = "$space.2",
+		IconButtons.IconButton {
+			id = "chat-pinned-visual-fold",
+			icon = function(): any
+				return if folded:get() then "alt-arrow-right" else "alt-arrow-down"
+			end,
+			label = function(): string
+				return locale.s(if folded:get() then "ds.visual.expand" else "ds.visual.minimise")
+			end,
+			size = "sm",
+			tone = "quiet",
+			on_click = toggle,
+		},
+		ui.text {
+			class = "visual-pinned-title",
+			title,
+			literal = true,
+			truncate = true,
+			grow = 1,
+			min_w = 0,
+			text_size = "$zend.visual.text.sm.size",
+			line_height = "$zend.visual.text.sm.line",
+			color = "$text.secondary",
+			cursor = function(): string
+				return if folded:get() then "pointer" else "default"
+			end,
+			on_click = function()
+				if folded:peek() then
+					toggle()
+				end
+			end,
+		},
+		IconButtons.IconButton {
+			id = "chat-pinned-visual-close",
+			icon = "close",
+			label = locale.s("ds.visual.close"),
+			size = "sm",
+			tone = "quiet",
+			on_click = function()
+				local b = props.block:peek()
+				if b then
+					VisualAnswer.dismiss(b.id, { path = b.path, device = b.device })
+				end
+			end,
+		},
+	}
+end)
 
 -- A visual's place in the transcript: the visual, or, while it's pinned,
 -- a line saying so in a box as tall as the visual was (the transcript

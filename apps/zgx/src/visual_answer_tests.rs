@@ -276,3 +276,151 @@ fn moving_between_place_and_pin_keeps_the_keys_and_the_caret() {
     assert_eq!(goal(&app).as_deref(), Some("abXYc"), "the caret moved");
     assert_eq!(app.error(), None);
 }
+
+/// Whether the host has the visual as sent (its place may be out of view
+/// after a send, so what it draws can't say).
+fn sent(app: &TestApp) -> bool {
+    app.host.shared("visuals", Value::Nil).get().field("v:fixture-answer").and_then(|v| v.field("sent")).is_some_and(|v| v.truthy())
+}
+
+/// The composer's draft, rewritten as the reader would (the words changed,
+/// lines gone): what the next send holds.
+fn rewrite_draft(app: &mut TestApp, words: &str) {
+    app.host.shared("chat.composer.text", Value::Nil).set(Value::Str(words.into()));
+    app.frames(10);
+}
+
+/// A message holding the visual's heading line is its answer, however the
+/// answers under it were rewritten (the reader's words, an answer changed,
+/// lines struck); take the heading out and it isn't (plans/live-visuals
+/// fix2).
+#[test]
+fn a_message_with_the_heading_line_answers_the_visual_whatever_else_was_rewritten() {
+    let mut app = mount();
+    pin(&mut app);
+    app.type_text("role:textbox \"Goal\"", "Move the db");
+    app.frames(10);
+    app.wait_until(|app| goal(app).is_some());
+    app.click(ANSWER);
+    app.frames(10);
+    assert!(draft(&app).contains("### Migration plan\nGoal: Move the db"), "{:?}", draft(&app));
+    // Rewritten: the answer changed, a line struck, words of the reader's own.
+    rewrite_draft(&mut app, "Hm, let me put it my way.\n\n### Migration plan\nGoal: not the db after all\nand more words");
+    app.click(COMPOSER);
+    app.keys("Enter");
+    app.wait_until(|app| calls(app).contains("send:sv:"));
+    assert!(calls(&app).contains("not the db after all"), "{}", calls(&app));
+    app.wait_until(|app| sent(app));
+    assert!(sent(&app), "the edited answers didn't answer it: {}", calls(&app));
+    assert!(app.find("#chat-pinned-visual").is_none(), "still pinned");
+    assert_eq!(app.error(), None);
+}
+
+#[test]
+fn a_message_without_the_heading_line_leaves_the_visual_open_even_with_its_answers() {
+    let mut app = mount();
+    pin(&mut app);
+    app.type_text("role:textbox \"Goal\"", "Move the db");
+    app.frames(10);
+    app.wait_until(|app| goal(app).is_some());
+    app.click(ANSWER);
+    app.frames(10);
+    // The heading struck; the answers under it stay.
+    rewrite_draft(&mut app, "Goal: Move the db\nSteps: none\n(### Migration plan, said in a sentence)");
+    app.click(COMPOSER);
+    app.keys("Enter");
+    app.wait_until(|app| calls(app).contains("send:sv:"));
+    app.frames(20);
+    assert!(!sent(&app), "it was marked sent");
+    assert!(app.find("#chat-pinned-visual").is_some(), "no longer pinned");
+}
+
+/// Two visuals under one title: each heading line in the message answers
+/// one, the one whose whole block it holds first, else the newest put
+/// (the fixture's `sv_dup`, noted in `calls`).
+#[test]
+fn two_visuals_with_one_title_are_told_apart_by_how_many_headings_a_message_holds() {
+    let mut app = mount();
+    app.host.run_command("sv_dup");
+    app.frames(10);
+    let seen = calls(&app);
+    for want in [
+        "one:b",
+        "two:a+b",
+        "trimmed:b",
+        "inline:",
+        "whole:a",
+        "none:",
+    ] {
+        assert!(seen.contains(&format!("dup:{want}")), "{want} missing:\n{seen}");
+    }
+}
+
+/// The reader's own ×: it is answered all the same (marked sent with the
+/// part's path and device, though no answers ever went into the draft),
+/// unpinned, nothing sent.
+#[test]
+fn the_x_on_the_pinned_visual_marks_it_sent_by_the_parts_path() {
+    let mut app = mount();
+    app.host.run_command("sv_spy");
+    pin(&mut app);
+    assert!(draft(&app).is_empty(), "{:?}", draft(&app));
+    app.click("#chat-pinned-visual >> role:button \"Close\"");
+    app.frames(10);
+    app.wait_until(|app| calls(app).contains("mark:"));
+    assert!(calls(&app).contains("mark:v:fixture-answer:/fixture/answer.luau:fixture-device"), "{}", calls(&app));
+    app.wait_until(|app| app.find("#chat-pinned-visual").is_none());
+    app.frames(10);
+    assert!(app.find("#chat-pinned-visual").is_none(), "still pinned");
+    assert!(app.find(".visual-pinned-marker").is_none(), "still a line");
+    assert!(!calls(&app).contains("send:"), "something was sent: {}", calls(&app));
+    assert!(draft(&app).is_empty(), "{:?}", draft(&app));
+    assert_eq!(app.error(), None);
+}
+
+fn height_of(app: &mut TestApp, selector: &str) -> f32 {
+    let node = app.find(selector).unwrap_or_else(|| panic!("no {selector}"));
+    app.ui.scene.borrow().transformed_bounds(node).height
+}
+
+/// Minimised, the pinned visual is its title line alone; the line or its
+/// button opens it again, what was entered kept, and nothing is marked
+/// sent by folding it.
+#[test]
+fn the_pinned_visual_folds_to_its_title_line_and_opens_again() {
+    let goal_box = "#chat-pinned-visual >> role:textbox \"Goal\"";
+    let mut app = mount();
+    app.host.run_command("sv_spy");
+    pin(&mut app);
+    let open_h = height_of(&mut app, "#chat-pinned-visual");
+    app.click(goal_box);
+    text(&mut app, "Keep me");
+    app.wait_until(|app| goal(app).as_deref() == Some("Keep me"));
+
+    app.click("#chat-pinned-visual >> role:button \"Minimise\"");
+    app.frames(15);
+    assert!(app.find(goal_box).is_none(), "the visual still shows:\n{}", visual_lines(&mut app));
+    assert!(app.find("#chat-pinned-visual >> .visual-pinned-title").is_some(), "no title line");
+    let folded_h = height_of(&mut app, "#chat-pinned-visual");
+    assert!(folded_h < 40. && folded_h < open_h, "folded {folded_h} open {open_h}");
+    assert_eq!(goal(&app).as_deref(), Some("Keep me"));
+    assert!(!calls(&app).contains("mark:"), "folding marked it: {}", calls(&app));
+
+    app.click("#chat-pinned-visual >> role:button \"Expand\"");
+    app.frames(15);
+    assert!(app.find(goal_box).is_some(), "not open again:\n{}", visual_lines(&mut app));
+    assert_eq!(goal(&app).as_deref(), Some("Keep me"));
+    assert!(height_of(&mut app, "#chat-pinned-visual") > folded_h);
+
+    // The line itself opens it too.
+    app.click("#chat-pinned-visual >> role:button \"Minimise\"");
+    app.frames(15);
+    assert!(app.find(goal_box).is_none());
+    app.click("#chat-pinned-visual >> .visual-pinned-title");
+    app.frames(15);
+    assert!(app.find(goal_box).is_some(), "the line didn't open it");
+    assert_eq!(goal(&app).as_deref(), Some("Keep me"));
+    assert!(!calls(&app).contains("mark:"), "folding marked it: {}", calls(&app));
+    assert_eq!(app.error(), None);
+}
+
