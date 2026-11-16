@@ -99,9 +99,10 @@ pub fn exchange_value(reply: &Json, doc: &str, id: &str) -> Value {
                 .then(|| diff_value(&reply["diff"]))
                 .flatten()
                 .or_else(|| {
-                    // No diff from the harness: the call's own blocks.
-                    let new = text("newString").or(text("content"))?;
-                    let old = text("oldString").unwrap_or("");
+                    // No diff from the harness: the call's own blocks
+                    // (ToolCall's fields go over the wire snake_case).
+                    let new = text("new_string").or(text("content"))?;
+                    let old = text("old_string").unwrap_or("");
                     diff_value(&json!({ "path": text("path").unwrap_or(""), "oldText": old, "newText": new }))
                 });
             if let Some(diff) = shown {
@@ -415,11 +416,38 @@ mod tests {
         let v = exchange_value(&reply, "c", "e");
         assert_eq!(kinds(&v), ["diff"]);
         assert_eq!(section(&v, "diff").field("added"), Some(&Value::Num(1.0)));
-        let from_call = exchange_value(&json!({ "call": { "kind": "editFile", "path": "a.rs", "oldString": "b", "newString": "c" }, "done": true }), "c", "e");
+        let from_call = exchange_value(&json!({ "call": { "kind": "editFile", "path": "a.rs", "old_string": "b", "new_string": "c" }, "done": true }), "c", "e");
         assert_eq!(section(&from_call, "diff").field("removed"), Some(&Value::Num(1.0)));
         // A failed edit says why, under what it tried.
-        let failed = exchange_value(&json!({ "call": { "kind": "editFile", "path": "a.rs", "oldString": "b", "newString": "c" }, "isError": true, "output": "Could not find the exact text" }), "c", "e");
+        let failed = exchange_value(&json!({ "call": { "kind": "editFile", "path": "a.rs", "old_string": "b", "new_string": "c" }, "isError": true, "output": "Could not find the exact text" }), "c", "e");
         assert_eq!(kinds(&failed), ["diff", "output"]);
+    }
+
+    /// The engine's own reply, serialized as it goes over the wire: an
+    /// edit's blocks are `old_string`/`new_string` (ToolCall's fields stay
+    /// snake_case; only its kinds are camelCase), its diff camelCase.
+    #[test]
+    fn an_edit_from_the_engines_serialized_reply_opens_to_its_diff() {
+        let wire = |call, diff| {
+            serde_json::to_value(zend_proto::ToolExchangeReply {
+                call,
+                done: true,
+                output: Some("Edited".into()),
+                output_trimmed: false,
+                is_error: false,
+                exit_code: None,
+                diff,
+                image: None,
+                withheld: false,
+            })
+            .unwrap()
+        };
+        let edit = zend_proto::ToolCall::EditFile { path: "a.rs".into(), old_string: Some("b\n".into()), new_string: Some("c\nd\n".into()) };
+        let v = exchange_value(&wire(edit.clone(), None), "c", "e");
+        let diff = section(&v, "diff");
+        assert_eq!((diff.field("removed"), diff.field("added")), (Some(&Value::Num(1.0)), Some(&Value::Num(2.0))), "{v:?}");
+        let with_diff = wire(edit, Some(zend_proto::ToolDiff { path: "a.rs".into(), old_text: Some("a\nb\n".into()), new_text: "a\nc\n".into() }));
+        assert_eq!(section(&exchange_value(&with_diff, "c", "e"), "diff").field("added"), Some(&Value::Num(1.0)));
     }
 
     #[test]
