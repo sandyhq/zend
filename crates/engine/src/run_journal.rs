@@ -288,12 +288,13 @@ impl RunJournal {
                     output,
                     exit_code,
                     is_error,
-                    ..
+                    diff,
                 } if id == tool_id && result.is_none() => {
                     result = Some(ToolResultRecord {
                         output,
                         exit_code,
                         is_error,
+                        diff,
                     });
                 }
                 AgentEvent::ToolCall { id, call } if id == tool_id => {
@@ -354,6 +355,8 @@ pub struct ToolResultRecord {
     pub output: Option<String>,
     pub exit_code: Option<i32>,
     pub is_error: bool,
+    /// The file it changed, before and after (an edit's, a write's).
+    pub diff: Option<zend_proto::ToolDiff>,
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {

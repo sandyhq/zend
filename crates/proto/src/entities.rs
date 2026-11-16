@@ -734,6 +734,52 @@ pub struct ToolOutputChunk {
     pub exit_code: Option<i32>,
 }
 
+/// Bytes of one string in a tool's input a `ReadToolExchange` reply keeps
+/// (a written file's content, an edit's text, a script), and of its whole
+/// input as JSON; past the second, the input is its JSON's start as one
+/// string.
+pub const TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES: usize = 32 * 1024;
+pub const TOOL_EXCHANGE_INPUT_MAX_BYTES: usize = 64 * 1024;
+/// Bytes of a tool's result text it keeps: a command's end, another tool's
+/// start (a read's first lines, a search's best matches).
+pub const TOOL_EXCHANGE_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+/// Bytes of each side of a diff it keeps; a bigger diff isn't sent (its
+/// lines would end where the cut is, not where the change is).
+pub const TOOL_EXCHANGE_DIFF_MAX_BYTES: usize = 64 * 1024;
+
+/// One tool's call and result as its host's run journal recorded them
+/// (`ReadToolExchange {chatId, toolId}`): what a row opens to. The chat's
+/// doc keeps only a call's short identifiers and a line of its result; this
+/// comes from the device that ran it, on request, bounded and redacted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolExchangeReply {
+    /// The call with its input: strings redacted and cut, secret keys'
+    /// values replaced, a secret file's contents left out.
+    pub call: crate::ToolCall,
+    /// It has settled (a result, below); `false` while it runs.
+    pub done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// `output` is part of a longer result.
+    #[serde(default)]
+    pub output_trimmed: bool,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<crate::ToolDiff>,
+    /// A read of a picture (PNG, JPEG, WebP, GIF by its name): its type.
+    /// Its bytes come from `ReadToolImageChunk`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// What it read, wrote or printed is a secret by nature (a `.env`, a
+    /// key; `env`): its contents and result are left out.
+    #[serde(default)]
+    pub withheld: bool,
+}
+
 impl Session {
     /// Attention across native and terminal work. Native execution control must
     /// keep using `status`: a terminal report cannot complete/steer a native run.

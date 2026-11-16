@@ -126,11 +126,7 @@ impl Normalizer {
                         return None;
                     }
                     match name.as_str() {
-                        "edit" => Some(ToolDiff {
-                            path: string(args, "path").into(),
-                            old_text: Some(cap(string(args, "oldText"), 65536)),
-                            new_text: cap(string(args, "newText"), 65536),
-                        }),
+                        "edit" => edit_diff(args, &result["details"]),
                         "write" => Some(ToolDiff {
                             path: string(args, "path").into(),
                             old_text: None,
@@ -180,6 +176,89 @@ fn cap(text: &str, limit: usize) -> String {
     }
     format!("{}\n… [truncated]", &text[..at])
 }
+/// An edit's diff, from what Pi says it changed: its own numbered diff
+/// (`details.diff`, the file's lines round each change), else the blocks
+/// it was asked to replace (`edits: [{oldText, newText}]`), else an older
+/// Pi's single `oldText` / `newText`. `None` when none of them says
+/// anything (a diff of two empty texts would count nothing and show
+/// nothing).
+fn edit_diff(args: &Value, details: &Value) -> Option<ToolDiff> {
+    let path = string(args, "path").to_owned();
+    let (old, new) = details["diff"]
+        .as_str()
+        .and_then(numbered_diff_texts)
+        .or_else(|| {
+            let (old, new) = edit_texts(args)?;
+            (!old.is_empty() || !new.is_empty()).then_some((old, new))
+        })?;
+    Some(ToolDiff {
+        path,
+        old_text: Some(cap(&old, 65536)),
+        new_text: cap(&new, 65536),
+    })
+}
+
+/// Pi's `edit` input as one old and one new text: each block of
+/// `edits` (today's schema) one after the other, a blank line between, or
+/// an older Pi's `oldText` / `newText`.
+fn edit_texts(args: &Value) -> Option<(String, String)> {
+    if let Some(edits) = args["edits"].as_array().filter(|e| !e.is_empty()) {
+        let join = |key: &str| {
+            edits
+                .iter()
+                .map(|e| string(e, key).trim_end_matches('\n'))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+        return Some((join("oldText"), join("newText")));
+    }
+    let old = args["oldText"].as_str();
+    let new = args["newText"].as_str();
+    (old.is_some() || new.is_some())
+        .then(|| (old.unwrap_or("").to_owned(), new.unwrap_or("").to_owned()))
+}
+
+/// The file before and after, as far as Pi's numbered diff shows it: each
+/// line is its sign (` `, `-`, `+`), the line's number padded, a space and
+/// its text; a gap between hunks is `...` alone. Context goes into both,
+/// a removed line into the old, an added into the new, a gap into both as
+/// `⋯`. `None` when it isn't such a diff.
+fn numbered_diff_texts(diff: &str) -> Option<(String, String)> {
+    let (mut old, mut new) = (Vec::new(), Vec::new());
+    let mut changed = false;
+    for line in diff.lines() {
+        let mut chars = line.chars();
+        let sign = chars.next()?;
+        let rest = chars.as_str().trim_start();
+        if rest == "..." {
+            old.push("⋯");
+            new.push("⋯");
+            continue;
+        }
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits == 0 {
+            return None;
+        }
+        let text = rest[digits..].strip_prefix(' ').unwrap_or(&rest[digits..]);
+        match sign {
+            ' ' => {
+                old.push(text);
+                new.push(text);
+            }
+            '-' => {
+                old.push(text);
+                changed = true;
+            }
+            '+' => {
+                new.push(text);
+                changed = true;
+            }
+            _ => return None,
+        }
+    }
+    changed.then(|| (old.join("\n") + "\n", new.join("\n") + "\n"))
+}
+
 fn tool(name: &str, args: &Value) -> ToolCall {
     match name {
         "bash" => ToolCall::Exec {
@@ -192,11 +271,14 @@ fn tool(name: &str, args: &Value) -> ToolCall {
             path: string(args, "path").into(),
             content: args["content"].as_str().map(str::to_owned),
         },
-        "edit" => ToolCall::EditFile {
-            path: string(args, "path").into(),
-            old_string: args["oldText"].as_str().map(str::to_owned),
-            new_string: args["newText"].as_str().map(str::to_owned),
-        },
+        "edit" => {
+            let (old, new) = edit_texts(args).unzip();
+            ToolCall::EditFile {
+                path: string(args, "path").into(),
+                old_string: old,
+                new_string: new,
+            }
+        }
         "grep" => ToolCall::Search {
             pattern: string(args, "pattern").into(),
             path: args["path"].as_str().map(str::to_owned),
@@ -248,6 +330,34 @@ mod tests {
         assert!(
             matches!(&events[0],AgentEvent::ToolResult{id,diff:Some(diff),..} if id=="t" && diff.new_text=="new")
         );
+    }
+
+    /// Today's Pi edits by blocks (`edits`) and answers its own numbered
+    /// diff (`details.diff`): the diff is that one, its context in both
+    /// texts, so the row counts and shows what really changed; without
+    /// details, the blocks themselves. (Before, both texts were empty: Pi
+    /// no longer sends `oldText` at the top.)
+    #[test]
+    fn a_pi_edit_by_blocks_diffs_from_its_own_numbered_diff_or_its_blocks() {
+        let args = json!({"path":"a.md","edits":[{"oldText":"two\n","newText":"2\n"},{"oldText":"nine","newText":"9"}]});
+        let details = json!({"diff":"    ...\n  1 one\n- 2 two\n+ 2 2\n  3 three\n    ...\n- 9 nine\n+ 9 9"});
+        let diff = edit_diff(&args, &details).unwrap();
+        assert_eq!(diff.old_text.as_deref(), Some("⋯\none\ntwo\nthree\n⋯\nnine\n"));
+        assert_eq!(diff.new_text, "⋯\none\n2\nthree\n⋯\n9\n");
+        let diff = edit_diff(&args, &json!({})).unwrap();
+        assert_eq!((diff.old_text.as_deref(), diff.new_text.as_str()), (Some("two\n\nnine"), "2\n\n9"));
+        // The call keeps the blocks too, as its input.
+        assert!(matches!(tool("edit", &args),
+            ToolCall::EditFile { old_string: Some(o), new_string: Some(n), .. } if o == "two\n\nnine" && n == "2\n\n9"));
+        // Nothing said: no diff, rather than an empty one.
+        assert!(edit_diff(&json!({"path":"a"}), &json!({})).is_none());
+        assert!(edit_diff(&json!({"path":"a"}), &json!({"diff":"not a diff"})).is_none());
+        // Through the normalizer, as Pi's frames come.
+        let mut n = Normalizer::default();
+        n.map(&json!({"type":"tool_execution_start","toolCallId":"e","toolName":"edit","args":args}));
+        let events = n.map(&json!({"type":"tool_execution_end","toolCallId":"e","isError":false,
+            "result":{"content":[{"type":"text","text":"Successfully replaced 2 block(s) in a.md."}],"details":details}}));
+        assert!(matches!(&events[0], AgentEvent::ToolResult { diff: Some(d), .. } if d.new_text.contains("three")));
     }
 
     #[test]

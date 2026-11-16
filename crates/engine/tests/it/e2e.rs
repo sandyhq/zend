@@ -4355,6 +4355,139 @@ async fn chat_images_come_only_from_their_chats_own_folder() {
     core.shutdown().await;
 }
 
+/// What a tool row opens to comes from the host's journal too
+/// (`ReadToolExchange`): a script's whole input, which the doc never kept,
+/// with its result; and a read picture's bytes (`ReadToolImageChunk`) from
+/// the path the journal recorded.
+#[tokio::test]
+async fn a_tools_whole_call_and_read_picture_come_from_its_hosts_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let picture = dir.path().join("shot.png");
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    png.extend(std::iter::repeat_n(7u8, 100_000));
+    std::fs::write(&picture, &png).unwrap();
+    let code = "const r = await tools.read({ path: \"a.rs\" });\nreturn r;";
+    let core = assemble(
+        dir.path(),
+        Arc::new(ScriptedHarness {
+            script: vec![
+                AgentEvent::ToolCall {
+                    id: "c1".into(),
+                    call: ToolCall::Unknown {
+                        name: "codemode".into(),
+                        input: Some(serde_json::json!({ "code": code })),
+                    },
+                },
+                AgentEvent::ToolResult {
+                    id: "c1".into(),
+                    is_error: false,
+                    output: Some("Script completed".into()),
+                    diff: None,
+                    exit_code: None,
+                },
+                AgentEvent::ToolCall {
+                    id: "p1".into(),
+                    call: ToolCall::ReadFile {
+                        path: picture.to_string_lossy().into_owned(),
+                    },
+                },
+                AgentEvent::ToolResult {
+                    id: "p1".into(),
+                    is_error: false,
+                    output: Some("Read image file [image/png]".into()),
+                    diff: None,
+                    exit_code: None,
+                },
+                done(DoneStatus::Completed),
+            ],
+            step_delay: Duration::from_millis(5),
+            hang_until_interrupt: false,
+        }),
+    );
+    let here = core.device_id.clone();
+    core.workspace
+        .create_chat(CHAT, None, Some(&here), None, None)
+        .unwrap();
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-run-exchange",
+        SessionCommandPayload::Run {
+            request: run_request("test"),
+            message_id: "m-1".into(),
+        },
+    );
+    wait_for(
+        || {
+            entries(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
+        },
+        "complete reply",
+    )
+    .await;
+    // The doc's part has no input: the row has nothing to open but this.
+    let all = entries(&core);
+    let part = all.iter().flat_map(|e| &e.parts).find(|p| p.id() == "c1").unwrap();
+    assert!(
+        matches!(part, MessagePart::Tool { call: ToolCall::Unknown { input: None, .. }, .. }),
+        "{part:?}"
+    );
+
+    let client = zend_rpc::memory_client(core.rpc_service());
+    let exchange = |tool: &str| {
+        client.call(
+            zend_rpc::methods::READ_TOOL_EXCHANGE,
+            serde_json::json!({ "chatId": CHAT, "toolId": tool }),
+        )
+    };
+    let script: zend_proto::ToolExchangeReply =
+        serde_json::from_value(exchange("c1").await.expect("the script")).unwrap();
+    let ToolCall::Unknown { input: Some(input), .. } = &script.call else {
+        panic!("{script:?}");
+    };
+    assert_eq!(input["code"], code);
+    assert_eq!(script.output.as_deref(), Some("Script completed"));
+    let read: zend_proto::ToolExchangeReply =
+        serde_json::from_value(exchange("p1").await.expect("the read")).unwrap();
+    assert_eq!(read.image.as_deref(), Some("image/png"));
+    let mut bytes = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let chunk = client
+            .call(
+                zend_rpc::methods::READ_TOOL_IMAGE_CHUNK,
+                serde_json::json!({ "chatId": CHAT, "toolId": "p1", "offset": offset }),
+            )
+            .await
+            .expect("a chunk");
+        assert_eq!(chunk["mimeType"], "image/png");
+        use base64::Engine as _;
+        bytes.extend(
+            base64::engine::general_purpose::STANDARD
+                .decode(chunk["data"].as_str().unwrap())
+                .unwrap(),
+        );
+        offset = chunk["nextOffset"].as_u64().unwrap();
+        if chunk["done"] == true {
+            break;
+        }
+    }
+    assert_eq!(bytes, png, "the picture the tool read, in chunks");
+    for (tool, method, why) in [
+        ("c1", zend_rpc::methods::READ_TOOL_IMAGE_CHUNK, "didn't read a picture"),
+        ("nope", zend_rpc::methods::READ_TOOL_EXCHANGE, "tool_output.unavailable"),
+    ] {
+        let error = client
+            .call(method, serde_json::json!({ "chatId": CHAT, "toolId": tool }))
+            .await
+            .expect_err(tool)
+            .to_string();
+        assert!(error.contains(why), "{tool}: {error}");
+    }
+    core.shutdown().await;
+}
+
 /// A command's whole output comes from the host's run journal on request
 /// (`ReadToolOutput`), redacted as the doc's ten-line tail is; the doc says
 /// how many lines there are. Only the chat's host answers, and only for a

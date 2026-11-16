@@ -689,6 +689,46 @@ impl SessionsEngine {
         })?
     }
 
+    /// One tool's call and result from this host's run journal, for its row
+    /// opened (`ReadToolExchange`, [`crate::tool_exchange`]).
+    pub async fn read_tool_exchange(
+        &self,
+        doc_id: &str,
+        tool_id: &str,
+    ) -> Result<zend_proto::ToolExchangeReply, crate::tool_output::ToolOutputError> {
+        let journal = self.inner.journal.clone();
+        let (doc_id, tool_id) = (doc_id.to_owned(), tool_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            crate::tool_exchange::read(&journal, &doc_id, &tool_id)
+        })
+        .await
+        .map_err(|e| {
+            crate::tool_output::ToolOutputError::Journal(crate::run_journal::JournalError::Io(
+                std::io::Error::other(e.to_string()),
+            ))
+        })?
+    }
+
+    /// The path of the picture tool `tool_id` read (`ReadToolImageChunk`).
+    pub async fn tool_image_path(
+        &self,
+        doc_id: &str,
+        tool_id: &str,
+        cwd: Option<String>,
+    ) -> Result<std::path::PathBuf, crate::tool_output::ToolOutputError> {
+        let journal = self.inner.journal.clone();
+        let (doc_id, tool_id) = (doc_id.to_owned(), tool_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            crate::tool_exchange::image_path(&journal, &doc_id, &tool_id, cwd.as_deref())
+        })
+        .await
+        .map_err(|e| {
+            crate::tool_output::ToolOutputError::Journal(crate::run_journal::JournalError::Io(
+                std::io::Error::other(e.to_string()),
+            ))
+        })?
+    }
+
     /// What this engine's runs are doing, for the Cloud runner heartbeat:
     /// turns in flight, those parked on a question, and runs whose turn ended
     /// with background work still live. A runaway subagent can't hold the

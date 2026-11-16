@@ -291,6 +291,14 @@ pub mod methods {
     /// output, from the run journal of the device that ran it, redacted;
     /// relay-forwardable (target the chat's host).
     pub const READ_TOOL_OUTPUT: &str = "ReadToolOutput";
+    /// `{chatId, toolId}` → `ToolExchangeReply`: one tool's call (its whole
+    /// input) and result, from the run journal of the device that ran it,
+    /// bounded and redacted: what its row opens to. Relay-forwardable.
+    pub const READ_TOOL_EXCHANGE: &str = "ReadToolExchange";
+    /// `{chatId, toolId, offset}` → `AttachmentChunk`: the picture a read
+    /// tool read, from the path its host's journal recorded (PNG, JPEG,
+    /// WebP, GIF by name and first bytes). Relay-forwardable.
+    pub const READ_TOOL_IMAGE_CHUNK: &str = "ReadToolImageChunk";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";
     pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";
@@ -1503,6 +1511,8 @@ mod tests {
             // The window's own watch of the theme files.
             methods::WATCH_THEMES,
             methods::READ_TOOL_OUTPUT,
+            methods::READ_TOOL_EXCHANGE,
+            methods::READ_TOOL_IMAGE_CHUNK,
         ] {
             assert!(!agent_allowed(method), "{method}");
             match agent.call(method, serde_json::json!({})).await {
