@@ -9,9 +9,11 @@
 //! host, which answers from there, made safe to leave it as a command's
 //! whole output is ([`crate::tool_output`]):
 //!
-//! - every string of the input redacted ([`redact::redact_output`]) and cut
-//!   to [`TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES`]; the value of a key naming
-//!   a secret ([`redact::input_key_is_secret`]) replaced; the whole input at
+//! - every string of every kind of call cut to
+//!   [`TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES`] and redacted as a command's
+//!   output is ([`redact::redact_command_output`]: private key blocks,
+//!   env-style assignments too); all a key naming a secret holds
+//!   ([`redact::input_key_is_secret`]) replaced, whatever its shape; the whole input at
 //!   most [`TOOL_EXCHANGE_INPUT_MAX_BYTES`] of JSON;
 //! - its result redacted as a command's is ([`redact::redact_command_output`];
 //!   a command's through [`zend_doc::command_output_end`], so one that
@@ -140,64 +142,97 @@ fn withholds(call: &ToolCall) -> bool {
     }
 }
 
-/// The call with its input made safe to show.
+/// How much more than its cap a text is redacted of before it's cut to
+/// it: a secret cut in two at the first cut sits past the second.
+const REDACT_MARGIN: usize = 4096;
+
+/// A text as it may leave the host: cut to `max` and redacted as a
+/// command's output is ([`redact::redact_command_output`]: private key
+/// blocks dropped, an env-style assignment's value hidden). Cut first, so
+/// a huge input costs no more to redact than one at the cap.
+fn shown_text(text: &str, max: usize) -> (String, bool) {
+    let (head, cut) = cut_start(text, max + REDACT_MARGIN);
+    let (shown, cut_again) = cut_start(&redact::redact_command_output(&head), max);
+    (shown, cut || cut_again)
+}
+
+/// The call with its input made safe to show: every string of every kind
+/// cut and redacted, a secret file's contents none, and the whole at most
+/// [`TOOL_EXCHANGE_INPUT_MAX_BYTES`] (each of two fields half of it).
 fn shown_call(call: &ToolCall, withheld: bool) -> ToolCall {
-    let text = |s: &Option<String>| {
-        if withheld {
-            None
-        } else {
-            s.as_deref().map(|s| cut_start(&redact::redact_output(s), TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES).0)
-        }
-    };
+    const ONE: usize = TOOL_EXCHANGE_INPUT_MAX_BYTES / 2;
+    let s = |s: &str, max: usize| shown_text(s, max.min(TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES)).0;
+    let contents = |c: &Option<String>| if withheld { None } else { c.as_deref().map(|c| s(c, ONE)) };
     match call {
+        ToolCall::Exec { command } => ToolCall::Exec { command: s(command, usize::MAX) },
+        ToolCall::ReadFile { path } => ToolCall::ReadFile { path: s(path, usize::MAX) },
         ToolCall::WriteFile { path, content } => ToolCall::WriteFile {
-            path: path.clone(),
-            content: text(content),
+            path: s(path, ONE / 4),
+            content: contents(content),
         },
         ToolCall::EditFile {
             path,
             old_string,
             new_string,
         } => ToolCall::EditFile {
-            path: path.clone(),
-            old_string: text(old_string),
-            new_string: text(new_string),
+            path: s(path, ONE / 4),
+            old_string: contents(old_string),
+            new_string: contents(new_string),
         },
+        ToolCall::ApplyPatch { path } => ToolCall::ApplyPatch { path: path.as_deref().map(|p| s(p, usize::MAX)) },
+        ToolCall::Search { pattern, path } => ToolCall::Search {
+            pattern: s(pattern, ONE),
+            path: path.as_deref().map(|p| s(p, ONE)),
+        },
+        ToolCall::Glob { pattern } => ToolCall::Glob { pattern: s(pattern, usize::MAX) },
         ToolCall::WebFetch { url, prompt } => ToolCall::WebFetch {
-            url: url.clone(),
-            prompt: text(prompt),
+            url: s(url, ONE),
+            prompt: prompt.as_deref().map(|p| s(p, ONE)),
         },
+        ToolCall::WebSearch { query } => ToolCall::WebSearch { query: s(query, usize::MAX) },
+        ToolCall::Todo { items } => {
+            // As many items as fit, each its text cut.
+            let mut left = TOOL_EXCHANGE_INPUT_MAX_BYTES;
+            let mut kept = Vec::new();
+            for item in items {
+                let text = s(&item.text, 1024);
+                let cost = text.len() + 64;
+                if cost > left {
+                    break;
+                }
+                left -= cost;
+                kept.push(zend_proto::TodoItem { text, ..item.clone() });
+            }
+            ToolCall::Todo { items: kept }
+        }
         ToolCall::Mcp {
             server,
             tool,
             input,
         } => ToolCall::Mcp {
-            server: server.clone(),
-            tool: tool.clone(),
+            server: s(server, 256),
+            tool: s(tool, 256),
             input: input.as_ref().map(shown_input),
         },
         ToolCall::Unknown { name, input } => ToolCall::Unknown {
-            name: name.clone(),
+            name: s(name, 512),
             input: input.as_ref().map(shown_input),
         },
-        other => other.clone(),
     }
 }
 
-/// A tool's input made safe to show: strings redacted and cut, secret
-/// keys' values replaced; past [`TOOL_EXCHANGE_INPUT_MAX_BYTES`] of JSON,
+/// A tool's input made safe to show: strings cut and redacted, all a
+/// secret key holds replaced (a list, an object as much as a string); past [`TOOL_EXCHANGE_INPUT_MAX_BYTES`] of JSON,
 /// its pretty JSON's start as one string.
 pub fn shown_input(input: &Value) -> Value {
     fn walk(value: &Value) -> Value {
         match value {
-            Value::String(s) => Value::String(
-                cut_start(&redact::redact_output(s), TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES).0,
-            ),
+            Value::String(s) => Value::String(shown_text(s, TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES).0),
             Value::Array(items) => Value::Array(items.iter().map(walk).collect()),
             Value::Object(map) => Value::Object(
                 map.iter()
                     .map(|(k, v)| {
-                        let v = if redact::input_key_is_secret(k) && !v.is_object() && !v.is_array() && !v.is_null() {
+                        let v = if redact::input_key_is_secret(k) && !v.is_null() {
                             Value::String("[redacted]".into())
                         } else {
                             walk(v)
@@ -226,12 +261,13 @@ fn shown_output(call: &ToolCall, text: &str) -> (String, bool) {
             None => (String::new(), false),
         };
     }
-    let redacted = redact::redact_command_output(text);
-    cut_start(redacted.trim_end(), TOOL_EXCHANGE_OUTPUT_MAX_BYTES)
+    let (shown, cut) = shown_text(text.trim_end(), TOOL_EXCHANGE_OUTPUT_MAX_BYTES);
+    (shown.trim_end().to_owned(), cut)
 }
 
-/// A diff as it may leave the host: both sides redacted alike (so their
-/// lines still pair up); none when a side is past the cap.
+/// A diff as it may leave the host: both sides redacted alike, as a
+/// command's output is (so their lines still pair up); none when a side is
+/// past the cap.
 fn shown_diff(diff: &ToolDiff) -> Option<ToolDiff> {
     let old = diff.old_text.as_deref().unwrap_or("");
     if old.len() > TOOL_EXCHANGE_DIFF_MAX_BYTES || diff.new_text.len() > TOOL_EXCHANGE_DIFF_MAX_BYTES {
@@ -242,8 +278,8 @@ fn shown_diff(diff: &ToolDiff) -> Option<ToolDiff> {
     }
     Some(ToolDiff {
         path: diff.path.clone(),
-        old_text: diff.old_text.as_deref().map(redact::redact_output),
-        new_text: redact::redact_output(&diff.new_text),
+        old_text: diff.old_text.as_deref().map(redact::redact_command_output),
+        new_text: redact::redact_command_output(&diff.new_text),
     })
 }
 
@@ -412,6 +448,93 @@ mod tests {
         let s = input.as_str().expect("one string");
         assert!(s.len() <= TOOL_EXCHANGE_INPUT_MAX_BYTES + 4 && s.starts_with('{'));
         assert!(serde_json::to_vec(&unknown).unwrap().len() < 3 * TOOL_EXCHANGE_INPUT_MAX_BYTES);
+    }
+
+    /// A key naming a secret hides all it holds, whatever its shape.
+    #[test]
+    fn a_secret_keys_whole_value_is_redacted_whatever_its_shape() {
+        let input = json!({
+            "password": ["hunter2", "hunter3"],
+            "credentials": { "value": "s3cr3t-value", "user": "ann" },
+            "nested": { "api_key": { "primary": "pk-0042" } },
+            "token": 424242,
+            "note": "kept",
+        });
+        let (_dir, journal) = journal(&[
+            call("m1", ToolCall::Mcp { server: "acme".into(), tool: "login".into(), input: Some(input) }),
+            result("m1", "ok", None),
+        ]);
+        let reply = read(&journal, "chat-1", "m1").unwrap();
+        let json = serde_json::to_string(&reply).unwrap();
+        for secret in ["hunter2", "hunter3", "s3cr3t-value", "pk-0042", "424242"] {
+            assert!(!json.contains(secret), "{secret}: {json}");
+        }
+        let ToolCall::Mcp { input: Some(shown), .. } = &reply.call else { panic!() };
+        assert_eq!(shown["password"], "[redacted]");
+        assert_eq!(shown["credentials"], "[redacted]");
+        assert_eq!(shown["nested"]["api_key"], "[redacted]");
+        assert_eq!(shown["note"], "kept");
+    }
+
+    /// A file's contents leave as a command's output does: a private key
+    /// block dropped whole, an env-style assignment's value hidden.
+    #[test]
+    fn written_and_edited_contents_and_diffs_are_redacted_as_a_commands_output_is() {
+        let pem = "-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEA
+qrstuvwx
+-----END RSA PRIVATE KEY-----
+";
+        let env = "ROLLOUT_SALT=plainvalue1
+";
+        let content = format!("fn a() {{}}
+{pem}{env}");
+        let (_dir, journal) = journal(&[
+            call("w1", ToolCall::WriteFile { path: "config/app.rs".into(), content: Some(content.clone()) }),
+            result("w1", "ok", Some(ToolDiff { path: "config/app.rs".into(), old_text: None, new_text: content.clone() })),
+            call("e1", ToolCall::EditFile { path: "config/app.rs".into(), old_string: Some(pem.into()), new_string: Some(env.into()) }),
+            result("e1", "ok", Some(ToolDiff { path: "config/app.rs".into(), old_text: Some(content.clone()), new_text: format!("fn a() {{}}
+{env}") })),
+            call("u1", ToolCall::Unknown { name: "codemode".into(), input: Some(json!({ "code": format!("await write(`\n{content}`);") })) }),
+            result("u1", "ok", None),
+        ]);
+        for id in ["w1", "e1", "u1"] {
+            let reply = read(&journal, "chat-1", id).unwrap();
+            assert!(!reply.withheld, "{id}");
+            let json = serde_json::to_string(&reply).unwrap();
+            for secret in ["MIIEowIBAAKCAQEA", "qrstuvwx", "plainvalue1"] {
+                assert!(!json.contains(secret), "{id} {secret}: {json}");
+            }
+            assert!(json.contains("fn a()"), "{id}: the rest stays: {json}");
+        }
+    }
+
+    /// Every kind of call leaves bounded and redacted, not only the ones
+    /// with free-form input.
+    #[test]
+    fn every_kind_of_call_is_bounded_and_redacted() {
+        let huge = format!("ghp_abcdefghijklmnopqrstuvwxyz0123456789 {}", "q".repeat(3 * TOOL_EXCHANGE_INPUT_STRING_MAX_BYTES));
+        let items: Vec<zend_proto::TodoItem> = (0..2000)
+            .map(|i| zend_proto::TodoItem { text: format!("{i} {}", "t".repeat(1000)), done: false, status: None })
+            .collect();
+        let calls = [
+            ToolCall::Exec { command: huge.clone() },
+            ToolCall::ReadFile { path: huge.clone() },
+            ToolCall::Search { pattern: huge.clone(), path: Some(huge.clone()) },
+            ToolCall::Glob { pattern: huge.clone() },
+            ToolCall::WebSearch { query: huge.clone() },
+            ToolCall::WebFetch { url: huge.clone(), prompt: Some(huge.clone()) },
+            ToolCall::ApplyPatch { path: Some(huge.clone()) },
+            ToolCall::Todo { items },
+        ];
+        let events: Vec<AgentEvent> = calls.iter().enumerate().map(|(i, c)| call(&format!("k{i}"), c.clone())).collect();
+        let (_dir, journal) = journal(&events);
+        for i in 0..calls.len() {
+            let reply = read(&journal, "chat-1", &format!("k{i}")).unwrap();
+            let json = serde_json::to_string(&reply.call).unwrap();
+            assert!(json.len() <= TOOL_EXCHANGE_INPUT_MAX_BYTES + 1024, "k{i}: {} bytes", json.len());
+            assert!(!json.contains("ghp_abcdef"), "k{i}");
+        }
     }
 
     #[test]
