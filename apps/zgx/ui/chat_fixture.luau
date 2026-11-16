@@ -382,6 +382,65 @@ end
 stub.retry = function(id: string, message: string)
 	note(`retry:{id}:{message}`)
 end
+-- A message's Fork from here and an edited prompt's rewind, as the engine
+-- answers them: a fork at a prompt gives its words back; a rewind takes the
+-- message and all after it out of the transcript.
+do
+	local stub_sessions = sessions :: any
+	stub_sessions.fork = function(source: string, _parent: string?, id: string?, message: string?): any
+		note(`fork:{source}:{message or "-"}`)
+		local draft: string? = nil
+		for _, m in TRANSCRIPTS[source] or {} do
+			if m.id == message and m.role == "user" then
+				draft = m.text
+			end
+		end
+		return settled(if message then { id = id, draft = draft } else id)
+	end
+	stub_sessions.rewind = function(id: string, message: string): any
+		note(`rewind:{id}:{message}`)
+		local kept, removed = {}, 0
+		for _, m in TRANSCRIPTS[id] or {} do
+			if removed > 0 or m.id == message then
+				removed += 1
+			else
+				table.insert(kept, m)
+			end
+		end
+		TRANSCRIPTS[id] = kept
+		if opened == id then
+			store.messages:set(kept)
+		end
+		return settled(removed)
+	end
+end
+-- `turn_running`: the open session's turn under way (its prompts can't be
+-- edited till it ends); `prompt_with_files`: s2's first prompt carries a
+-- picture and a file, as the host lists them.
+ui.command {
+	id = "turn_running",
+	title = "A turn runs",
+	run = function()
+		local s = store.session:peek()
+		if s and s.id then
+			publish(s.id, { running = true })
+		end
+	end,
+}
+ui.command {
+	id = "prompt_with_files",
+	title = "A prompt carries files",
+	run = function()
+		local ms = table.clone(store.messages:peek())
+		local first = table.clone(ms[1])
+		first.attachments = {
+			{ kind = "image", name = "shot.png", path = "/host/shot.png", src = "/host/shot.png" },
+			{ kind = "file", name = "notes.md", path = "/host/notes.md" },
+		}
+		ms[1] = first
+		store.messages:set(ms)
+	end,
+}
 -- This device's outbox, as the engine takes a send out of it (#1256's
 -- RemoveHeldSend): gone from the chat's waiting list, or not there. An
 -- engine from before it refuses.

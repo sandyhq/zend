@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-16
+
+### Added
+- Chats: Edit on your own prompt (removes it and everything below, after one confirmation, then sends the edited words; the agent starts a fresh session fed the kept history) and Fork from here on any prompt or reply (`RewindChat`, `ForkSideChat` `messageId`).
+
 ## 2026-11-15
 
 ### Added

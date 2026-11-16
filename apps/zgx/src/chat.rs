@@ -3702,6 +3702,9 @@ fn attachments_value(paths: &[String]) -> Value {
                 let mut fields = vec![
                     ("kind", Value::from(if image { "image" } else { "file" })),
                     ("name", Value::from(name)),
+                    // (Where it is on the chat's host: an edited prompt sends
+                    // it again from there.)
+                    ("path", Value::from(p.as_str())),
                 ];
                 if image {
                     fields.push(("src", Value::from(p.as_str())));

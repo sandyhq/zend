@@ -12,6 +12,7 @@ local ds = require("@ds")
 local Dictation = require("@app/screens/chat/dictation")
 local T = require("@ds/transcript")
 local lanes = require("@app/screens/chat/lanes")
+local MessageActions = require("@app/screens/chat/message_actions")
 local TurnGlue = require("@app/screens/chat/turn_glue")
 local store = require("@app/screens/chat/store")
 local prefs = require("@app/screens/settings/prefs")
@@ -789,6 +790,13 @@ M.Tab = ui.component(function(props: { tab: any }): Node
 		end)
 		focus:add(1)
 	end
+	local lane_acts = MessageActions.of(function(): string?
+		return chat
+	end, function(): any
+		return view.session:get()
+	end, function(): string?
+		return home_session()
+	end)
 	local transcript = T.Transcript {
 		-- (Its own glide, runway and place: never the chat page's.)
 		name = `lane.{slot}`,
@@ -815,6 +823,11 @@ M.Tab = ui.component(function(props: { tab: any }): Node
 		on_retry = function(message: string)
 			store.retry(chat, message)
 		end,
+		-- A message's Edit and Fork from here (screens/chat/message_actions;
+		-- a subagent's transcript is its own agent's, not the person's).
+		on_fork = if tab.kind == "subagent" then nil else lane_acts.on_fork,
+		on_edit = if tab.kind == "subagent" then nil else lane_acts.on_edit,
+		edit_blocked = lane_acts.edit_blocked,
 		-- (A split's pane: the keys stay with this chat, in the window's composer.)
 		on_jump = if split
 			then function()

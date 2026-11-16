@@ -15,6 +15,7 @@ local route = require("@app/screens/shell/route")
 -- Its side chats and subagents, in a card at the top right (the title
 -- bar's "Show session details").
 local lanes = require("@app/screens/chat/lanes")
+local MessageActions = require("@app/screens/chat/message_actions")
 local TurnGlue = require("@app/screens/chat/turn_glue")
 local shared = require("@app/screens/chat/shared")
 local prefs = require("@app/screens/settings/prefs")
@@ -97,6 +98,9 @@ end
 
 local function Session(id: Id?): Node
 	local which = resolve(id :: any)
+	local acts = MessageActions.of(which, function(): any
+		return store.session:get()
+	end)
 	-- A file a reply links or a prompt mentions: opened in the session's
 	-- panel (a link outside its folder stays as it is); a chat mentioned,
 	-- that chat.
@@ -320,6 +324,10 @@ local function Session(id: Id?): Node
 									store.retry(s, message)
 								end
 							end,
+							-- A message's Edit and Fork from here (screens/chat/message_actions).
+							on_fork = acts.on_fork,
+							on_edit = acts.on_edit,
+							edit_blocked = acts.edit_blocked,
 							on_attach = shared.attach_quote,
 							pictures = pictures,
 							sent_pictures = sent_pictures,

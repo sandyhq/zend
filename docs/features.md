@@ -25,6 +25,12 @@ A visual can show a picture the agent passes in `assets` (PNG, JPEG or WebP), at
 A plugin can give text to the agents of your chats: for every chat on the device, one project's chats, or one chat. The text goes whole into the agent's system prompt as its own section and is renewed every turn. 8 KB per chat. Settings shows each plugin's text, read only. Works for chats on Pi; other harnesses run without it.
 How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your agents". Example: `apps/zgx/plugins-dev/delegation`.
 
+## For people in a chat
+
+### Edit a prompt, fork from a message
+Hovering one of your prompts shows Edit: the prompt turns into an editor where it stands, its files and pictures kept as chips you can take off. Save & send asks once ("Removes N messages below. Files the agent changed are not reverted."), then the engine removes the prompt and everything below it for good and the edited words go as a new turn. The agent forgets the removed part: Zend drops the chat's provider session and the next turn starts a fresh one fed the kept history, on every harness. Not while a turn runs. Hovering any prompt or reply also shows Fork from here: a side chat with the conversation up to that reply, or up to just before that prompt with its words waiting in the side chat's message box.
+How to use: [working-with-agents.md](working-with-agents.md), "Editing a prompt, forking from a message". Engine: `RewindChat`, `ForkSideChat` with `messageId`.
+
 ## For building plugins
 
 All of these are described in [plugins.md](../apps/zgx/docs/plugins.md), section "The loop". Each has an MCP tool and a CLI command; the tools are listed in [mcp.md](mcp.md), "Plugin tools".

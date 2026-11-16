@@ -25,8 +25,10 @@
 --                         messages, draft } states; `lanes.watch(slot, id)`
 --   lanes.open(session, lane)  a lane in the session's panel, as a tab
 --                         ({ kind = "side_chat" | "subagent", id, title })
---   lanes.new_side_chat(session, at?), lanes.fork(session)  the shipping
---                         app's "New side chat" and "Fork chat"; `at`
+--   lanes.new_side_chat(session, at?), lanes.fork(session, message?)  the
+--                         shipping app's "New side chat" and "Fork chat"
+--                         (`message`: from there, a message's "Fork from
+--                         here": a prompt's words wait in its composer); `at`
 --                         ({ project?, device? }) where its composer's place
 --                         starts instead of its parent's (the panel home's
 --                         group "+")
@@ -37,6 +39,7 @@ local SessionLanes = require("@ds/session_lanes")
 local sessions = require("@account/sessions")
 local route = require("@app/screens/shell/route")
 local store = require("@app/screens/chat/store")
+local Shared = require("@app/screens/chat/shared")
 
 local M = {}
 
@@ -344,33 +347,43 @@ end
 -- "forking" | "failed", error? }. Its tab says so meanwhile.
 M.forks = ui.state("chat_lanes_forks", {} :: { [string]: any })
 
-local function start_fork(id: string, source: string)
-	set_in(M.forks, id, { source = source, state = "forking" })
-	sessions.fork(source, nil, id):after(function()
+local function start_fork(id: string, source: string, message: string?, parent: string?)
+	set_in(M.forks, id, { source = source, message = message, parent = parent, state = "forking" })
+	sessions.fork(source, parent, id, message):after(function(made: any)
 		set_in(M.forks, id, nil)
+		-- (Forked at a prompt: its words wait, unsent, in the fork's box.)
+		if type(made) == "table" and type(made.draft) == "string" and made.draft ~= "" then
+			Shared.set_draft_of(id, "text", made.draft)
+		end
 	end, function(err: any)
 		local why = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
-		set_in(M.forks, id, { source = source, state = "failed", error = why })
+		set_in(M.forks, id, { source = source, message = message, parent = parent, state = "failed", error = why })
 	end)
 end
 
 -- The shipping app's "Fork chat": a side chat that starts as this one up
 -- to its last finished reply, its tab open at once ("Forking…"), with the
 -- engine's words for why not and Retry, the same fork again.
-function M.fork(session: string?)
+-- (`source`: a side chat shown in `session`'s panel, forked from one of
+-- its messages: the fork hangs beside it, under `session`.)
+function M.fork(session: string?, message: string?, source: string?)
 	if not session then
 		ds.toast.show { title = locale.s("chat.lanes.need_conversation"), tone = "warning" }
 		return
 	end
 	local id = M.new_id()
 	M.open(session, { kind = "side_chat", id = id, title = locale.s("chat.lanes.side_chat") })
-	start_fork(id, session)
+	if source and source ~= session then
+		start_fork(id, source, message, session)
+	else
+		start_fork(id, session, message)
+	end
 end
 
 function M.retry_fork(id: string)
 	local f = M.forks:peek()[id]
 	if f then
-		start_fork(id, f.source)
+		start_fork(id, f.source, f.message, f.parent)
 	end
 end
 

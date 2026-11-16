@@ -110,8 +110,8 @@ stub_sessions.create = function(req: any): any
 	end
 	return settled(true, req.id)
 end
-stub_sessions.fork = function(source: string, _parent: string?, id: string?): any
-	note(`fork:{source}:{id}`)
+stub_sessions.fork = function(source: string, _parent: string?, id: string?, message: string?): any
+	note(if message then `fork:{source}:{id}:{message}` else `fork:{source}:{id}`)
 	return settled(true, id)
 end
 local stub_store = store :: any

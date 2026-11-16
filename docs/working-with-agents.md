@@ -41,5 +41,11 @@ Plugins with the permission `session.instructions` put text into your agents' sy
 - Works for chats on Pi. Chats on other harnesses run without it for now.
 - 8 KB a chat for each plugin. A change reaches a running chat at its next turn and costs it its prompt cache once.
 
+## Editing a prompt, forking from a message
+Hover a message to see its actions beside Copy.
+
+- **Edit** (your own prompts): the prompt opens as an editor in place. Change the words, take off a file or picture with its ×, then Save & send (⌘Enter), or Cancel (Escape). If anything is below it, Zend asks once: everything below goes, for good. Files the agent changed on disk stay as they are; undo those yourself or ask the agent. The agent then works from a fresh session that gets the conversation up to your edited prompt. While the agent is still replying you can't send an edit: stop it or wait.
+- **Fork from here** (any prompt or reply): opens a side chat. From a reply it holds the conversation up to and including that reply; from a prompt, everything before it, with the prompt's words in the side chat's message box to change and send. The chat you forked from stays as it is.
+
 ## Usage and accounts
 Limits shown in Zend are read from each provider with your sign-in. If a provider's sign-in has expired, readings stop and go stale without the chats failing: see [troubleshooting.md](troubleshooting.md).

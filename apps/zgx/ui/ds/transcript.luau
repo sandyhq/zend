@@ -45,6 +45,7 @@ local opened_at = 0
 local Icon = require("@self/icon")
 local Markdown = require("@self/markdown")
 local UserMessage = require("@self/user_message")
+local MessageEditor = require("@self/message_editor")
 local Lightbox = require("@self/lightbox")
 local ReplyPicture = require("@self/reply_picture")
 local Visual = require("@self/visual")
@@ -125,6 +126,15 @@ export type Props = {
 	on_attach: ((q: Quote.Quote) -> ())?,
 	-- A prompt that wasn't delivered, sent again (by its id).
 	on_retry: ((id: string) -> ())?,
+	-- A message's "Fork from here" (a prompt or a reply, by its id): a
+	-- side chat that starts there. None: no Fork in its lane.
+	on_fork: ((id: string) -> ())?,
+	-- A prompt of the person's edited and sent again (ds/message_editor):
+	-- its id, its new words and what it still carries; the caller removes
+	-- it and everything below it first. None: no Edit in its lane.
+	on_edit: ((id: string, text: string, attachments: { UserMessage.Attachment }) -> ())?,
+	-- Why a prompt can't be edited now (a turn running), nil when it can.
+	edit_blocked: (() -> string?)?,
 	-- What an unfinished turn's foot says in its working word's place, when
 	-- there's no turn to speak of (its host gone, its machine asleep): the
 	-- caller's, for a message (nil: the working word). `sending`: a prompt
@@ -270,7 +280,48 @@ local LANE_TOP = 8
 -- holding only those, not a state per message.
 local COPIED = ui.state("transcript_copied", {} :: { [string]: boolean })
 
-local function strip(m: Message, row: State<Message>, hovered: () -> boolean): Node
+-- The prompt being edited where it stands (its id; "" none): one at a time.
+local EDITING = ui.state("transcript_editing", "")
+
+-- A message's own actions in its lane, beside Copy: Edit (a prompt of the
+-- person's) and Fork from here.
+type Acts = { edit: (() -> ())?, fork: (() -> ())? }
+
+local function lane_button(key: string, icon: Icon.Name, on_click: () -> (), class: string): Node
+	return ui.button {
+		class = class,
+		label = locale.t(key),
+		tooltip = locale.s(key),
+		w = 24,
+		h = 24,
+		p = 0,
+		items = "center",
+		justify = "center",
+		rounded = "$radius.md",
+		bg = "#00000000",
+		color = "$text.secondary",
+		hover = { bg = "$zend.secondary.bg" },
+		active = { bg = "$zend.secondary.hover" },
+		focus = control.ring,
+		cursor = "pointer",
+		on_click = on_click,
+		Icon { name = icon, size = 14 },
+	}
+end
+
+local function acts_of(m: Message, acts: Acts?): { Node }
+	local out: { Node } = {}
+	if acts and acts.edit and m.role == "user" then
+		-- (Open while a turn runs too: the editor says why it can't go yet.)
+		table.insert(out, lane_button("ds.transcript.edit_message", "pen", acts.edit, "message-edit"))
+	end
+	if acts and acts.fork then
+		table.insert(out, lane_button("ds.transcript.fork_here", "git-branch", acts.fork, "message-fork"))
+	end
+	return out
+end
+
+local function strip(m: Message, row: State<Message>, hovered: () -> boolean, acts: Acts?): Node
 	local mine = m.role == "user"
 	local function set_copied(on: boolean)
 		local all = table.clone(COPIED:peek())
@@ -307,7 +358,12 @@ local function strip(m: Message, row: State<Message>, hovered: () -> boolean): N
 		ui.presence(function(): string?
 			-- (Never while a reply is written: it has no time yet.)
 			local now = row:get()
-			return if hovered() and now.at and not now.streaming then "shown" else nil
+			if EDITING:get() == m.id then
+				return nil
+			end
+			-- (A prompt with no time yet still has its Edit and Fork.)
+			local any = now.at or (acts ~= nil and (acts.edit ~= nil or acts.fork ~= nil))
+			return if hovered() and any and not now.streaming then "shown" else nil
 		end, function(): Node
 			return ui.row {
 				class = "message-actions",
@@ -349,6 +405,7 @@ local function strip(m: Message, row: State<Message>, hovered: () -> boolean): N
 						},
 					}
 				),
+				if acts then ui.row { gap = "$space.2", items = "center", table.unpack(acts_of(m, acts)) } else nil,
 				-- Where plugins add a message's actions: beside Copy.
 				ui.row { hook = "chat.message.actions", gap = "$space.2", items = "center" },
 			}
@@ -789,7 +846,8 @@ local function reply(
 	draft: State<Draft>?,
 	hovered: () -> boolean,
 	compact: (() -> boolean)?,
-	view: View?
+	view: View?,
+	acts: Acts?
 ): Node
 	local function now(): Message
 		return row:get()
@@ -890,7 +948,7 @@ local function reply(
 					},
 				}
 			end, { exit = { opacity = 0, duration = 160 } }),
-			strip(m, row, hovered),
+			strip(m, row, hovered, acts),
 		},
 	}
 end
@@ -1795,6 +1853,19 @@ local function Transcript(props: Props): Node
 		ui.on_cleanup(function()
 			rows[m.id] = nil
 		end)
+		-- Its Edit (a prompt) and Fork from here, as the caller offers them.
+		local acts: Acts? = nil
+		if m.role ~= "switch" and (props.on_fork or (props.on_edit and mine)) then
+			local on_fork, on_edit = props.on_fork, props.on_edit
+			acts = {
+				fork = if on_fork then function() on_fork(m.id) end else nil,
+				edit = if on_edit and mine then function() EDITING:set(m.id) end else nil,
+			}
+		end
+		-- How many messages are below it now (an edit removes them).
+		local function below(): number
+			return math.max(0, count:peek() - index:peek())
+		end
 		-- Zend's gaps: a message opens 16 under the lane of the one before;
 		-- a prompt sits 6 under the switch seam over it.
 		local function pt(): number
@@ -1890,7 +1961,28 @@ local function Transcript(props: Props): Node
 						provide = { message = m.id },
 						w_full = true,
 						if m.sender then sender_line(m, props) else nil,
-						UserMessage {
+						ui.presence(function(): string?
+							return if props.on_edit and EDITING:get() == m.id then "editing" else nil
+						end, function(): Node
+							local on_edit = props.on_edit :: any
+							return MessageEditor {
+								id = m.id,
+								text = state:peek().text,
+								attachments = state:peek().attachments,
+								below = below,
+								blocked = props.edit_blocked,
+								on_cancel = function()
+									EDITING:set("")
+								end,
+								on_send = function(text: string, attachments: { UserMessage.Attachment })
+									EDITING:set("")
+									on_edit(m.id, text, attachments)
+								end,
+							}
+						end),
+						ui.show(function(): boolean
+							return EDITING:get() ~= m.id
+						end, UserMessage {
 							id = m.id,
 							text = m.text,
 							attachments = m.attachments,
@@ -1903,11 +1995,11 @@ local function Transcript(props: Props): Node
 							link_menu = props.link_menu,
 							pictures = props.sent_pictures,
 							find = if find_for then find_for(`{m.id}:u`) else nil,
-						},
-						strip(m, state, hovered),
+						}),
+						strip(m, state, hovered, acts),
 						waiting_line(state, props.on_retry, props.turn_state),
 					}
-					else reply(m, state, props.draft, hovered, props.compact, { turn_state = props.turn_state, view = list, offset = offset, at_end = at_end, row = outer, pictures = props.pictures, shown_pictures = props.sent_pictures, open = props.open_link, link_menu = props.link_menu, link_chip = props.link_chip, open_subagent = props.on_open_subagent, find = find_for }),
+					else reply(m, state, props.draft, hovered, props.compact, { turn_state = props.turn_state, view = list, offset = offset, at_end = at_end, row = outer, pictures = props.pictures, shown_pictures = props.sent_pictures, open = props.open_link, link_menu = props.link_menu, link_chip = props.link_chip, open_subagent = props.on_open_subagent, find = find_for }, acts),
 			},
 		}
 	end

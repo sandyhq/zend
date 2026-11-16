@@ -42,9 +42,16 @@
 //!                                  a side chat of that chat, where it is;
 //!                                  `cloud`: on a Cloud machine of its own,
 //!                                  `{ id, cwd }`, or why not in words)
-//!   sessions.fork({ source, parent?, id? })  a side chat starting as a copy of
-//!                                  `source` (`ForkSideChat`): its id, or the
-//!                                  engine's words for why not
+//!   sessions.fork({ source, parent?, id?, message? })  a side chat starting
+//!                                  as a copy of `source` (`ForkSideChat`): its
+//!                                  id, or the engine's words for why not;
+//!                                  with `message`, the copy ends there (a
+//!                                  reply: through it; a prompt: before it)
+//!                                  and the answer is `{ id, draft? }`, the
+//!                                  prompt's words for the fork's composer
+//!   sessions.rewind({ id, message })  chat `id` without `message` and all
+//!                                  after it (`RewindChat`, an edited prompt
+//!                                  sent again next): how many went
 //!   sessions.archive(id), sessions.unarchive(id)
 //!   sessions.rename({ id, title })
 //!   sessions.seen(id) (an action)  its finished state seen, on every device
@@ -848,6 +855,11 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         let a = a.clone();
         async move { a.fork(args).await }
     });
+    let a = s.clone();
+    host.async_action("sessions.rewind", move |args| {
+        let a = a.clone();
+        async move { a.rewind(args).await }
+    });
     for (name, archived) in [("sessions.archive", true), ("sessions.unarchive", false)] {
         let a = s.clone();
         host.async_action(name, move |id| {
@@ -1578,9 +1590,32 @@ impl Sessions {
         // (The caller's id, where its tab shows "Forking…" first: the same id
         // tried again is the same fork.)
         let id = field("id").filter(|id| plain_id(id)).unwrap_or_else(new_id);
-        let params = fork_params(&self.chats.borrow(), &id, &source, field("parent").as_deref());
-        engine::get().call("ForkSideChat", params).await?;
-        Ok(Value::from(id.as_str()))
+        let message = field("message");
+        let mut params = fork_params(&self.chats.borrow(), &id, &source, field("parent").as_deref());
+        if let Some(message) = &message {
+            params["messageId"] = Json::from(message.as_str());
+        }
+        let reply = engine::get().call("ForkSideChat", params).await?;
+        if message.is_none() {
+            return Ok(Value::from(id.as_str()));
+        }
+        let mut fields = vec![("id", Value::from(id.as_str()))];
+        if let Some(draft) = reply["draft"].as_str() {
+            fields.push(("draft", Value::from(draft)));
+        }
+        Ok(Value::record(fields))
+    }
+
+    /// An edited prompt's first half (`RewindChat`): chat `id` without
+    /// `message` and everything after it, on the chat's device; how many
+    /// messages went, or the engine's words for why not (a turn running).
+    async fn rewind(&self, args: Value) -> Result<Value, String> {
+        let field = |key: &str| args.field(key).map(text).filter(|s| !s.is_empty());
+        let id = field("id").ok_or("No chat to edit.")?;
+        let message = field("message").ok_or("No message to edit.")?;
+        let params = rewind_params(&self.chats.borrow(), &id, &message);
+        let reply = engine::get().call("RewindChat", params).await?;
+        Ok(Value::from(reply["removed"].as_f64().unwrap_or(0.)))
     }
 
     /// The places the scripts want: the changes from what's expected go to
@@ -1748,6 +1783,16 @@ fn where_parent_is(chats: &Json, parent: &str) -> Option<Json> {
 fn fork_params(chats: &Json, id: &str, source: &str, parent: Option<&str>) -> Json {
     let device = chats.as_array().into_iter().flatten().find(|c| c["id"].as_str() == Some(source)).and_then(|c| c["deviceId"].as_str());
     let mut params = json!({ "chatId": id, "sourceChatId": source, "parentChatId": parent.unwrap_or(source) });
+    if let Some(device) = device {
+        params["targetDeviceId"] = Json::from(device);
+    }
+    params
+}
+
+/// `RewindChat`'s params: chat `id` from `message` on, on the chat's device.
+fn rewind_params(chats: &Json, id: &str, message: &str) -> Json {
+    let device = chats.as_array().into_iter().flatten().find(|c| c["id"].as_str() == Some(id)).and_then(|c| c["deviceId"].as_str());
+    let mut params = json!({ "chatId": id, "messageId": message });
     if let Some(device) = device {
         params["targetDeviceId"] = Json::from(device);
     }
@@ -2748,6 +2793,11 @@ mod tests {
         );
         // A side chat's own fork hangs beside it, under its parent.
         assert_eq!(super::fork_params(&chats, "new", "p", Some("top"))["parentChatId"], "top");
+        // An edit's rewind goes to the chat's own device.
+        assert_eq!(
+            super::rewind_params(&chats, "p", "m1"),
+            serde_json::json!({ "chatId": "p", "messageId": "m1", "targetDeviceId": "mac" })
+        );
     }
 
     #[test]

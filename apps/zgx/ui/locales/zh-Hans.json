@@ -744,7 +744,16 @@
       "new_reply": "新回复",
       "display_failed": "无法显示此内容",
       "image_failed": "无法显示这张图片",
-      "visual_failed": "无法显示这个可视化"
+      "visual_failed": "无法显示这个可视化",
+      "edit_message": "编辑消息",
+      "fork_here": "从这里分叉",
+      "edit_label": "编辑你的消息",
+      "edit_save": "保存并发送",
+      "edit_cancel": "取消",
+      "edit_remove": "移除 {name}",
+      "edit_confirm_title": "编辑并重新发送？",
+      "edit_confirm_body": "{n, plural, other {将移除下方 # 条消息。}}智能体改动过的文件不会被还原。",
+      "edit_confirm": "移除并发送"
     },
     "user_message": {
       "open_named": "打开 {name}",
@@ -3077,6 +3086,10 @@
       "setup_summary": "已设置 Cloud 机器",
       "woke_summary": "已唤醒 Cloud 机器",
       "unreachable": "已中断——无法连接到{host}"
+    },
+    "message_actions": {
+      "edit_running": "请等回复完成或先停止它，再编辑。",
+      "couldnt_edit": "无法编辑这条消息。"
     }
   },
   "panel": {

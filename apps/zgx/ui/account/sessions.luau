@@ -13,7 +13,13 @@
 --                          promise of { id, cwd }, or why not in words)
 --   sessions.fork(source, parent?, id?)  a side chat starting as a copy of
 --                          `source` (Fork chat): a promise of its id, or the
---                          engine's words for why not
+--                          engine's words for why not; with `message`
+--                          (`sessions.fork(source, parent, id, message)`)
+--                          the copy ends there, a promise of { id, draft? }
+--                          (a prompt's words, for the fork's composer)
+--   sessions.rewind(id, message)  chat `id` without `message` and all after
+--                          it (an edited prompt, sent again next): a promise
+--                          of how many went, or why not
 --   sessions.children(id)  a chat's side chats, newest first (tracked)
 --   sessions.archive(id), sessions.unarchive(id)
 --   sessions.rename(id, title)
@@ -175,8 +181,12 @@ function M.create(req: { [string]: any }): any
 	return ui.call("sessions.create", req)
 end
 
-function M.fork(source: string, parent: string?, id: string?): any
-	return ui.call("sessions.fork", { source = source, parent = parent, id = id })
+function M.fork(source: string, parent: string?, id: string?, message: string?): any
+	return ui.call("sessions.fork", { source = source, parent = parent, id = id, message = message })
+end
+
+function M.rewind(id: string, message: string): any
+	return ui.call("sessions.rewind", { id = id, message = message })
 end
 
 function M.children(id: string?): { Child }

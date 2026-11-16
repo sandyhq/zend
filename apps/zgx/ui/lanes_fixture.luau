@@ -129,8 +129,8 @@ stub_sessions.link = function(id: string): any
 	note(`link:{id}`)
 	return settled(true, `https://zend.invalid/c/{id}`)
 end
-stub_sessions.fork = function(source: string, _parent: string?, id: string?): any
-	note(`fork:{source}:{id}`)
+stub_sessions.fork = function(source: string, _parent: string?, id: string?, message: string?): any
+	note(if message then `fork:{source}:{id}:{message}` else `fork:{source}:{id}`)
 	if fork_fails:peek() then
 		return settled(false, { message = "Wait for a completed response before starting a side chat" })
 	end
@@ -142,6 +142,10 @@ stub_sessions.fork = function(source: string, _parent: string?, id: string?): an
 				end)
 			end,
 		}
+	end
+	-- (From a message: a prompt's words come back for the fork's box.)
+	if message then
+		return settled(true, { id = id, draft = if string.sub(message, 1, 1) == "u" then `words of {message}` else nil })
 	end
 	return settled(true, id)
 end
