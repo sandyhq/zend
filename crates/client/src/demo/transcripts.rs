@@ -823,6 +823,7 @@ fn visuals(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                 title: visual.title.clone(),
                 rev: 0,
                 sent: false,
+                dismissed: false,
             });
         }
         return vec![

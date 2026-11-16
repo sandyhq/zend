@@ -371,7 +371,8 @@ its update count `rev`, its inputs, and `sent`; crates/engine
   entry is kept and comes back with its name. The reply lists `added`,
   `droppedWithEntries`, the inputs with each one's `entry`, and `entries`.
 - `read_visual {id}` returns the inputs, the entries, `open` (it has inputs and
-  isn't sent) and `sent`.
+  is neither sent nor dismissed), `sent`, `dismissed` and `state` (`open`,
+  `sent`, `dismissed`, or `shown` for one without inputs).
 - Only the chat that showed a visual may update or read it. While a visual of
   the chat is open, `show_visual` with its title is refused and names
   `update_visual`.
@@ -381,8 +382,16 @@ its update count `rev`, its inputs, and `sent`; crates/engine
 - `sent` is the window's to set: `MarkVisualSent {path, sent}` when the person
   sends a message holding the visual's answers (`path` is the script's, as the
   part names it). It is not an agent method. It also marks the transcript's
-  visual part `sent` (zend-doc `mark_visual_part_sent`), so every window
+  visual part `sent` (zend-doc `mark_visual_part_state`), so every window
   shows it answered and stops pinning it above the composer.
+- `dismissed` is the window's too: `MarkVisualSent {path, dismissed: true}`
+  when the person closes the pinned visual with its × and sends nothing. Not
+  sent (a later send makes it `sent`; a dismissal of one sent changes
+  nothing); the part says `dismissed` ("Closed without answers"). The next
+  prompt into the chat, a new turn's or a steer into the running one, carries
+  one line per dismissed visual, once, to the agent only (the transcript keeps
+  the person's words): `[Zend: visual "<title>" (<id>) was closed without
+  answers]`.
 - While a visual of a parent is open, each child event it gets ends with a
   line per open visual, newest first ("Child events"):
   `Open visual <id> "<title>": <n> entries so far, not sent. Don't decide its

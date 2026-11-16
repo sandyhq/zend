@@ -8,7 +8,10 @@
 //!   entry: they are the person's draft.
 //! - `{id}-visual-meta.json`: [`VisualMeta`], the chat that showed it, its
 //!   title, how often it was updated, its named inputs, and whether its
-//!   entries were sent (the window says so: `MarkVisualSent`).
+//!   entries were sent (the window says so: `MarkVisualSent`), or the
+//!   person closed it without answers (`MarkVisualSent` with
+//!   `dismissed`). A dismissal is told to the agent once, as a line on
+//!   the next prompt into its chat ([`with_dismissals`]).
 //!
 //! An update swaps the script the way the window does (crates/visual
 //! `Visual::swap`): entries kept, an input the new script drops keeps its
@@ -37,6 +40,15 @@ pub struct VisualMeta {
     /// `MarkVisualSent`). From then on they bind.
     #[serde(default)]
     pub sent: bool,
+    /// The person closed it with its × and sent nothing (the window says
+    /// so: `MarkVisualSent` with `dismissed`). Not sent: a later send of
+    /// its answers makes it sent instead.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dismissed: bool,
+    /// The agent was told of that dismissal (a line on the next prompt
+    /// into its chat): told once per dismissal.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dismissal_told: bool,
     /// When it was shown (ms since the epoch; 0 for one kept before this
     /// was): the newest open ones are named first.
     #[serde(default)]
@@ -50,7 +62,39 @@ impl VisualMeta {
     /// Open (plans/live-visuals D4): it asks the person something and they
     /// haven't sent their answers yet.
     pub fn is_open(&self) -> bool {
-        !self.sent && !self.inputs.is_empty()
+        !self.sent && !self.dismissed && !self.inputs.is_empty()
+    }
+
+    /// Open, sent, or dismissed (closed by the person without answers),
+    /// as `read_visual` names it. One without inputs never asked: open
+    /// is false, and it is none of sent or dismissed either ("shown").
+    pub fn state(&self) -> &'static str {
+        if self.sent {
+            "sent"
+        } else if self.dismissed {
+            "dismissed"
+        } else if self.inputs.is_empty() {
+            "shown"
+        } else {
+            "open"
+        }
+    }
+
+    /// The window says it was sent (`sent`, or taken back) or closed
+    /// without answers (`dismissed`). Sent wins: a dismissal of one sent
+    /// changes nothing, and a send after a dismissal makes it sent.
+    pub fn mark(&mut self, sent: bool, dismissed: bool) {
+        if dismissed {
+            if !self.sent && !self.dismissed {
+                self.dismissed = true;
+                self.dismissal_told = false;
+            }
+        } else {
+            self.sent = sent;
+            if sent {
+                self.dismissed = false;
+            }
+        }
     }
 
     pub fn from_json(text: &str) -> Option<Self> {
@@ -198,8 +242,86 @@ pub fn describe(meta: &VisualMeta, entries: &zv::Entries) -> serde_json::Value {
         "rev": meta.rev,
         "open": meta.is_open(),
         "sent": meta.sent,
+        "dismissed": meta.dismissed,
+        "state": meta.state(),
         "inputs": inputs,
         "entries": entries.values(),
+    })
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The line the agent's next prompt carries for a visual the person
+/// closed without answers.
+pub fn dismissal_line(meta: &VisualMeta) -> String {
+    format!(
+        "[Zend: visual \"{}\" ({}) was closed without answers]",
+        meta.title.split_whitespace().collect::<Vec<_>>().join(" "),
+        meta.id
+    )
+}
+
+/// Chat `chat_id`'s visuals the person closed without answers that its
+/// agent wasn't told of yet, oldest shown first.
+fn due_dismissals(uploads: &crate::uploads::Uploads, chat_id: &str) -> Vec<VisualMeta> {
+    let mut due: Vec<VisualMeta> = uploads
+        .visual_metas()
+        .iter()
+        .filter_map(|m| VisualMeta::from_json(m))
+        .filter(|m| m.chat_id == chat_id && m.dismissed && !m.sent && !m.dismissal_told)
+        .collect();
+    due.sort_by(|a, b| a.shown_at.cmp(&b.shown_at).then_with(|| a.id.cmp(&b.id)));
+    due
+}
+
+/// A prompt with the lines for the dismissals it tells, and which ones
+/// those are: [`Dismissals::told`] once the prompt was taken in, so each
+/// is told once (one not taken in rides the next prompt instead).
+#[derive(Debug)]
+pub struct Dismissals {
+    pub prompt: String,
+    ids: Vec<String>,
+}
+
+impl Dismissals {
+    /// The prompt carrying them was taken in: they're told.
+    pub fn told(&self, uploads: Option<&crate::uploads::Uploads>) {
+        let Some(uploads) = uploads else { return };
+        let _held = ENTRIES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &self.ids {
+            let Some(mut meta) = uploads.visual_meta(id).and_then(|m| VisualMeta::from_json(&m)) else {
+                continue;
+            };
+            if !meta.dismissed || meta.dismissal_told {
+                continue;
+            }
+            meta.dismissal_told = true;
+            if let Err(error) = uploads.store_visual_meta(id, &meta.to_json()) {
+                tracing::warn!(visual = %id, %error, "couldn't mark a dismissal told");
+            }
+        }
+    }
+}
+
+/// `prompt` with a line under it for each of chat `chat_id`'s visuals
+/// the person closed without answers that its agent wasn't told of yet
+/// (none: `None`). Not marked told: call [`Dismissals::told`] once the
+/// prompt was taken in.
+pub fn with_dismissals(
+    uploads: Option<&crate::uploads::Uploads>,
+    chat_id: &str,
+    prompt: &str,
+) -> Option<Dismissals> {
+    let due = due_dismissals(uploads?, chat_id);
+    if due.is_empty() {
+        return None;
+    }
+    let notes = due.iter().map(dismissal_line).collect::<Vec<_>>().join("\n");
+    Some(Dismissals {
+        prompt: if prompt.trim().is_empty() { notes } else { format!("{prompt}\n\n{notes}") },
+        ids: due.into_iter().map(|m| m.id).collect(),
     })
 }
 
@@ -257,6 +379,7 @@ end"#;
             sent: false,
             shown_at: 0,
             inputs: swapped.inputs.clone(),
+            ..Default::default()
         };
         let told = describe(&meta, &swapped.entries);
         assert_eq!(told["open"], true);

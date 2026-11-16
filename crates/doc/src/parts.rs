@@ -256,6 +256,11 @@ pub enum MessagePart {
     /// `sent`: the person sent its answers in a message (the window says
     /// so, engine `MarkVisualSent`): it no longer asks, and shows what was
     /// sent. Absent (false) until then.
+    ///
+    /// `dismissed`: the person closed it with its ×, nothing sent (engine
+    /// `MarkVisualSent` with `dismissed`): it no longer asks, and says it
+    /// was closed without answers. Absent (false) until then; a later send
+    /// of its answers makes it `sent` instead.
     Visual {
         id: String,
         path: String,
@@ -264,6 +269,8 @@ pub enum MessagePart {
         rev: u64,
         #[serde(default, skip_serializing_if = "is_false")]
         sent: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        dismissed: bool,
     },
     /// Model thinking. Carries its body in a dedicated doc field (`reasoning`,
     /// never `text`) so pre-reasoning desktop builds — whose unknown-kind
@@ -503,6 +510,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 title: title.clone(),
                 rev: 0,
                 sent: false,
+                dismissed: false,
             };
             if let Some(existing) = out.iter_mut().find(|p| p.id() == id) {
                 *existing = visual;

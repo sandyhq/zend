@@ -175,7 +175,7 @@ local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> num
 					if id == "" or not b then
 						return ui.div {}
 					end
-					return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent }
+					return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent, dismissed = b.dismissed }
 				end),
 			},
 		}),

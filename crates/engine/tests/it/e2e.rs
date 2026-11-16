@@ -3908,6 +3908,249 @@ end"#;
     core.shutdown().await;
 }
 
+/// A held turn ("ask…": live until `end` is notified, recording each steer
+/// it reads) or a mock one; records every prompt a run starts with.
+struct VisualTurns {
+    runs: Arc<std::sync::Mutex<Vec<String>>>,
+    steered: Arc<std::sync::Mutex<Vec<String>>>,
+    end: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl Harness for VisualTurns {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Visual turns"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.runs.lock().unwrap().push(request.prompt.clone());
+        if !request.prompt.starts_with("ask") {
+            return MockHarness {
+                script: mock_script(),
+            }
+            .run(request, controls)
+            .await;
+        }
+        let (steered, end) = (self.steered.clone(), self.end.clone());
+        Ok(futures::stream::unfold(
+            (0u8, controls.steering),
+            move |(step, mut steering)| {
+                let (steered, end) = (steered.clone(), end.clone());
+                async move {
+                    if step == 0 {
+                        return Some((Ok(mock_script()[0].clone()), (1, steering)));
+                    }
+                    if step == 2 {
+                        return None;
+                    }
+                    tokio::select! {
+                        Some(message) = steering.recv() => {
+                            steered.lock().unwrap().push(message.prompt);
+                            Some((
+                                Ok(AgentEvent::Steered {
+                                    assistant_message_id: None,
+                                    next_assistant_message_id: None,
+                                }),
+                                (1, steering),
+                            ))
+                        }
+                        () = end.notified() => Some((Ok(done(DoneStatus::Completed)), (2, steering))),
+                    }
+                }
+            },
+        )
+        .boxed())
+    }
+}
+
+/// The person closes an open visual with its × (fix3): the window marks it
+/// dismissed (`MarkVisualSent` with `dismissed`), a state of its own: not
+/// sent, not open, its part says so; `read_visual` says `dismissed`. Its
+/// agent is told once, a line on the next prompt into the chat: a steer
+/// into the live turn, or the next turn's prompt; never in the transcript.
+/// A later send of its answers makes it sent.
+#[tokio::test]
+async fn a_visual_closed_without_answers_is_told_once_and_a_later_send_makes_it_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let runs: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let steered: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let end = Arc::new(tokio::sync::Notify::new());
+    let core = assemble(
+        dir.path(),
+        Arc::new(VisualTurns {
+            runs: runs.clone(),
+            steered: steered.clone(),
+            end: end.clone(),
+        }),
+    );
+    let client = zend_rpc::memory_client(core.rpc_service());
+    const FORM: &str = r#"return function()
+  return ui.column { ui.field { name = "goal", label = "Goal" } }
+end"#;
+    let path_of = |id: &str| {
+        entries(&core).into_iter().flat_map(|e| e.parts).find_map(|p| match p {
+            MessagePart::Visual { id: part, path, .. } if part == id => Some(path),
+            _ => None,
+        })
+    };
+    let part_state = |id: &str| {
+        entries(&core).into_iter().flat_map(|e| e.parts).find_map(|p| match p {
+            MessagePart::Visual { id: part, sent, dismissed, .. } if part == id => Some((sent, dismissed)),
+            _ => None,
+        })
+    };
+    let read = |id: String| {
+        let client = &client;
+        async move {
+            client
+                .call(
+                    zend_rpc::methods::READ_VISUAL,
+                    serde_json::json!({ "chatId": CHAT, "id": id }),
+                )
+                .await
+                .expect("ReadVisual")
+        }
+    };
+    let line = |id: &str, title: &str| format!("[Zend: visual \"{title}\" ({id}) was closed without answers]");
+    let told = |line: &str| {
+        let all: Vec<String> = runs.lock().unwrap().iter().chain(steered.lock().unwrap().iter()).cloned().collect();
+        all.iter().map(|p| p.matches(line).count()).sum::<usize>()
+    };
+    let show = |title: &'static str| {
+        let client = &client;
+        async move {
+            let shown = client
+                .call(
+                    zend_rpc::methods::PUBLISH_VISUAL,
+                    serde_json::json!({ "chatId": CHAT, "title": title, "script": FORM }),
+                )
+                .await
+                .expect("PublishVisual");
+            shown["id"].as_str().unwrap().to_owned()
+        }
+    };
+
+    // Closed while its turn runs: the next steer into it carries the line.
+    core.sessions
+        .dispatch(CHAT, HarnessId::Mock, run_request("ask me"), None)
+        .await
+        .unwrap();
+    wait_for(|| core.sessions.turn_in_flight(CHAT), "turn starts").await;
+    let first = show("Plan").await;
+    wait_for(|| path_of(&first).is_some(), "visual part").await;
+    let marked = client
+        .call(
+            zend_rpc::methods::MARK_VISUAL_SENT,
+            serde_json::json!({ "path": path_of(&first).unwrap(), "dismissed": true }),
+        )
+        .await
+        .expect("MarkVisualSent dismissed");
+    assert_eq!(marked["state"], "dismissed");
+    let told_first = read(first.clone()).await;
+    assert_eq!(told_first["state"], "dismissed", "{told_first}");
+    assert_eq!(told_first["dismissed"], true);
+    assert_eq!(told_first["sent"], false, "dismissed is not sent");
+    assert_eq!(told_first["open"], false);
+    assert_eq!(part_state(&first), Some((false, true)), "the part says dismissed");
+    let outcome = core.sessions.steer(CHAT, "one more thing", None).await.unwrap();
+    assert!(matches!(outcome, zend_engine::sessions::SteerOutcome::Accepted), "{outcome:?}");
+    wait_for(|| !steered.lock().unwrap().is_empty(), "the steer is read").await;
+    let first_line = line(&first, "Plan");
+    assert_eq!(told(&first_line), 1, "told once, in the steer: {:?}", steered.lock().unwrap());
+    end.notify_one();
+    wait_for(|| !core.sessions.turn_in_flight(CHAT), "turn ends").await;
+
+    // Closed between turns: the next turn's prompt carries it, once.
+    core.sessions
+        .dispatch(CHAT, HarnessId::Mock, run_request("ask again"), None)
+        .await
+        .unwrap();
+    wait_for(|| core.sessions.turn_in_flight(CHAT), "turn starts").await;
+    let second = show("Deploy window").await;
+    wait_for(|| path_of(&second).is_some(), "visual part").await;
+    end.notify_one();
+    wait_for(|| !core.sessions.turn_in_flight(CHAT), "turn ends").await;
+    let path = path_of(&second).unwrap();
+    client
+        .call(
+            zend_rpc::methods::MARK_VISUAL_SENT,
+            serde_json::json!({ "path": path, "dismissed": true }),
+        )
+        .await
+        .expect("MarkVisualSent dismissed");
+    let second_line = line(&second, "Deploy window");
+    assert_eq!(told(&second_line), 0);
+    for prompt in ["next", "and later"] {
+        core.sessions
+            .dispatch(CHAT, HarnessId::Mock, run_request(prompt), None)
+            .await
+            .unwrap();
+        wait_for(
+            || runs.lock().unwrap().iter().any(|p| p.starts_with(prompt)),
+            "the run starts",
+        )
+        .await;
+        wait_for(|| !core.sessions.turn_in_flight(CHAT), "turn ends").await;
+    }
+    let started = runs.lock().unwrap().clone();
+    let next = started.iter().find(|p| p.starts_with("next")).unwrap();
+    assert!(next.ends_with(&second_line), "{next:?}");
+    assert_eq!(told(&second_line), 1, "told once: {started:?}");
+    assert_eq!(told(&first_line), 1, "the first, not again: {started:?}");
+    // The transcript keeps the person's own words.
+    assert!(
+        entries(&core)
+            .iter()
+            .filter(|e| e.role == MessageRole::User)
+            .flat_map(|e| &e.parts)
+            .all(|p| !matches!(p, MessagePart::Text { text, .. } if text.contains("closed without answers"))),
+        "no line in the transcript"
+    );
+
+    // A later send of its answers: sent, no longer dismissed.
+    let marked = client
+        .call(
+            zend_rpc::methods::MARK_VISUAL_SENT,
+            serde_json::json!({ "path": path, "sent": true }),
+        )
+        .await
+        .expect("MarkVisualSent sent");
+    assert_eq!(marked["state"], "sent");
+    let after = read(second.clone()).await;
+    assert_eq!(after["state"], "sent", "{after}");
+    assert_eq!(after["sent"], true);
+    assert_eq!(after["dismissed"], false);
+    assert_eq!(part_state(&second), Some((true, false)));
+    // Dismissing one sent changes nothing.
+    client
+        .call(
+            zend_rpc::methods::MARK_VISUAL_SENT,
+            serde_json::json!({ "path": path, "dismissed": true }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read(second).await["state"], "sent");
+    core.shutdown().await;
+}
+
 /// `show_image` end to end below the MCP server: the RPC checks the bytes are
 /// an image, stores them in uploads, and folds an image part into the chat's
 /// live turn, after what the harness streamed (not through the generated-image

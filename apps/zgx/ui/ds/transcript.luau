@@ -694,7 +694,7 @@ local function blocks_of(list: () -> { Block }, m: Message, now: () -> Message, 
 		end
 		-- An agent's visual: built once, followed by the host (src/visuals.rs).
 		if b.kind == "visual" then
-			local visual = Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent }
+			local visual = Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent, dismissed = b.dismissed }
 			-- Open and scrolled out of view: pinned above the composer, a line
 			-- in its place (ds/visual_pin).
 			return VisualPin.Place { id = b.id, title = b.title, visual = visual }

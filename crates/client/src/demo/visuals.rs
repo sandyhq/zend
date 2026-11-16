@@ -75,6 +75,7 @@ pub(crate) fn part(index: usize) -> MessagePart {
         title: title.to_owned(),
         rev: 0,
         sent: false,
+        dismissed: false,
     }
 }
 

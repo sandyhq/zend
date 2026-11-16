@@ -294,6 +294,19 @@ VisualAnswer.mark = function(id: string, file: VisualAnswer.File?)
 		promise:after(function() end, function() end)
 	end
 end
+-- Closed by the reader's × without answers: the visual shows it closed,
+-- and the chat's host marks it dismissed, which its agent is told on the
+-- next prompt (visuals.dismiss → MarkVisualSent `dismissed`).
+VisualAnswer.close = function(id: string, file: VisualAnswer.File?)
+	local ok, promise = pcall(ui.call, "visuals.dismiss", {
+		id = id,
+		path = if file then file.path else nil,
+		device = if file then file.device else nil,
+	})
+	if ok and promise then
+		promise:after(function() end, function() end)
+	end
+end
 VisualAnswer.write = function(chat: string?, text: string)
 	local key = answer_key(chat)
 	shared.set_draft_of(key, "text", text)

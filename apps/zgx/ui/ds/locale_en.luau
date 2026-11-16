@@ -834,6 +834,7 @@ return {
 	["ds.visual.input.remove_row"] = "Remove row",
 	["ds.visual.answer.add"] = "Add to message",
 	["ds.visual.answer.sent"] = "Answers sent",
+	["ds.visual.answer.dismissed"] = "Closed without answers",
 	["ds.visual.pinned"] = "{title}: open above the message box",
 	["ds.visual.minimise"] = "Minimise",
 	["ds.visual.expand"] = "Expand",

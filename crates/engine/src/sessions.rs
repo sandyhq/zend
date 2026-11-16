@@ -333,6 +333,10 @@ struct Inner {
     turn_listener: OnceLock<TurnListener>,
     /// Plugins whose native MCP servers local runs get (absent in bare tests).
     plugins: OnceLock<crate::plugins::Plugins>,
+    /// Where the chats' visuals are kept: a visual the person closed
+    /// without answers is told to its agent as a line on the next prompt
+    /// into its chat (live_visuals `with_dismissals`). Absent in bare tests.
+    visuals: OnceLock<crate::uploads::Uploads>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -386,6 +390,7 @@ impl SessionsEngine {
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 plugins: OnceLock::new(),
+                visuals: OnceLock::new(),
             }),
         }
     }
@@ -454,6 +459,12 @@ impl SessionsEngine {
     /// Wire the plugins service: local runs get its native MCP servers.
     pub fn set_plugins(&self, plugins: crate::plugins::Plugins) {
         let _ = self.inner.plugins.set(plugins);
+    }
+
+    /// Wire where visuals are kept: the next prompt into a chat carries a
+    /// line for each of its visuals the person closed without answers.
+    pub fn set_visuals(&self, uploads: crate::uploads::Uploads) {
+        let _ = self.inner.visuals.set(uploads);
     }
 
     /// Wire the doc host (called once at engine assembly; the two services are mutually
@@ -1035,12 +1046,21 @@ impl SessionsEngine {
             };
             let user_id = message_id.clone().unwrap_or_else(new_id);
             let mut bootstrap = None;
+            let mut noted = None;
             let same_runtime = route.is_some();
             let reconfigure = route == Some(true);
             let accepted = if steerable && same_runtime {
                 bootstrap =
                     self.warm_fork_history(chat_id, harness_id, &request.prompt, &history_sent);
                 let delivered = bootstrap.as_deref().unwrap_or(&request.prompt);
+                // Visuals the person closed without answers: a line each,
+                // told once the live run took the prompt in.
+                noted = crate::live_visuals::with_dismissals(
+                    self.inner.visuals.get(),
+                    chat_id,
+                    delivered,
+                );
+                let delivered = noted.as_ref().map_or(delivered, |n| n.prompt.as_str());
                 // Warm dispatch uses the same mailbox as explicit steering.
                 // Register acceptance before a fast boundary can retire it.
                 let message = SteerMessage {
@@ -1104,6 +1124,9 @@ impl SessionsEngine {
                     if bootstrap.is_some() {
                         history_sent.store(true, std::sync::atomic::Ordering::Release);
                     }
+                    if let Some(noted) = &noted {
+                        noted.told(self.inner.visuals.get());
+                    }
                     // Working BEFORE the lastMessageAt bump: both ride the
                     // workspace doc from this one peer, so causal order makes it
                     // impossible for an observer to hold [new message, old status]
@@ -1123,6 +1146,9 @@ impl SessionsEngine {
                     ledger.len() != before
                 };
                 if !reclaimed {
+                    if let Some(noted) = &noted {
+                        noted.told(self.inner.visuals.get());
+                    }
                     self.inner.note_message(chat_id, &request.prompt);
                     return Ok(run_id);
                 }
@@ -1563,6 +1589,12 @@ impl SessionsEngine {
         let user_id = message_id.unwrap_or_else(new_id);
         let bootstrap = self.warm_fork_history(chat_id, harness_id, prompt, &history_sent);
         let delivered = bootstrap.as_deref().unwrap_or(prompt);
+        // Visuals the person closed without answers: a line each, told
+        // once the live run took the steer in (else the fresh run the
+        // caller falls back to carries them).
+        let noted =
+            crate::live_visuals::with_dismissals(self.inner.visuals.get(), chat_id, delivered);
+        let delivered = noted.as_ref().map_or(delivered, |n| n.prompt.as_str());
         // A steer runs on the configuration live now; record it with the
         // message so a re-dispatch keeps it.
         let sent_with = self.last_request(chat_id).map(|mut request| {
@@ -1614,6 +1646,9 @@ impl SessionsEngine {
             if bootstrap.is_some() {
                 history_sent.store(true, std::sync::atomic::Ordering::Release);
             }
+            if let Some(noted) = &noted {
+                noted.told(self.inner.visuals.get());
+            }
             self.set_status(chat_id, SessionStatus::Working, false);
             self.inner.note_message(chat_id, prompt);
             return Ok(SteerOutcome::Accepted);
@@ -1630,6 +1665,9 @@ impl SessionsEngine {
         };
         if reclaimed {
             return Ok(SteerOutcome::NotSteerable);
+        }
+        if let Some(noted) = &noted {
+            noted.told(self.inner.visuals.get());
         }
         self.inner.note_message(chat_id, prompt);
         Ok(SteerOutcome::Accepted)
@@ -4134,6 +4172,15 @@ async fn drive_run(
         resume_state
             .fork_history_sent
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+    // Visuals the person closed without answers ride the prompt as a line
+    // each, told once (the transcript keeps the user's own message).
+    if !resume_state.idle
+        && let Some(noted) =
+            crate::live_visuals::with_dismissals(inner.visuals.get(), &chat_id, &request.prompt)
+    {
+        noted.told(inner.visuals.get());
+        request.prompt = noted.prompt;
     }
     // Startup can stop before the SDK saves user text, with no new session
     // ID or receipt. Bridge that unacknowledged tail from our transcript;

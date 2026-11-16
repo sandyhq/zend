@@ -21,9 +21,13 @@
 -- so it shows what was sent and asks no more (plans/live-visuals G4, fix2).
 -- Two visuals with one title: each heading line in the message answers one,
 -- the one whose block it holds as put first, then the one put last.
--- `dismiss(id, file)` is the reader's own ×: answered, with nothing sent.
+-- `dismiss(id, file)` is the reader's own ×: closed without answers, a
+-- state of its own (engine `MarkVisualSent` with `dismissed`, fix3): it
+-- asks no more, and its agent is told so on the next prompt. Not sent:
+-- a message sent later that still holds its heading line marks it sent.
 --
---   VisualAnswer.dismiss(id, file)   marks it sent, as sending does
+--   VisualAnswer.close = function(id, file) … end   (the app: `visuals.dismiss`)
+--   VisualAnswer.dismiss(id, file)   marks it dismissed
 
 local M = {}
 
@@ -32,6 +36,7 @@ M.write = nil :: ((chat: string?, text: string) -> ())?
 
 export type File = { path: string?, device: string? }
 M.mark = nil :: ((id: string, file: File?) -> ())?
+M.close = nil :: ((id: string, file: File?) -> ())?
 
 -- What each visual last put in, by its id.
 -- (A plugin's page has no composer and the app doesn't share this with
@@ -160,19 +165,15 @@ function M.sending(text: string): { string }
 	return held
 end
 
--- The reader closes visual `id` by hand: answered all the same, as sent
--- (`file`: where its script is, the transcript part's path and device, for
--- one whose answers were never put in the draft). Nothing is sent.
+-- The reader closes visual `id` by hand, sending nothing: it's marked
+-- closed without answers (`file`: where its script is, the transcript
+-- part's path and device, for one whose answers were never put in the
+-- draft). What it put in the draft stays known here: sent later, that
+-- message still marks it sent.
 function M.dismiss(id: string, file: File?)
 	local mine = files[id]
-	if M.mark then
-		M.mark(id, if file and file.path and file.path ~= "" then file else mine)
-	end
-	files[id], stamps[id] = nil, nil
-	if given:peek()[id] ~= nil then
-		local all = table.clone(given:peek())
-		all[id] = nil
-		given:set(all)
+	if M.close then
+		M.close(id, if file and file.path and file.path ~= "" then file else mine)
 	end
 end
 

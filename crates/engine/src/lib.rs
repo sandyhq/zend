@@ -419,6 +419,7 @@ impl EngineCore {
             agent_accounts_config.codex_home.clone()
         };
         sessions.set_generated_images(uploads.clone(), codex_home.join("generated_images"));
+        sessions.set_visuals(uploads.clone());
         let local_import = (profile.scope() == WorkspaceScope::Synced).then(|| {
             local_import::LocalImporter::new(
                 data_dir,

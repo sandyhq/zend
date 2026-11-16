@@ -175,6 +175,10 @@ struct Entry {
     /// The person sent its answers (its part says so, or they just sent a
     /// message holding them): it no longer asks, so it isn't pinned.
     sent: bool,
+    /// The person closed it with its × and sent nothing (its part says
+    /// so, or they just did): it no longer asks either, and isn't pinned.
+    /// Not sent: a later send of its answers makes it sent.
+    dismissed: bool,
 }
 
 impl Entry {
@@ -203,6 +207,7 @@ impl Entry {
             wanted_rev: 0,
             rereading: false,
             sent: false,
+            dismissed: false,
         }
     }
 
@@ -210,7 +215,7 @@ impl Entry {
     /// not sent (engine live_visuals `is_open`). The window pins it above
     /// the composer while it is.
     fn open(&self) -> bool {
-        !self.sent && self.tree.as_ref().is_some_and(|tree| !zv::inputs(tree).is_empty())
+        !self.sent && !self.dismissed && self.tree.as_ref().is_some_and(|tree| !zv::inputs(tree).is_empty())
     }
 
     /// Run `source`'s setup and first render, seeded from `id`.
@@ -452,6 +457,7 @@ impl Visuals {
                     ("stale", Value::Bool(e.wanted_rev > e.part_rev && e.file.is_some())),
                     ("open", Value::Bool(e.open())),
                     ("sent", Value::Bool(e.sent)),
+                    ("dismissed", Value::Bool(e.dismissed && !e.sent)),
                 ]),
             )
         }))
@@ -626,6 +632,13 @@ fn calls(host: &ScriptHost, prefix: &str, visuals: &Rc<Visuals>, scope: Option<S
         async move { mark_sent(v, arg, trusted).await }
     });
     let (v, sc) = (visuals.clone(), scope.clone());
+    host.async_action(name("dismiss"), move |arg| {
+        let v = v.clone();
+        let trusted = sc.is_none();
+        let arg = scoped(arg, &sc);
+        async move { mark_dismissed(v, arg, trusted).await }
+    });
+    let (v, sc) = (visuals.clone(), scope.clone());
     host.action(name("focus"), move |arg| {
         let arg = scoped(arg, &sc);
         let id = text(arg.field("id"));
@@ -776,10 +789,69 @@ pub fn seen_sent(id: &str, sent: bool) {
         return;
     }
     VISUALS.with(|v| {
-        if v.with(id, |e| !std::mem::replace(&mut e.sent, true)).unwrap_or(false) {
+        if v
+            .with(id, |e| !std::mem::replace(&mut e.sent, true) | std::mem::replace(&mut e.dismissed, false))
+            .unwrap_or(false)
+        {
             v.publish();
         }
     });
+}
+
+/// What visual `id`'s part says of it being closed without answers
+/// (chat.rs): one shown here stops asking, in every place it shows.
+pub fn seen_dismissed(id: &str, dismissed: bool) {
+    if !dismissed {
+        return;
+    }
+    VISUALS.with(|v| {
+        if v.with(id, |e| !std::mem::replace(&mut e.dismissed, true)).unwrap_or(false) {
+            v.publish();
+        }
+    });
+}
+
+/// Where visual `id`'s script is: the one this window holds, else the
+/// `path` and `device` given (the app's own `visuals` only).
+fn file_of(v: &Visuals, id: &str, arg: &Value, trusted: bool, mark: impl FnOnce(&mut Entry)) -> Option<(String, Option<String>)> {
+    let given = Some(text(arg.field("path")))
+        .filter(|_| trusted)
+        .filter(|p| !p.is_empty())
+        .map(|p| (p, arg.field("device").map(crate::auth::text).filter(|d| !d.is_empty())));
+    v.with(id, |e| {
+        mark(e);
+        e.file.clone()
+    })
+    .flatten()
+    .or(given)
+}
+
+/// `visuals.dismiss {id, path?, device?}`: the person closed visual `id`
+/// with its × and sent nothing (ds/visual_answer `dismiss`): it shows
+/// closed here at once, and the engine of the chat's host marks it
+/// dismissed (`MarkVisualSent` with `dismissed`), its part too, so every
+/// window shows it closed and its agent is told, once, on the next prompt
+/// into the chat. Not sent: a later send of its answers marks it sent.
+async fn mark_dismissed(v: Rc<Visuals>, arg: Value, trusted: bool) -> Result<Value, String> {
+    let id = text(arg.field("id"));
+    let file = file_of(&v, &id, &arg, trusted, |e| {
+        if !e.sent {
+            e.dismissed = true;
+        }
+    });
+    v.publish();
+    let Some((path, device)) = file else {
+        return Err("no visual file".into());
+    };
+    let mut params = json!({ "path": path, "dismissed": true });
+    if let Some(device) = device {
+        params["targetDeviceId"] = json!(device);
+    }
+    crate::engine::get().call("MarkVisualSent", params).await.map_err(|why| {
+        eprintln!("zend-zgx: visual {id} not marked dismissed: {why}");
+        why.to_string()
+    })?;
+    Ok(Value::Nil)
 }
 
 /// `visuals.sent {id, path?, device?}`: the person sent a message holding
@@ -790,17 +862,10 @@ pub fn seen_sent(id: &str, sent: bool) {
 /// `visuals` only: a plugin's marks only a visual of its own it holds).
 async fn mark_sent(v: Rc<Visuals>, arg: Value, trusted: bool) -> Result<Value, String> {
     let id = text(arg.field("id"));
-    let given = Some(text(arg.field("path")))
-        .filter(|_| trusted)
-        .filter(|p| !p.is_empty())
-        .map(|p| (p, arg.field("device").map(crate::auth::text).filter(|d| !d.is_empty())));
-    let file = v
-        .with(&id, |e| {
-            e.sent = true;
-            e.file.clone()
-        })
-        .flatten()
-        .or(given);
+    let file = file_of(&v, &id, &arg, trusted, |e| {
+        e.sent = true;
+        e.dismissed = false;
+    });
     v.publish();
     let Some((path, device)) = file else {
         return Err("no visual file".into());
@@ -890,6 +955,10 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
     if sent {
         seen_sent(&id, true);
     }
+    let dismissed = arg.field("dismissed").is_some_and(Value::truthy);
+    if dismissed {
+        seen_dismissed(&id, true);
+    }
     {
         let mut entries = v.entries.borrow_mut();
         match entries.get_mut(&id) {
@@ -909,6 +978,7 @@ async fn open(v: Rc<Visuals>, arg: Value) -> Result<Value, String> {
                 let mut entry = Entry::new(title);
                 (entry.part_rev, entry.wanted_rev) = (part_rev, part_rev);
                 entry.sent = sent;
+                entry.dismissed = dismissed;
                 entries.insert(id.clone(), entry);
             }
         }

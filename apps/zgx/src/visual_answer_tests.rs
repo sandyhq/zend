@@ -356,25 +356,70 @@ fn two_visuals_with_one_title_are_told_apart_by_how_many_headings_a_message_hold
     }
 }
 
-/// The reader's own ×: it is answered all the same (marked sent with the
-/// part's path and device, though no answers ever went into the draft),
-/// unpinned, nothing sent.
+/// What the host has of the visual (shared `visuals`): `field` true?
+fn host_says(app: &TestApp, field: &str) -> bool {
+    app.host.shared("visuals", Value::Nil).get().field("v:fixture-answer").and_then(|v| v.field(field)).is_some_and(|v| v.truthy())
+}
+
+/// The reader's own ×: closed without answers, a state of its own (fix3):
+/// marked dismissed by the part's path and device (`visuals.dismiss` →
+/// engine `MarkVisualSent` with `dismissed`), not sent, unpinned, nothing
+/// sent; its place says "Closed without answers" and asks no more.
 #[test]
-fn the_x_on_the_pinned_visual_marks_it_sent_by_the_parts_path() {
+fn the_x_on_the_pinned_visual_marks_it_dismissed_by_the_parts_path_not_sent() {
     let mut app = mount();
     app.host.run_command("sv_spy");
     pin(&mut app);
     assert!(draft(&app).is_empty(), "{:?}", draft(&app));
     app.click("#chat-pinned-visual >> role:button \"Close\"");
     app.frames(10);
-    app.wait_until(|app| calls(app).contains("mark:"));
-    assert!(calls(&app).contains("mark:v:fixture-answer:/fixture/answer.luau:fixture-device"), "{}", calls(&app));
+    app.wait_until(|app| calls(app).contains("dismiss:"));
+    assert!(calls(&app).contains("dismiss:v:fixture-answer:/fixture/answer.luau:fixture-device"), "{}", calls(&app));
+    assert!(!calls(&app).contains("mark:"), "marked sent: {}", calls(&app));
     app.wait_until(|app| app.find("#chat-pinned-visual").is_none());
     app.frames(10);
     assert!(app.find("#chat-pinned-visual").is_none(), "still pinned");
     assert!(app.find(".visual-pinned-marker").is_none(), "still a line");
+    assert!(host_says(&app, "dismissed"), "the host hasn't it dismissed");
+    assert!(!sent(&app), "dismissed is not sent");
+    assert!(!host_says(&app, "open"), "still open");
     assert!(!calls(&app).contains("send:"), "something was sent: {}", calls(&app));
     assert!(draft(&app).is_empty(), "{:?}", draft(&app));
+    app.wait_until(|app| app.find("#transcript >> .visual-dismissed").is_some());
+    assert!(app.find("#transcript >> .visual-dismissed").is_some(), "its place doesn't say closed:\n{}", visual_lines(&mut app));
+    assert!(app.find("#transcript >> .visual-sent").is_none(), "it says sent");
+    assert!(app.find(&format!("#transcript >> {ANSWER}")).is_none(), "it still asks");
+    assert_eq!(app.error(), None);
+}
+
+/// Closed with its × after its answers went into the draft, a message
+/// sent later that holds its heading line still answers it: sent, no
+/// longer dismissed (fix3).
+#[test]
+fn a_later_send_with_its_heading_line_makes_a_dismissed_visual_sent() {
+    let mut app = mount();
+    app.host.run_command("sv_spy");
+    pin(&mut app);
+    app.type_text("role:textbox \"Goal\"", "Move the db");
+    app.frames(10);
+    app.wait_until(|app| goal(app).is_some());
+    app.click(&format!("#chat-pinned-visual >> {ANSWER}"));
+    app.frames(10);
+    assert!(draft(&app).contains("Goal: Move the db"), "{:?}", draft(&app));
+    app.click("#chat-pinned-visual >> role:button \"Close\"");
+    app.frames(10);
+    app.wait_until(|app| host_says(app, "dismissed"));
+    assert!(host_says(&app, "dismissed") && !sent(&app));
+    assert!(draft(&app).contains("Goal: Move the db"), "the draft lost the answers: {:?}", draft(&app));
+    app.click(COMPOSER);
+    app.keys("Enter");
+    app.frames(20);
+    app.wait_until(|app| calls(app).contains("send:sv:"));
+    app.wait_until(|app| calls(app).contains("mark:"));
+    assert!(calls(&app).contains("mark:v:fixture-answer:"), "{}", calls(&app));
+    app.wait_until(|app| sent(app));
+    assert!(sent(&app), "not sent");
+    assert!(!host_says(&app, "dismissed"), "still dismissed");
     assert_eq!(app.error(), None);
 }
 

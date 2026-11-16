@@ -362,8 +362,9 @@ const READ_VISUAL_DESCRIPTION: &str = "\
 Read a visual you showed in this chat: its named inputs, what the person entered in each so far, \
 and whether it is open (it asks something and they haven't sent their answers) or sent. Entries are \
 the person's unsent draft until sent is true: read-only, not answers yet. Don't act on them, don't \
-decide or ask again what they are filling in; wait for their message. To change the visual, use \
-update_visual.";
+decide or ask again what they are filling in; wait for their message. state \"dismissed\": they \
+closed it without answers (their next message says so once); ask again only if you still need to. \
+To change the visual, use update_visual.";
 
 /// Shows an image file in the CALLING chat; offered like `show_visual`.
 const SHOW_IMAGE: &str = "show_image";

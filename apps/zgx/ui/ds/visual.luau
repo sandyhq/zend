@@ -82,6 +82,9 @@ export type Props = {
 	rev: number?,
 	-- Its part says its answers were sent (MarkVisualSent).
 	sent: boolean?,
+	-- Its part says the person closed it without answers (its ×,
+	-- MarkVisualSent `dismissed`).
+	dismissed: boolean?,
 }
 
 -- What the host says of every visual: `{ [id] = { rev, gen } }`.
@@ -208,6 +211,9 @@ type Ctx = {
 	answer: () -> (),
 	-- The person sent its answers: it asks no more, its entries stay.
 	sent: () -> boolean,
+	-- The person closed it without answers (its ×): it asks no more
+	-- either. Not sent.
+	dismissed: () -> boolean,
 	-- A failure while drawing (a canvas's, a scene's), shown under it.
 	drew: (error: string?) -> (),
 }
@@ -1907,14 +1913,18 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 		end
 		local get = ctx.at(n.p)
 		-- Sent: what was sent stays in its inputs, and it says so here.
-		return ui.show(ctx.sent, ui.text {
-			class = "visual-sent",
-			locale.s("ds.visual.answer.sent"),
-			literal = true,
-			text_size = "$zend.visual.text.sm.size",
-			line_height = "$zend.visual.text.sm.line",
-			color = "$text.tertiary",
-		}, Button(place({
+		-- Closed without answers (its ×): it says that instead.
+		local function said(class: string, key: string): Node
+			return ui.text {
+				class = class,
+				locale.s(key),
+				literal = true,
+				text_size = "$zend.visual.text.sm.size",
+				line_height = "$zend.visual.text.sm.line",
+				color = "$text.tertiary",
+			}
+		end
+		return ui.show(ctx.sent, said("visual-sent", "ds.visual.answer.sent"), ui.show(ctx.dismissed, said("visual-dismissed", "ds.visual.answer.dismissed"), Button(place({
 			class = "visual-answer",
 			tone = "primary",
 			size = "sm",
@@ -1928,7 +1938,7 @@ build = function(n: any, ctx: Ctx, parent: string): Node
 				end,
 				literal = true,
 			},
-		}, n, parent)))
+		}, n, parent))))
 	elseif k == "tabs" then
 		return ui.row(place({ min_w = 0, Tabs { n = n, ctx = ctx } }, n, parent))
 	elseif k == "toggle" then
@@ -1991,6 +2001,7 @@ return ui.component(function(props: Props): Node
 				source = props.source,
 				rev = props.rev,
 				sent = props.sent,
+				dismissed = props.dismissed,
 			})
 			if promise then
 				promise:after(function() end, function() end)
@@ -2018,6 +2029,19 @@ return ui.component(function(props: Props): Node
 	local sent = ui.computed(function(): boolean
 		local r = REVS:get()[id]
 		return props.sent == true or (r ~= nil and r.sent == true)
+	end)
+	-- Closed by the person without answers (its part says so, or this
+	-- window just closed it), and not sent since.
+	local dismissed = ui.computed(function(): boolean
+		local r = REVS:get()[id]
+		if sent:get() then
+			return false
+		end
+		return props.dismissed == true or (r ~= nil and r.dismissed == true)
+	end)
+	-- Either way it asks no more.
+	local closed = ui.computed(function(): boolean
+		return sent:get() or dismissed:get()
 	end)
 	local snap = ui.computed(function(): any
 		rev:get()
@@ -2067,7 +2091,7 @@ return ui.component(function(props: Props): Node
 			end
 		end,
 		input = function(name: string, value: any)
-			if sent:peek() then
+			if closed:peek() then
 				return
 			end
 			local ok, promise = pcall(ui.call, api .. ".input", { id = id, name = name, value = value })
@@ -2081,8 +2105,11 @@ return ui.component(function(props: Props): Node
 		sent = function(): boolean
 			return sent:get()
 		end,
+		dismissed = function(): boolean
+			return dismissed:get()
+		end,
 		answer = function()
-			if sent:peek() then
+			if closed:peek() then
 				return
 			end
 			local ok, text = pcall(ui.call_sync, api .. ".answer", id)

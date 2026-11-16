@@ -66,7 +66,7 @@ function M.pick(messages: { any }, revs: { [string]: any }, away: { [string]: bo
 		for j = #found, 1, -1 do
 			local b = found[j]
 			local r = revs[b.id]
-			if b.sent ~= true and r and r.open == true and (away == nil or away[b.id] == true) then
+			if b.sent ~= true and b.dismissed ~= true and r and r.open == true and (away == nil or away[b.id] == true) then
 				return b
 			end
 		end

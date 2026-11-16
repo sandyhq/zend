@@ -1033,7 +1033,8 @@
       },
       "answer": {
         "add": "Add to message",
-        "sent": "Answers sent"
+        "sent": "Answers sent",
+        "dismissed": "Closed without answers"
       },
       "pinned": "{title}: open above the message box",
       "minimise": "Minimise",

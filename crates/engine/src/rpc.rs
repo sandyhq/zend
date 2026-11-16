@@ -668,6 +668,11 @@ struct MarkVisualSentParams {
     path: String,
     #[serde(default = "yes")]
     sent: bool,
+    /// The person closed it with its × and sent nothing: dismissed, not
+    /// sent (`sent` is then not read). Its agent is told once, on the next
+    /// prompt into its chat (live_visuals `with_dismissals`).
+    #[serde(default)]
+    dismissed: bool,
 }
 
 fn yes() -> bool {
@@ -6008,7 +6013,7 @@ impl RpcService for EngineRpc {
                         .visual_meta(&stem)
                         .and_then(|m| crate::live_visuals::VisualMeta::from_json(&m))
                         .ok_or_else(|| crate::EngineError::Other("that visual has no inputs Zend keeps".into()))?;
-                    meta.sent = p.sent;
+                    meta.mark(p.sent, p.dismissed);
                     uploads.store_visual_meta(&stem, &meta.to_json())?;
                     Ok::<_, crate::EngineError>(meta)
                 })
@@ -6021,9 +6026,19 @@ impl RpcService for EngineRpc {
                     .doc_host
                     .open(&meta.chat_id)
                     .ok()
-                    .and_then(|handle| handle.doc().mark_visual_part_sent(&meta.id, p.sent).ok())
+                    .and_then(|handle| {
+                        handle
+                            .doc()
+                            .mark_visual_part_state(&meta.id, meta.sent, meta.dismissed)
+                            .ok()
+                    })
                     .unwrap_or(false);
-                RpcReply::value(&serde_json::json!({ "sent": p.sent, "inTranscript": in_transcript }))
+                RpcReply::value(&serde_json::json!({
+                    "sent": meta.sent,
+                    "dismissed": meta.dismissed,
+                    "state": meta.state(),
+                    "inTranscript": in_transcript,
+                }))
             }
             methods::SAVE_VISUAL_ENTRIES => {
                 let p: SaveVisualEntriesParams = parse_params(params)?;

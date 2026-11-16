@@ -1289,20 +1289,25 @@ ui.command {
 	end,
 }
 -- What the visual's answer module marks sent, noted in `calls` as
--- "mark:<id>:<path>:<device>" (src/visual_answer_tests.rs): the
--- host still gets the call, so the visual shows sent.
+-- "mark:<id>:<path>:<device>", and closed without answers (its ×), as
+-- "dismiss:<id>:<path>:<device>" (src/visual_answer_tests.rs): the host
+-- still gets the call, so the visual shows sent or closed.
 ui.command {
 	id = "sv_spy",
-	title = "Note what is marked sent",
+	title = "Note what is marked sent or closed",
 	run = function()
 		local answers = require("@ds/visual_answer") :: any
-		local was = answers.mark
-		answers.mark = function(id: string, file: any)
-			note(`mark:{id}:{if file then file.path else ""}:{if file then file.device else ""}`)
-			if was then
-				was(id, file)
+		local function spy(key: string, as: string)
+			local was = answers[key]
+			answers[key] = function(id: string, file: any)
+				note(`{as}:{id}:{if file then file.path else ""}:{if file then file.device else ""}`)
+				if was then
+					was(id, file)
+				end
 			end
 		end
+		spy("mark", "mark")
+		spy("close", "dismiss")
 	end,
 }
 -- Two visuals under one title, as the answer module tells them apart
