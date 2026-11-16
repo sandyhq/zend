@@ -12,6 +12,7 @@ local locale = require("@ds/locale")
 local sessions = require("@account/sessions")
 local store = require("@app/screens/chat/store")
 local lanes = require("@app/screens/chat/lanes")
+local Shared = require("@app/screens/chat/shared")
 
 local M = {}
 
@@ -55,12 +56,19 @@ function M.of(chat: () -> string?, session: () -> any, home: (() -> string?)?): 
 					table.insert(carried, { path = a.path, name = a.name, kind = a.kind, on_host = true })
 				end
 			end
-			sessions.rewind(c, id):after(function()
-				store.send({ session = c, text = text, attachments = carried } :: any)
-			end, function(err: any)
+			-- (Failing, the edited words wait in the chat's message box: the
+			-- editor has closed, and they're not lost.)
+			local function failed(err: any)
+				Shared.set_draft_of(c, "text", text)
 				local why = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
 				ds.toast.show { title = locale.s("chat.message_actions.couldnt_edit"), body = why, tone = "warning" }
-			end)
+			end
+			sessions.rewind(c, id):after(function()
+				local sent = store.send({ session = c, text = text, attachments = carried } :: any)
+				if type(sent) == "table" and sent.after then
+					sent:after(function() end, failed)
+				end
+			end, failed)
 		end,
 	}
 end

@@ -382,6 +382,15 @@ end
 stub.retry = function(id: string, message: string)
 	note(`retry:{id}:{message}`)
 end
+-- `rewind_fails`: the engine refuses the next rewind.
+local REWIND_FAILS = ui.state("fixture_rewind_fails", false)
+ui.command {
+	id = "rewind_fails",
+	title = "The next edit is refused",
+	run = function()
+		REWIND_FAILS:set(true)
+	end,
+}
 -- A message's Fork from here and an edited prompt's rewind, as the engine
 -- answers them: a fork at a prompt gives its words back; a rewind takes the
 -- message and all after it out of the transcript.
@@ -399,6 +408,14 @@ do
 	end
 	stub_sessions.rewind = function(id: string, message: string): any
 		note(`rewind:{id}:{message}`)
+		if REWIND_FAILS:peek() then
+			REWIND_FAILS:set(false)
+			return {
+				after = function(_self: any, _ok: any, err: (any) -> ())
+					err({ message = "That message is no longer in this chat" })
+				end,
+			}
+		end
 		local kept, removed = {}, 0
 		for _, m in TRANSCRIPTS[id] or {} do
 			if removed > 0 or m.id == message then
