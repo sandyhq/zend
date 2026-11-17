@@ -47,5 +47,11 @@ Hover a message to see its actions beside Copy.
 - **Edit** (your own prompts): the prompt opens as an editor in place. Change the words, take off a file or picture with its ×, then Save & send (⌘Enter), or Cancel (Escape). If anything is below it, Zend asks once: everything below goes, for good. Files the agent changed on disk stay as they are; undo those yourself or ask the agent. The agent then works from a fresh session that gets the conversation up to your edited prompt. While the agent is still replying you can't send an edit: stop it or wait. An edit that can't go (a turn started meanwhile, Zend refused it) stays open in its editor with the reason; if the prompt is already removed and only the send fails, the words go into the message box after whatever you had there.
 - **Fork from here** (any prompt or reply): opens a side chat. From a reply it holds the conversation up to and including that reply; from a prompt, everything before it, with the prompt's words in the side chat's message box to change and send. The chat you forked from stays as it is.
 
+## Auto access
+
+The access picker has four modes: Supervised, Auto-accept edits, Auto and Full access. Auto hands the approval to the agent's own reviewer: it lets safe actions through and asks you about risky ones. Only Claude Code and Codex have such a reviewer, so only they offer Auto.
+
+If Auto can't be honoured for a chat (the agent has no Auto mode), Zend never quietly runs it looser: Send is held and the composer says why. Pick another mode or agent to go on. A reviewer's verdict shows as a shield on the tool's row; text a tool prints can't pose as one.
+
 ## Usage and accounts
 Limits shown in Zend are read from each provider with your sign-in. If a provider's sign-in has expired, readings stop and go stale without the chats failing: see [troubleshooting.md](troubleshooting.md).
