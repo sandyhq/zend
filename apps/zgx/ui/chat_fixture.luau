@@ -545,6 +545,20 @@ ui.command {
 		end
 	end,
 }
+-- The chat's visuals its host says are open: those of its transcript that
+-- weren't sent (the engine's list, ListOpenVisuals).
+stub.open_visuals = function(chat: string, device: string?)
+	note(`open_visuals:{chat}`)
+	local list = {}
+	for _, m in TRANSCRIPTS[chat] or {} do
+		for _, b in m.blocks or {} do
+			if b.kind == "visual" and b.sent ~= true then
+				table.insert(list, b)
+			end
+		end
+	end
+	return settled(list)
+end
 stub.refs = function(path: string, device: string?)
 	note(`refs:{path}:{device or "here"}`)
 	return settled(REFS[path] or {})

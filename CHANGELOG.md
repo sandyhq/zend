@@ -5,6 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-16
 
 ### Added
+- Visuals: the window asks the chat's host which visuals are open (new read-only RPC `ListOpenVisuals {chatId}`, forwardable like `MarkVisualSent`; a host without it answers unknown method and the transcript's own visuals still pin), so an open visual is pinned before a long chat's history has loaded, and only visuals that ask something are ever opened for the pin.
 - Visuals: an open visual is pinned above the composer whenever its place in the transcript is not in view, also when that place was never built (a long chat opened at the bottom, a chat opened again); it goes only when answered or closed with ×.
 - Chats: Auto access mode (ported from upstream) lets the agent's own reviewer approve safe actions and ask about risky ones; Claude Code and Codex offer it, other agents don't. When Auto is unavailable for a chat the composer holds Send and says why; the engine refuses the run rather than falling back to a looser mode.
 - Chats: Edit on your own prompt (removes it and everything below, after one confirmation, then sends the edited words; the agent starts a fresh session fed the kept history) and Fork from here on any prompt or reply (`RewindChat`, `ForkSideChat` `messageId`).

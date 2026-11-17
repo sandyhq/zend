@@ -7,7 +7,8 @@
 -- Moving between the two keeps what was entered (the host keeps it) and
 -- the field being typed in, with its caret (ds/visual).
 --
---   VisualPin.pick(messages, revs, away) → the block to pin, or nil
+--   VisualPin.pick(messages, revs, away, listed?) → the block to pin, or nil
+--                            (listed: the chat is open visuals, its host list)
 --   VisualPin.pinned          ui.shared { [id] = true }: what's pinned now
 --   VisualPin.away            ui.shared { [id] = true }: places out of view
 --   VisualPin.Place { id, title, visual }   the transcript's place
@@ -65,7 +66,7 @@ end
 -- The newest visual in `messages` that is open, as the host says
 -- (`revs`: shared `visuals`, `{ [id] = { open, sent } }`), whose part
 -- doesn't say it was sent, and whose place is out of view (`away`).
-function M.pick(messages: { any }, revs: { [string]: any }, away: { [string]: boolean }?): any
+function M.pick(messages: { any }, revs: { [string]: any }, away: { [string]: boolean }?, listed: { any }?): any
 	for i = #messages, 1, -1 do
 		local found = {}
 		visuals_in(messages[i].blocks, found)
@@ -77,36 +78,41 @@ function M.pick(messages: { any }, revs: { [string]: any }, away: { [string]: bo
 			end
 		end
 	end
+	-- Not in the messages (their history isn't all here): the host's list.
+	for _, b in listed or {} do
+		local r = revs[b.id]
+		if b.sent ~= true and b.dismissed ~= true and r and r.open == true and (away == nil or away[b.id] ~= false) then
+			return b
+		end
+	end
 	return nil
 end
 
 -- The host knows a visual is open only once it has read and started it,
--- which its place does as it is built. One whose place was never built
--- (see above) is started here, once, from its part: `revs` then holds it.
+-- which its place does as it is built. One whose place was never built (or
+-- not loaded yet) is started here, once, from `listed`: the chat's visuals
+-- its host says are open (ChatStore.open_visuals), so none that asks
+-- nothing is ever run.
 local asked: { [string]: boolean } = {}
-function M.preopen(messages: { any }, revs: { [string]: any })
-	for i = #messages, 1, -1 do
-		local found = {}
-		visuals_in(messages[i].blocks, found)
-		for _, b in found do
-			if b.sent ~= true and b.dismissed ~= true and revs[b.id] == nil and not asked[b.id] then
-				asked[b.id] = true
-				pcall(function()
-					local promise = ui.call("visuals.open", {
-						id = b.id,
-						path = b.path,
-						title = b.title,
-						device = b.device,
-						source = b.source,
-						rev = b.rev,
-						sent = b.sent,
-						dismissed = b.dismissed,
-					})
-					if promise then
-						promise:after(function() end, function() end)
-					end
-				end)
-			end
+function M.preopen(listed: { any }, revs: { [string]: any })
+	for _, b in listed do
+		if revs[b.id] == nil and not asked[b.id] then
+			asked[b.id] = true
+			pcall(function()
+				local promise = ui.call("visuals.open", {
+					id = b.id,
+					path = b.path,
+					title = b.title,
+					device = b.device,
+					source = b.source,
+					rev = b.rev,
+					sent = b.sent,
+					dismissed = b.dismissed,
+				})
+				if promise then
+					promise:after(function() end, function() end)
+				end
+			end)
 		end
 	end
 end

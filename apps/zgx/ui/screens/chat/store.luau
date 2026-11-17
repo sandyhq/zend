@@ -203,6 +203,13 @@ function M.refs(path: string, device: string?): any
 	return ui.call("chat.refs", { path = path, device = device })
 end
 
+-- The chat's visuals that ask the person something, as its host knows them
+-- (newest first, as ds/transcript's visual blocks), before its history is
+-- all here: a promise of the list (ds/visual_pin).
+function M.open_visuals(chat: string, device: string?): any
+	return ui.call("chat.open_visuals", { chat = chat, device = device })
+end
+
 -- The clipboard's picture written out as a PNG to send (src/pasted.rs): a
 -- promise of its path, nil when the clipboard holds none.
 function M.paste_image(): any

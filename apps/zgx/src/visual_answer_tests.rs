@@ -509,3 +509,67 @@ fn an_open_visual_is_pinned_again_when_its_chat_is_reopened() {
     assert!(pinned, "not pinned after reopening:\n{}", visual_lines(&mut app));
     assert_eq!(app.error(), None);
 }
+
+#[test]
+fn a_never_built_visual_is_pinned_again_when_scrolled_back_and_away() {
+    let mut app = mount_chat("go_svl");
+    assert!(app.wait_until(|app| app.find("#chat-pinned-visual").is_some()));
+    back(&mut app);
+    app.scroll("#transcript", 100000.);
+    app.frames(30);
+    assert!(app.wait_until(|app| app.find("#chat-pinned-visual").is_some()), "not repinned");
+    assert_eq!(app.error(), None);
+}
+#[test]
+fn a_visual_is_still_pinned_once_the_whole_history_arrives() {
+    let mut app = mount_chat("go_s1");
+    app.host.run_command("tail_first");
+    app.host.run_command("go_svl");
+    app.frames(30);
+    // (Pinned already: see the next test.)
+    app.host.run_command("history");
+    app.frames(30);
+    assert!(app.wait_until(|app| app.find("#chat-pinned-visual").is_some()), "not pinned after history");
+    assert_eq!(app.error(), None);
+}
+#[test]
+fn an_open_visual_is_pinned_while_only_the_newest_messages_are_loaded() {
+    let mut app = mount_chat("go_s1");
+    app.host.run_command("tail_first");
+    app.host.run_command("go_svl");
+    app.frames(30);
+    assert!(app.find("#chat-pinned-visual").is_some(), "open question missing while the history is pending: the host's list of open visuals isn't used");
+}
+
+#[test]
+fn visuals_that_ask_nothing_are_never_opened_to_find_a_pin() {
+    let mut app = mount_chat("go_s1");
+    let messages = (0..100).map(|i| Value::record([
+        ("id", Value::from(format!("review-m{i}").as_str())),
+        ("role", Value::from("assistant")),
+        ("blocks", Value::List(vec![Value::record([
+            ("kind", Value::from("visual")),
+            ("id", Value::from(format!("v:review-chart-{i}").as_str())),
+            ("source", Value::from("return function() return ui.text { 'Chart without questions' } end")),
+        ])].into())),
+    ])).collect::<Vec<_>>();
+    let start = std::time::Instant::now();
+    app.host.shared("chat.messages", Value::Nil).set(Value::List(messages.into()));
+    app.frames(40);
+    let revs = app.host.shared("visuals", Value::Nil).get();
+    let opened = (0..100).filter(|i| revs.field(&format!("v:review-chart-{i}")).is_some()).count();
+    let _ = start;
+    // Only the rows the list built (their own place opens them) are run,
+    // never the ones far above, for the pin's sake.
+    assert!(opened < 100, "all 100 charts were run");
+    assert!(revs.field("v:review-chart-0").is_none(), "the oldest chart (row never built) was run");
+    assert!(app.find("#chat-pinned-visual").is_none());
+    assert_eq!(app.error(), None);
+}
+#[test]
+fn the_zend_v2_composer_is_the_blessed_one() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let base: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("templates/zend-v2/.base.json")).unwrap()).unwrap();
+    let hash = crate::plugins::live::hash(&std::fs::read(root.join("screens/chat/composer.luau")).unwrap());
+    assert_eq!(base["screens/chat/composer.luau"].as_str(), Some(hash.as_str()));
+}

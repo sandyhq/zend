@@ -3879,6 +3879,16 @@ end"#;
     assert_eq!(updated["added"], serde_json::json!([]));
     assert_eq!(visual(), [(id.clone(), "Plan, v2".to_owned(), 2)]);
 
+    // The window can ask which of the chat's visuals are open (before its
+    // history is loaded): this one, with its script's path.
+    let listed = client
+        .call(zend_rpc::methods::LIST_OPEN_VISUALS, serde_json::json!({ "chatId": CHAT }))
+        .await
+        .expect("ListOpenVisuals");
+    assert_eq!(listed["visuals"][0]["id"], serde_json::json!(id));
+    assert_eq!(listed["visuals"][0]["path"], serde_json::json!(path));
+    assert_eq!(listed["visuals"].as_array().map(Vec::len), Some(1));
+
     // The window marks it sent: no longer open, and its title free again.
     client
         .call(
@@ -3896,6 +3906,11 @@ end"#;
         .unwrap();
     assert_eq!(read["sent"], true);
     assert_eq!(read["open"], false);
+    let listed = client
+        .call(zend_rpc::methods::LIST_OPEN_VISUALS, serde_json::json!({ "chatId": CHAT }))
+        .await
+        .unwrap();
+    assert_eq!(listed["visuals"], serde_json::json!([]), "sent: not open any more");
     // The transcript says so too: every window stops pinning it, after a
     // restart as well.
     let sent = entries(&core)

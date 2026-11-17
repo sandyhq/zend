@@ -382,6 +382,13 @@ pub mod methods {
     /// `{path, sent}`, `path` its script as its part names it. The
     /// window's, like `SaveVisualEntries`: not an agent's.
     pub const MARK_VISUAL_SENT: &str = "MarkVisualSent";
+    /// The visuals of one chat that ask the person something they haven't
+    /// sent (live_visuals `is_open`), newest first: `{chatId}` →
+    /// `{visuals: [{id, title, rev, path, shownAt}]}`, `path` its script as
+    /// its part names it. Read-only; the window's, so a chat's open visual
+    /// is found before its history is all loaded. Forwardable like
+    /// `MarkVisualSent` (a host without it answers an unknown method).
+    pub const LIST_OPEN_VISUALS: &str = "ListOpenVisuals";
     /// Store an image file an agent shows and fold it into that chat's live
     /// turn as an image part (`show_image`). Local only, like `PublishVisual`.
     pub const PUBLISH_IMAGE: &str = "PublishImage";

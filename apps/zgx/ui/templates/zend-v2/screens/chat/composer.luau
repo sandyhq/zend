@@ -1527,17 +1527,35 @@ local function Composer(): Node
 	-- The newest open visual of the chat shown whose place in the
 	-- transcript is out of view (ds/visual_pin): pinned, its place a line.
 	local revs = ui.shared("visuals", {} :: { [string]: any })
+	-- The chat's open visuals as its host knows them: found before its
+	-- history is all loaded, and for one whose place is never built.
+	local listed = ui.state("chat_open_visuals", {} :: { any })
+	ui.effect(function()
+		local id = session_id:get()
+		listed:set({})
+		if not id then
+			return
+		end
+		local s = store.session:peek()
+		local device = if s and s.id == id then s.device else nil
+		local ok, promise = pcall(store.open_visuals, id, device)
+		if ok and promise then
+			promise:after(function(list: any)
+				if session_id:peek() == id and type(list) == "table" then
+					listed:set(list)
+				end
+			end, function() end)
+		end
+	end)
 	local wanted = ui.computed(function(): any
 		if not session_id:get() then
 			return nil
 		end
-		return VisualPin.pick(store.messages:get(), revs:get(), VisualPin.away:get())
+		return VisualPin.pick(store.messages:get(), revs:get(), VisualPin.away:get(), listed:get())
 	end)
 	-- (One whose place was never built isn't known to the host yet.)
 	ui.effect(function()
-		if session_id:get() then
-			VisualPin.preopen(store.messages:get(), revs:get())
-		end
+		VisualPin.preopen(listed:get(), revs:get())
 	end)
 	-- What's pinned, as the effect below sets it (the panel follows this,
 	-- not `wanted`: what has the keys is saved before either place goes).

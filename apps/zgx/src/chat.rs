@@ -1009,6 +1009,9 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
     // `ensure_refs`): `{ path, device? }`, the device only when it isn't this
     // one (the engine forwards it there).
     host.async_action("chat.refs", move |args| async move { refs(args).await.map_err(String::from) });
+    // The chat's open visuals as its host knows them (ds/visual_pin): found
+    // before its history is all here. `{ chat, device? }`.
+    host.async_action("chat.open_visuals", move |args| async move { Ok::<Value, String>(open_visuals(args).await) });
 }
 
 /// Where a subagent's uploaded transcript is: `{chat}/{doc}`, the chat it
@@ -1065,6 +1068,46 @@ async fn refs(args: Value) -> Result<Value, Outcome> {
     }
     let found = engine::get().call("ListRefs", params).await.map_err(|e| engine::outcome(&e))?;
     Ok(refs_value(&found))
+}
+
+/// `ListOpenVisuals` as ds/transcript's visual blocks (newest first); none
+/// when the host can't say (offline, a version without the call): the
+/// transcript's own visuals still pin.
+async fn open_visuals(args: Value) -> Value {
+    let field = |key: &str| args.field(key).map(text).filter(|s| !s.is_empty());
+    let Some(chat) = field("chat") else { return Value::List(Rc::from([])) };
+    let device = field("device");
+    let mut params = json!({ "chatId": chat });
+    if let Some(device) = &device {
+        params["targetDeviceId"] = Json::from(device.as_str());
+    }
+    let Ok(found) = engine::get().call("ListOpenVisuals", params).await else {
+        return Value::List(Rc::from([]));
+    };
+    Value::List(
+        found["visuals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| {
+                let mut fields = vec![
+                    ("id", Value::from(v["id"].as_str()?)),
+                    ("kind", Value::from("visual")),
+                    ("path", Value::from(v["path"].as_str()?)),
+                    ("title", Value::from(v["title"].as_str().unwrap_or_default())),
+                    ("rev", Value::Num(v["rev"].as_u64().unwrap_or(0) as f64)),
+                    ("sent", Value::Bool(false)),
+                    ("dismissed", Value::Bool(false)),
+                    ("chat", Value::from(chat.as_str())),
+                ];
+                if let Some(device) = &device {
+                    fields.push(("device", Value::from(device.as_str())));
+                }
+                Some(Value::record(fields))
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    )
 }
 
 fn refs_value(found: &Json) -> Value {

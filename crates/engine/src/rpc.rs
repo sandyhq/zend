@@ -673,6 +673,12 @@ struct ReadVisualParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ListOpenVisualsParams {
+    chat_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MarkVisualSentParams {
     /// The visual's script, as its part names it.
     path: String,
@@ -2803,6 +2809,7 @@ fn forwardable(method: &str) -> bool {
             // A visual's entries live beside its script on the chat's host.
             | methods::SAVE_VISUAL_ENTRIES
             | methods::MARK_VISUAL_SENT
+            | methods::LIST_OPEN_VISUALS
             // A command's whole output lives in its host's run journal.
             | methods::READ_TOOL_OUTPUT
             | methods::READ_TOOL_EXCHANGE
@@ -6167,6 +6174,26 @@ impl RpcService for EngineRpc {
                 let mut told = crate::live_visuals::describe(&meta, &entries);
                 told["note"] = crate::live_visuals::ENTRIES_NOTE.into();
                 RpcReply::value(&told)
+            }
+            methods::LIST_OPEN_VISUALS => {
+                let p: ListOpenVisualsParams = parse_params(params)?;
+                let mut open: Vec<crate::live_visuals::VisualMeta> =
+                    self.chat_visuals(&p.chat_id).into_iter().filter(|m| m.is_open()).collect();
+                open.sort_by(|a, b| b.shown_at.cmp(&a.shown_at).then_with(|| a.id.cmp(&b.id)));
+                let visuals: Vec<serde_json::Value> = open
+                    .iter()
+                    .filter_map(|m| {
+                        let (path, _) = self.uploads.visual_script(&m.id)?;
+                        Some(serde_json::json!({
+                            "id": m.id,
+                            "title": m.title,
+                            "rev": m.rev,
+                            "path": path,
+                            "shownAt": m.shown_at,
+                        }))
+                    })
+                    .collect();
+                RpcReply::value(&serde_json::json!({ "visuals": visuals }))
             }
             methods::MARK_VISUAL_SENT => {
                 let p: MarkVisualSentParams = parse_params(params)?;
