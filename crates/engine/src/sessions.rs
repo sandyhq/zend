@@ -1934,14 +1934,7 @@ impl SessionsEngine {
     /// The [`StopGate`] for the message `message_id` on its way to chat
     /// `chat_id`'s agent: what the disk says is read now, outside any lock.
     fn stop_gate(&self, chat_id: &str, message_id: &str) -> StopGate {
-        StopGate {
-            chat_id: chat_id.to_owned(),
-            message_id: message_id.to_owned(),
-            on_disk: self
-                .inner
-                .doc_host()
-                .is_some_and(|host| host.stop_claimed(chat_id, message_id)),
-        }
+        self.inner.stop_gate(chat_id, message_id)
     }
 
     /// Test hook: the routed message `message_id` waits after its handover
@@ -3905,6 +3898,33 @@ fn note_handed(handed: &Mutex<std::collections::HashSet<String>>, message_id: &s
 /// lock) and handing it to a live runtime (a routed send, a steer, a queue
 /// row sent now, a steer redelivered; under the runtime's ledger lock).
 /// Made by [`SessionsEngine::stop_gate`] before the lock is taken.
+impl Inner {
+    /// [`StopGate`] for the message `message_id` of chat `chat_id`.
+    fn stop_gate(&self, chat_id: &str, message_id: &str) -> StopGate {
+        StopGate {
+            chat_id: chat_id.to_owned(),
+            message_id: message_id.to_owned(),
+            on_disk: self
+                .doc_host()
+                .is_some_and(|host| host.stop_claimed(chat_id, message_id)),
+        }
+    }
+}
+
+/// A run that ends before its agent starts: a Stop got there first.
+fn interrupted_stream()
+-> futures::stream::BoxStream<'static, Result<AgentEvent, zend_harness::HarnessError>> {
+    futures::stream::once(async {
+        Ok(AgentEvent::Done {
+            status: DoneStatus::Interrupted,
+            result: None,
+            error: None,
+            session_id: None,
+        })
+    })
+    .boxed()
+}
+
 struct StopGate {
     chat_id: String,
     message_id: String,
@@ -4696,37 +4716,55 @@ async fn drive_run(
                 );
                 // Host-resolved spawn env (a Cloud device's credential broker);
                 // `RunRequest::env` is serde-skipped, never persisted.
-                let prepared = inner
-                    .registry
-                    .prepare_run(harness_id, Some(&chat_id), &mut wire_request)
-                    .await;
-                if prepared.is_ok() {
-                    // Preparing can decide the chat's account (a plugin's
-                    // `run.preparing` pin): the session parks on what it
-                    // really started with, not on what dispatch read before.
-                    let now = inner.registry.run_credential(harness_id, Some(&chat_id)).await;
-                    if let Some(h) = lock(&inner.runs).get_mut(&chat_id).filter(|h| h.run_id == run_id) {
-                        h.credential = now;
-                    }
-                }
+                // A Stop during it ends the run here: the preparation is
+                // dropped, not waited for, so a stuck one can't hold the Stop.
+                let interrupt = controls.interrupt.clone();
+                let prepared = tokio::select! {
+                    biased;
+                    _ = interrupt.cancelled() => None,
+                    prepared = async {
+                        let prepared = inner
+                            .registry
+                            .prepare_run(harness_id, Some(&chat_id), &mut wire_request)
+                            .await;
+                        if prepared.is_ok() {
+                            // Preparing can decide the chat's account (a plugin's
+                            // `run.preparing` pin): the session parks on what it
+                            // really started with, not on what dispatch read before.
+                            let now = inner.registry.run_credential(harness_id, Some(&chat_id)).await;
+                            if let Some(h) = lock(&inner.runs).get_mut(&chat_id).filter(|h| h.run_id == run_id) {
+                                h.credential = now;
+                            }
+                        }
+                        prepared
+                    } => Some(prepared),
+                };
+                // The last step before the agent gets the message: a Stop
+                // that claimed it since its registration (killing this run,
+                // or moot and only naming it) keeps it from the harness.
+                let stopped = prepared.is_none()
+                    || interrupt.is_cancelled()
+                    || (!resume_state.idle
+                        && !inner
+                            .stop_gate(&chat_id, &resume_state.user_message_id)
+                            .lets_through(&inner));
                 match prepared {
-                    Ok(()) if resume_state.idle => harness.start_idle(wire_request, controls).await,
-                    Ok(()) => {
+                    _ if stopped => {
+                        tracing::info!(chat = %chat_id, "message claimed by a Stop: not handed to the harness");
+                        Ok(interrupted_stream())
+                    }
+                    Some(Ok(())) if resume_state.idle => {
+                        harness.start_idle(wire_request, controls).await
+                    }
+                    Some(Ok(())) => {
                         crate::wake_trace::mark(crate::wake_trace::Stage::AgentSpawn);
                         harness.run(wire_request, controls).await
                     }
-                    Err(message) => Err(zend_harness::HarnessError::NotSignedIn(message)),
+                    Some(Err(message)) => Err(zend_harness::HarnessError::NotSignedIn(message)),
+                    None => unreachable!("a dropped preparation is stopped"),
                 }
             } else {
-                Ok(futures::stream::once(async {
-                    Ok(AgentEvent::Done {
-                        status: DoneStatus::Interrupted,
-                        result: None,
-                        error: None,
-                        session_id: None,
-                    })
-                })
-                .boxed())
+                Ok(interrupted_stream())
             }
         }
         Err(error) => Err(error),

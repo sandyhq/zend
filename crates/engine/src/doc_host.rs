@@ -6519,7 +6519,11 @@ impl DocHost {
     /// (a revival after a restart too), before its last check under the lock.
     pub(crate) fn stop_claimed(&self, chat_id: &str, message_id: &str) -> bool {
         let processed = |key: String| self.inner.store.is_processed(&key).unwrap_or(false);
-        if processed(stop_cancel_key(chat_id, message_id)) {
+        // Named, or the very row a Stop was aimed at: both hold without a
+        // row here (a host behind the sender's transcript).
+        if processed(stop_cancel_key(chat_id, message_id))
+            || processed(stop_seen_key(chat_id, message_id))
+        {
             return true;
         }
         let Ok(handle) = self.open(chat_id) else {

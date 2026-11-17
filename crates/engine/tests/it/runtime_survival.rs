@@ -1943,3 +1943,242 @@ async fn the_idle_reaper_spares_a_runtime_holding_background_work() {
     .await;
     rig.core.sessions.shutdown().await;
 }
+
+/// Holds a run whose prompt contains `prepare-stalled` in its
+/// preparation (after its runtime is registered, before the harness runs)
+/// until the test releases it.
+struct PrepareGate {
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl zend_engine::registry::RunEnvironment for PrepareGate {
+    async fn prepare(
+        &self,
+        _: HarnessId,
+        _: Option<&str>,
+        request: &mut RunRequest,
+    ) -> Result<(), String> {
+        if request.prompt.contains("prepare-stalled") {
+            self.reached.notify_one();
+            self.release.notified().await;
+        }
+        Ok(())
+    }
+}
+
+/// GPT review 7: a send registers its runtime, then waits in its
+/// preparation (a credential broker, a plugin's `run.preparing`). A Stop
+/// naming it lands then. The Stop must not wait for the stuck preparation,
+/// and the send must not reach the harness once it is let go.
+#[tokio::test]
+async fn a_send_a_stop_claims_while_it_prepares_never_reaches_the_harness() {
+    let rig = rig();
+    let gate = Arc::new(PrepareGate {
+        reached: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    rig.core.registry.set_run_environment(gate.clone());
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: prepare-stalled"),
+            Some("m-prepared".into()),
+        )
+        .await
+        .unwrap();
+    gate.reached.notified().await;
+    assert!(
+        rig.core.sessions.turn_starting(CHAT),
+        "registered, not started"
+    );
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 0);
+
+    let started = std::time::Instant::now();
+    let result = ingest(
+        &rig,
+        relayed_stop(
+            "stop-prepare",
+            now(),
+            "m-prepared".into(),
+            Some(&["m-prepared"]),
+        ),
+    )
+    .await;
+    let took = started.elapsed();
+    assert_eq!(result, "executed");
+
+    gate.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let spawns = rig.ledger.spawns.load(Ordering::SeqCst);
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        spawns, 0,
+        "the named send reached the harness after the Stop: {prompts:?}"
+    );
+    assert!(prompts.is_empty());
+    // The preparation is dropped on the Stop, not waited for: before, the
+    // Stop sat out the run's whole 5 s settle wait behind it.
+    assert!(
+        took < Duration::from_secs(2),
+        "the Stop waited {took:?} on a stuck preparation"
+    );
+}
+
+/// GPT review 7: a Stop aimed at a row this host doesn't have yet (the
+/// sender's transcript is ahead) claims that row from its disk key alone.
+/// The row's queue item, delivered after a restart and sent now into a
+/// newer runtime, must not reach it. `anchor_arrives`: the sender's
+/// transcript lands first (the control, which held before too).
+async fn a_stop_aimed_at_a_queue_row(anchor_arrives: bool) {
+    let rig = rig();
+    start_hold(&rig).await;
+    let id = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "hold: seen on sender missing on host", vec![])
+        .unwrap();
+    // Delivered late: taken off the host's queue, put back after the restart.
+    let queued = rig
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .take_queued(&id)
+        .unwrap()
+        .unwrap();
+    rig.core.sessions.interrupt(CHAT).await.unwrap();
+
+    // The sender's own engine sends the row (held before its runtime), so
+    // its transcript ends on it; the Stop is built from that transcript.
+    let sender = rig_full(false, false);
+    let snapshot = rig
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .export_snapshot()
+        .unwrap();
+    sender
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .import(&snapshot)
+        .unwrap();
+    sender.ledger.binary_gate.store(true, Ordering::SeqCst);
+    let sender_sessions = sender.core.sessions.clone();
+    let sender_id = id.clone();
+    let sent = tokio::spawn(async move {
+        sender_sessions
+            .dispatch(
+                CHAT,
+                HarnessId::Mock,
+                request("hold: sender saw"),
+                Some(sender_id),
+            )
+            .await
+            .unwrap()
+    });
+    wait_for(
+        || sender.ledger.binary_reached.load(Ordering::SeqCst) > 0,
+        "the sender's row before its runtime",
+    )
+    .await;
+    assert_eq!(last_row(&sender), id);
+    let stop = relayed_stop("seen-stop", now(), last_row(&sender), Some(&[]));
+    *sender.ledger.binary_release.0.lock().unwrap() = true;
+    sender.ledger.binary_release.1.notify_all();
+    sent.await.unwrap();
+    wait_for(
+        || sender.ledger.prompts.lock().unwrap().len() == 1,
+        "the sender's run",
+    )
+    .await;
+    sender.core.sessions.shutdown().await;
+    sender.core.doc_host.shutdown_workers().await;
+
+    // The host gets the Stop (moot here: no row for it), then restarts.
+    ingest(&rig, stop).await;
+    rig.core.doc_host.flush_all();
+    rig.core.sessions.shutdown().await;
+    rig.core.doc_host.shutdown_workers().await;
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ProcessHarness {
+        ledger: rig.ledger.clone(),
+        adopts_config: false,
+        turn_boundary: false,
+    }));
+    let Rig { core, ledger, _dir } = rig;
+    drop(core);
+    let core =
+        EngineCore::assemble(_dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    let rig = Rig { core, ledger, _dir };
+
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: newer after Stop"),
+            Some("m-newer".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() >= 2,
+        "the newer runtime",
+    )
+    .await;
+    assert!(!has_row(&rig, &id));
+    if anchor_arrives {
+        let snapshot = sender
+            .core
+            .doc_host
+            .open(CHAT)
+            .unwrap()
+            .doc()
+            .export_snapshot()
+            .unwrap();
+        rig.core
+            .doc_host
+            .open(CHAT)
+            .unwrap()
+            .doc()
+            .import(&snapshot)
+            .unwrap();
+    }
+    rig.core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .push_queued(&queued)
+        .unwrap();
+    rig.core.doc_host.steer_queued_now(CHAT, &id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        prompts.len(),
+        2,
+        "the row the Stop was aimed at reached the agent: {prompts:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_queue_row_a_stop_was_aimed_at_is_not_steered_in_after_a_restart() {
+    a_stop_aimed_at_a_queue_row(false).await;
+}
+
+#[tokio::test]
+async fn a_queue_row_a_stop_was_aimed_at_stays_claimed_once_its_row_lands() {
+    a_stop_aimed_at_a_queue_row(true).await;
+}
