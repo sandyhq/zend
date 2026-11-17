@@ -6,7 +6,9 @@
 //! types) are accepted, and unknown item types map to nothing.
 
 use serde_json::Value;
-use zend_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall, ToolDiff};
+use zend_proto::{
+    AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall, ToolDiff, ToolReview, ToolReviewStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
