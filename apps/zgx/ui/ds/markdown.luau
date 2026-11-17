@@ -783,6 +783,10 @@ local function runs_now(list: { MarkdownRun }, style: { [string]: any }?, ctx: C
 					return Links.take(target)
 				end
 			elseif open then
+				-- (Its href only names it a link, for its role: zgx opens
+				-- none but web and mail links itself, and this click is the
+				-- app's.)
+				span.href = target
 				span.on_click = function()
 					open(target)
 				end
