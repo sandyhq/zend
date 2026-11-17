@@ -8187,15 +8187,9 @@ mod tests {
         view.pending.borrow_mut().insert(
             "c".into(),
             vec![Pending {
-                id: "u1".into(),
-                words: "go".into(),
-                paths: Vec::new(),
-                waiting: "sending",
-                retry: None,
                 at: None,
-                held: false,
-                row: false,
-                transfers: Vec::new(),
+                sent_ms: 1_762_000_000_001,
+                ..Pending::new("u1".into(), "go".into(), Vec::new())
             }],
         );
         let ids = || -> Vec<String> {
