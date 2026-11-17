@@ -633,6 +633,9 @@ pub struct SessionDoc {
     entry_bytes: std::sync::atomic::AtomicUsize,
     command_bytes: std::sync::atomic::AtomicUsize,
     change: ChangeLock,
+    /// The transcript's rows as the doc's ops tell them, for
+    /// [`Self::version_holds_message`]: each op read once.
+    row_history: std::sync::Mutex<crate::row_history::RowHistory>,
     _entry_events: loro::Subscription,
 }
 
@@ -666,6 +669,7 @@ impl SessionDoc {
             entry_bytes: Default::default(),
             command_bytes: Default::default(),
             change: ChangeLock::default(),
+            row_history: Default::default(),
             _entry_events,
         }
     }
@@ -1021,6 +1025,67 @@ impl SessionDoc {
         }
         self.commit();
         Ok(())
+    }
+
+    /// This doc's version as a Stop carries it, to say what its sender saw
+    /// ([`crate::CommandBasedOn::frontier`]): the version of the state the
+    /// doc shows, so the transcript read with it has that version's rows
+    /// and no other (a doc checked out at an older version shows, and
+    /// says, the older one). Read both under [`Self::settled`].
+    pub fn version_for_command(&self) -> String {
+        let version = self
+            .doc
+            .try_state_vv()
+            .unwrap_or_else(|_| self.doc.oplog_vv());
+        crate::encode_version(&version)
+    }
+
+    /// Run `read` with no change of the doc between its ops and its
+    /// events: what `read` reads from the doc is of one version, and every
+    /// change up to it has been told to the doc's subscribers.
+    pub fn settled<R>(&self, read: impl FnOnce() -> R) -> R {
+        let _change = self.change.lock();
+        if self.pending_changes() > 0 {
+            LoroDoc::commit(&self.doc);
+        }
+        read()
+    }
+
+    /// Whether the transcript at `version` had a row with the id
+    /// `message_id`: the op that gave a row that id is in `version`, and no
+    /// op that removed the row is. Told from the doc's ops, so it holds for
+    /// a row removed since (a rewind), and for one whose map was there
+    /// before it had an id. Costs a lookup, and reading the ops the doc
+    /// gained since the last call.
+    pub fn version_holds_message(&self, version: &loro::VersionVector, message_id: &str) -> bool {
+        self.row_history().holds(version, message_id)
+    }
+
+    /// The ids of every row the transcript at `version` had
+    /// ([`Self::version_holds_message`]).
+    pub fn messages_in_version(
+        &self,
+        version: &loro::VersionVector,
+    ) -> std::collections::HashSet<String> {
+        self.row_history().held(version)
+    }
+
+    /// The rows that the rows with the id `message_id` continue, removed
+    /// rows too.
+    pub fn message_continues(&self, message_id: &str) -> Vec<String> {
+        self.row_history().continues(message_id)
+    }
+
+    /// [`Self::row_history`], caught up with the oplog. (Not from inside
+    /// one of this doc's import events: reading the ops asks Loro for its
+    /// transaction, which that import holds. The next call catches up.)
+    fn row_history(&self) -> std::sync::MutexGuard<'_, crate::row_history::RowHistory> {
+        let _change = self.change.lock();
+        let mut history = self.row_history.lock().unwrap_or_else(|e| e.into_inner());
+        if !Importing::here(self) {
+            history.catch_up(&self.doc);
+        }
+        history
     }
 
     /// Read all entries (continuations NOT joined — see `join_continuation_entries`).

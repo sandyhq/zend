@@ -751,6 +751,54 @@ async fn a_stopped_turn_is_not_revived_after_shutdown() {
     core.shutdown().await;
 }
 
+/// A turn a Stop named is not brought back after a restart: the revival reads
+/// the Stop's names from disk (G3 attempt 4). A moot Stop stands in for one
+/// that noted its names and then lost its kill to a crash: it names the
+/// running turn's message and kills nothing.
+#[tokio::test]
+async fn a_turn_a_stop_named_is_not_revived_after_shutdown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = data_dir(&tmp);
+    let core = hold_a_turn(&dir, false).await;
+    let stop = zend_doc::SessionCommandEntry {
+        id: "stop".into(),
+        payload: SessionCommandPayload::Interrupt {
+            cancels: Some(vec!["msg-user-1".into()]),
+        },
+        issued_by: "device-elsewhere".into(),
+        issued_at: chrono::Utc::now().timestamp_millis(),
+        based_on: Some(zend_doc::CommandBasedOn {
+            turn_id: Some("a-rewound-turn".into()),
+            frontier: None,
+        }),
+        expires_at: None,
+        status: zend_doc::SessionCommandStatus::Pending,
+        resolution: None,
+    };
+    let status = core
+        .doc_host
+        .ingest_relayed_command(CHAT, stop)
+        .await
+        .unwrap();
+    assert_eq!(status, "superseded", "the Stop is moot: its turn is gone");
+    assert_eq!(
+        core.sessions.session_status(CHAT).map(|s| s.status),
+        Some(SessionStatus::Working),
+        "and kills nothing"
+    );
+    core.shutdown().await;
+    drop(core);
+
+    let requests: RequestLog = Default::default();
+    let core = assemble(&dir, ScriptedHarness::completing(&requests, "hs-held"));
+    settle().await;
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "the turn the Stop named was revived"
+    );
+    core.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_shutdown_while_waiting_for_an_answer_is_not_revived() {
     let tmp = tempfile::tempdir().unwrap();

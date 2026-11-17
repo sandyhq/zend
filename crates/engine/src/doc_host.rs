@@ -369,6 +369,155 @@ struct DocHostInner {
     store_looks: Mutex<HashMap<String, attachment_store::StoreLook>>,
 }
 
+/// Whether the turn a Stop was aimed at, `turn_id` (its sender's last row),
+/// is over, so the Stop is moot. A Stop that names its sends (`cancels`) is
+/// decided causally: the turn is over once a user row after `turn_id` is one
+/// its sender neither had nor named, the person's next message, sent after
+/// the Stop or not known to it. What it named, and the replies they bring,
+/// are what it stops: a steer that lands first never makes it moot
+/// (2026-11-17), and no clock is compared. A `turn_id` that is gone (a
+/// rewind removed it) was a turn that is over too. A Stop of an older engine
+/// keeps the turn rule: any row after `turn_id`, and a missing one isn't over.
+fn stop_turn_is_past(
+    messages: &[Arc<SessionMessageEntry>],
+    stop: &SessionCommandEntry,
+    turn_id: &str,
+) -> bool {
+    let cancels = stop.stop_cancels();
+    let Some(at) = messages.iter().position(|m| m.id == turn_id) else {
+        return cancels.is_some();
+    };
+    let Some(cancels) = cancels else {
+        return true;
+    };
+    let named = |id: &str| cancels.iter().any(|c| c == id);
+    messages[at + 1..].iter().any(|m| {
+        m.role == MessageRole::User
+            && !named(&m.id)
+            && !m.continuation_of.as_deref().is_some_and(named)
+    })
+}
+
+/// Whether the Stop `stop` is moot now: aimed at a turn that is over, as
+/// [`evaluate_command`] judges it against the transcript `messages`.
+fn stop_is_moot(messages: &[Arc<SessionMessageEntry>], stop: &SessionCommandEntry) -> bool {
+    let Some(turn_id) = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref()) else {
+        return false;
+    };
+    messages.last().map(|m| m.id.as_str()) != Some(turn_id)
+        && stop_turn_is_past(messages, stop, turn_id)
+}
+
+/// The doc version the sender of the Stop `stop` had as it built it
+/// (`based_on.frontier`), for a Stop that names its sends; `None` for a
+/// Stop of an engine before 2026-11-18, which judges what its sender saw
+/// by the transcript's order instead.
+fn stop_version(stop: &SessionCommandEntry) -> Option<loro::VersionVector> {
+    stop.stop_cancels()?;
+    stop.based_on.as_ref()?.sender_version()
+}
+
+/// What the Stop `stop`, naming `named`, may stop: its names, the rows its
+/// sender had, and the rows that continue either. A runtime handed anything
+/// else is running a turn the Stop's sender never saw.
+///
+/// The rows its sender had are those its version holds ([`stop_version`],
+/// [`SessionDoc::messages_in_version`]): the op that gave a row its id is
+/// in it or not, wherever the merge put the row, and a row removed since
+/// was still one it had.
+/// A Stop without a version says only the row it was aimed at: the rows
+/// up to that one, in this host's order.
+fn stop_known_messages(
+    doc: &SessionDoc,
+    messages: &[Arc<SessionMessageEntry>],
+    stop: &SessionCommandEntry,
+    named: &[String],
+) -> std::collections::HashSet<String> {
+    let mut known: std::collections::HashSet<String> = named.iter().cloned().collect();
+    match stop_version(stop) {
+        Some(version) => known.extend(doc.messages_in_version(&version)),
+        None => {
+            let turn_id = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref());
+            let upto = turn_id
+                .and_then(|turn| messages.iter().position(|m| m.id == turn))
+                .map_or(0, |at| at + 1);
+            known.extend(messages[..upto].iter().map(|m| m.id.clone()));
+        }
+    }
+    loop {
+        let before = known.len();
+        for m in messages {
+            if m.continuation_of
+                .as_deref()
+                .is_some_and(|of| known.contains(of))
+            {
+                known.insert(m.id.clone());
+            }
+        }
+        if known.len() == before {
+            return known;
+        }
+    }
+}
+
+/// The processed-ledger key that says a Stop named the send `message_id` of
+/// chat `chat_id`: kept on disk, so the send is cancelled whenever it
+/// arrives, across a restart too.
+fn stop_cancel_key(chat_id: &str, message_id: &str) -> String {
+    format!("stop-cancel:{chat_id}:{message_id}")
+}
+
+/// The processed-ledger key that says a Stop aimed at the row `turn_id` of
+/// chat `chat_id` reached this host: its sender had every row up to that
+/// one, and none of them starts after it ([`stop_saw`]). A Stop without
+/// its sender's version only.
+fn stop_seen_key(chat_id: &str, turn_id: &str) -> String {
+    format!("stop-seen:{chat_id}:{turn_id}")
+}
+
+/// The processed-ledger key that says a Stop carrying its sender's version
+/// was aimed at the row `turn_id`: that row is claimed even before it is on
+/// this host, where the op that gave it its id isn't known yet. Read for
+/// that row alone.
+fn stop_aimed_key(chat_id: &str, turn_id: &str) -> String {
+    format!("stop-aimed:{chat_id}:{turn_id}")
+}
+
+/// The processed-ledger key that keeps the version a Stop's sender had
+/// (`version`, as `based_on.frontier` carries it): every row it holds is
+/// claimed. The ledger keeps keys only, so the version is in the key; one
+/// range read finds a chat's ([`DocHost::stop_versions`]). A Stop that came
+/// by relay isn't in this host's doc until it syncs: this is its version
+/// across a restart before then.
+fn stop_version_key(chat_id: &str, stop_id: &str, version: &str) -> String {
+    format!("stop-version:{chat_id}:{stop_id}:{version}")
+}
+
+/// Whether a Stop's sender had the row `message_id`: a Stop was aimed at
+/// it or at a row after it (`aimed_at` says which rows a Stop was aimed
+/// at), or at the row it continues. False when it has no row.
+fn stop_saw(
+    messages: &[Arc<SessionMessageEntry>],
+    message_id: &str,
+    aimed_at: impl Fn(&str) -> bool,
+) -> bool {
+    let mut id = message_id;
+    let mut visited = std::collections::HashSet::new();
+    while visited.insert(id) {
+        let Some(at) = messages.iter().position(|m| m.id == id) else {
+            return false;
+        };
+        if messages[at..].iter().any(|m| aimed_at(&m.id)) {
+            return true;
+        }
+        match messages[at].continuation_of.as_deref() {
+            Some(of) => id = of,
+            None => return false,
+        }
+    }
+    false
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -4292,10 +4441,38 @@ impl DocHost {
         }
         let id = new_id();
         let now = now_ms();
-        let based_on = handle.doc.read_entries_shared()?.last().map(|m| CommandBasedOn {
+        // A Stop says what it saw: the doc's version, read with the
+        // transcript it is built from, no change between the two (the
+        // version holds that transcript's rows and no other).
+        let stop = matches!(payload, SessionCommandPayload::Interrupt { .. });
+        let (messages, version) = handle.doc.settled(|| {
+            let messages = handle.doc.read_entries_shared();
+            (messages, stop.then(|| handle.doc.version_for_command()))
+        });
+        let messages = messages?;
+        let mut based_on = messages.last().map(|m| CommandBasedOn {
             turn_id: Some(m.id.clone()),
             frontier: None,
         });
+        if let Some(version) = version {
+            based_on
+                .get_or_insert_with(CommandBasedOn::default)
+                .frontier = Some(version);
+        }
+        // A Stop names the sends it stops: those still on their way, unless
+        // its caller named them.
+        let payload = match payload {
+            SessionCommandPayload::Interrupt { cancels: None } => {
+                let landed: HashSet<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+                let commands = handle.doc.read_commands()?;
+                SessionCommandPayload::Interrupt {
+                    cancels: Some(zend_doc::sends_on_their_way(&commands, &|id| {
+                        landed.contains(id)
+                    })),
+                }
+            }
+            payload => payload,
+        };
         let is_message = matches!(
             payload,
             SessionCommandPayload::Run { .. } | SessionCommandPayload::Steer { .. }
@@ -5066,15 +5243,13 @@ impl DocHost {
             let Ok(commands) = handle.doc.read_commands() else {
                 return;
             };
+            // A Stop that names its sends waits for none (its names keep
+            // them from the agent); this is a Stop of an older engine.
             let Some(at) = commands.iter().position(|c| c.id == stop_id) else {
                 return;
             };
             let earlier_prompt = commands[..at].iter().any(|c| {
-                c.status == SessionCommandStatus::Pending
-                    && matches!(
-                        c.payload,
-                        SessionCommandPayload::Run { .. } | SessionCommandPayload::Steer { .. }
-                    )
+                c.status == SessionCommandStatus::Pending && c.sent_message_id().is_some()
             });
             if !earlier_prompt {
                 return;
@@ -5124,6 +5299,16 @@ impl DocHost {
         handle: &Arc<ChatDocHandle>,
     ) -> Result<bool, EngineError> {
         let _drain = handle.drain_lock.lock().await;
+        self.interrupt_and_pause_queue_locked(sessions, handle)
+            .await
+    }
+
+    /// [`Self::interrupt_and_pause_queue`] for a caller holding `drain_lock`.
+    async fn interrupt_and_pause_queue_locked(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+    ) -> Result<bool, EngineError> {
         if !sessions.turn_in_flight(&handle.chat_id)
             && !sessions.holds_background_work(&handle.chat_id)
         {
@@ -5137,6 +5322,55 @@ impl DocHost {
             Ok(false) => {
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok(false)
+            }
+            Err(err) => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Err(err)
+            }
+        }
+    }
+
+    /// A Stop that names its sends stops the chat's live runtime, unless it
+    /// was handed a message the Stop's sender never saw: `known` holds what
+    /// the Stop may stop (its names, the rows up to its turn, and what
+    /// continues them). Decided and done in one step in sessions
+    /// ([`SessionsEngine::interrupt_if`]), so no turn reaches the runtime in
+    /// between. `None`: it was left alone.
+    async fn interrupt_named(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<Option<bool>, EngineError> {
+        if !sessions.turn_in_flight(&handle.chat_id)
+            && !sessions.holds_background_work(&handle.chat_id)
+            && !sessions.turn_starting(&handle.chat_id)
+        {
+            return Ok(Some(false));
+        }
+        let paused = handle.queue_paused.load(Ordering::Acquire);
+        handle.queue_paused.store(true, Ordering::Release);
+        match sessions
+            .interrupt_if(
+                &handle.chat_id,
+                |id| known.contains(id),
+                || {
+                    handle
+                        .queue_frozen_by_recovery
+                        .store(false, Ordering::Release);
+                    self.cancel_held_sends(handle);
+                },
+            )
+            .await
+        {
+            Ok(Some(true)) => Ok(Some(true)),
+            Ok(None) => {
+                handle.queue_paused.store(paused, Ordering::Release);
+                Ok(None)
+            }
+            Ok(Some(false)) => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Ok(Some(false))
             }
             Err(err) => {
                 handle.queue_paused.store(false, Ordering::Release);
@@ -5214,7 +5448,8 @@ impl DocHost {
                 )
                 .await?
             {
-                SteerOutcome::Accepted => return Ok(()),
+                // A Stop named it: it stays in the transcript, unrun.
+                SteerOutcome::Accepted | SteerOutcome::Cancelled => return Ok(()),
                 SteerOutcome::DeferredByUpdate => {
                     return Err(EngineError::Other(
                         "agent update pending; the message remains queued".into(),
@@ -5691,7 +5926,7 @@ impl DocHost {
         let commands = handle.doc.read_commands()?;
         let messages = handle.doc.read_entries_shared().unwrap_or_default();
         let current_turn_id = messages.last().map(|m| m.id.clone());
-        let turn_is_past = |turn_id: &str| messages.iter().any(|m| m.id == turn_id);
+        let turn_is_past = |turn_id: &str| stop_turn_is_past(&messages, &entry, turn_id);
         let is_processed = |id: &str| self.inner.store.is_processed(id).unwrap_or(false);
         let disposition = evaluate_command(
             &entry,
@@ -5711,6 +5946,7 @@ impl DocHost {
         if !lock(&self.inner.executing).insert(entry.id.clone()) {
             return Ok("duplicate");
         }
+        self.note_stop_cancels(&handle, &entry, false);
         // Claim BEFORE executing (the drain's own mark-before-execute rule).
         let marked = self.inner.store.mark_processed(&entry.id);
         let result = match marked {
@@ -5726,6 +5962,7 @@ impl DocHost {
                     }
                     self.execute(&sessions, &handle, &entry).await
                 } {
+                    Ok((SessionCommandStatus::Superseded, _)) => Ok("superseded"),
                     Ok(_) => Ok("executed"),
                     Err(err) => Err(err),
                 },
@@ -6070,7 +6307,7 @@ impl DocHost {
             };
             let messages = handle.doc.read_entries_shared().unwrap_or_default();
             let current_turn_id = messages.last().map(|m| m.id.clone());
-            let turn_is_past = |turn_id: &str| messages.iter().any(|m| m.id == turn_id);
+            let turn_is_past = |turn_id: &str| stop_turn_is_past(&messages, &entry, turn_id);
             let disposition = evaluate_command(
                 &entry,
                 &EvaluationContext {
@@ -6131,6 +6368,9 @@ impl DocHost {
             if !lock(&self.inner.executing).insert(entry.id.clone()) {
                 skipped.insert(entry.id.clone());
                 continue;
+            }
+            if !matches!(disposition, CommandDisposition::Skip) {
+                self.note_stop_cancels(handle, &entry, true);
             }
             // Mark BEFORE executing: a crash mid-execution must never double-run a
             // command whose side effect may already have happened.
@@ -6332,22 +6572,195 @@ impl DocHost {
         }
     }
 
-    /// `entry` is a prompt sent before the Stop that has already acted on
-    /// this chat: the Stop cancelled it. Returns its message id.
+    /// Whether a Stop claimed the message `message_id` of chat `chat_id`, as
+    /// kept on disk ([`Self::note_stop_cancels`]): it named it, or was aimed
+    /// at its row or a later one. Read by every send on its way to an agent
+    /// (a revival after a restart too), before its last check under the lock.
+    ///
+    /// A Stop carrying its sender's version claims each row that version
+    /// holds ([`SessionDoc::version_holds_message`]: the op that gave the
+    /// row its id is in it; a row removed since is still claimed), and the
+    /// rows continuing one; its version is read from the ledger
+    /// ([`stop_version_key`]) and from the doc's resolved Stops (one another
+    /// host resolved, or this one before a restart). A Stop without one
+    /// claims by position ([`stop_saw`]).
+    pub(crate) fn stop_claimed(&self, chat_id: &str, message_id: &str) -> bool {
+        let processed = |key: String| self.inner.store.is_processed(&key).unwrap_or(false);
+        // Named, or the very row a Stop was aimed at: both hold without a
+        // row here (a host behind the sender's transcript).
+        if processed(stop_cancel_key(chat_id, message_id))
+            || processed(stop_seen_key(chat_id, message_id))
+            || processed(stop_aimed_key(chat_id, message_id))
+        {
+            return true;
+        }
+        let Ok(handle) = self.open(chat_id) else {
+            return false;
+        };
+        let aimed_at: HashSet<String> = self
+            .noted(&stop_seen_key(chat_id, ""))
+            .into_iter()
+            .collect();
+        let versions = self.stop_versions(&handle);
+        if aimed_at.is_empty() && versions.is_empty() {
+            return false;
+        }
+        // A Stop without its sender's version claims by position.
+        if !aimed_at.is_empty() {
+            let messages = handle.doc.read_entries_shared().unwrap_or_default();
+            if stop_saw(&messages, message_id, |row| aimed_at.contains(row)) {
+                return true;
+            }
+        }
+        if versions.is_empty() {
+            return false;
+        }
+        // The row, and the rows it continues. A row not here yet isn't
+        // known by its op: its claim is its key (aimed at or named, above).
+        let mut ids = vec![message_id.to_owned()];
+        let mut visited = HashSet::new();
+        while let Some(id) = ids.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            if versions
+                .iter()
+                .any(|version| handle.doc.version_holds_message(version, &id))
+            {
+                return true;
+            }
+            ids.extend(handle.doc.message_continues(&id));
+        }
+        false
+    }
+
+    /// What the processed ledger holds under `prefix`, the prefix taken off.
+    fn noted(&self, prefix: &str) -> Vec<String> {
+        self.inner
+            .store
+            .processed_with_prefix(prefix)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|key| key.strip_prefix(prefix).map(str::to_owned))
+            .collect()
+    }
+
+    /// The versions the senders of this chat's Stops had: each Stop that
+    /// came by relay ([`stop_version_key`]), and each the doc holds that
+    /// some host resolved or this one claimed (before a restart too).
+    fn stop_versions(&self, handle: &ChatDocHandle) -> Vec<loro::VersionVector> {
+        let noted = self
+            .noted(&format!("stop-version:{}:", handle.chat_id))
+            .into_iter()
+            .filter_map(|rest| {
+                let (_, version) = rest.rsplit_once(':')?;
+                zend_doc::decode_version(version)
+            });
+        let resolved = handle
+            .doc
+            .read_commands()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|c| {
+                let version = stop_version(&c)?;
+                (c.status != SessionCommandStatus::Pending
+                    || self.inner.store.is_processed(&c.id).unwrap_or(false))
+                .then_some(version)
+            });
+        noted.chain(resolved).collect()
+    }
+
+    /// A Stop that names its sends (`cancels`) has reached this host: those
+    /// sends are cancelled, whether the Stop goes on to act, is moot (the
+    /// person wrote again since) or gives way to a newer Stop. What it names
+    /// is kept in the processed ledger, on disk, before the Stop is claimed,
+    /// so a send arriving later, by relay or by sync, after a restart too,
+    /// never runs; and in sessions, where a named send already on its way
+    /// (its row written or not) checks it as the last step before the agent
+    /// gets it, atomically with starting its runtime or being handed to a
+    /// live one. The Stop waits for none of them.
+    ///
+    /// The same holds for what its sender saw: every row up to the turn the
+    /// Stop was aimed at. One of those not with an agent yet (its row
+    /// written, its dispatch on its way) never gets there either. On disk
+    /// that is one key for the row it was aimed at ([`stop_seen_key`]), read
+    /// by position ([`stop_saw`]); in sessions, the rows themselves. A Stop
+    /// that carries its sender's version keeps the row it was aimed at
+    /// ([`stop_aimed_key`]), and its version is read from its entry in the
+    /// doc; one that came by relay (`in_doc` false) isn't there until it
+    /// syncs, so its version goes to the ledger ([`stop_version_key`]).
+    fn note_stop_cancels(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        stop: &SessionCommandEntry,
+        in_doc: bool,
+    ) {
+        let Some(named) = stop.stop_cancels() else {
+            return;
+        };
+        let aimed_at = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref());
+        // With its sender's version, that is what it saw; without, the row
+        // it was aimed at says so, by position.
+        let version = stop_version(stop)
+            .is_some()
+            .then(|| stop.based_on.as_ref()?.frontier.as_deref())
+            .flatten();
+        let keys = named
+            .iter()
+            .map(|id| stop_cancel_key(&handle.chat_id, id))
+            .chain(aimed_at.map(|turn| match version {
+                Some(_) => stop_aimed_key(&handle.chat_id, turn),
+                None => stop_seen_key(&handle.chat_id, turn),
+            }))
+            .chain(
+                version
+                    .filter(|_| !in_doc)
+                    .map(|v| stop_version_key(&handle.chat_id, &stop.id, v)),
+            );
+        for key in keys {
+            if let Err(err) = self.inner.store.mark_processed(&key) {
+                tracing::warn!(chat = %handle.chat_id, error = %err, "stop cancel write failed");
+            }
+        }
+        if let Some(sessions) = self.sessions() {
+            // Read after the disk write: a send whose disk check came before
+            // it wrote its row before that check, so its row is in here.
+            let messages = handle.doc.read_entries_shared().unwrap_or_default();
+            let mut claimed = stop_known_messages(&handle.doc, &messages, stop, named);
+            claimed.extend(aimed_at.map(str::to_owned));
+            sessions.cancel_sent_messages(&handle.chat_id, claimed.into_iter().collect());
+        }
+    }
+
+    /// `entry` is a prompt sent before a Stop that has already acted on
+    /// this chat: the Stop cancelled it. Returns its message id. A Stop that
+    /// names its sends cancels exactly those, whichever arrives first
+    /// ([`Self::note_stop_cancels`]; the ledger's resolved Stops count too,
+    /// for one another host resolved). A Stop of an older engine cancels what
+    /// is before it in the ledger.
     fn cancelled_by_stop(
         &self,
         handle: &Arc<ChatDocHandle>,
         entry: &SessionCommandEntry,
     ) -> Option<String> {
-        let message_id = match &entry.payload {
-            SessionCommandPayload::Run { message_id, .. } => message_id.clone(),
-            SessionCommandPayload::Steer { message_id, .. } => {
-                message_id.clone().unwrap_or_else(|| entry.id.clone())
-            }
-            _ => return None,
-        };
-        let stop = lock(&handle.stopped_by).clone()?;
+        let message_id = entry.sent_message_id()?.to_owned();
+        if self
+            .inner
+            .store
+            .is_processed(&stop_cancel_key(&handle.chat_id, &message_id))
+            .unwrap_or(false)
+        {
+            return Some(message_id);
+        }
         let commands = handle.doc.read_commands().ok()?;
+        if commands.iter().any(|c| {
+            c.status != SessionCommandStatus::Pending
+                && c.stop_cancels()
+                    .is_some_and(|named| named.contains(&message_id))
+        }) {
+            return Some(message_id);
+        }
+        let stop = lock(&handle.stopped_by).clone()?;
         let at = commands.iter().position(|c| c.id == entry.id)?;
         let stop_at = commands.iter().position(|c| c.id == stop)?;
         (at < stop_at).then_some(message_id)
@@ -6533,7 +6946,39 @@ impl DocHost {
                 )
                 .await
             }
-            SessionCommandPayload::Interrupt {} => {
+            SessionCommandPayload::Interrupt {
+                cancels: Some(named),
+            } => {
+                // Its names were noted as it was claimed (note_stop_cancels):
+                // a named send not yet with the agent never gets there, so
+                // the Stop waits for no send. It stops only what is running,
+                // and only a runtime that was handed nothing its sender never
+                // saw (interrupt_named). The queue's lock is tried, bounded,
+                // only so pausing the queue doesn't cross the status watcher:
+                // a wedged queue send must not hold the Stop up.
+                let _drain = tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    handle.drain_lock.lock(),
+                )
+                .await
+                .ok();
+                let messages = handle.doc.read_entries_shared().unwrap_or_default();
+                if stop_is_moot(&messages, entry) {
+                    return Ok((
+                        SessionCommandStatus::Superseded,
+                        Some("a newer message started a turn".into()),
+                    ));
+                }
+                let known = stop_known_messages(&handle.doc, &messages, entry, named);
+                match self.interrupt_named(sessions, handle, &known).await? {
+                    Some(_) => Ok((SessionCommandStatus::Applied, None)),
+                    None => Ok((
+                        SessionCommandStatus::Superseded,
+                        Some("a newer message started a turn".into()),
+                    )),
+                }
+            }
+            SessionCommandPayload::Interrupt { cancels: None } => {
                 self.await_earlier_prompts(sessions, handle, &entry.id)
                     .await;
                 *lock(&handle.stopped_by) = Some(entry.id.clone());
@@ -6767,6 +7212,10 @@ impl DocHost {
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
+            SteerOutcome::Cancelled => Ok((
+                SessionCommandStatus::Applied,
+                Some("cancelled by the Stop sent after it".into()),
+            )),
             SteerOutcome::NotSteerable => {
                 if let Some(message_id) = message_id.as_deref() {
                     handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))?;

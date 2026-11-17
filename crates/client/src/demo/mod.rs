@@ -364,7 +364,7 @@ impl DemoHost {
                         None,
                     );
                 }
-                SessionCommandPayload::Interrupt {} => {
+                SessionCommandPayload::Interrupt { .. } => {
                     if let Some((_, token)) = lock(&self.turns).remove(chat_id) {
                         token.cancel();
                     } else {

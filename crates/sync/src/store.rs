@@ -1137,6 +1137,46 @@ impl DocsStore {
         Ok(inserted)
     }
 
+    /// The claims whose ids start with `prefix`, read by range (the ids are
+    /// the table's key): what was noted under one prefix, all at once.
+    pub fn processed_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        store_blocking(|| self.processed_with_prefix_blocking(prefix))
+    }
+
+    fn processed_with_prefix_blocking(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn();
+        // [prefix, its successor): the ids compare bytewise (BINARY). A
+        // prefix without one (empty, or ending in char::MAX) reads on to
+        // the end, filtered here.
+        let end = prefix.chars().last().and_then(|last| {
+            let next = char::from_u32(last as u32 + 1)?;
+            Some(format!(
+                "{}{next}",
+                &prefix[..prefix.len() - last.len_utf8()]
+            ))
+        });
+        let rows = match end {
+            Some(end) => conn
+                .prepare(
+                    "SELECT command_id FROM processed_commands
+                     WHERE command_id >= ?1 AND command_id < ?2 ORDER BY command_id",
+                )?
+                .query_map(params![prefix, end], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<String>, _>>()?,
+            None => conn
+                .prepare(
+                    "SELECT command_id FROM processed_commands
+                     WHERE command_id >= ?1 ORDER BY command_id",
+                )?
+                .query_map(params![prefix], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<String>, _>>()?,
+        };
+        Ok(rows
+            .into_iter()
+            .filter(|id| id.starts_with(prefix))
+            .collect())
+    }
+
     /// Whether `command_id` has already been claimed for execution.
     pub fn is_processed(&self, command_id: &str) -> Result<bool, StoreError> {
         store_blocking(|| self.is_processed_blocking(command_id))

@@ -14,6 +14,7 @@ pub mod parts;
 pub mod queue;
 pub mod rebuild;
 pub mod registry;
+mod row_history;
 pub mod schema;
 pub mod transcript_delta;
 pub mod voice;

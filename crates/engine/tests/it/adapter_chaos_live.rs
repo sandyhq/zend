@@ -313,7 +313,7 @@ impl Chat<'_> {
         self.suite
             .core
             .doc_host
-            .queue_command(&self.id, SessionCommandPayload::Interrupt {})
+            .queue_command(&self.id, SessionCommandPayload::Interrupt { cancels: None })
             .unwrap();
     }
 

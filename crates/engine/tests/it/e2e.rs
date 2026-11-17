@@ -737,7 +737,7 @@ async fn interrupt_stamps_streaming_entry_aborted() {
     queue_as_viewer(
         handle.doc(),
         "cmd-int-1",
-        SessionCommandPayload::Interrupt {},
+        SessionCommandPayload::Interrupt { cancels: None },
     );
 
     wait_for(
@@ -3567,7 +3567,7 @@ async fn session_row_counts_running_subagents_until_the_run_ends() {
     queue_as_viewer(
         handle.doc(),
         "subagents-interrupt",
-        SessionCommandPayload::Interrupt {},
+        SessionCommandPayload::Interrupt { cancels: None },
     );
     wait_for(
         || core.sessions.session_status(CHAT).map(|s| s.status) == Some(SessionStatus::Idle),

@@ -189,6 +189,9 @@ struct CoreState {
     hydrated: bool,
     transcript_revision: u64,
     composer_revision: u64,
+    /// The doc's version as the tracker last read it
+    /// ([`SessionSnapshot::version`]).
+    transcript_version: Option<Arc<str>>,
 }
 
 pub(crate) struct SessionCore {
@@ -281,6 +284,7 @@ impl SessionCore {
                 hydrated: false,
                 transcript_revision: 0,
                 composer_revision: 0,
+                transcript_version: None,
             }),
             transcript_tx,
             composer: RwLock::new(composer),
@@ -503,7 +507,6 @@ impl SessionCore {
     /// Apply queued doc events + time-driven state; publish what changed.
     pub(crate) fn refresh(&self) {
         let Ok(client) = self.client() else { return };
-        let dirty = std::mem::take(&mut *lock(&self.dirty));
         let now = now_ms();
         let degraded = client.chat_delivery_degraded(&self.chat_id);
         let workspace = client.workspace.snapshot();
@@ -545,7 +548,16 @@ impl SessionCore {
         {
             let mut st = lock(&self.state);
             send_before = oldest_state(&st.pending);
-            let change = st.tracker.refresh(self.doc.doc(), &dirty);
+            // The transcript and the doc version it is read at, with no
+            // change of the doc in between: a Stop says what its sender
+            // saw with that version, so it holds the rows of the published
+            // transcript and no other (one imported since isn't seen).
+            let (dirty, change) = self.doc.settled(|| {
+                let dirty = std::mem::take(&mut *lock(&self.dirty));
+                let change = st.tracker.refresh(self.doc.doc(), &dirty);
+                st.transcript_version = Some(self.doc.version_for_command().into());
+                (dirty, change)
+            });
             if dirty.queue {
                 st.queue = self.doc.read_queue().unwrap_or_default();
             }
@@ -737,12 +749,25 @@ impl SessionCore {
         self.update_state(|st| st.transfer_progress = progress);
     }
 
-    fn last_entry_id(&self) -> Option<String> {
-        self.snapshot()
+    /// A Stop names the sends it stops: those still on their way, their rows
+    /// not in `snapshot`, the transcript its `based_on` is taken from.
+    fn with_stop_cancels(
+        &self,
+        snapshot: &SessionSnapshot,
+        payload: SessionCommandPayload,
+    ) -> SessionCommandPayload {
+        if !matches!(payload, SessionCommandPayload::Interrupt { cancels: None }) {
+            return payload;
+        }
+        let transcript = snapshot
             .entries
-            .get(..self.snapshot().transcript_len)
-            .and_then(|e| e.last())
-            .map(|e| e.id.clone())
+            .get(..snapshot.transcript_len)
+            .unwrap_or_default();
+        let landed = |id: &str| transcript.iter().any(|e| e.id == id);
+        let commands = self.doc.read_commands().unwrap_or_default();
+        SessionCommandPayload::Interrupt {
+            cancels: Some(zend_doc::sends_on_their_way(&commands, &landed)),
+        }
     }
 
     fn queue_command(&self, device_id: &str, payload: SessionCommandPayload) -> Result<String> {
@@ -755,6 +780,17 @@ impl SessionCore {
         device_id: &str,
         payload: SessionCommandPayload,
     ) -> Result<String> {
+        // A Stop says what its sender saw: the version of the transcript
+        // this device shows, the one its names and `based_on` come from.
+        // Not the doc's version now: the doc may hold rows imported since,
+        // which the person pressing Stop hasn't seen.
+        let snapshot = self.snapshot();
+        let payload = self.with_stop_cancels(&snapshot, payload);
+        let stop = matches!(payload, SessionCommandPayload::Interrupt { .. });
+        let turn_id = snapshot.transcript().last().map(|e| e.id.clone());
+        let frontier = stop
+            .then(|| snapshot.version.as_deref().map(str::to_owned))
+            .flatten();
         let now = now_ms();
         // A Cloud machine may be asleep for days: its messages wait a week.
         let cloud = self
@@ -767,10 +803,8 @@ impl SessionCore {
             payload,
             issued_by: device_id.to_owned(),
             issued_at: now,
-            based_on: self.last_entry_id().map(|turn_id| CommandBasedOn {
-                turn_id: Some(turn_id),
-                frontier: None,
-            }),
+            based_on: (turn_id.is_some() || frontier.is_some())
+                .then(|| CommandBasedOn { turn_id, frontier }),
             expires_at: Some(now + zend_doc::command_ttl_ms(cloud)),
             status: SessionCommandStatus::Pending,
             resolution: None,
@@ -1259,6 +1293,7 @@ fn build_snapshot(
         context_usage: st.context_usage,
         hydrated: st.hydrated,
         restored_at_ms: live.restored_at_ms,
+        version: st.transcript_version.clone(),
         delta: SnapshotDelta::default(),
         index: Arc::new(index),
     };
@@ -1634,7 +1669,7 @@ impl SessionHandle {
         let client = self.core.client()?;
         self.core.queue_command(
             &client.config.device_id,
-            SessionCommandPayload::Interrupt {},
+            SessionCommandPayload::Interrupt { cancels: None },
         )?;
         client.after_command(&self.core, false);
         Ok(())
@@ -2077,6 +2112,7 @@ mod setup_placeholder_tests {
             hydrated: true,
             transcript_revision: 0,
             composer_revision: 0,
+            transcript_version: None,
         };
         let pending = PendingSend {
             message_id: "m1".into(),
@@ -2201,5 +2237,92 @@ mod setup_placeholder_tests {
         st.commands[0].status = SessionCommandStatus::Rejected;
         derive_pending(&mut st, "phone", false, true, late);
         assert_eq!(st.pending[0].state, SendState::Failed);
+    }
+}
+#[cfg(test)]
+mod stop_version_tests {
+    use super::*;
+    use crate::{Client, ClientConfig, Credentials, DemoOptions};
+
+    fn stops(session: &SessionHandle) -> Vec<SessionCommandEntry> {
+        session
+            .core
+            .doc
+            .read_commands()
+            .unwrap()
+            .into_iter()
+            .filter(|c| matches!(c.payload, SessionCommandPayload::Interrupt { .. }))
+            .collect()
+    }
+
+    /// Round 8, finding 4: the doc can be ahead of the transcript this
+    /// device shows (an import is published a frame later). A Stop pressed
+    /// in between says the version of the transcript shown, so a row the
+    /// person hasn't seen isn't one the Stop claims.
+    #[test]
+    fn a_stop_says_the_version_of_the_transcript_it_was_pressed_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Client::new(
+            ClientConfig::new("https://edge.invalid", dir.path()),
+            Credentials::Demo(DemoOptions::default()),
+            Arc::new(crate::events::NullListener),
+        )
+        .unwrap();
+        let session = client.open_session("chat-deploy").unwrap();
+        let shown = session.snapshot();
+        assert!(!shown.transcript().is_empty());
+
+        // Another device's row reaches the doc; nothing is published yet.
+        let source = SessionDoc::from_doc(session.core.doc.doc().fork());
+        source
+            .push_message(&zend_doc::SessionMessageEntry {
+                id: "imported-unseen".into(),
+                role: zend_doc::MessageRole::User,
+                created_at: 42,
+                device_id: "host".into(),
+                parts: vec![],
+                status: None,
+                continuation_of: None,
+                duration_ms: None,
+            })
+            .unwrap();
+        let rows = source.doc().get_list("messages");
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(row))) =
+            rows.get(rows.len() - 1)
+        else {
+            panic!("the new row");
+        };
+        let loro::ContainerID::Normal { peer, counter, .. } = loro::ContainerTrait::id(&row) else {
+            panic!("the new row's id");
+        };
+        let row = loro::ID::new(peer, counter);
+        session.core.doc.import(&source.export_snapshot().unwrap()).unwrap();
+        assert!(
+            !session.snapshot().transcript().iter().any(|e| e.id == "imported-unseen"),
+            "the import was published before the Stop"
+        );
+
+        session.interrupt().unwrap();
+        let stop = stops(&session).pop().unwrap();
+        let based_on = stop.based_on.as_ref().unwrap();
+        assert_eq!(
+            based_on.turn_id.as_deref(),
+            shown.transcript().last().map(|e| e.id.as_str())
+        );
+        let version = based_on.sender_version().expect("a Stop carries a version");
+        assert!(
+            !version.includes_id(row),
+            "the Stop claims a row its sender's transcript didn't show"
+        );
+
+        // Published, the row is one the next Stop saw.
+        session.core.refresh();
+        assert!(session.snapshot().transcript().iter().any(|e| e.id == "imported-unseen"));
+        session.interrupt().unwrap();
+        let stop = stops(&session).pop().unwrap();
+        let based_on = stop.based_on.as_ref().unwrap();
+        assert_eq!(based_on.turn_id.as_deref(), Some("imported-unseen"));
+        assert!(based_on.sender_version().unwrap().includes_id(row));
+        client.shutdown();
     }
 }

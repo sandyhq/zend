@@ -112,6 +112,10 @@ pub struct SessionSnapshot {
     /// ([`crate::SessionHandle::dismiss_restored_note`]).
     pub restored_at_ms: Option<i64>,
     pub delta: SnapshotDelta,
+    /// The doc version this transcript was read at
+    /// ([`zend_doc::SessionDoc::version_for_command`]): what a Stop pressed
+    /// on it says its sender saw. `None` before the first read.
+    pub(crate) version: Option<Arc<str>>,
     pub(crate) index: Arc<HashMap<String, usize>>,
 }
 
