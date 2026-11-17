@@ -18,7 +18,10 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 
-use zend_doc::{MessageStatus, SessionCommandPayload};
+use zend_doc::{
+    CommandBasedOn, MessageStatus, SessionCommandEntry, SessionCommandPayload,
+    SessionCommandStatus,
+};
 use zend_engine::{EngineCore, HarnessRegistry};
 use zend_harness::{Harness, HarnessError, RunControls, TurnControl};
 use zend_proto::{
@@ -958,6 +961,147 @@ async fn a_steer_sent_before_stop_is_cancelled_with_it() {
         "nothing re-ran"
     );
     assert_eq!(status(&rig.core), Some(SessionStatus::Idle));
+    rig.core.sessions.shutdown().await;
+}
+
+/// A command forwarded over the peer relay: its doc row hasn't synced to
+/// this host, so only what the entry itself carries is known here.
+fn relayed(
+    id: &str,
+    payload: SessionCommandPayload,
+    issued_at: i64,
+    based_on: Option<String>,
+) -> SessionCommandEntry {
+    SessionCommandEntry {
+        id: id.into(),
+        payload,
+        issued_by: "device-elsewhere".into(),
+        issued_at,
+        based_on: based_on.map(|turn_id| CommandBasedOn {
+            turn_id: Some(turn_id),
+            frontier: None,
+        }),
+        expires_at: None,
+        status: SessionCommandStatus::Pending,
+        resolution: None,
+    }
+}
+
+fn last_row(rig: &Rig) -> String {
+    let doc = rig.core.doc_host.open(CHAT).unwrap();
+    doc.doc().read_entries().unwrap().last().unwrap().id.clone()
+}
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// The relay road of [`a_steer_sent_before_stop_is_cancelled_with_it`]: a
+/// steer and then a Stop, both from another device, arrive by relay before
+/// either row syncs. The steer's row lands first; the Stop still stops the
+/// turn, steer and all.
+#[tokio::test]
+async fn a_relayed_stop_after_a_relayed_steer_still_stops_the_turn() {
+    let rig = rig();
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None)
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 1,
+        "the agent to be running the turn",
+    )
+    .await;
+    let aimed_at = last_row(&rig);
+    let steered_at = now();
+    let steer = relayed(
+        "c-steer",
+        SessionCommandPayload::Run {
+            request: request("hold: steer before stop"),
+            message_id: "m-relayed-steer".into(),
+        },
+        steered_at,
+        Some(aimed_at.clone()),
+    );
+    let stop = relayed(
+        "c-stop",
+        SessionCommandPayload::Interrupt {},
+        steered_at + 1,
+        Some(aimed_at),
+    );
+    assert_eq!(
+        rig.core.doc_host.ingest_relayed_command(CHAT, steer).await.unwrap(),
+        "executed"
+    );
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the steer to reach the agent",
+    )
+    .await;
+    assert_eq!(
+        rig.core.doc_host.ingest_relayed_command(CHAT, stop).await.unwrap(),
+        "executed",
+        "the Stop covers the steer sent before it"
+    );
+    wait_for(
+        || {
+            rig.ledger.kills.load(Ordering::SeqCst) == 1
+                && status(&rig.core) == Some(SessionStatus::Idle)
+        },
+        "the stop to settle",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 1, "nothing re-ran");
+    rig.core.sessions.shutdown().await;
+}
+
+/// A Stop from another device that arrives late, by relay, after the person
+/// sent a new message here: it was aimed at the turn before, and leaves the
+/// new turn alone.
+#[tokio::test]
+async fn a_late_relayed_stop_leaves_a_turn_sent_after_it_alone() {
+    let rig = rig();
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("first"), None)
+        .await
+        .unwrap();
+    settle(&rig, 1).await;
+    let stop = relayed(
+        "c-late-stop",
+        SessionCommandPayload::Interrupt {},
+        now(),
+        Some(last_row(&rig)),
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    rig.core
+        .doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: request("hold: the next turn"),
+                message_id: "m-next".into(),
+            },
+        )
+        .unwrap();
+    wait_for(
+        || {
+            rig.ledger.prompts.lock().unwrap().len() == 2
+                && status(&rig.core) == Some(SessionStatus::Working)
+        },
+        "the next turn to run",
+    )
+    .await;
+    assert_eq!(
+        rig.core.doc_host.ingest_relayed_command(CHAT, stop).await.unwrap(),
+        "superseded",
+        "the late Stop was aimed at the finished turn"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(rig.ledger.kills.load(Ordering::SeqCst), 0, "the new turn lives");
+    assert_eq!(status(&rig.core), Some(SessionStatus::Working));
     rig.core.sessions.shutdown().await;
 }
 

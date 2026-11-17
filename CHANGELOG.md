@@ -5,7 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-17
 
 ### Fixed
-- Engine: a Stop sent just after a steer is no longer dropped as aimed at a finished turn when the steer lands first; it stops the turn, steer included (`runtime_survival::a_steer_sent_before_stop_is_cancelled_with_it`).
+- Engine: a Stop sent just after a steer is no longer dropped as aimed at a finished turn when the steer lands first; it stops the turn, steer included (`runtime_survival::a_steer_sent_before_stop_is_cancelled_with_it`). Judged by send times, so it holds by relay too, and a late relayed Stop leaves a turn sent after it alone.
 
 ## 2026-11-16
 

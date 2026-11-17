@@ -369,39 +369,54 @@ struct DocHostInner {
     store_looks: Mutex<HashMap<String, attachment_store::StoreLook>>,
 }
 
-/// Whether the turn a Stop (`stop_id`) was aimed at, `turn_id` (the chat's
-/// last row when it was sent), is over: a user message came after it that
-/// was not sent before the Stop. A message sent before it, still on its way
-/// or a steer that joined the turn, is part of what the Stop stops, as are
-/// the replies it brings: they never make the Stop moot (2026-11-17: a steer
-/// that landed before the Stop was judged ran on after it).
+/// The user message a Run or Steer command writes (a steer without an id
+/// takes the command's).
+fn sent_message_id(command: &SessionCommandEntry) -> Option<&str> {
+    match &command.payload {
+        SessionCommandPayload::Run { message_id, .. } => Some(message_id.as_str()),
+        SessionCommandPayload::Steer { message_id, .. } => {
+            Some(message_id.as_deref().unwrap_or(command.id.as_str()))
+        }
+        _ => None,
+    }
+}
+
+/// Whether the turn a Stop was aimed at, `turn_id` (the chat's last row when
+/// it was sent), is over: a user message came after it that was sent after
+/// the Stop. A message sent before it, still on its way or a steer that
+/// joined the turn, is part of what the Stop stops, as are the replies it
+/// brings: they never make the Stop moot (2026-11-17: a steer that landed
+/// before the Stop was judged ran on after it).
+///
+/// Decided by send times, the Stop's own `issued_at` against each message's:
+/// that of the command that sent it, from the chat's commands or from what
+/// this host ran (`ran`: a relayed command's row may not have synced yet,
+/// nor the relayed Stop's), else when the row was written.
 fn turn_ended_before(
     messages: &[Arc<SessionMessageEntry>],
     commands: &[SessionCommandEntry],
-    stop_id: &str,
+    ran: &std::collections::VecDeque<(String, i64)>,
+    stop: &SessionCommandEntry,
     turn_id: &str,
 ) -> bool {
     let Some(at) = messages.iter().position(|m| m.id == turn_id) else {
         return false;
     };
-    let sent_before: HashSet<&str> = commands
-        .iter()
-        .take_while(|c| c.id != stop_id)
-        .filter_map(|c| match &c.payload {
-            SessionCommandPayload::Run { message_id, .. } => Some(message_id.as_str()),
-            SessionCommandPayload::Steer { message_id, .. } => {
-                Some(message_id.as_deref().unwrap_or(c.id.as_str()))
-            }
-            _ => None,
-        })
-        .collect();
+    let sent_at = |id: &str| {
+        commands
+            .iter()
+            .find(|c| sent_message_id(c) == Some(id))
+            .map(|c| c.issued_at)
+            .or_else(|| ran.iter().find(|(m, _)| m == id).map(|(_, at)| *at))
+    };
     messages[at + 1..].iter().any(|m| {
-        m.role == MessageRole::User
-            && !sent_before.contains(m.id.as_str())
-            && !m
-                .continuation_of
-                .as_deref()
-                .is_some_and(|root| sent_before.contains(root))
+        let sent = m
+            .continuation_of
+            .as_deref()
+            .and_then(sent_at)
+            .or_else(|| sent_at(&m.id))
+            .unwrap_or(m.created_at);
+        m.role == MessageRole::User && sent > stop.issued_at
     })
 }
 
@@ -712,6 +727,10 @@ pub struct ChatDocHandle {
     /// Queue rows held as explicit steers for a turn-boundary agent. They
     /// lead ordinary queued rows, in the order they were steered.
     steered_rows: Mutex<Vec<String>>,
+    /// When each message this host ran (by command) was sent, newest last
+    /// and bounded: a Stop that arrives by relay weighs them before their
+    /// command rows sync ([`turn_ended_before`]).
+    sent_at: Mutex<std::collections::VecDeque<(String, i64)>>,
     /// Sends held for a turn-boundary agent's turn end (rather than queued
     /// by the user), with the run configuration each was sent with: the row
     /// carries only its text and images.
@@ -2209,6 +2228,7 @@ impl DocHost {
             drain_lock: tokio::sync::Mutex::new(()),
             command_drain_lock: tokio::sync::Mutex::new(()),
             steered_rows: Mutex::new(Vec::new()),
+            sent_at: Mutex::default(),
             held_sends: Mutex::new(HashMap::new()),
             stopped_by: Mutex::new(None),
             queue_paused: AtomicBool::new(recovered_queue_pending),
@@ -5727,7 +5747,9 @@ impl DocHost {
         let commands = handle.doc.read_commands()?;
         let messages = handle.doc.read_entries_shared().unwrap_or_default();
         let current_turn_id = messages.last().map(|m| m.id.clone());
-        let turn_is_past = |turn_id: &str| turn_ended_before(&messages, &commands, &entry.id, turn_id);
+        let turn_is_past = |turn_id: &str| {
+            turn_ended_before(&messages, &commands, &lock(&handle.sent_at), &entry, turn_id)
+        };
         let is_processed = |id: &str| self.inner.store.is_processed(id).unwrap_or(false);
         let disposition = evaluate_command(
             &entry,
@@ -6106,8 +6128,9 @@ impl DocHost {
             };
             let messages = handle.doc.read_entries_shared().unwrap_or_default();
             let current_turn_id = messages.last().map(|m| m.id.clone());
-            let turn_is_past =
-                |turn_id: &str| turn_ended_before(&messages, &commands, &entry.id, turn_id);
+            let turn_is_past = |turn_id: &str| {
+                turn_ended_before(&messages, &commands, &lock(&handle.sent_at), &entry, turn_id)
+            };
             let disposition = evaluate_command(
                 &entry,
                 &EvaluationContext {
@@ -6397,6 +6420,13 @@ impl DocHost {
         entry: &SessionCommandEntry,
     ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
         let chat_id = &handle.chat_id;
+        if let Some(message_id) = sent_message_id(entry) {
+            let mut sent = lock(&handle.sent_at);
+            if sent.len() >= 256 {
+                sent.pop_front();
+            }
+            sent.push_back((message_id.to_owned(), entry.issued_at));
+        }
         if let Some(message_id) = self.cancelled_by_stop(handle, entry) {
             // Still the user's message: it stays in the transcript, unrun.
             let prompt = match &entry.payload {
