@@ -1499,6 +1499,12 @@ local function Composer(): Node
 		end
 		return VisualPin.pick(store.messages:get(), revs:get(), VisualPin.away:get())
 	end)
+	-- (One whose place was never built isn't known to the host yet.)
+	ui.effect(function()
+		if session_id:get() then
+			VisualPin.preopen(store.messages:get(), revs:get())
+		end
+	end)
 	-- What's pinned, as the effect below sets it (the panel follows this,
 	-- not `wanted`: what has the keys is saved before either place goes).
 	local pinned = ui.state("chat_pinned_visual", nil :: any)

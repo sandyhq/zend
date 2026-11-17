@@ -10,6 +10,10 @@ const COMPOSER: &str = "#chat-composer >> role:textbox \"Message\"";
 const ANSWER: &str = "role:button \"Add to message\"";
 
 fn mount() -> TestApp {
+    mount_chat("go_sv")
+}
+
+fn mount_chat(go: &str) -> TestApp {
     let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/chat_fixture.luau");
     let mut app = TestApp::new(|runtime| {
         let host = ScriptHost::new(runtime, entry);
@@ -18,8 +22,11 @@ fn mount() -> TestApp {
     });
     app.ui.scene.borrow_mut().resize(900., 1400.);
     app.frames(10);
-    app.host.run_command("go_sv");
+    app.host.run_command(go);
     app.frames(30);
+    if go != "go_sv" {
+        return app;
+    }
     // (In its place in the transcript, in view: not pinned.)
     let settled = app.wait_until(|app| app.find(&format!("#transcript >> {ANSWER}")).is_some());
     if !settled {
@@ -469,3 +476,36 @@ fn the_pinned_visual_folds_to_its_title_line_and_opens_again() {
     assert_eq!(app.error(), None);
 }
 
+
+/// The visual far up a long chat (fixture `svl`): the chat opens at the
+/// bottom and its place is never built, so nothing ever said it was away.
+/// It is still open and still pinned, until it is answered or closed.
+#[test]
+fn an_open_visual_whose_place_was_never_built_is_pinned_until_closed() {
+    let mut app = mount_chat("go_svl");
+    app.frames(30);
+    let pinned = app.wait_until(|app| app.find(&format!("#chat-pinned-visual >> {ANSWER}")).is_some());
+    assert!(pinned, "not pinned:\n{}", visual_lines(&mut app));
+    app.click("#chat-pinned-visual >> role:button \"Close\"");
+    app.frames(10);
+    let gone = app.wait_until(|app| app.find("#chat-pinned-visual").is_none());
+    assert!(gone, "still pinned after ×:\n{}", visual_lines(&mut app));
+    app.frames(20);
+    assert!(app.find("#chat-pinned-visual").is_none(), "pinned again after ×");
+    assert_eq!(app.error(), None);
+}
+
+/// Reopened (another chat, then back), it is pinned again.
+#[test]
+fn an_open_visual_is_pinned_again_when_its_chat_is_reopened() {
+    let mut app = mount_chat("go_svl");
+    app.wait_until(|app| app.find("#chat-pinned-visual").is_some());
+    app.host.run_command("go_s1");
+    app.frames(30);
+    assert!(app.find("#chat-pinned-visual").is_none(), "pinned in another chat");
+    app.host.run_command("go_svl");
+    app.frames(30);
+    let pinned = app.wait_until(|app| app.find(&format!("#chat-pinned-visual >> {ANSWER}")).is_some());
+    assert!(pinned, "not pinned after reopening:\n{}", visual_lines(&mut app));
+    assert_eq!(app.error(), None);
+}

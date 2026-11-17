@@ -1373,6 +1373,17 @@ TRANSCRIPTS.sv = {
 		},
 	}),
 }
+-- The same visual far up a long chat: forty tall replies come after it, so
+-- the chat opens at the bottom and its row is never built.
+META.svl = { title = "A question visual, long chat", project = "atlas", model = "sonnet", effort = "medium", access = "full", plan = false }
+TRANSCRIPTS.svl = table.clone(TRANSCRIPTS.sv)
+for i = 1, 40 do
+	local paragraphs = {}
+	for p = 1, 8 do
+		table.insert(paragraphs, `Paragraph {p} of reply {i}: the transcript has long moved on from the visual, line after line.`)
+	end
+	table.insert(TRANSCRIPTS.svl, line(`ql{i}`, "assistant", 2 + i, table.concat(paragraphs, "\n\n")))
+end
 -- The question visual's chat moving on: tall replies under it, so its place
 -- scrolls out of view and it is pinned (src/visual_answer_tests.rs).
 ui.command {
@@ -2237,7 +2248,7 @@ TRANSCRIPTS.uf = {
 	{ id = "uf2", role = "user", text = "Here is the folder path instead" },
 	{ id = "uf3", role = "assistant", text = "I read the folder.", model = "Sonnet", at = "Sep 8, 4:11 PM", copy = "I read the folder." },
 }
-for _, id in { "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sv", "uf" } do
+for _, id in { "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sv", "svl", "uf" } do
 	ui.command {
 		id = `go_{id}`,
 		title = `Open {id}`,
