@@ -82,7 +82,42 @@ impl SessionCommandPayload {
 #[serde(rename_all = "camelCase")]
 pub struct CommandBasedOn {
     pub turn_id: Option<String>,
+    /// The doc version its sender had as it built the command: the Loro
+    /// version vector of its oplog, hex ([`encode_version`]). A Stop
+    /// carries it to say what its sender saw (2026-11-17); `None` from
+    /// older senders.
     pub frontier: Option<String>,
+}
+
+impl CommandBasedOn {
+    /// What `frontier` says its sender had; `None` when absent or unreadable.
+    pub fn sender_version(&self) -> Option<loro::VersionVector> {
+        decode_version(self.frontier.as_deref()?)
+    }
+}
+
+/// A doc version as [`CommandBasedOn::frontier`] carries it.
+pub fn encode_version(version: &loro::VersionVector) -> String {
+    use std::fmt::Write;
+    version
+        .encode()
+        .iter()
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+/// [`encode_version`]'s inverse; `None` for anything it didn't make.
+pub fn decode_version(text: &str) -> Option<loro::VersionVector> {
+    if text.len() % 2 != 0 || !text.is_ascii() {
+        return None;
+    }
+    let bytes = (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    loro::VersionVector::decode(&bytes).ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

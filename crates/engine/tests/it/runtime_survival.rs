@@ -2182,3 +2182,314 @@ async fn a_queue_row_a_stop_was_aimed_at_is_not_steered_in_after_a_restart() {
 async fn a_queue_row_a_stop_was_aimed_at_stays_claimed_once_its_row_lands() {
     a_stop_aimed_at_a_queue_row(true).await;
 }
+
+/// The doc version an engine has, as a Stop carries it in
+/// `based_on.frontier` (the oplog's version vector, hex).
+fn version_of(rig: &Rig) -> String {
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    let bytes = handle.doc().doc().oplog_vv().encode();
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn restart(rig: Rig) -> Rig {
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ProcessHarness {
+        ledger: rig.ledger.clone(),
+        adopts_config: false,
+        turn_boundary: false,
+    }));
+    let Rig { core, ledger, _dir } = rig;
+    drop(core);
+    let core =
+        EngineCore::assemble(_dir.path(), Arc::new(registry), HarnessId::Mock, None).unwrap();
+    Rig { core, ledger, _dir }
+}
+
+/// GPT review 7: a turn U the Stop's sender never saw starts on the host
+/// after the sender built its Stop; the sender's rows reach the host after
+/// U's and the Stop after both. Where the merge puts U (before or after the
+/// row the Stop was aimed at) depends on the peers' ids, not on what the
+/// sender saw. `with_version`: the Stop says what its sender had (its doc
+/// version); returns the kills the Stop added.
+async fn a_turn_started_after_a_stop_was_built(
+    host_peer: u64,
+    sender_peer: u64,
+    with_version: bool,
+) -> usize {
+    let host = rig();
+    start_hold(&host).await;
+    host.core.sessions.interrupt(CHAT).await.unwrap();
+    let sender = rig();
+    let snapshot = host
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .export_snapshot()
+        .unwrap();
+    let sender_doc = sender.core.doc_host.open(CHAT).unwrap();
+    sender_doc.doc().import(&snapshot).unwrap();
+    let host_doc = host.core.doc_host.open(CHAT).unwrap();
+    host_doc.doc().doc().set_peer_id(host_peer).unwrap();
+    sender_doc.doc().doc().set_peer_id(sender_peer).unwrap();
+
+    // The sender sends T, sees its reply, and builds a Stop.
+    sender
+        .core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: sender known T"),
+            Some("m-T".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || sender.ledger.prompts.lock().unwrap().len() == 1 && last_row(&sender) != "m-T",
+        "the sender to see T's reply",
+    )
+    .await;
+    let mut stop = relayed_stop("late-stop", now(), last_row(&sender), Some(&[]));
+    if with_version {
+        stop.based_on.as_mut().unwrap().frontier = Some(version_of(&sender));
+    }
+    assert!(!has_row(&sender, "m-U"));
+    sender.core.sessions.shutdown().await;
+    sender.core.doc_host.shutdown_workers().await;
+
+    // U starts on the host after that, while the Stop and the sender's
+    // rows are on their way.
+    host.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: unknown U after Stop"),
+            Some("m-U".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || host.ledger.prompts.lock().unwrap().len() == 2,
+        "U to reach the agent",
+    )
+    .await;
+    let before = host.ledger.kills.load(Ordering::SeqCst);
+    let snapshot = sender_doc.doc().export_snapshot().unwrap();
+    host_doc.doc().import(&snapshot).unwrap();
+    ingest(&host, stop).await;
+    let kills = host.ledger.kills.load(Ordering::SeqCst);
+    host.core.sessions.shutdown().await;
+    kills - before
+}
+
+/// With the sender's version, U is a turn it never saw, wherever the merge
+/// puts it: here before the row the Stop was aimed at, which judging by the
+/// host's order took for seen and killed.
+#[tokio::test]
+async fn a_stop_spares_a_turn_its_sender_never_saw_merged_before_its_aim() {
+    assert_eq!(
+        a_turn_started_after_a_stop_was_built(1, u64::MAX - 1, true).await,
+        0,
+        "the Stop killed a turn its sender never saw"
+    );
+}
+
+/// The same, U merged after the row the Stop was aimed at.
+#[tokio::test]
+async fn a_stop_spares_a_turn_its_sender_never_saw_merged_after_its_aim() {
+    assert_eq!(
+        a_turn_started_after_a_stop_was_built(u64::MAX - 1, 1, true).await,
+        0,
+        "the Stop killed a turn its sender never saw"
+    );
+}
+
+/// A Stop without its sender's version (an engine before 2026-11-18) says
+/// only the row it was aimed at: what the host has before that row counts
+/// as seen. So it spares U merged after its aim, and kills U merged before
+/// it, as it did before Stops carried versions.
+#[tokio::test]
+async fn a_stop_without_its_senders_version_judges_by_the_hosts_order() {
+    assert_eq!(
+        a_turn_started_after_a_stop_was_built(u64::MAX - 1, 1, false).await,
+        0,
+        "U merged after the Stop's aim"
+    );
+    assert_eq!(
+        a_turn_started_after_a_stop_was_built(1, u64::MAX - 1, false).await,
+        1,
+        "U merged before the Stop's aim"
+    );
+}
+
+/// A Stop carrying its sender's version holds a row its sender had (its
+/// send never started) across a restart (nothing in memory): after it, the
+/// row isn't steered into a newer runtime. `by_relay` false: another engine
+/// resolved the Stop and it reached this host by sync alone, so nothing of
+/// it is in this host's ledger; its version is read back from its entry in
+/// the doc. True: it came by relay, aimed at an earlier row, and isn't in
+/// the doc; its version is read back from the ledger.
+async fn a_stops_version_after_a_restart(by_relay: bool) {
+    let rig = rig();
+    start_hold(&rig).await;
+    let id = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "hold: seen by the Stop's sender", vec![])
+        .unwrap();
+    let queued = rig
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .take_queued(&id)
+        .unwrap()
+        .unwrap();
+    rig.core.sessions.interrupt(CHAT).await.unwrap();
+
+    // The sender writes the row (its runtime held), then Stops on its own
+    // engine, which resolves the Stop.
+    let sender = rig_full(false, false);
+    let snapshot = rig
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .export_snapshot()
+        .unwrap();
+    let sender_doc = sender.core.doc_host.open(CHAT).unwrap();
+    sender_doc.doc().import(&snapshot).unwrap();
+    sender.ledger.binary_gate.store(true, Ordering::SeqCst);
+    let sender_sessions = sender.core.sessions.clone();
+    let sender_id = id.clone();
+    let sent = tokio::spawn(async move {
+        sender_sessions
+            .dispatch(
+                CHAT,
+                HarnessId::Mock,
+                request("hold: sender saw"),
+                Some(sender_id),
+            )
+            .await
+            .unwrap()
+    });
+    wait_for(
+        || sender.ledger.binary_reached.load(Ordering::SeqCst) > 0,
+        "the sender's row before its runtime",
+    )
+    .await;
+    let mut relayed = None;
+    let stop_id = if by_relay {
+        let first = sender_doc.doc().read_entries().unwrap()[0].id.clone();
+        let mut stop = relayed_stop("relayed-stop", now(), first, Some(&[]));
+        stop.based_on.as_mut().unwrap().frontier = Some(version_of(&sender));
+        relayed = Some(stop);
+        "relayed-stop".to_owned()
+    } else {
+        sender
+            .core
+            .doc_host
+            .queue_command(CHAT, SessionCommandPayload::Interrupt { cancels: None })
+            .unwrap()
+    };
+    wait_for(
+        || {
+            by_relay
+                || sender_doc
+                    .doc()
+                    .read_commands()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c.id == stop_id && c.status != SessionCommandStatus::Pending)
+        },
+        "the sender's engine to resolve its Stop",
+    )
+    .await;
+    *sender.ledger.binary_release.0.lock().unwrap() = true;
+    sender.ledger.binary_release.1.notify_all();
+    sent.await.unwrap();
+    sender.core.sessions.shutdown().await;
+    sender.core.doc_host.shutdown_workers().await;
+
+    // This host gets the sender's doc (with the Stop resolved, or the
+    // Stop by relay after it), then restarts.
+    let snapshot = sender_doc.doc().export_snapshot().unwrap();
+    rig.core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .import(&snapshot)
+        .unwrap();
+    if let Some(stop) = relayed {
+        ingest(&rig, stop).await;
+    }
+    rig.core.doc_host.flush_all();
+    rig.core.sessions.shutdown().await;
+    rig.core.doc_host.shutdown_workers().await;
+    let rig = restart(rig);
+    let stop = rig
+        .core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .read_commands()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.id == stop_id);
+    match stop {
+        Some(stop) => assert!(
+            !by_relay && stop.based_on.and_then(|b| b.frontier).is_some(),
+            "the Stop carries its sender's version"
+        ),
+        None => assert!(by_relay, "the Stop reached the doc"),
+    }
+
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: newer after Stop"),
+            Some("m-newer".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() >= 2,
+        "the newer runtime",
+    )
+    .await;
+    rig.core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .push_queued(&queued)
+        .unwrap();
+    rig.core.doc_host.steer_queued_now(CHAT, &id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        prompts.len(),
+        2,
+        "a row the Stop's sender had reached the agent: {prompts:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_stops_version_is_read_back_from_the_doc_after_a_restart() {
+    a_stops_version_after_a_restart(false).await;
+}
+
+#[tokio::test]
+async fn a_relayed_stops_version_is_read_back_from_the_ledger_after_a_restart() {
+    a_stops_version_after_a_restart(true).await;
+}

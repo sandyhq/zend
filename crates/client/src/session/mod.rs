@@ -774,6 +774,11 @@ impl SessionCore {
         payload: SessionCommandPayload,
     ) -> Result<String> {
         let payload = self.with_stop_cancels(payload);
+        // A Stop says what its sender saw: the doc's version, read after the
+        // transcript its names and `based_on` come from (it holds all of it).
+        let stop = matches!(payload, SessionCommandPayload::Interrupt { .. });
+        let turn_id = self.last_entry_id();
+        let frontier = stop.then(|| self.doc.version_for_command());
         let now = now_ms();
         // A Cloud machine may be asleep for days: its messages wait a week.
         let cloud = self
@@ -786,10 +791,8 @@ impl SessionCore {
             payload,
             issued_by: device_id.to_owned(),
             issued_at: now,
-            based_on: self.last_entry_id().map(|turn_id| CommandBasedOn {
-                turn_id: Some(turn_id),
-                frontier: None,
-            }),
+            based_on: (turn_id.is_some() || frontier.is_some())
+                .then(|| CommandBasedOn { turn_id, frontier }),
             expires_at: Some(now + zend_doc::command_ttl_ms(cloud)),
             status: SessionCommandStatus::Pending,
             resolution: None,

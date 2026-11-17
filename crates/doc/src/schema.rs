@@ -625,7 +625,22 @@ pub struct SessionDoc {
     entry_bytes: std::sync::atomic::AtomicUsize,
     command_bytes: std::sync::atomic::AtomicUsize,
     change: ChangeLock,
+    /// Each transcript row's container by its message id, for
+    /// [`Self::message_origin`]: each row read once, caught up when the
+    /// doc changed.
+    row_index: std::sync::Mutex<RowIndex>,
     _entry_events: loro::Subscription,
+}
+
+/// [`SessionDoc::row_index`].
+#[derive(Default)]
+struct RowIndex {
+    /// The doc's version it was caught up at.
+    at: Option<loro::VersionVector>,
+    /// Each row container's message id, once read.
+    ids: std::collections::HashMap<loro::ContainerID, Option<String>>,
+    /// The rows in the list now, by message id (the newest of an id).
+    by_id: std::collections::HashMap<String, loro::ContainerID>,
 }
 
 impl SessionDoc {
@@ -658,6 +673,7 @@ impl SessionDoc {
             entry_bytes: Default::default(),
             command_bytes: Default::default(),
             change: ChangeLock::default(),
+            row_index: Default::default(),
             _entry_events,
         }
     }
@@ -1013,6 +1029,87 @@ impl SessionDoc {
         }
         self.commit();
         Ok(())
+    }
+
+    /// This doc's version as a Stop carries it, to say what its sender saw
+    /// ([`crate::CommandBasedOn::frontier`]).
+    pub fn version_for_command(&self) -> String {
+        crate::encode_version(&self.doc.oplog_vv())
+    }
+
+    /// The op that created each transcript row, with the row's id, in order:
+    /// a doc that has that op had the row ([`loro::VersionVector::includes_id`]).
+    pub fn message_origins(&self) -> Vec<(String, loro::ID)> {
+        self.message_rows().collect()
+    }
+
+    /// [`Self::message_origins`] of the row `message_id` alone (the newest
+    /// of that id), and the row it continues; `None` when there is no such
+    /// row. Costs a lookup; after the doc changed, a pass over the list's
+    /// containers too, reading only the rows it hasn't read before.
+    pub fn message_origin(&self, message_id: &str) -> Option<(loro::ID, Option<String>)> {
+        let mut index = self.row_index.lock().unwrap_or_else(|e| e.into_inner());
+        let now = self.doc.oplog_vv();
+        if index.at.as_ref() != Some(&now) {
+            let RowIndex { ids, by_id, .. } = &mut *index;
+            by_id.clear();
+            for container in self.message_containers() {
+                let id = ids
+                    .entry(container.clone())
+                    .or_insert_with(|| self.row_origin(container.clone()).map(|(id, _)| id));
+                if let Some(id) = id {
+                    by_id.insert(id.clone(), container);
+                }
+            }
+            index.at = Some(now);
+        }
+        let container = index.by_id.get(message_id)?.clone();
+        drop(index);
+        let loro::ContainerID::Normal { peer, counter, .. } = container else {
+            return None;
+        };
+        let Some(loro::Container::Map(map)) = self.doc.get_container(container) else {
+            return None;
+        };
+        let continues = match map.get("continuationOf") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(of))) => Some(of.to_string()),
+            _ => None,
+        };
+        Some((loro::ID::new(peer, counter), continues))
+    }
+
+    fn message_rows(&self) -> impl Iterator<Item = (String, loro::ID)> + '_ {
+        self.message_containers()
+            .into_iter()
+            .filter_map(|container| self.row_origin(container))
+    }
+
+    fn message_containers(&self) -> Vec<loro::ContainerID> {
+        let LoroValue::List(items) = self.doc.get_list("messages").get_value() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                LoroValue::Container(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn row_origin(&self, container: loro::ContainerID) -> Option<(String, loro::ID)> {
+        let loro::ContainerID::Normal { peer, counter, .. } = container else {
+            return None;
+        };
+        let Some(loro::Container::Map(map)) = self.doc.get_container(container) else {
+            return None;
+        };
+        match map.get("id") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(id))) => {
+                Some((id.to_string(), loro::ID::new(peer, counter)))
+            }
+            _ => None,
+        }
     }
 
     /// Read all entries (continuations NOT joined — see `join_continuation_entries`).
