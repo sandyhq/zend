@@ -267,7 +267,7 @@ mod tests {
         let (_dir, store) = open();
         let held = HeldPayload {
             body: HeldBody::Command {
-                payload: SessionCommandPayload::Interrupt {},
+                payload: SessionCommandPayload::Interrupt { cancels: None },
             },
             uploads: Vec::new(),
             also_peer: true,

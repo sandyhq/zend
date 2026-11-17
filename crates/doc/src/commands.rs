@@ -48,7 +48,18 @@ pub enum SessionCommandPayload {
         prompt: String,
         message_id: Option<String>,
     },
-    Interrupt {},
+    Interrupt {
+        /// What this Stop stops, as its sender saw the chat: the message ids
+        /// of the sends it knew of whose rows it hadn't seen yet, still on
+        /// their way ([`sends_on_their_way`]). With it the host decides
+        /// causally: a named send is cancelled wherever and whenever it
+        /// runs, and the Stop is moot only when a user row after its
+        /// `based_on` turn is neither named nor known to the sender. Absent
+        /// from a Stop of an engine before 2026-11-17, which keeps the turn
+        /// rule (any row after `based_on`) and the ledger order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cancels: Option<Vec<String>>,
+    },
     #[serde(rename_all = "camelCase")]
     RespondInput {
         request_id: String,
@@ -61,7 +72,7 @@ impl SessionCommandPayload {
         match self {
             SessionCommandPayload::Run { .. } => SessionCommandKind::Run,
             SessionCommandPayload::Steer { .. } => SessionCommandKind::Steer,
-            SessionCommandPayload::Interrupt {} => SessionCommandKind::Interrupt,
+            SessionCommandPayload::Interrupt { .. } => SessionCommandKind::Interrupt,
             SessionCommandPayload::RespondInput { .. } => SessionCommandKind::RespondInput,
         }
     }
@@ -101,6 +112,50 @@ impl SessionCommandEntry {
         self.expires_at
             .unwrap_or(self.issued_at + COMMAND_DEFAULT_TTL_MS)
     }
+
+    /// The user message a Run or Steer writes (a steer without an id takes
+    /// the command's).
+    pub fn sent_message_id(&self) -> Option<&str> {
+        match &self.payload {
+            SessionCommandPayload::Run { message_id, .. } => Some(message_id.as_str()),
+            SessionCommandPayload::Steer { message_id, .. } => {
+                Some(message_id.as_deref().unwrap_or(self.id.as_str()))
+            }
+            _ => None,
+        }
+    }
+
+    /// What a Stop says it stops: `Some` for a Stop that names its sends
+    /// (`SessionCommandPayload::Interrupt::cancels`), `None` for any other
+    /// command and for a Stop of an older engine.
+    pub fn stop_cancels(&self) -> Option<&[String]> {
+        match &self.payload {
+            SessionCommandPayload::Interrupt { cancels } => cancels.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// The sends a Stop queued now stops, for its `cancels`: each Run or Steer
+/// in the ledger, pending or run, whose message isn't in the sender's
+/// transcript (`landed`) yet. A row that has landed is known to the sender
+/// through `based_on`, which is the transcript's last row.
+pub fn sends_on_their_way(
+    commands: &[SessionCommandEntry],
+    landed: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    commands
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.status,
+                SessionCommandStatus::Pending | SessionCommandStatus::Applied
+            )
+        })
+        .filter_map(SessionCommandEntry::sent_message_id)
+        .filter(|id| !landed(id))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Rule 2: only the composer that issued a still-pending command may cancel it.
@@ -282,8 +337,16 @@ mod tests {
     #[test]
     fn newer_interrupt_still_supersedes_older_interrupt() {
         let entries = vec![
-            entry("i1", SessionCommandPayload::Interrupt {}, 1_000),
-            entry("i2", SessionCommandPayload::Interrupt {}, 2_000),
+            entry(
+                "i1",
+                SessionCommandPayload::Interrupt { cancels: None },
+                1_000,
+            ),
+            entry(
+                "i2",
+                SessionCommandPayload::Interrupt { cancels: None },
+                2_000,
+            ),
         ];
         let context = cx(&entries, &NEVER, &NEVER, 3_000, None);
         assert_eq!(
@@ -298,7 +361,11 @@ mod tests {
 
     #[test]
     fn interrupt_for_past_turn_is_superseded() {
-        let mut e = entry("c1", SessionCommandPayload::Interrupt {}, 1_000);
+        let mut e = entry(
+            "c1",
+            SessionCommandPayload::Interrupt { cancels: None },
+            1_000,
+        );
         e.based_on = Some(CommandBasedOn {
             turn_id: Some("turn-1".into()),
             frontier: None,
@@ -367,5 +434,60 @@ mod tests {
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_stop_without_cancels_keeps_the_old_wire_shape() {
+        let old = SessionCommandPayload::Interrupt { cancels: None };
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({ "kind": "interrupt" })
+        );
+        let read: SessionCommandPayload =
+            serde_json::from_value(serde_json::json!({ "kind": "interrupt" })).unwrap();
+        assert_eq!(read, old);
+        let named = SessionCommandPayload::Interrupt {
+            cancels: Some(vec!["m-1".into()]),
+        };
+        let json = serde_json::to_value(&named).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "kind": "interrupt", "cancels": ["m-1"] })
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionCommandPayload>(json).unwrap(),
+            named
+        );
+    }
+
+    #[test]
+    fn a_stop_names_the_sends_whose_rows_have_not_landed() {
+        let mut ran = entry(
+            "c-ran",
+            SessionCommandPayload::Steer {
+                prompt: "go".into(),
+                message_id: Some("m-ran".into()),
+            },
+            1,
+        );
+        ran.status = SessionCommandStatus::Applied;
+        let mut gone = steer("c-gone", 2);
+        gone.status = SessionCommandStatus::Expired;
+        let commands = vec![
+            ran,
+            steer("c-landed", 3),
+            steer("c-on-its-way", 4),
+            gone,
+            entry(
+                "c-stop",
+                SessionCommandPayload::Interrupt { cancels: None },
+                5,
+            ),
+        ];
+        let landed = |id: &str| id == "c-landed";
+        assert_eq!(
+            sends_on_their_way(&commands, &landed),
+            vec!["m-ran".to_string(), "c-on-its-way".to_string()]
+        );
     }
 }

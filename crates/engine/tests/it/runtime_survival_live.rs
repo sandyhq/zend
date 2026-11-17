@@ -675,7 +675,7 @@ async fn stop_tears_down_all_agent_work() {
     )
     .await;
     core.doc_host
-        .queue_command(CHAT, SessionCommandPayload::Interrupt {})
+        .queue_command(CHAT, SessionCommandPayload::Interrupt { cancels: None })
         .unwrap();
     wait(
         &core,

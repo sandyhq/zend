@@ -5,7 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-17
 
 ### Fixed
-- Engine: a Stop sent just after a steer is no longer dropped as aimed at a finished turn when the steer lands first; it stops the turn, steer included (`runtime_survival::a_steer_sent_before_stop_is_cancelled_with_it`). Judged by send times, so it holds by relay too, and a late relayed Stop leaves a turn sent after it alone.
+- Engine: a Stop sent just after a steer is no longer dropped as aimed at a finished turn when the steer lands first; it stops the turn, steer included (`runtime_survival::a_steer_sent_before_stop_is_cancelled_with_it`). A Stop now names the sends it stops (`Interrupt.cancels`, ADR 0007) and the host decides by that, not by clocks or ledger order: across devices and by relay a send named by a Stop never runs after it, and a late Stop never stops a turn its sender didn't know of. A Stop from an older engine keeps the old rule.
 
 ## 2026-11-16
 

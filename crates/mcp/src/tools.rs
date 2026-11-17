@@ -1829,7 +1829,7 @@ impl Tools {
         let chat = self.zend.resolve_chat(&args.chat).await?;
         let command_id = self
             .zend
-            .queue_command(&chat.id, &SessionCommandPayload::Interrupt {})
+            .queue_command(&chat.id, &SessionCommandPayload::Interrupt { cancels: None })
             .await?;
         Ok(json!({ "chatId": chat.id, "commandId": command_id }))
     }

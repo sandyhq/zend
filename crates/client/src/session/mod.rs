@@ -745,6 +745,24 @@ impl SessionCore {
             .map(|e| e.id.clone())
     }
 
+    /// A Stop names the sends it stops: those still on their way, their rows
+    /// not in the transcript this `based_on` is taken from.
+    fn with_stop_cancels(&self, payload: SessionCommandPayload) -> SessionCommandPayload {
+        if !matches!(payload, SessionCommandPayload::Interrupt { cancels: None }) {
+            return payload;
+        }
+        let snapshot = self.snapshot();
+        let transcript = snapshot
+            .entries
+            .get(..snapshot.transcript_len)
+            .unwrap_or_default();
+        let landed = |id: &str| transcript.iter().any(|e| e.id == id);
+        let commands = self.doc.read_commands().unwrap_or_default();
+        SessionCommandPayload::Interrupt {
+            cancels: Some(zend_doc::sends_on_their_way(&commands, &landed)),
+        }
+    }
+
     fn queue_command(&self, device_id: &str, payload: SessionCommandPayload) -> Result<String> {
         self.queue_command_as(crate::new_id(), device_id, payload)
     }
@@ -755,6 +773,7 @@ impl SessionCore {
         device_id: &str,
         payload: SessionCommandPayload,
     ) -> Result<String> {
+        let payload = self.with_stop_cancels(payload);
         let now = now_ms();
         // A Cloud machine may be asleep for days: its messages wait a week.
         let cloud = self
@@ -1633,7 +1652,7 @@ impl SessionHandle {
         let client = self.core.client()?;
         self.core.queue_command(
             &client.config.device_id,
-            SessionCommandPayload::Interrupt {},
+            SessionCommandPayload::Interrupt { cancels: None },
         )?;
         client.after_command(&self.core, false);
         Ok(())
