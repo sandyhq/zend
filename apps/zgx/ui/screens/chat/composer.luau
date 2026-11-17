@@ -19,6 +19,7 @@
 local ds = require("@ds")
 local Dictation = require("@app/screens/chat/dictation")
 local motion = require("@ds/motion")
+local Placement = require("@app/screens/chat/composer_place")
 local T = require("@ds/transcript")
 local prefs = require("@app/screens/settings/prefs")
 local store = require("@app/screens/chat/store")
@@ -194,6 +195,7 @@ local function Composer(): Node
 	-- (Set as it sends from a new chat: the move to the session that
 	-- follows slides, as the prompt glides; see `place`.)
 	local slide_next = false
+	local slide_session: string? = nil
 	-- Its form (a new chat's, opened out; a session's): the place it shows
 	-- at's, changing with its place (see `place`).
 	local form_new = ui.state("chat_composer_form_new", session_id:peek() == nil)
@@ -201,6 +203,7 @@ local function Composer(): Node
 	-- Moved as it switches between them (ds.Composer's `snap`): its form and
 	-- size there at once, not eased.
 	local snap = ui.state("chat_composer_snap", 0)
+	local place_snap = ui.state("chat_composer_place_snap", true)
 	-- Whether its model picker is open: the composer is held where it is
 	-- while it is (the picker hangs from its chip; a new chat's composer,
 	-- re-centring as its draft grows or shrinks, moved the chip and the
@@ -1229,9 +1232,19 @@ local function Composer(): Node
 		return asks.question:get() ~= nil or asks.approval:get() ~= nil or route.current:get().name == "settings" or route.current:get().name == "plugin"
 	end, "main")
 
+	local composer_sizes = ui.state("chat_composer_sizes", nil :: ds.ComposerSizes?)
 	local function composer(): Node
 		return ds.Composer {
 			dictation = dictation,
+			on_sizes = function(sizes: ds.ComposerSizes)
+				composer_sizes:set(sizes)
+				if sizes.context == snap:peek() and sizes.ready and not sizes.settling then
+					place_snap:set(false)
+				end
+				if math.abs(shared.dock_h:peek() - sizes.presented) > 0.01 then
+					shared.dock_h:set(sizes.presented)
+				end
+			end,
 			-- Its measures, fold and open tray kept across a reload, so it
 			-- is laid out as it was from the first frame.
 			keep = "chat",
@@ -1576,40 +1589,14 @@ local function Composer(): Node
 			shared.composer_gone()
 		end
 	end)
-	local dock = ui.ref()
-	-- How tall a new chat's composer is with nothing in it (what it's placed
-	-- by, so what's written in it doesn't move its top).
-	local rest_tall = ui.state("chat_composer_rest_tall", nil :: number?)
-	-- (A draft just deleted, it's empty while still easing back, and that
-	-- height would move its top: taken once that's over.)
-	local REST_SETTLE_MS = 500
-	local had_draft = false
-	local rest_settles_at = 0
-	ui.effect(function()
-		local tall = dock.height or 0
-		if shared.text:get() ~= "" or #shared.cargo:get() > 0 or next(shared.quotes:get()) ~= nil then
-			had_draft = true
-			return
-		end
-		if had_draft then
-			had_draft = false
-			rest_settles_at = ui.now() + REST_SETTLE_MS
-		end
-		if tall <= 0 or not new_chat() then
-			return
-		end
-		local function take()
-			if math.abs((rest_tall:peek() or 0) - tall) >= 0.5 then
-				rest_tall:set(tall)
-			end
-		end
-		local left = rest_settles_at - ui.now()
-		if left > 0 and rest_tall:peek() ~= nil then
-			ui.after(left, take)
-		else
-			take()
-		end
+	local rest_tall = ui.computed(function(): number?
+		local sizes = composer_sizes:get()
+		return if sizes then sizes.rest else nil
 	end)
+	local function presented_height(): number
+		local sizes = composer_sizes:get()
+		return if sizes then sizes.presented else shared.dock_h:get()
+	end
 	-- Where it stands: mid-page on a new chat (centred under the title bar),
 	-- else docked at the foot (0), as laid out now.
 	local function target_y(): number
@@ -1622,7 +1609,7 @@ local function Composer(): Node
 		if h <= 0 then
 			h = page_h:get()
 		end
-		local tall = dock.height or 0
+		local tall = presented_height()
 		if tall <= 0 then
 			tall = shared.dock_h:get()
 		end
@@ -1630,9 +1617,7 @@ local function Composer(): Node
 		-- and grows down from there. Only a draft that would run off the
 		-- page's foot moves it, up by as much.)
 		local rest = rest_tall:get() or tall
-		local hero = h / 2 + Dock.hero_offset()
-		local docked = h - FOOT - rest / 2
-		return math.min(hero - docked, rest - tall)
+		return Placement.dock_offset(h, rest, tall, FOOT)
 	end
 	-- Moving between a new chat and a session: its own send from a new chat
 	-- slides it down with the prompt (`slide_next`); any other move (another
@@ -1641,99 +1626,89 @@ local function Composer(): Node
 	-- measured, it follows at once too). In the page, as it grows or the window resizes, it
 	-- moves there as the dock's spring did. Motion reduced, it's there.
 	local GLIDE = { duration = 260, ease = "out(3)" }
-	-- How long after a switch its place follows its size at once (the
-	-- form's size, there at once too (`snap`), is measured a frame later).
-	local SNAP_MS = 400
-	-- (Kept state, as this file's others: the composer is made in a plain
-	-- function, not a component.)
+	-- Snap until this context has valid metrics and its destination has
+	-- been laid out. A deferred acknowledgement replaces elapsed deadlines.
 	local place = ui.state("chat_composer_place", 0)
-	-- (Held where it is while its model picker is open: `model_open`.)
 	local was_new: boolean? = nil
-	-- (Its model picker open on a new chat: how far its top gives way so its
-	-- chip stays, the picker hanging from it, as what's written grows.)
 	local hold = ui.state("chat_composer_hold", 0)
 	local held_tall: number? = nil
-	local gliding: any = nil
-	local snap_until = 0
+	local gliding, holding: any = nil, nil
+	local glide_goal: number? = nil
+	local function cancel_glide()
+		if gliding then gliding:cancel(); gliding = nil end
+		glide_goal = nil
+	end
+	local function cancel_hold()
+		if holding then holding:cancel(); holding = nil end
+	end
 	local function glide_to(y: number)
-		if gliding then
-			gliding:cancel()
-			gliding = nil
-		end
-		if motion.reduced_now() or ui.now() < snap_until or math.abs(place:peek() - y) < 0.5 then
+		local immediate = motion.reduced() or place_snap:get()
+		if not immediate and gliding and glide_goal == y then return end
+		cancel_glide()
+		if immediate or math.abs(place:peek() - y) < 0.5 then
 			place:set(y)
 			return
 		end
+		glide_goal = y
 		gliding = anime.animate(place, { value = y, duration = GLIDE.duration, ease = GLIDE.ease })
 	end
-	-- Made again (as the window opens on its last session, the composer is
-	-- built twice), a glide begun here must not land after: `place` is kept,
-	-- and it would put a session's composer where a new chat's stood.
 	ui.on_cleanup(function()
-		if gliding then
-			gliding:cancel()
-			gliding = nil
-		end
+		cancel_glide()
+		cancel_hold()
 	end)
 	ui.effect(function()
 		local y = target_y()
 		local nc = new_chat()
-		local switched = was_new ~= nil and nc ~= was_new and not slide_next
+		local sent = slide_next
+		if sent and not nc then slide_session = session_id:peek() end
+		local switched = was_new ~= nil and nc ~= was_new
 		was_new = nc
 		slide_next = false
 		if switched then
-			snap_until = ui.now() + SNAP_MS
-			snap:set(snap:peek() + 1)
+			ui.batch(function()
+				place_snap:set(not sent)
+				form_new:set(nc)
+				snap:set(snap:peek() + 1)
+			end)
+		else
+			form_new:set(nc)
 		end
-		form_new:set(nc)
-		-- On a new chat its place is the layout's (see the row below), so the
-		-- page resizing moves it with the page; this is only where a send
-		-- slides from.
-		if nc and not switched then
-			if gliding then
-				gliding:cancel()
-				gliding = nil
-			end
+		-- New chats are placed by layout; this coordinate only remembers
+		-- where a send's page transition starts.
+		if nc then
+			cancel_glide()
 			place:set(y)
-			local tall = dock.height or 0
+			local tall = presented_height()
 			if model_open:get() then
+				cancel_hold()
 				held_tall = held_tall or tall
 				hold:set(held_tall - tall)
 			elseif held_tall then
 				held_tall = nil
-				anime.animate(hold, { value = 0, duration = GLIDE.duration, ease = GLIDE.ease })
+				cancel_hold()
+				if motion.reduced() then hold:set(0)
+				else holding = anime.animate(hold, { value = 0, duration = GLIDE.duration, ease = GLIDE.ease }) end
 			end
 			return
 		end
+		cancel_hold()
 		held_tall = nil
 		hold:set(0)
 		glide_to(y)
 	end)
-	-- (Moving to another chat, as the focus moves between a split's
-	-- panes, is shown for something else too: its draft, and its size for
-	-- it, there at once rather than growing or shrinking into it.)
+	-- Split focus can change the draft without changing page mode. Every
+	-- such context owns its snap; only an intentional new-chat send glides.
 	local chat_was: string? = route.chat:peek().session
 	ui.effect(function()
 		local now = route.chat:get().session
 		if now ~= chat_was then
 			chat_was = now
-			snap_until = ui.now() + SNAP_MS
-			snap:set(snap:peek() + 1)
-		end
-	end)
-	-- (The sidebar opening or closing moves the page's edges (a new
-	-- chat's page goes to the window's edges as it closes): its place
-	-- follows the page as it moves, at once, rather than easing after it on
-	-- a clock of its own, which drew a small loop as the two went their own
-	-- ways.)
-	local shell_view = require("@app/screens/shell/view")
-	local fit = require("@app/screens/shell/fit")
-	local sidebar_was = not shell_view.collapsed:peek() and fit.current:peek().sidebar
-	ui.effect(function()
-		local now = not shell_view.collapsed:get() and fit.current:get().sidebar
-		if now ~= sidebar_was then
-			sidebar_was = now
-			snap_until = ui.now() + SNAP_MS
+			local sent = slide_next or (slide_session ~= nil and slide_session == now)
+			if not sent then slide_session = nil end
+			ui.batch(function()
+				place_snap:set(not sent)
+				snap:set(snap:peek() + 1)
+			end)
 		end
 	end)
 	-- Over the whole pane, the pointer passing through it to the page
@@ -1783,21 +1758,15 @@ local function Composer(): Node
 				if not new_chat() then
 					return place:get()
 				end
-				local tall = dock.height or 0
+				local tall = presented_height()
 				if tall <= 0 then
 					tall = shared.dock_h:get()
 				end
 				local rest = rest_tall:get() or tall
-				local at = Dock.hero_offset() - rest / 2
-				-- (Only a draft that would run off the page's foot moves it.)
-				local h = page.height or 0
-				if h > 0 then
-					at = math.min(at, h / 2 - FOOT - tall)
-				end
+				local at = Placement.new_offset(page.height or 0, rest, tall, FOOT)
 				return at + hold:get()
 			end,
 			ui.div {
-				ref = dock,
 				id = "chat-composer",
 				hook = "chat.composer",
 				-- (Over the page, not in it: the session it sends to, as the
@@ -1811,11 +1780,7 @@ local function Composer(): Node
 					end),
 					DOCK
 				),
-				on_resize = function(size: { w: number, h: number })
-					if size.h >= 1 and math.abs(shared.dock_h:peek() - size.h) > 0.01 then
-						shared.dock_h:set(size.h)
-					end
-				end,
+
 				-- Files carried over the composer itself: the chat's drop,
 				-- as over the page under it.
 				on_file_hover = composer_zone.on_file_hover,
