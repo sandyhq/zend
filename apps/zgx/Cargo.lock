@@ -7470,6 +7470,7 @@ dependencies = [
  "unicode-linebreak",
  "unicode-normalization",
  "unicode-segmentation",
+ "web-time",
  "zerotrie",
  "zerovec",
  "zgx-taffy",
@@ -7486,7 +7487,7 @@ dependencies = [
 
 [[package]]
 name = "zgx-alacritty-terminal"
-version = "0.26.4"
+version = "0.26.8"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
@@ -7599,6 +7600,7 @@ dependencies = [
  "ash",
  "block2 0.6.2",
  "bytemuck",
+ "dispatch2",
  "fontconfig-parser",
  "gif",
  "image",
@@ -7632,7 +7634,7 @@ dependencies = [
 
 [[package]]
 name = "zgx-harfrust"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -7643,7 +7645,7 @@ dependencies = [
 
 [[package]]
 name = "zgx-mlua"
-version = "0.12.8"
+version = "0.12.9"
 dependencies = [
  "bstr",
  "either",
@@ -7681,6 +7683,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "unicase",
+ "web-time",
  "windows",
  "zgx",
  "zgx-3d",
@@ -7718,6 +7721,7 @@ dependencies = [
  "memchr",
  "png 0.18.1",
  "polling",
+ "unicode-width",
  "windows-sys 0.59.0",
  "zgx",
  "zgx-alacritty-terminal",
@@ -7725,7 +7729,7 @@ dependencies = [
 
 [[package]]
 name = "zgx-vte"
-version = "0.15.0"
+version = "0.15.4"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",

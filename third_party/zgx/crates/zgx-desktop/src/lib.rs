@@ -67,6 +67,8 @@ mod mimalloc_tag_tests {
     }
 }
 pub mod app_menu;
+#[cfg(feature = "audio")]
+mod audio;
 mod clipboard;
 mod composition;
 mod contain;
@@ -149,6 +151,8 @@ pub use app_menu::{
     APPLICATION_MENU, AppMenu, AppMenuEntry, AppMenuError, MenuAccelerator, MenuAction,
     StandardItem, app_menu_bar, has_native_app_menu,
 };
+#[cfg(feature = "audio")]
+pub use audio::{AudioEvent, AudioListening};
 pub use composition::{CompositionLayer, WindowComposition};
 pub use file_dialog::{
     FileDialogError, FileDialogOptions, FileDialogResult, FileDialogs, FileFilter,
@@ -161,6 +165,10 @@ pub use window_info::{
     DisplayInfo, DisplaySelector, FullScreenTransition, WindowBounds, WindowCapabilities,
     WindowInfo, WindowLevel,
 };
+/// zgx-audio, as [`WindowFactory::audio`] makes its engine (the `audio`
+/// feature).
+#[cfg(feature = "audio")]
+pub use zgx_audio;
 mod native_host;
 #[cfg(any(windows, test))]
 mod windows_caption;
@@ -173,6 +181,9 @@ mod native_ime;
 // Windows' Text Services Framework: the document its input methods read.
 pub mod presentation;
 pub mod raster;
+mod raster_window;
+#[doc(hidden)]
+pub use raster_window::RendererChoice;
 pub mod terminal_process;
 #[cfg(any(windows, test))]
 mod text_store;

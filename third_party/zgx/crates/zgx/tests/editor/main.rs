@@ -24,8 +24,12 @@ mod editor_caret_width;
 mod editor_code;
 #[path = "../editor_context_menu.rs"]
 mod editor_context_menu;
+#[path = "../editor_copy_hook.rs"]
+mod editor_copy_hook;
 #[path = "../editor_external_edits.rs"]
 mod editor_external_edits;
+#[path = "../editor_focus_snapshot.rs"]
+mod editor_focus_snapshot;
 #[path = "../editor_hints.rs"]
 mod editor_hints;
 #[path = "../editor_ingress_normalization.rs"]
@@ -38,6 +42,8 @@ mod editor_long_documents;
 mod editor_model_normalization;
 #[path = "../editor_native_caret.rs"]
 mod editor_native_caret;
+#[path = "../editor_natural_metrics.rs"]
+mod editor_natural_metrics;
 #[path = "../editor_paging.rs"]
 mod editor_paging;
 #[path = "../editor_pointer_selection.rs"]

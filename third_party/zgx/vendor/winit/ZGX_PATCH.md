@@ -219,6 +219,17 @@ shows no copy badge and every release would look taken.
       `DragEnter`, `DragOver` and `Drop` get is a `POINTL` by value, as COM
       passes it (`definitions.rs` declared a pointer, never read before).
     Wayland's drags reach zgx's own data device, not winit.
+12. `TextDrops::dropped_with_html`: the same drop with the text as HTML too,
+    where the source offers it (a browser's selection), for a rich
+    destination; by default `dropped` with the text alone.
+    - macOS: the pasteboard's `NSPasteboardTypeHTML` (`public.html`).
+    - X11: `text/html` (atom `TextHtml`), converted after the text arrives
+      (one conversion at a time through `XdndSelection`), the drop waiting
+      for both (`Dnd::text_complete`); UTF-16 after a byte order mark reads
+      as UTF-16.
+    - Windows: the registered `HTML Format` (`CF_HTML`,
+      `RegisterClipboardFormatW`, `Win32_System_DataExchange`), the fragment
+      its header's `StartFragment`/`EndFragment` byte offsets mark.
 
 ## Where dragged files are (macOS, Windows, X11)
 
@@ -372,6 +383,20 @@ for a new one; a wait that reaches its deadline (the timer's signal, which
 the wait consumes, or the wait's own timeout, which can beat the timer by a
 tick), or a failed wait, leaves it unarmed (`event_loop.rs`, `HighResolutionTimer`,
 tested by `a_deadline_already_armed_isnt_armed_again`).
+
+## Windows: an exit asked for as the loop goes idle ends it without a wait
+
+`wait_for_messages` delivers what comes before a wait (`prepare_wait`: on the
+loop's first turn `NewEvents(Init)` and `Resumed`, on every turn
+`AboutToWait`), then waited in `MsgWaitForMultipleObjectsEx` before the loop
+read the exit code. An exit asked for in `resumed` or `about_to_wait` waited
+for a message to come first: CI's runner always had one coming, but on an
+idle desktop (WING-PC) none came, and zgx-desktop's
+`a_turns_pointer_moves_come_as_its_last_on_windows` hung for good. The wait is
+now skipped once an exit has been asked for (`event_loop.rs`,
+`wait_for_messages`; tested by zgx-desktop's `tests/loop_exit.rs`). X11 and
+Wayland check for an exit before they poll, and macOS posts itself an event
+as it stops, so neither has the gap.
 
 ## X11: a choice of device events applies at once
 

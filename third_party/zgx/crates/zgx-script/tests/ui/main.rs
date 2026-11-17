@@ -3,6 +3,9 @@
 // Each file loads its own `common` (a Harness of its own, which files
 // add methods to), as it did as a binary of its own.
 #![allow(clippy::duplicate_mod)]
+#[cfg(feature = "audio")]
+#[path = "../audio.rs"]
+mod audio;
 #[path = "../components.rs"]
 mod components;
 #[path = "../container_queries.rs"]
@@ -11,10 +14,14 @@ mod container_queries;
 mod decision;
 #[path = "../display_contents.rs"]
 mod display_contents;
+#[path = "../drag_declined.rs"]
+mod drag_declined;
 #[path = "../driver.rs"]
 mod driver;
 #[path = "../each_reorder.rs"]
 mod each_reorder;
+#[path = "../editor_metrics.rs"]
+mod editor_metrics;
 #[path = "../editor_props.rs"]
 mod editor_props;
 #[path = "../exiting_rows.rs"]
@@ -23,6 +30,8 @@ mod exiting_rows;
 mod failures;
 #[path = "../file_drop.rs"]
 mod file_drop;
+#[path = "../focus_snapshot.rs"]
+mod focus_snapshot;
 #[path = "../grid_areas.rs"]
 mod grid_areas;
 #[path = "../grid_tracks.rs"]
@@ -99,6 +108,8 @@ mod scene3d;
 mod scene3d_off;
 #[path = "../script_crashes.rs"]
 mod script_crashes;
+#[path = "../scroll_into_view_script.rs"]
+mod scroll_into_view_script;
 #[path = "../scrollbar_style.rs"]
 mod scrollbar_style;
 #[path = "../sealed.rs"]
@@ -125,6 +136,8 @@ mod text_props;
 mod theme;
 #[path = "../ui.rs"]
 mod ui;
+#[path = "../ui_map.rs"]
+mod ui_map;
 #[path = "../variants.rs"]
 mod variants;
 #[path = "../wheel_across.rs"]

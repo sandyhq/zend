@@ -232,6 +232,13 @@ pub struct FontSystem {
     /// zgx patch: how many times that stage has run (`full_scans`).
     pub(crate) full_scans: u64,
 
+    /// zgx patch: the platform's own choice of face for a character the
+    /// run's face lacks (`set_platform_fallback`), asked before the fallback
+    /// lists, and what it gave; boxed, as most platforms have none (one
+    /// pointer then, not three maps, in a struct every shaping call moves).
+    #[cfg(feature = "std")]
+    pub(crate) platform: Option<Box<Platform>>,
+
     /// Scratch buffer for shaping and laying out.
     pub(crate) shape_buffer: ShapeBuffer,
 
@@ -249,6 +256,41 @@ pub struct FontSystem {
     pub(crate) fallbacks: Fallbacks,
 }
 
+/// zgx patch: a platform's fallback, what it gave each character at a
+/// weight and size (the face and the weight to instance it at, or none;
+/// asked once each, forgotten when the database can change: `db_mut`), and
+/// the faces it gave, which are tracked (`Font::new_at`).
+#[cfg(feature = "std")]
+pub(crate) struct Platform {
+    fallback: Box<PlatformFallbackFn>,
+    /// The standard font families of a locale (the language text is in:
+    /// `set_language`'s, else the system's), tried before `fallback`
+    /// (Chrome's per-script standard font for the content's language).
+    standard: fn(&str) -> &'static [&'static str],
+    /// How many of its faces for a word's characters the search under way
+    /// has given (`FontFallbackIter::next_platform`).
+    pub(crate) next: usize,
+    faces: HashMap<(char, u16, u16), Option<(fontdb::ID, u16)>>,
+    tracked: BTreeSet<fontdb::ID>,
+}
+
+/// zgx patch: a face the platform's fallback picked (`set_platform_fallback`).
+#[cfg(feature = "std")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlatformFace {
+    /// Its PostScript name, which finds it in the database.
+    pub post_script_name: String,
+    /// Its file, loaded if the database lacks it.
+    pub path: std::path::PathBuf,
+    /// The weight (`wght`) to instance it at.
+    pub weight: u16,
+}
+
+/// zgx patch: a platform's fallback: the face for a character at a weight
+/// and size (pixels), if it has one.
+#[cfg(feature = "std")]
+pub type PlatformFallbackFn = dyn Fn(char, u16, u16) -> Option<PlatformFace> + Send + Sync;
+
 impl fmt::Debug for FontSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FontSystem")
@@ -257,6 +299,10 @@ impl fmt::Debug for FontSystem {
             .finish_non_exhaustive()
     }
 }
+
+/// zgx: sized instances kept a face and weight (`FontSystem::load_font_at`):
+/// an interface's text sizes, with room for a zoom's.
+const SIZES: usize = 8;
 
 /// zgx patch: attributes kept by `FontSystem::first_font` (an interface's
 /// few text styles: sizes, weights, families).
@@ -408,6 +454,8 @@ impl FontSystem {
             face_queries: Vec::new(),
             scanned: HashMap::default(),
             full_scans: 0,
+            #[cfg(feature = "std")]
+            platform: None,
             hyphenator: None,
             weight_axes: HashMap::default(),
             font_codepoint_support_info_cache: HashMap::default(),
@@ -452,6 +500,11 @@ impl FontSystem {
         self.first_fallback.clear();
         #[cfg(feature = "shape-run-cache")]
         self.shape_run_cache.clear();
+        // zgx patch: and the platform's faces by its standard font.
+        #[cfg(feature = "std")]
+        if let Some(platform) = &mut self.platform {
+            platform.faces.clear();
+        }
     }
 
     /// zgx: whether an app set a Chinese, Japanese or Korean language
@@ -478,6 +531,53 @@ impl FontSystem {
         Some(hyphenator(word, &self.locale))
     }
 
+    /// zgx: about the bytes shaping holds on the heap between runs, for a
+    /// memory report: its reused buffers (`ShapeBuffer::heap_bytes`) and the
+    /// caches its font searches keep (matches, first fonts and fallbacks,
+    /// characters scanned, codepoint support, weight axes, monospace ids).
+    /// The parsed fonts and the database are counted apart. Walked when
+    /// asked, nothing kept as it runs.
+    pub fn cache_bytes(&self) -> usize {
+        fn table<K, V>(map: &HashMap<K, V>) -> usize {
+            map.capacity() * (size_of::<K>() + size_of::<V>() + 1)
+        }
+        let matches: usize = self
+            .font_matches_cache
+            .values()
+            .map(|keys| keys.capacity() * size_of::<FontMatchKey>())
+            .sum();
+        let support: usize = self
+            .font_codepoint_support_info_cache
+            .values()
+            .map(|info| (info.supported.capacity() + info.not_supported.capacity()) * 4)
+            .sum();
+        let per_script: usize = self
+            .per_script_monospace_font_ids
+            .values()
+            .map(|ids| ids.capacity() * size_of::<fontdb::ID>())
+            .sum();
+        self.shape_buffer.heap_bytes()
+            + table(&self.font_matches_cache)
+            + matches
+            + self.first_font.capacity() * size_of::<FirstFont>()
+            + self.first_fallback.capacity() * size_of::<FirstFallback>()
+            + self
+                .first_fallback
+                .iter()
+                .map(|first| first.scripts.capacity() * size_of::<unicode_script::Script>())
+                .sum::<usize>()
+            + self.face_queries.capacity()
+                * size_of::<(FamilyOwned, fontdb::Weight, fontdb::Style, Option<fontdb::ID>)>()
+            + table(&self.scanned)
+            + table(&self.font_codepoint_support_info_cache)
+            + support
+            + table(&self.weight_axes)
+            + table(&self.per_script_monospace_font_ids)
+            + per_script
+            + self.monospace_font_ids.capacity() * size_of::<fontdb::ID>()
+            + table(&self.font_cache)
+    }
+
     /// zgx: how many fonts are loaded (parsed and kept), for a memory report.
     pub fn loaded_fonts(&self) -> usize {
         self.font_cache.values().filter(|font| font.is_some()).count()
@@ -495,7 +595,99 @@ impl FontSystem {
         self.first_fallback.clear();
         self.face_queries.clear();
         self.scanned.clear();
+        #[cfg(feature = "std")]
+        if let Some(platform) = &mut self.platform {
+            platform.faces.clear();
+        }
         &mut self.db
+    }
+
+    /// zgx patch: the platform's own fallback, asked for a character a run's
+    /// face lacks before the fallback lists are: macOS's Core Text, as
+    /// Chrome asks it (zgx-gpu installs it), which picks faces the lists
+    /// can't name (`.PingFang UI SC`, `.CJK Symbols Fallback SC`) and the
+    /// weight to draw them at. `None` from it goes on to the lists.
+    #[cfg(feature = "std")]
+    pub fn set_platform_fallback(
+        &mut self,
+        fallback: Option<Box<PlatformFallbackFn>>,
+        standard: fn(&str) -> &'static [&'static str],
+    ) {
+        self.platform = fallback.map(|fallback| {
+            Box::new(Platform {
+                fallback,
+                standard,
+                next: 0,
+                faces: HashMap::default(),
+                tracked: BTreeSet::new(),
+            })
+        });
+    }
+
+    /// zgx patch: the face the platform's fallback gives `c` at `weight` and
+    /// `size` (pixels), loaded into the database if it isn't, and the weight
+    /// to instance it at; asked once each.
+    #[cfg(feature = "std")]
+    pub(crate) fn platform_face(&mut self, c: char, weight: u16, size: u16) -> Option<(fontdb::ID, u16)> {
+        if let Some(known) = self.platform.as_ref()?.faces.get(&(c, weight, size)) {
+            return *known;
+        }
+        // (Out while the database may load a file, then back.)
+        let mut platform = self.platform.take()?;
+        // The locale's standard font first, as Chrome tries its per-script
+        // standard font (`webkit.webprefs.fonts.standard.<script>`, by the
+        // content's language) before the platform's; matched by family at
+        // the weight as CSS matches it. The locale is the font system's own,
+        // made with it, so what is kept stands for it.
+        let standard = ((platform.standard)(&self.locale).iter()).find_map(|family| {
+            let id = self.query_face(Family::Name(family), fontdb::Weight(weight), Style::Normal)?;
+            let mut one = [0; 4];
+            let holds = self.family_face_covers_in_word(id, fontdb::Weight(weight), c.encode_utf8(&mut one));
+            (holds == Some(1)).then_some((id, weight))
+        });
+        if standard.is_some() {
+            platform.faces.insert((c, weight, size), standard);
+            self.platform = Some(platform);
+            return standard;
+        }
+        let found = (platform.fallback)(c, weight, size).and_then(|face| {
+            // By its name; a variable face's named instance (Core Text's
+            // `.CJKSymbolsFallbackSC-Medium`) by the face it instances, in
+            // the same file, named alike up to the style
+            // (`.CJKSymbolsFallbackSC-Regular`), at the weight it gives.
+            let stem = |name: &str| name.rsplit_once('-').map_or(name, |(stem, _)| stem).to_owned();
+            let wanted = stem(&face.post_script_name);
+            let find = |db: &fontdb::Database| {
+                let in_file = |info: &&FaceInfo| match &info.source {
+                    fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => *path == face.path,
+                    fontdb::Source::Binary(_) => false,
+                };
+                db.faces()
+                    .find(|info| info.post_script_name == face.post_script_name)
+                    .or_else(|| {
+                        db.faces()
+                            .filter(in_file)
+                            .find(|info| stem(&info.post_script_name) == wanted)
+                    })
+                    .map(|info| info.id)
+            };
+            let id = find(&self.db).or_else(|| {
+                // Outside the directories the system's fonts load from
+                // (a private framework's): loaded as it's first needed.
+                self.db.load_font_file(&face.path).ok()?;
+                find(&self.db)
+            })?;
+            Some((id, face.weight))
+        });
+        platform.faces.insert((c, weight, size), found);
+        if let Some((id, _)) = found {
+            if platform.tracked.insert(id) {
+                // Made untracked before (as another family's face): again.
+                self.font_cache.retain(|key, _| key.0 != id);
+            }
+        }
+        self.platform = Some(platform);
+        found
     }
 
     /// zgx patch: how many times a fallback search has looked at every face
@@ -556,28 +748,62 @@ impl FontSystem {
         weight: fontdb::Weight,
         optical: u16,
     ) -> Option<Arc<Font>> {
-        // A font without the axis is one instance at every size.
-        if optical > 0 && !self.get_font_at(id, weight, 0)?.has_optical() {
+        // A font without the axis or a tracking table is one instance at
+        // every size.
+        if optical > 0 && !self.get_font_at(id, weight, 0)?.sized() {
             return self.get_font_at(id, weight, 0);
         }
-        self.font_cache
-            .entry((id, weight, optical))
-            .or_insert_with(|| {
-                #[cfg(feature = "std")]
-                unsafe {
-                    self.db.make_shared_face_data(id);
-                }
-                if let Some(font) = Font::new_at(&self.db, id, weight, optical) {
-                    Some(Arc::new(font))
-                } else {
-                    log::warn!(
-                        "failed to load font '{}'",
-                        self.db.face(id)?.post_script_name
-                    );
-                    None
-                }
-            })
-            .clone()
+        if let Some(font) = self.font_cache.get(&(id, weight, optical)) {
+            return font.clone();
+        }
+        self.load_font_at(id, weight, optical)
+    }
+
+    /// zgx: `get_font_at`'s instance made, the first time it is asked for;
+    /// a sized one (an optical size axis or tracking: one a size) kept with
+    /// at most `SIZES` of its face and weight, the farthest size going.
+    /// Out of line: a font is made once, asked for at every word.
+    #[cold]
+    #[inline(never)]
+    fn load_font_at(
+        &mut self,
+        id: fontdb::ID,
+        weight: fontdb::Weight,
+        optical: u16,
+    ) -> Option<Arc<Font>> {
+        #[cfg(feature = "std")]
+        let track = (self.platform.as_ref()).is_some_and(|platform| platform.tracked.contains(&id));
+        #[cfg(not(feature = "std"))]
+        let track = false;
+        #[cfg(feature = "std")]
+        unsafe {
+            self.db.make_shared_face_data(id);
+        }
+        let font = match Font::new_at(&self.db, id, weight, optical, track) {
+            Some(font) => Some(Arc::new(font)),
+            None => {
+                log::warn!(
+                    "failed to load font '{}'",
+                    self.db.face(id)?.post_script_name
+                );
+                None
+            }
+        };
+        // At most `SIZES` sizes of a face and weight: past them, the one
+        // farthest from this size goes (a zoom's steps away from where it
+        // is). Counted in the cache itself, which keeps no order of its own:
+        // the font system every shaping call reaches stays the size it was.
+        if optical > 0 {
+            let sizes = (self.font_cache.keys())
+                .filter(|key| key.0 == id && key.1 == weight && key.2 > 0)
+                .map(|key| key.2);
+            if sizes.clone().count() >= SIZES {
+                let far = sizes.max_by_key(|size| size.abs_diff(optical)).expect("counted");
+                self.font_cache.remove(&(id, weight, far));
+            }
+        }
+        self.font_cache.insert((id, weight, optical), font.clone());
+        font
     }
 
     pub fn is_monospace(&self, id: fontdb::ID) -> bool {
@@ -595,6 +821,30 @@ impl FontSystem {
         ret.sort();
         ret.dedup();
         ret
+    }
+
+    /// zgx patch: how many of `word`'s characters a monospace family's own
+    /// face covers. Without `monospace_fallback` no face lists its
+    /// codepoints, so the family's face seemed to cover none of a word: the
+    /// first word of monospaced text parsed every fixed-width face on the
+    /// system (13 on a Mac) to settle on that face anyway. Its character map
+    /// answers instead. (Only here: what other searches make of a face's
+    /// coverage stays as it was.)
+    pub(crate) fn family_face_covers_in_word(
+        &mut self,
+        id: fontdb::ID,
+        weight: fontdb::Weight,
+        word: &str,
+    ) -> Option<usize> {
+        #[cfg(feature = "swash")]
+        {
+            let font = self.get_font(id, weight)?;
+            if font.unicode_codepoints().is_empty() {
+                let charmap = font.as_swash().charmap();
+                return Some(word.chars().filter(|&ch| charmap.map(ch) != 0).count());
+            }
+        }
+        self.get_font_supported_codepoints_in_word(id, weight, word)
     }
 
     #[inline(always)]
@@ -625,11 +875,11 @@ impl FontSystem {
         self.first_font
             .iter()
             .rev()
-            // A font without an optical size axis is the same instance at
-            // every size (`get_font_at`).
+            // A font without an optical size axis or tracking is the same
+            // instance at every size (`get_font_at`).
             .find(|first| {
                 first.attrs.matches(attrs)
-                    && (first.optical == attrs.optical || !first.font.has_optical())
+                    && (first.optical == attrs.optical || !first.font.sized())
             })
             .map(|first| (first.fonts.clone(), first.font.clone()))
     }
@@ -667,7 +917,7 @@ impl FontSystem {
             .rev()
             .find(|first| {
                 first.attrs.matches(attrs)
-                    && (first.optical == attrs.optical || !first.font.has_optical())
+                    && (first.optical == attrs.optical || !first.font.sized())
                     && first.scripts == scripts
                     && (first.han == han || !scripts.contains(&unicode_script::Script::Han))
             })

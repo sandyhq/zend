@@ -1,5 +1,7 @@
 //! `zgx inspect mcp`: devtools as MCP tools, the handshake and the tools
 //! an agent sees (asking an app is `zgx-run`'s tests).
+mod common;
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -55,6 +57,18 @@ fn the_mcp_server_says_what_it_offers() {
         lines[1].contains(r#""required":["target"]"#),
         "targets required where they are"
     );
+    // A clipboard's files are a list of paths; `type` may go without a
+    // target (`no_click`).
+    assert!(
+        lines[1].contains(r#""files":{"items":{"type":"string"},"type":"array"}"#),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[1].contains(r#""no_click":{"type":"boolean"}"#),
+        "{}",
+        lines[1]
+    );
     assert!(
         lines[2].contains(r#""isError":true"#) && lines[2].contains("no tool zgx_nope"),
         "{}",
@@ -67,8 +81,7 @@ fn the_mcp_server_says_what_it_offers() {
 /// something else, before any app is asked.
 #[test]
 fn key_value_words_are_the_commands_fields() {
-    let empty = std::env::temp_dir().join(format!("zgx-no-apps-{}", std::process::id()));
-    std::fs::create_dir_all(&empty).unwrap();
+    let empty = common::temp_dir("no-apps");
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_zgx"))
             .arg("inspect")
@@ -87,4 +100,14 @@ fn key_value_words_are_the_commands_fields() {
     // A number reads as one: no complaint about it (no app answers here).
     let said = run(&["frames", "n=300", "since=drag"]);
     assert!(!said.contains("takes a number"), "{said}");
+    // `type --no-click` takes the text alone; `--files` one path or more.
+    let said = run(&["type", "--no-click", "#name", "text"]);
+    assert!(
+        said.contains("type --no-click takes the text alone"),
+        "{said}"
+    );
+    let said = run(&["type", "--no-click", "text"]);
+    assert!(!said.contains("takes the text alone"), "{said}");
+    let said = run(&["clipboard", "set", "--files", "--app", "1"]);
+    assert!(said.contains("--files takes one path or more"), "{said}");
 }

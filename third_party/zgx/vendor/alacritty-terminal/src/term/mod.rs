@@ -17,7 +17,7 @@ use crate::event::{Event, EventListener};
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
-use crate::term::cell::{Cell, Flags, LineLength};
+use crate::term::cell::{Cell, CellExtra, Flags, LineLength};
 use crate::term::color::Colors;
 use crate::term::graphics::{Placement, Placements};
 use crate::vi_mode::{ViModeCursor, ViMotion};
@@ -241,11 +241,23 @@ struct TermDamageState {
 
     /// Old terminal cursor point.
     last_cursor: Point,
+
+    /// zgx: lines the whole screen scrolled up since the damage was reset,
+    /// with the lines' damage moved up with them (`Term::scrolled`): line
+    /// `i`'s damage is at `lines[i + scrolled]`, a window sliding down
+    /// `lines` (`ordered` puts it back at the start), so a scroll is a count
+    /// and marking a line one addition.
+    scrolled: usize,
+
+    /// zgx: the screen's lines; `lines` holds a third of them more (`slack`),
+    /// room for the window to slide before the damage is whole.
+    screen: usize,
+    slack: usize,
 }
 
 impl TermDamageState {
     fn new(num_cols: usize, num_lines: usize) -> Self {
-        let lines = (0..num_lines)
+        let lines = (0..window(num_lines))
             .map(|line| LineDamageBounds::undamaged(line, num_cols))
             .collect();
 
@@ -253,6 +265,9 @@ impl TermDamageState {
             full: true,
             lines,
             last_cursor: Default::default(),
+            scrolled: 0,
+            screen: num_lines,
+            slack: window(num_lines) - num_lines,
         }
     }
 
@@ -261,10 +276,13 @@ impl TermDamageState {
         // Reset point, so old cursor won't end up outside of the viewport.
         self.last_cursor = Default::default();
         self.full = true;
+        self.scrolled = 0;
+        self.screen = num_lines;
+        self.slack = window(num_lines) - num_lines;
 
         self.lines.clear();
-        self.lines.reserve(num_lines);
-        for line in 0..num_lines {
+        self.lines.reserve(window(num_lines));
+        for line in 0..window(num_lines) {
             self.lines.push(LineDamageBounds::undamaged(line, num_cols));
         }
     }
@@ -278,14 +296,61 @@ impl TermDamageState {
     /// Expand `line`'s damage to span at least `left` to `right` column.
     #[inline]
     fn damage_line(&mut self, line: usize, left: usize, right: usize) {
-        self.lines[line].expand(left, right);
+        self.lines[line + self.scrolled].expand(left, right);
+    }
+
+    /// zgx: the screen's lines' damage at the start of `lines` again, after
+    /// scrolling slid it down: the lines new at the bottom (where nothing
+    /// was marked before they came) damaged whole.
+    fn ordered(&mut self, num_cols: usize) {
+        let scrolled = self.scrolled;
+        if scrolled == 0 {
+            return;
+        }
+        let screen = self.screen;
+        self.lines.copy_within(scrolled..scrolled + screen, 0);
+        for (row, line) in self.lines[..screen].iter_mut().enumerate() {
+            *line = if row + scrolled >= screen {
+                LineDamageBounds::new(row, 0, num_cols.saturating_sub(1))
+            } else {
+                LineDamageBounds::new(row, line.left, line.right)
+            };
+        }
     }
 
     /// Reset information about terminal damage.
     fn reset(&mut self, num_cols: usize) {
+        // Every line is reset, the window's slack too: put back in order is
+        // only for damage read. (A scroll changes no line's number, so they
+        // stay where they are.)
         self.full = false;
+        self.scrolled = 0;
         self.lines.iter_mut().for_each(|line| line.reset(num_cols));
     }
+
+    /// zgx: the whole screen scrolled up `lines`: each line's damage moves up
+    /// with its line (the window slides: `scrolled`), the lines new at the
+    /// bottom are damaged whole and the old cursor moves up (as the damage
+    /// is read: `ordered`, `Term::damage`). A count: no line is read.
+    fn scroll_up(&mut self, lines: usize) {
+        // Past a third of the screen's lines since the last reset, the rest
+        // go too: a frame bringing that many builds most rows anyway, and
+        // one refilling the screen (output pouring in) then turns its
+        // damage for a third of its scrolls, not all of them.
+        // The window has that third's room to slide in.
+        let scrolled = self.scrolled + lines;
+        if scrolled > self.slack {
+            self.full = true;
+            return;
+        }
+        self.scrolled = scrolled;
+    }
+}
+
+/// zgx: the damage lines kept for a screen of `lines`: a third more, the
+/// room a scroll slides the screen's damage down before it is whole.
+fn window(lines: usize) -> usize {
+    lines + lines / 3
 }
 
 pub struct Term<T> {
@@ -312,6 +377,14 @@ pub struct Term<T> {
     /// Pictures placed on the active grid, and on the inactive one.
     placements: Placements,
     inactive_placements: Placements,
+
+    /// zgx: whether a scroll from the top line scrolls the whole screen at
+    /// its newest lines, so its damage can turn (`TermDamageState::scroll_up`)
+    /// rather than all go: the scroll region is the screen, and the view is
+    /// at the bottom. Worked out again only as those change (`update_ring`),
+    /// so a scroll asks nothing of them. (A caller moving the view through
+    /// `grid_mut` leaves it as it was, which can only turn less.)
+    ring_ok: bool,
 
     /// Index into `charsets`, pointing to what ASCII is currently being mapped to.
     active_charset: CharsetIndex,
@@ -382,6 +455,10 @@ pub struct Config {
     /// zgx: whether device attributes announce sixel graphics (4). Off where
     /// the embedder can't show them, so programs don't send them.
     pub sixel: bool,
+
+    /// zgx: the name and version XTVERSION answers, `name(version)` as kitty,
+    /// foot and xterm give them; empty answers nothing.
+    pub version: String,
 }
 
 impl Default for Config {
@@ -394,6 +471,7 @@ impl Default for Config {
             kitty_keyboard: Default::default(),
             osc52: Default::default(),
             sixel: true,
+            version: String::new(),
         }
     }
 }
@@ -428,6 +506,7 @@ impl<T> Term<T> {
     {
         let old_display_offset = self.grid.display_offset();
         self.grid.scroll_display(scroll);
+        self.update_ring();
         self.event_proxy.send_event(Event::MouseCursorDirty);
 
         // Clamp vi mode cursor to the viewport.
@@ -462,6 +541,7 @@ impl<T> Term<T> {
             inactive_grid,
             placements: Placements::default(),
             inactive_placements: Placements::default(),
+            ring_ok: true,
             scroll_region,
             event_proxy,
             damage,
@@ -506,6 +586,12 @@ impl<T> Term<T> {
             return TermDamage::Full;
         }
 
+        // zgx: the old cursor moved up with its line as the screen scrolled
+        // (off the top, it damages the first row: a needless redraw at most).
+        let mut previous_cursor = previous_cursor;
+        let scrolled = self.damage.scrolled as i32;
+        previous_cursor.line = cmp::max(previous_cursor.line - scrolled, Line(0));
+
         // Add information about old cursor position and new one if they are not the same, so we
         // cover everything that was produced by `Term::input`.
         if self.damage.last_cursor != previous_cursor {
@@ -519,8 +605,29 @@ impl<T> Term<T> {
 
         // NOTE: damage which changes all the content when the display offset is non-zero (e.g.
         // scrolling) is handled via full damage.
+        let columns = self.columns();
+        self.damage.ordered(columns);
         let display_offset = self.grid().display_offset();
-        TermDamage::Partial(TermDamageIterator::new(&self.damage.lines, display_offset))
+        let screen = self.damage.screen;
+        TermDamage::Partial(TermDamageIterator::new(
+            &self.damage.lines[..screen],
+            display_offset,
+        ))
+    }
+
+    /// zgx: whether a scroll from the top turns the damage (`ring_ok`), after
+    /// the scroll region, the view or the screen's size changed.
+    fn update_ring(&mut self) {
+        let screen = Line(0)..Line(self.screen_lines() as i32);
+        self.ring_ok = self.scroll_region == screen && self.grid.display_offset() == 0;
+    }
+
+    /// zgx: lines the whole screen scrolled up since the damage was reset,
+    /// when the damage is partial: what was drawn of each line still shown
+    /// is that many rows lower, and its damage is where the line is now.
+    #[inline]
+    pub fn scrolled(&self) -> usize {
+        self.damage.scrolled
     }
 
     /// Resets the terminal damage information.
@@ -559,6 +666,7 @@ impl<T> Term<T> {
         if !placements.is_empty() {
             placements.shift(0, grid.history_size(), grid.screen_lines());
         }
+        self.update_ring();
 
         if self.config.kitty_keyboard != old_config.kitty_keyboard {
             self.keyboard_mode_stack = Vec::new();
@@ -674,7 +782,7 @@ impl<T> Term<T> {
                 text.push(cell.c);
 
                 // Push zero-width characters.
-                for c in cell.zerowidth().into_iter().flatten() {
+                for c in grid_line.zerowidth(column).into_iter().flatten() {
                     text.push(*c);
                 }
             }
@@ -804,6 +912,7 @@ impl<T> Term<T> {
 
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.update_ring();
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
@@ -845,6 +954,7 @@ impl<T> Term<T> {
         mem::swap(&mut self.placements, &mut self.inactive_placements);
         self.mode ^= TermMode::ALT_SCREEN;
         self.selection = None;
+        self.update_ring();
         self.mark_fully_damaged();
     }
 
@@ -922,7 +1032,18 @@ impl<T> Term<T> {
         if (top <= *line) && region.end > *line {
             *line = cmp::max(*line - lines, top);
         }
-        self.mark_fully_damaged();
+        // zgx: the whole screen, its newest lines shown, moves its lines'
+        // damage up with them: an embedder moves what it drew of them, and
+        // draws only the lines new at the bottom (`scrolled`): a count and a
+        // compare. Once the damage is whole (a third of the screen into a
+        // frame), a line feed pays one test, as it paid one store before.
+        if !self.damage.full {
+            if self.ring_ok && origin == Line(0) {
+                self.damage.scroll_up(lines);
+            } else {
+                self.mark_fully_damaged();
+            }
+        }
     }
 
     fn deccolm(&mut self)
@@ -1127,9 +1248,9 @@ impl<T> Term<T> {
         let fg = self.grid.cursor.template.fg;
         let bg = self.grid.cursor.template.bg;
         let flags = self.grid.cursor.template.flags;
-        let extra = self.grid.cursor.template.extra.clone();
+        let point = self.grid.cursor.point;
 
-        let mut cursor_cell = self.grid.cursor_cell();
+        let cursor_cell = self.grid.cursor_cell();
 
         // Clear all related cells when overwriting a fullwidth cell.
         if cursor_cell
@@ -1138,13 +1259,12 @@ impl<T> Term<T> {
         {
             // Remove wide char and spacer.
             let wide = cursor_cell.flags.contains(Flags::WIDE_CHAR);
-            let point = self.grid.cursor.point;
             if wide && point.column < self.last_column() {
                 self.grid[point.line][point.column + 1]
                     .flags
                     .remove(Flags::WIDE_CHAR_SPACER);
             } else if point.column > 0 {
-                self.grid[point.line][point.column - 1].clear_wide();
+                self.grid[point.line].clear_wide(point.column - 1);
             }
 
             // Remove leading spacers.
@@ -1154,10 +1274,13 @@ impl<T> Term<T> {
                     .flags
                     .remove(Flags::LEADING_WIDE_CHAR_SPACER);
             }
-
-            cursor_cell = self.grid.cursor_cell();
         }
 
+        // zgx: the pen's extra as a slot of the row's table, found after the
+        // wide character's cells are cleared (a slot pushed may renumber
+        // the row's).
+        let extra = self.grid.pen_handle(point);
+        let cursor_cell = self.grid.cursor_cell();
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
@@ -1215,7 +1338,7 @@ impl<T> Term<T> {
         if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
             return false;
         }
-        let rest = cell.zerowidth().unwrap_or(&[]);
+        let rest = self.grid[line].zerowidth(column).unwrap_or(&[]);
         let last = rest.last().copied().unwrap_or(cell.c);
         // Told without segmenting where it can be: a regional indicator
         // continues one alone, most emoji only a ZWJ, a variation selector,
@@ -1244,7 +1367,7 @@ impl<T> Term<T> {
             }
             _ => Point::new(line, column),
         };
-        self.grid[at.line][at.column].push_zerowidth(c);
+        self.grid[at.line].push_zerowidth(at.column, c);
         self.damage
             .damage_point(Point::new(at.line.0 as usize, at.column));
         true
@@ -1265,8 +1388,11 @@ impl<T> Term<T> {
             return None;
         }
         let line = self.grid.cursor.point.line;
-        let mut glyph = self.grid[line][column].clone();
+        let mut glyph = self.grid[line][column];
         glyph.flags.insert(Flags::WIDE_CHAR);
+        // zgx: its extra, given it again where it's written (maybe the next
+        // line, another table).
+        let glyph_extra = self.grid[line].slot(glyph.extra).cloned();
 
         if column + 1 >= columns {
             // The last column, the cursor on it waiting to wrap.
@@ -1294,6 +1420,7 @@ impl<T> Term<T> {
         let at = self.grid.cursor.point;
         self.write_at_cursor(' ');
         *self.grid.cursor_cell() = glyph;
+        self.grid[at.line].set_extra(at.column, glyph_extra);
         self.damage_cursor();
         self.grid.cursor.point.column += 1;
         let spacer = self.grid.cursor.point.column;
@@ -1428,7 +1555,7 @@ impl<T: EventListener> Term<T> {
                 column.0 = column.saturating_sub(1);
             }
 
-            self.grid[line][column].push_zerowidth(c);
+            self.grid[line].push_zerowidth(column, c);
             return;
         }
 
@@ -1502,6 +1629,71 @@ impl<T: EventListener> Term<T> {
     }
 }
 
+/// zgx: `run` written over `cells` (as long), each byte's cell made by
+/// `cell`, up to the first cell holding part of a wide character
+/// (`write_at_cursor` writes those, clearing the rest of it): how many were
+/// written. Cells from `clean` on are past the row's `occ`, which
+/// `Row::reset` already counts on holding no part of one (nor an extra):
+/// written straight, no check (a line a flood writes into a row just reset
+/// is all of them).
+#[inline(always)]
+fn write_run(
+    cells: &mut [Cell],
+    run: &[u8],
+    clean: usize,
+    blank: Cell,
+    c: impl Fn(u8) -> char,
+) -> usize {
+    // Each cell the pen's `blank` copied as bytes, then its character: a
+    // `Cell` stored a field at a time is four stores (`Color`'s padding),
+    // its bytes copied, one.
+    let blank = std::slice::from_ref(&blank);
+    let cells = &mut cells[..run.len()];
+    let clean = clean.min(run.len());
+    for at in 0..clean {
+        let old = &mut cells[at];
+        if old
+            .flags
+            .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER)
+        {
+            return at;
+        }
+        std::slice::from_mut(old).copy_from_slice(blank);
+        old.c = c(run[at]);
+    }
+    // With the default pen (most text): the cells blanked in one copy, then
+    // each one's character.
+    if blank[0] == Cell::default() {
+        #[cfg(debug_assertions)]
+        for old in &cells[clean..] {
+            debug_assert!(
+                !old.has_extra()
+                    && !old
+                        .flags
+                        .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER),
+                "a cell past the row's occupied ones holds something: {old:?}"
+            );
+        }
+        Cell::blank_all(&mut cells[clean..]);
+        for (old, &byte) in cells[clean..].iter_mut().zip(&run[clean..]) {
+            old.c = c(byte);
+        }
+        return run.len();
+    }
+    for (old, &byte) in cells[clean..].iter_mut().zip(&run[clean..]) {
+        debug_assert!(
+            !old.has_extra()
+                && !old
+                    .flags
+                    .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER),
+            "a cell past the row's occupied ones holds something: {old:?}"
+        );
+        std::slice::from_mut(old).copy_from_slice(blank);
+        old.c = c(byte);
+    }
+    run.len()
+}
+
 impl<T: EventListener> Handler for Term<T> {
     /// A character to be displayed.
     #[inline(always)]
@@ -1529,6 +1721,13 @@ impl<T: EventListener> Handler for Term<T> {
     /// holds no wide character (otherwise as `write_at_cursor` writes it).
     #[inline]
     fn input_str(&mut self, text: &str) {
+        #[cfg(test)]
+        if tests::BY_CHARACTER.get() {
+            for c in text.chars() {
+                self.input(c);
+            }
+            return;
+        }
         let mut bytes = text.as_bytes();
         let columns = self.columns();
         while let Some(&first) = bytes.first() {
@@ -1542,26 +1741,33 @@ impl<T: EventListener> Handler for Term<T> {
             let charset = self.grid.cursor.charsets[self.active_charset];
             let template = &self.grid.cursor.template;
             let (fg, bg, flags) = (template.fg, template.bg, template.flags);
-            let extra = template.extra.clone();
             let mut at = 0;
             while at < count {
                 let (start, end) = (point.column + at, point.column + count);
-                let cells = &mut self.grid[point.line][start..end];
-                // Up to a cell holding a wide character, written straight.
-                let plain = cells
-                    .iter()
-                    .position(|cell| {
-                        cell.flags
-                            .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER)
-                    })
-                    .unwrap_or(cells.len());
-                for (cell, &byte) in cells[..plain].iter_mut().zip(&bytes[at..]) {
-                    cell.c = charset.map(byte as char);
-                    cell.fg = fg;
-                    cell.bg = bg;
-                    cell.flags = flags;
-                    cell.extra = extra.clone();
-                }
+                // zgx: the pen's extra as a slot of the row's table, found
+                // again after each cell `write_at_cursor` writes (a slot
+                // pushed may renumber the row's).
+                let extra = self.grid.pen_handle(Point::new(point.line, start));
+                let row = &mut self.grid[point.line];
+                // The cells from the row's `occ` on hold nothing yet.
+                let clean = row.occ.saturating_sub(start.0);
+                let cells = &mut row[start..end];
+                let run = &bytes[at..count];
+                // Up to a cell holding a wide character, written straight; in
+                // ASCII (the usual), nothing mapped.
+                let blank = Cell {
+                    c: ' ',
+                    fg,
+                    bg,
+                    flags,
+                    extra,
+                };
+                let plain = match charset {
+                    StandardCharset::Ascii => {
+                        write_run(cells, run, clean, blank, |byte| byte as char)
+                    }
+                    _ => write_run(cells, run, clean, blank, |byte| charset.map(byte as char)),
+                };
                 at += plain;
                 if at < count {
                     self.grid.cursor.point.column = point.column + at;
@@ -2122,6 +2328,11 @@ impl<T: EventListener> Handler for Term<T> {
         for cell in &mut row[left..right] {
             *cell = bg.into();
         }
+        // zgx: the whole line blank, no cell holds an extra: the row lets go
+        // of them.
+        if left.0 == 0 && right.0 == row.len() {
+            row.extras.clear();
+        }
 
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
         self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
@@ -2288,6 +2499,7 @@ impl<T: EventListener> Handler for Term<T> {
             }
             ansi::ClearMode::Saved if self.history_size() > 0 => {
                 self.grid.clear_history();
+                self.update_ring();
                 if !self.placements.is_empty() {
                     self.placements
                         .retain(|placement| placement.point.line >= 0);
@@ -2337,6 +2549,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.placements.clear();
         self.inactive_placements.clear();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        self.update_ring();
         self.tabs = TabStops::new(self.columns());
         self.title_stack = Vec::new();
         self.title = None;
@@ -2369,10 +2582,10 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_hyperlink(&mut self, hyperlink: Option<Hyperlink>) {
         trace!("Setting hyperlink: {hyperlink:?}");
-        self.grid
-            .cursor
-            .template
-            .set_hyperlink(hyperlink.map(|e| e.into()));
+        CellExtra::set_hyperlink(
+            &mut self.grid.cursor.template_extra,
+            hyperlink.map(|e| e.into()),
+        );
     }
 
     /// Set a terminal attribute.
@@ -2383,12 +2596,14 @@ impl<T: EventListener> Handler for Term<T> {
         match attr {
             Attr::Foreground(color) => cursor.template.fg = color,
             Attr::Background(color) => cursor.template.bg = color,
-            Attr::UnderlineColor(color) => cursor.template.set_underline_color(color),
+            Attr::UnderlineColor(color) => {
+                CellExtra::set_underline_color(&mut cursor.template_extra, color)
+            }
             Attr::Reset => {
                 cursor.template.fg = Color::Named(NamedColor::Foreground);
                 cursor.template.bg = Color::Named(NamedColor::Background);
                 cursor.template.flags = Flags::empty();
-                cursor.template.set_underline_color(None);
+                CellExtra::set_underline_color(&mut cursor.template_extra, None);
             }
             Attr::Reverse => cursor.template.flags.insert(Flags::INVERSE),
             Attr::CancelReverse => cursor.template.flags.remove(Flags::INVERSE),
@@ -2689,6 +2904,7 @@ impl<T: EventListener> Handler for Term<T> {
         let screen_lines = Line(self.screen_lines() as i32);
         self.scroll_region.start = cmp::min(start, screen_lines);
         self.scroll_region.end = cmp::min(end, screen_lines);
+        self.update_ring();
         self.goto(0, 0);
     }
 
@@ -2783,10 +2999,192 @@ impl<T: EventListener> Handler for Term<T> {
             })));
     }
 
+    // zgx: as `CSI 6 ; height ; width t`, from the embedder's cell size as
+    // the text area's in pixels is.
+    #[inline]
+    fn cell_size_pixels(&mut self) {
+        self.event_proxy
+            .send_event(Event::TextAreaSizeRequest(Arc::new(move |window_size| {
+                format!(
+                    "\x1b[6;{};{}t",
+                    window_size.cell_height, window_size.cell_width
+                )
+            })));
+    }
+
     #[inline]
     fn text_area_size_chars(&mut self) {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    // zgx: XTVERSION, as `DCS > | name(version) ST`.
+    fn report_version(&mut self) {
+        if self.config.version.is_empty() {
+            return;
+        }
+        let text = format!("\x1bP>|{}\x1b\\", self.config.version);
+        self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    // zgx: DECRQSS, as xterm answers it: `DCS 1 $ r`, the setting as a
+    // program would set it, and its final bytes; `DCS 0 $ r` for one not
+    // kept. The text's attributes (SGR, with underline styles as `4:3`, as
+    // nvim looks for curly underlines), the cursor's style (DECSCUSR) and
+    // the scrolling region (DECSTBM).
+    fn report_setting(&mut self, setting: &[u8]) {
+        let value = match setting {
+            b"m" => Some(sgr_setting(
+                &self.grid.cursor.template,
+                self.grid.cursor.template_extra.as_deref(),
+            )),
+            b" q" => {
+                let style = self
+                    .cursor_style
+                    .unwrap_or(self.config.default_cursor_style);
+                let steady = match style.shape {
+                    CursorShape::Underline => 4,
+                    CursorShape::Beam => 6,
+                    CursorShape::Block | CursorShape::HollowBlock | CursorShape::Hidden => 2,
+                };
+                Some(format!("{}", steady - u8::from(style.blinking)))
+            }
+            b"r" => {
+                let region = &self.scroll_region;
+                Some(format!("{};{}", region.start.0 + 1, region.end.0))
+            }
+            _ => None,
+        };
+        let text = match value {
+            Some(value) => {
+                let setting = str::from_utf8(setting).unwrap_or_default();
+                format!("\x1bP1$r{value}{setting}\x1b\\")
+            }
+            None => String::from("\x1bP0$r\x1b\\"),
+        };
+        self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    // zgx: XTGETTCAP, answered a name at a time as kitty and foot do: `1+r`
+    // with the name and its value (none for a flag), each hex encoded, for a
+    // capability this terminal has; `0+r` and the name as asked for one it
+    // hasn't.
+    fn request_termcap(&mut self, names: &[u8]) {
+        let mut text = String::new();
+        for name in names.split(|&byte| byte == b';') {
+            let capability = decode_hex(name)
+                .and_then(|name| TERMCAPS.iter().find(|(known, _)| known.as_bytes() == name));
+            match capability {
+                Some((known, value)) => {
+                    text.push_str("\x1bP1+r");
+                    push_hex(&mut text, known.as_bytes());
+                    if let Some(value) = value {
+                        text.push('=');
+                        push_hex(&mut text, value.as_bytes());
+                    }
+                }
+                None => {
+                    text.push_str("\x1bP0+r");
+                    text.push_str(str::from_utf8(name).unwrap_or_default());
+                }
+            }
+            text.push_str("\x1b\\");
+        }
+        self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+}
+
+/// zgx: the terminfo capabilities XTGETTCAP reports, as `TERM`
+/// (xterm-256color) has them or beyond it, in terminfo's own notation, and
+/// none for a flag: the name and colours, direct colour (`RGB`, tmux's `Tc`
+/// and the sequences setting it), the clipboard through OSC 52 (`Ms`), the
+/// cursor's shape, and underlines styled and coloured (`Smulx`, `Setulc`,
+/// kitty's `Su`).
+const TERMCAPS: &[(&str, Option<&str>)] = &[
+    ("TN", Some("xterm-256color")),
+    ("name", Some("xterm-256color")),
+    ("Co", Some("256")),
+    ("colors", Some("256")),
+    ("RGB", None),
+    ("Tc", None),
+    ("setrgbf", Some("\\E[38;2;%p1%d;%p2%d;%p3%dm")),
+    ("setrgbb", Some("\\E[48;2;%p1%d;%p2%d;%p3%dm")),
+    ("Ms", Some("\\E]52;%p1%s;%p2%s\\007")),
+    ("Ss", Some("\\E[%p1%d q")),
+    ("Se", Some("\\E[0 q")),
+    ("Smulx", Some("\\E[4:%p1%dm")),
+    (
+        "Setulc",
+        Some("\\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m"),
+    ),
+    ("Su", None),
+];
+
+/// zgx: the text attributes `template` holds as SGR would set them, after a
+/// reset (`0`): underline styles as `4:2` to `4:5`, colours by name, or by
+/// index or value in their colon forms (`38:5:n`, `48:2:r:g:b`; nvim reads
+/// direct colour only so), the underline's as `58` (from the pen's extra,
+/// `extra`).
+fn sgr_setting(template: &Cell, extra: Option<&CellExtra>) -> String {
+    let mut text = String::from("0");
+    let flags = template.flags;
+    let codes = [
+        (Flags::BOLD, "1"),
+        (Flags::DIM, "2"),
+        (Flags::ITALIC, "3"),
+        (Flags::UNDERLINE, "4"),
+        (Flags::DOUBLE_UNDERLINE, "4:2"),
+        (Flags::UNDERCURL, "4:3"),
+        (Flags::DOTTED_UNDERLINE, "4:4"),
+        (Flags::DASHED_UNDERLINE, "4:5"),
+        (Flags::INVERSE, "7"),
+        (Flags::HIDDEN, "8"),
+        (Flags::STRIKEOUT, "9"),
+    ];
+    for (flag, code) in codes {
+        if flags.contains(flag) {
+            text.push(';');
+            text.push_str(code);
+        }
+    }
+    let mut color = |color: Color, base: u8, extended: u8| match color {
+        Color::Named(name) if (name as usize) < 8 => {
+            text.push_str(&format!(";{}", base + name as u8));
+        }
+        Color::Named(name) if (name as usize) < 16 => {
+            text.push_str(&format!(";{}", base + 60 + name as u8 - 8));
+        }
+        Color::Named(_) => {}
+        Color::Indexed(index) => text.push_str(&format!(";{extended}:5:{index}")),
+        Color::Spec(Rgb { r, g, b }) => text.push_str(&format!(";{extended}:2:{r}:{g}:{b}")),
+    };
+    color(template.fg, 30, 38);
+    color(template.bg, 40, 48);
+    match extra.and_then(CellExtra::underline_color) {
+        Some(Color::Indexed(index)) => text.push_str(&format!(";58:5:{index}")),
+        Some(Color::Spec(Rgb { r, g, b })) => text.push_str(&format!(";58:2:{r}:{g}:{b}")),
+        _ => {}
+    }
+    text
+}
+
+/// zgx: hex text (either case) as the bytes it encodes, or none if it isn't.
+fn decode_hex(hex: &[u8]) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let digit = |byte: u8| (byte as char).to_digit(16);
+    hex.chunks(2)
+        .map(|pair| Some((digit(pair[0])? * 16 + digit(pair[1])?) as u8))
+        .collect()
+}
+
+/// zgx: `bytes` hex encoded onto `text`, upper case as xterm answers.
+fn push_hex(text: &mut String, bytes: &[u8]) {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    for &byte in bytes {
+        text.push(DIGITS[usize::from(byte >> 4)] as char);
+        text.push(DIGITS[usize::from(byte & 15)] as char);
     }
 }
 
@@ -3050,12 +3448,187 @@ mod tests {
     use std::mem;
 
     use crate::event::VoidListener;
-    use crate::grid::{Grid, Scroll};
+    use crate::grid::{Grid, Row, Scroll};
     use crate::index::{Column, Point, Side};
     use crate::selection::{Selection, SelectionType};
     use crate::term::cell::{Cell, Flags};
     use crate::term::test::TermSize;
     use crate::vte::ansi::{self, CharsetIndex, Handler, StandardCharset};
+
+    thread_local! {
+        /// zgx: `input_str` as `input` for each character, to check the run
+        /// against.
+        pub(super) static BY_CHARACTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// zgx: every cell of `grid`, the history's too, top to bottom, with the
+    /// extra it holds (its handle, which numbers a slot of its row's table,
+    /// left out).
+    fn resolved(grid: &Grid<Cell>) -> Vec<(Cell, Option<CellExtra>)> {
+        let lines = grid.topmost_line().0..=grid.bottommost_line().0;
+        lines
+            .flat_map(|line| {
+                let row = &grid[Line(line)];
+                (0..grid.columns()).map(move |column| {
+                    let mut cell = row[Column(column)];
+                    cell.extra = 0;
+                    (cell, row.extra(Column(column)).cloned())
+                })
+            })
+            .collect()
+    }
+
+    /// zgx: random output, through the parser in reads of any length, leaves
+    /// the cells (the history's too) and the cursor as it leaves them when
+    /// each character of a run is written alone: plain text of every length,
+    /// wide characters and combining marks under and over it, wraps with
+    /// autowrap on and off, insert mode, the line drawing charset, colours,
+    /// and what keeps a cell's `extra` (hyperlinks, underline colours); among
+    /// them what moves, inserts, deletes or erases cells (scroll regions,
+    /// IL/DL, ICH/DCH/ECH, ED/EL, the alternate screen, DECALN) and resizes
+    /// with reflow. After every read, no cell past its row's `occ` holds an
+    /// extra or a wide character's flag, as runs written there count on.
+    #[test]
+    fn random_output_writes_as_characters_one_at_a_time_do() {
+        const PIECES: &[&[u8]] = &[
+            b"a",
+            b"short ",
+            b"a line of a log, longer than the line is",
+            b"xxxxxxxx",
+            b"0123456789abcdefghijklm",
+            b"\r\n",
+            b"\n",
+            b"\r",
+            b"\x08",
+            b"\t",
+            "日本".as_bytes(),
+            "e\u{301}".as_bytes(),
+            "\u{1f600}".as_bytes(),
+            b"\x1b[31m",
+            b"\x1b[0m",
+            b"\x1b[1;4m",
+            b"\x1b[48;5;21m",
+            b"\x1b[58;2;1;2;3m",
+            // With an id: one made up counts across terminals.
+            b"\x1b]8;id=a;https://example.com\x1b\\",
+            b"\x1b]8;;\x1b\\",
+            b"\x1b(0",
+            b"\x1b(B",
+            b"\x1b[4h",
+            b"\x1b[4l",
+            b"\x1b[?7l",
+            b"\x1b[?7h",
+            b"\x1b[2;7H",
+            b"\x1b[9G",
+            b"\x1b[K",
+            b"\x1b[3b",
+            b"\x1b[2;4r",
+            b"\x1b[r",
+            b"\x1b[2S",
+            b"\x1b[T",
+            b"\x1bM",
+            b"\x1b[L",
+            b"\x1b[2M",
+            b"\x1b[2@",
+            b"\x1b[2P",
+            b"\x1b[3X",
+            b"\x1b[J",
+            b"\x1b[1J",
+            b"\x1b[2J",
+            b"\x1b[1K",
+            b"\x1b[2K",
+            b"\x1b[?1049h",
+            b"\x1b[?1049l",
+            b"\x1b#8",
+            b"\x1b[5;12H",
+        ];
+        const SIZES: [(usize, usize); 4] = [(13, 5), (9, 4), (17, 6), (6, 3)];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |below: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % below as u64) as usize
+        };
+        let size = TermSize::new(13, 5);
+        // What the cases came to: cells with extras, wide characters, and
+        // the line drawing charset's.
+        let (mut extra, mut wide, mut drawn, mut resized) = (0, 0, 0, 0);
+        // No cell past its row's `occ` holds an extra or a wide flag.
+        let clean_past_occ = |term: &Term<VoidListener>, case: usize| {
+            let grid = term.grid();
+            for line in grid.topmost_line().0..=grid.bottommost_line().0 {
+                let row = &grid[Line(line)];
+                for column in row.occ..grid.columns() {
+                    let cell = &row[Column(column)];
+                    assert!(
+                        !cell.has_extra()
+                            && !cell
+                                .flags
+                                .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER),
+                        "case {case}: line {line}, column {column} past occ {}: {cell:?}",
+                        row.occ
+                    );
+                }
+            }
+        };
+        for case in 0..300 {
+            let mut bytes = Vec::new();
+            for _ in 0..next(120) {
+                bytes.extend_from_slice(PIECES[next(PIECES.len())]);
+            }
+            let mut runs = Term::new(Config::default(), &size, VoidListener);
+            let mut one = Term::new(Config::default(), &size, VoidListener);
+            let (mut parser, mut by_one) = (
+                ansi::Processor::<ansi::StdSyncHandler>::new(),
+                ansi::Processor::<ansi::StdSyncHandler>::new(),
+            );
+            let mut at = 0;
+            while at < bytes.len() {
+                let end = (at + 1 + next(64)).min(bytes.len());
+                parser.advance(&mut runs, &bytes[at..end]);
+                BY_CHARACTER.set(true);
+                by_one.advance(&mut one, &bytes[at..end]);
+                BY_CHARACTER.set(false);
+                at = end;
+                clean_past_occ(&runs, case);
+                if next(6) == 0 {
+                    let (columns, lines) = SIZES[next(SIZES.len())];
+                    runs.resize(TermSize::new(columns, lines));
+                    one.resize(TermSize::new(columns, lines));
+                    clean_past_occ(&runs, case);
+                    resized += 1;
+                }
+            }
+            let cursor = |term: &Term<VoidListener>| {
+                (term.grid.cursor.point, term.grid.cursor.input_needs_wrap)
+            };
+            let cells = |term: &Term<VoidListener>| resolved(term.grid());
+            let shown = String::from_utf8_lossy(&bytes);
+            assert_eq!(cursor(&runs), cursor(&one), "case {case}: {shown:?}");
+            let (written, expected) = (cells(&runs), cells(&one));
+            assert_eq!(written.len(), expected.len(), "case {case}: {shown:?}");
+            if let Some(at) = (0..written.len()).find(|&at| written[at] != expected[at]) {
+                let columns = runs.columns();
+                let (line, column) = (at / columns, at % columns);
+                panic!(
+                    "case {case}: {shown:?}: line {line} of the history and screen, column \
+                     {column}: {:?}, not {:?}",
+                    written[at], expected[at]
+                );
+            }
+            extra += written.iter().any(|(_, extra)| extra.is_some()) as usize;
+            wide += written
+                .iter()
+                .any(|(cell, _)| cell.flags.contains(Flags::WIDE_CHAR))
+                as usize;
+            drawn += written.iter().any(|(cell, _)| cell.c == '▒') as usize;
+        }
+        assert!(
+            extra > 30 && wide > 30 && drawn > 30 && resized > 100,
+            "{extra} {wide} {drawn} {resized}"
+        );
+    }
 
     #[test]
     fn scroll_display_page_up() {
@@ -3429,19 +4002,246 @@ mod tests {
                 };
                 // Every cell, the history's too (a grid scrolled compares
                 // only by its cells).
-                let cells = |term: &Term<VoidListener>| {
-                    let grid = term.grid();
-                    let lines = grid.topmost_line().0..=grid.bottommost_line().0;
-                    lines
-                        .flat_map(|line| {
-                            (0..grid.columns())
-                                .map(move |column| grid[Line(line)][Column(column)].clone())
-                        })
-                        .collect::<Vec<_>>()
-                };
+                let cells = |term: &Term<VoidListener>| resolved(term.grid());
                 assert_eq!(state(&runs), state(&one), "setup {at}, {text:?}");
                 assert!(cells(&runs) == cells(&one), "setup {at}, {text:?}");
             }
+        }
+    }
+
+    /// zgx: plain text written over cells holding extras (combining marks,
+    /// a hyperlink, an underline colour) leaves none of them, and the line
+    /// erased frees every one; so does erasing a line of more of them.
+    #[test]
+    fn plain_text_over_extras_frees_them() {
+        let size = TermSize::new(20, 3);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let extras: &[u8] = "e\u{301}e\u{301}e\u{301}\x1b]8;id=a;https://example.com\x1b\\abc\
+                              \x1b]8;;\x1b\\\x1b[58;2;1;2;3mdef\x1b[0m"
+            .as_bytes();
+        // Every extra a line's cells hold, held weakly: dead once its
+        // allocation is freed. A hyperlink's run is one slot, as is the
+        // underline colour's.
+        let held = |term: &Term<VoidListener>, line: i32| {
+            let row = &term.grid()[Line(line)];
+            assert_eq!((0..20).filter(|&at| row[Column(at)].has_extra()).count(), 9);
+            row.extras
+                .as_slice()
+                .iter()
+                .map(Arc::downgrade)
+                .collect::<Vec<_>>()
+        };
+        parser.advance(&mut term, extras);
+        let overwritten = held(&term, 0);
+        assert_eq!(overwritten.len(), 5);
+        parser.advance(&mut term, b"\x1b[1;1Hplain text over it");
+        let line: String = (0..20)
+            .map(|column| term.grid()[Line(0)][Column(column)].c)
+            .collect();
+        assert_eq!(line, "plain text over it  ");
+        assert!((0..20).all(|column| !term.grid()[Line(0)][Column(column)].has_extra()));
+        // Their slots kept until the line is erased.
+        parser.advance(&mut term, b"\x1b[2K");
+        assert!(
+            overwritten.iter().all(|extra| extra.upgrade().is_none()),
+            "an extra kept"
+        );
+
+        parser.advance(&mut term, b"\x1b[2;1H");
+        parser.advance(&mut term, extras);
+        let cleared = held(&term, 1);
+        assert_eq!(cleared.len(), 5);
+        // The line erased (all of the screen, ED 2, would keep it in the
+        // history).
+        parser.advance(&mut term, b"\x1b[2K");
+        assert!(
+            cleared.iter().all(|extra| extra.upgrade().is_none()),
+            "an extra kept"
+        );
+    }
+
+    /// zgx: no row's table of extras holds more than `max(width, 8)` slots
+    /// after `term` repaints its first `rows` lines in place `times` times
+    /// with `line` (the CUP to each row before it), each row checked by
+    /// `check` after each repaint.
+    fn repaint_in_place(line: &[u8], rows: usize, times: usize, check: impl Fn(&Row<Cell>, usize)) {
+        let size = TermSize::new(30, rows + 1);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let limit = cmp::max(term.columns(), 8);
+        for time in 0..times {
+            for row in 0..rows {
+                parser.advance(&mut term, format!("\x1b[{};1H", row + 1).as_bytes());
+                parser.advance(&mut term, line);
+            }
+            for row in 0..rows {
+                let row = &term.grid()[Line(row as i32)];
+                assert!(
+                    row.extras.len() <= limit,
+                    "{} slots at {time}",
+                    row.extras.len()
+                );
+                check(row, time);
+            }
+        }
+    }
+
+    /// zgx: a TUI repainting hyperlinked text in place (each repaint a link
+    /// of its own, as OSC 8 makes one; a run of it, and cells each with its
+    /// own) keeps each row's table bounded, every cell on the link it was
+    /// written with.
+    #[test]
+    fn hyperlinks_repainted_in_place_keep_their_tables_bounded() {
+        let mut line = b"\x1b]8;id=x;https://e.com\x1b\\a run of a link\x1b]8;;\x1b\\ ".to_vec();
+        for at in 0..12 {
+            line.extend_from_slice(format!("\x1b]8;id={at};https://{at}.com\x1b\\c").as_bytes());
+        }
+        line.extend_from_slice(b"\x1b]8;;\x1b\\");
+        repaint_in_place(&line, 3, 10_000, |row, time| {
+            for at in 0..15 {
+                let link = row.hyperlink(Column(at)).expect("a link");
+                assert_eq!((link.id(), link.uri()), ("x", "https://e.com"), "{time}");
+            }
+            assert_eq!(row.hyperlink(Column(15)), None);
+            for at in 0..12 {
+                let link = row.hyperlink(Column(16 + at)).expect("a link");
+                assert_eq!(link.uri(), format!("https://{at}.com"), "{time}");
+            }
+        });
+    }
+
+    /// zgx: combining marks repainted in place keep each row's table
+    /// bounded, each cell with its mark.
+    #[test]
+    fn combining_marks_repainted_in_place_keep_their_tables_bounded() {
+        repaint_in_place("e\u{301}".repeat(29).as_bytes(), 3, 10_000, |row, time| {
+            for at in 0..29 {
+                assert_eq!(row[Column(at)].c, 'e');
+                assert_eq!(row.zerowidth(Column(at)), Some(&['\u{301}'][..]), "{time}");
+            }
+        });
+    }
+
+    /// zgx: a run written with a hyperlink and an underline colour (a run at
+    /// once or a character at a time) holds one slot of its row's table; a
+    /// mark joined to one of its cells is that cell's alone.
+    #[test]
+    fn a_run_written_with_the_pen_is_one_slot() {
+        for by_character in [false, true] {
+            let size = TermSize::new(80, 3);
+            let mut term = Term::new(Config::default(), &size, VoidListener);
+            let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+            BY_CHARACTER.set(by_character);
+            parser.advance(
+                &mut term,
+                b"\x1b]8;id=a;https://example.com\x1b\\\x1b[4;58;5;3m",
+            );
+            parser.advance(&mut term, "x".repeat(40).as_bytes());
+            BY_CHARACTER.set(false);
+            let row = &term.grid()[Line(0)];
+            assert_eq!(row.extras.len(), 1, "{by_character}");
+            for at in 0..40 {
+                assert_eq!(
+                    row.hyperlink(Column(at)).map(|link| link.uri().to_owned()),
+                    Some("https://example.com".into())
+                );
+                assert_eq!(row.underline_color(Column(at)), Some(Color::Indexed(3)));
+            }
+            assert!(!row[Column(40)].has_extra());
+
+            parser.advance(&mut term, "\u{301}".as_bytes());
+            let row = &term.grid()[Line(0)];
+            assert_eq!(row.extras.len(), 2);
+            assert_eq!(row.zerowidth(Column(39)), Some(&['\u{301}'][..]));
+            assert_eq!(row.underline_color(Column(39)), Some(Color::Indexed(3)));
+            assert!(row.hyperlink(Column(39)).is_some());
+            assert_eq!(
+                row.zerowidth(Column(38)),
+                Some(&[][..]),
+                "the run's left alone"
+            );
+        }
+    }
+
+    /// zgx: DECSC and DECRC save and restore the pen's hyperlink and
+    /// underline colour with the rest of it.
+    #[test]
+    fn a_saved_cursor_keeps_the_pens_hyperlink_and_underline_colour() {
+        let size = TermSize::new(20, 3);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        parser.advance(
+            &mut term,
+            b"\x1b]8;id=a;https://example.com\x1b\\\x1b[58;5;3m\x1b7",
+        );
+        parser.advance(&mut term, b"\x1b]8;;\x1b\\\x1b[0mplain\x1b8linked");
+        let row = &term.grid()[Line(0)];
+        for at in 0..6 {
+            let link = row.hyperlink(Column(at)).expect("a link");
+            assert_eq!((link.id(), link.uri()), ("a", "https://example.com"));
+            assert_eq!(row.underline_color(Column(at)), Some(Color::Indexed(3)));
+        }
+        // The restored pen asked for, as a program would.
+        assert_eq!(
+            sgr_setting(
+                &term.grid.cursor.template,
+                term.grid.cursor.template_extra.as_deref()
+            ),
+            "0;58:5:3"
+        );
+    }
+
+    /// zgx: lines with hyperlinks (a wide character in one), underline
+    /// colours and combining marks keep them as a resize reflows them
+    /// narrower and wider, and are as they were back at their width; no
+    /// table grows past its bound.
+    #[test]
+    fn reflow_keeps_the_cells_extras() {
+        let size = TermSize::new(20, 6);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let line = "\x1b]8;id=l;https://e.com\x1b\\linked 日本 t\x1b]8;;\x1b\\ \x1b[4;58;5;3mund\
+                    \x1b[0m e\u{301}x\r\n";
+        for _ in 0..3 {
+            parser.advance(&mut term, line.as_bytes());
+        }
+        let before = resolved(term.grid());
+        let bounded = |term: &Term<VoidListener>| {
+            let grid = term.grid();
+            let limit = cmp::max(grid.columns(), 8);
+            for line in grid.topmost_line().0..=grid.bottommost_line().0 {
+                assert!(grid[Line(line)].extras.len() <= limit, "line {line}");
+            }
+        };
+        for columns in [7, 4, 13, 9] {
+            term.resize(TermSize::new(columns, 6));
+            bounded(&term);
+            // The link's text, the underline colour's and the marks, read
+            // through the reflowed lines.
+            let (mut linked, mut coloured, mut marked) = (String::new(), 0, 0);
+            let grid = term.grid();
+            for line in grid.topmost_line().0..=grid.bottommost_line().0 {
+                let row = &grid[Line(line)];
+                for at in (0..columns).map(Column) {
+                    let spacer = row[at]
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+                    if row.hyperlink(at).is_some() && !spacer {
+                        linked.push(row[at].c);
+                    }
+                    coloured += (row.underline_color(at) == Some(Color::Indexed(3))) as usize;
+                    marked += (row.zerowidth(at) == Some(&['\u{301}'][..])) as usize;
+                }
+            }
+            assert_eq!(linked, "linked 日本 t".repeat(3), "{columns} columns");
+            assert_eq!((coloured, marked), (9, 3), "{columns} columns");
+            term.resize(TermSize::new(20, 6));
+            bounded(&term);
+            assert!(
+                resolved(term.grid()) == before,
+                "{columns} columns and back"
+            );
         }
     }
 
@@ -3684,6 +4484,94 @@ mod tests {
 
         assert_eq!(term.history_size(), 15);
         assert_eq!(term.grid.cursor.point, Point::new(Line(4), Column(0)));
+    }
+
+    /// zgx: a scroll from the top turns the damage (a line scrolled, not all
+    /// damaged) only while the scroll region is the screen and the view at
+    /// its newest lines: worked out again whenever the region, the view or
+    /// the screen's size changes, whichever way it goes.
+    #[test]
+    fn turning_damage_follows_the_region_view_and_size() {
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 5), VoidListener);
+        // A line at the scroll region's bottom: does the scroll it makes turn
+        // the damage?
+        let turns = |term: &mut Term<VoidListener>| {
+            term.reset_damage();
+            let bottom = term.scroll_region.end.0 - 1;
+            term.goto(bottom, 0);
+            term.linefeed();
+            let turned = term.scrolled() == 1;
+            term.reset_damage();
+            turned
+        };
+        for _ in 0..10 {
+            term.linefeed();
+        }
+        assert!(turns(&mut term), "at first");
+        // The scroll region.
+        term.set_scrolling_region(2, None);
+        assert!(!turns(&mut term), "in a region below the top");
+        term.set_scrolling_region(1, Some(3));
+        assert!(!turns(&mut term), "in a region from the top");
+        term.set_scrolling_region(1, None);
+        assert!(turns(&mut term), "the region the screen again");
+        // The view.
+        term.scroll_display(Scroll::Delta(2));
+        assert!(!turns(&mut term), "scrolled back");
+        term.scroll_display(Scroll::Bottom);
+        assert!(turns(&mut term), "at the bottom again");
+        // The screen's size, which resets the region.
+        term.set_scrolling_region(2, None);
+        term.resize(TermSize::new(10, 6));
+        assert!(turns(&mut term), "resized");
+        // The other screen, whose view is its own.
+        term.scroll_display(Scroll::Delta(2));
+        term.swap_alt();
+        assert!(turns(&mut term), "on the other screen");
+        term.swap_alt();
+        assert!(!turns(&mut term), "back, still scrolled back");
+        term.scroll_display(Scroll::Bottom);
+        // A full reset, which resets the region and the view.
+        term.set_scrolling_region(2, None);
+        term.reset_state();
+        assert!(turns(&mut term), "reset");
+        // The scrollback cleared, which brings the view down.
+        for _ in 0..10 {
+            term.linefeed();
+        }
+        term.scroll_display(Scroll::Delta(2));
+        term.clear_screen(ansi::ClearMode::Saved);
+        assert!(turns(&mut term), "the scrollback cleared");
+        // A scrollback set shorter, which brings it down too.
+        for _ in 0..10 {
+            term.linefeed();
+        }
+        term.scroll_display(Scroll::Delta(2));
+        term.set_options(Config {
+            scrolling_history: 0,
+            ..Config::default()
+        });
+        assert!(turns(&mut term), "the scrollback shortened");
+    }
+
+    /// zgx: past a third of the screen's lines scrolled since the damage
+    /// was reset, all of it is damaged: the rows a frame brings are most of
+    /// what it would build anyway.
+    #[test]
+    fn turning_damage_stops_past_a_third_of_the_screen() {
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 9), VoidListener);
+        term.goto(8, 0);
+        term.reset_damage();
+        for scrolled in 1..=3 {
+            term.linefeed();
+            assert_eq!(term.scrolled(), scrolled);
+            assert!(
+                matches!(term.damage(), TermDamage::Partial(_)),
+                "{scrolled} lines"
+            );
+        }
+        term.linefeed();
+        assert!(matches!(term.damage(), TermDamage::Full), "a fourth line");
     }
 
     #[test]
@@ -4233,12 +5121,12 @@ mod grapheme_tests {
     fn row(term: &Term<Answers>) -> Vec<(String, bool)> {
         let line = &term.grid[Line(0)];
         (0..term.columns())
-            .map(|column| &line[Column(column)])
-            .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
-            .map(|cell| {
-                let mut cluster = String::from(cell.c);
-                cluster.extend(cell.zerowidth().into_iter().flatten());
-                (cluster, cell.flags.contains(Flags::WIDE_CHAR))
+            .map(Column)
+            .filter(|&column| !line[column].flags.contains(Flags::WIDE_CHAR_SPACER))
+            .map(|column| {
+                let mut cluster = String::from(line[column].c);
+                cluster.extend(line.zerowidth(column).into_iter().flatten());
+                (cluster, line[column].flags.contains(Flags::WIDE_CHAR))
             })
             .collect()
     }
@@ -4362,5 +5250,106 @@ mod grapheme_tests {
             ]
         );
         assert_eq!(term.grid.cursor.point, Point::new(Line(0), Column(3)));
+    }
+}
+
+/// zgx: XTGETTCAP's and XTVERSION's answers.
+#[cfg(test)]
+mod report_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::event::{Event, EventListener};
+    use crate::term::test::TermSize;
+    use crate::vte::ansi::Handler;
+
+    /// What the terminal answered.
+    #[derive(Clone, Default)]
+    struct Answers(Arc<Mutex<String>>);
+    impl EventListener for Answers {
+        fn send_event(&self, event: Event) {
+            if let Event::PtyWrite(text) = event {
+                self.0.lock().unwrap().push_str(&text);
+            }
+        }
+    }
+
+    fn answer(names: &[u8]) -> String {
+        let answers = Answers::default();
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 3), answers.clone());
+        term.request_termcap(names);
+        answers.0.lock().unwrap().clone()
+    }
+
+    /// A value and a flag found, each in an answer of its own, the names
+    /// asked for in either case; one not known, and one not hex, answered as
+    /// not found with the name as asked.
+    #[test]
+    fn capabilities_are_answered_a_name_at_a_time() {
+        // TN, RGB, "zz" and a name that isn't hex.
+        assert_eq!(
+            answer(b"544e;524742;7a7a;5x"),
+            "\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\\x1bP1+r524742\x1b\\\
+             \x1bP0+r7a7a\x1b\\\x1bP0+r5x\x1b\\"
+        );
+        // Ms: the clipboard's sequence in terminfo's notation.
+        assert_eq!(
+            answer(b"4D73"),
+            "\x1bP1+r4D73=5C455D35323B25703125733B25703225735C303037\x1b\\"
+        );
+    }
+
+    /// DECRQSS: SGR after a reset, the cursor's style, the scrolling region,
+    /// and not valid for a setting not kept.
+    #[test]
+    fn settings_are_reported_as_set() {
+        let answers = Answers::default();
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 5), answers.clone());
+        term.terminal_attribute(Attr::Undercurl);
+        term.terminal_attribute(Attr::Foreground(Color::Named(NamedColor::BrightBlue)));
+        term.terminal_attribute(Attr::UnderlineColor(Some(Color::Indexed(9))));
+        term.report_setting(b"m");
+        term.set_cursor_style(Some(CursorStyle {
+            shape: CursorShape::Underline,
+            blinking: true,
+        }));
+        term.report_setting(b" q");
+        term.set_scrolling_region(2, Some(4));
+        term.report_setting(b"r");
+        term.report_setting(b"\"p");
+        assert_eq!(
+            *answers.0.lock().unwrap(),
+            "\x1bP1$r0;4:3;94;58:5:9m\x1b\\\x1bP1$r3 q\x1b\\\x1bP1$r2;4r\x1b\\\x1bP0$r\x1b\\"
+        );
+    }
+
+    /// XTVERSION answers with the name and version set, and nothing
+    /// without one.
+    #[test]
+    fn the_version_is_answered_once_set() {
+        let answers = Answers::default();
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 3), answers.clone());
+        term.report_version();
+        assert_eq!(*answers.0.lock().unwrap(), "");
+        let config = Config {
+            version: "zgx(1.0)".into(),
+            ..Config::default()
+        };
+        let mut term = Term::new(config, &TermSize::new(10, 3), answers.clone());
+        term.report_version();
+        assert_eq!(*answers.0.lock().unwrap(), "\x1bP>|zgx(1.0)\x1b\\");
+    }
+
+    /// Every capability reported is found by its name, hex encoded.
+    #[test]
+    fn every_capability_is_found() {
+        for (name, _) in TERMCAPS {
+            let mut hex = String::new();
+            push_hex(&mut hex, name.as_bytes());
+            assert!(
+                answer(hex.as_bytes()).starts_with(&format!("\x1bP1+r{hex}")),
+                "{name}"
+            );
+        }
     }
 }

@@ -9,6 +9,8 @@ pub mod view;
 pub mod virtual_list;
 
 pub mod input;
+#[doc(hidden)]
+pub mod outside_drag;
 pub mod semantics;
 pub mod text;
 pub mod text_edit;
@@ -27,6 +29,7 @@ pub mod components;
 pub mod i18n;
 pub mod issues;
 pub mod local_time;
+mod time;
 pub mod timer;
 
 pub mod env;
@@ -40,6 +43,7 @@ pub mod trace;
 
 pub mod caret_blink;
 pub mod clock;
+pub(crate) mod drag_scroll;
 pub(crate) mod editor_autocorrect;
 pub(crate) mod editor_lines;
 pub(crate) mod editor_menu;
@@ -50,6 +54,7 @@ mod find_text;
 pub(crate) mod paging;
 pub mod rich_text;
 mod scroll_keys;
+pub(crate) mod scroll_reveal;
 pub mod selection;
 pub mod text_layout;
 mod typeahead;
@@ -136,8 +141,11 @@ pub(crate) fn shrink_sparse<K: std::hash::Hash + Eq, V, S: std::hash::BuildHashe
 /// seeded once per process from std's random seed, so keys made to collide
 /// cannot slow every lookup, as they can a fixed hasher's. What depends on
 /// order iterates in the list's own (a map's differs from run to run).
-pub(crate) type KeyHasher = foldhash::fast::FixedState;
-pub(crate) fn key_hasher() -> KeyHasher {
+#[doc(hidden)]
+pub type KeyHasher = foldhash::fast::FixedState;
+/// A [`KeyHasher`] with this process's seed.
+#[doc(hidden)]
+pub fn key_hasher() -> KeyHasher {
     static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     foldhash::fast::FixedState::with_seed(*SEED.get_or_init(|| {
         use std::hash::BuildHasher;

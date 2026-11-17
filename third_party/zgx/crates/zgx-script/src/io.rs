@@ -191,6 +191,11 @@ fn off_thread(
 ) -> mlua::Result<PromiseUd> {
     let (tell, mut heard) = zgx::task::latest::<Result<Option<String>, String>>();
     let promise = pending(lua, name)?;
+    // No threads in the browser (wasm32): the work runs here, and fails
+    // there as its file access does.
+    #[cfg(target_arch = "wasm32")]
+    tell.send(work());
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(move || {
         tell.send(work());
     });
@@ -255,6 +260,36 @@ pub(crate) fn install(
                 Ok(platform(&shared, "ui.clipboard.write")?
                     .0
                     .set_clipboard_text(text))
+            })?,
+        )?;
+    }
+    {
+        let shared = shared.clone();
+        board.set(
+            "read_html",
+            lua.create_function(move |lua, ()| {
+                if !clipboard {
+                    return Err(denied("ui.clipboard.read_html", "Clipboard"));
+                }
+                crate::rules::guard(lua, crate::GuardKind::Clipboard, "read")?;
+                Ok(platform(&shared, "ui.clipboard.read_html")?
+                    .0
+                    .clipboard_html())
+            })?,
+        )?;
+    }
+    {
+        let shared = shared.clone();
+        board.set(
+            "write_html",
+            lua.create_function(move |lua, (text, html): (String, String)| {
+                if !clipboard {
+                    return Err(denied("ui.clipboard.write_html", "Clipboard"));
+                }
+                crate::rules::guard(lua, crate::GuardKind::Clipboard, "write")?;
+                Ok(platform(&shared, "ui.clipboard.write_html")?
+                    .0
+                    .set_clipboard_rich_text(text, html))
             })?,
         )?;
     }

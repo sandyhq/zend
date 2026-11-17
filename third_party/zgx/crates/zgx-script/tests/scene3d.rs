@@ -312,7 +312,7 @@ fn square_glb() -> Vec<u8> {
 /// A script `code` beside `square.glb`, in a directory of its own.
 #[cfg(feature = "gltf")]
 fn beside_a_model(name: &str, code: &str) -> Harness {
-    let dir = std::env::temp_dir().join(format!("zgx-model-{name}-{}", std::process::id()));
+    let dir = common::temp_dir(&format!("model-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("square.glb"), square_glb()).unwrap();
     std::fs::write(dir.join("app.luau"), code).unwrap();
@@ -544,8 +544,7 @@ fn a_window_reads_its_model_off_its_main_thread() {
         fn mkfifo(path: *const std::ffi::c_char, mode: u32) -> i32;
     }
     // Under macOS's temporary directory, a link: found through it all the same.
-    let dir = std::env::temp_dir().join(format!("zgx-model-pipe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::temp_dir("model-pipe");
     std::fs::create_dir_all(&dir).unwrap();
     let pipe = dir.join("buffer.bin");
     let name = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
@@ -595,8 +594,7 @@ fn a_window_reads_its_model_off_its_main_thread() {
 fn a_file_that_is_no_model_says_so_whichever_way_it_is_read() {
     for whole in [true, false] {
         let _whole = whole.then(WholeFrames::on);
-        let dir =
-            std::env::temp_dir().join(format!("zgx-model-bad-{whole}-{}", std::process::id()));
+        let dir = common::temp_dir(&format!("model-bad-{whole}"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("bad.glb"), b"not a model").unwrap();
         std::fs::write(
@@ -824,12 +822,10 @@ fn a_mesh_of_its_own_triangles_is_checked() {
     assert_eq!(made("{ positions = { 0,0,0, 1,0,0, 0,1,0 } }"), "no error");
 }
 
-/// A plugin granted nothing shows a scene of its own triangles, and hears
-/// clicks on them: `ui.scene3d` asks no capability.
-#[test]
-fn a_plugin_granted_nothing_shows_and_picks_its_own_mesh() {
+/// A plugin's scene, of its own triangles, with or without the grant.
+fn plugin_scene(name: &str, grants: Vec<zgx_script::Capability>) -> Harness {
     use zgx_script::{Plugin, ScriptHost};
-    let dir = std::env::temp_dir().join(format!("zgx-scene3d-plugin-{}", std::process::id()));
+    let dir = common::temp_dir(name);
     std::fs::create_dir_all(&dir).unwrap();
     let entry = dir.join("init.luau");
     let plugin = OWN
@@ -842,7 +838,7 @@ fn a_plugin_granted_nothing_shows_and_picks_its_own_mesh() {
         .to_owned()
         + " }\n";
     std::fs::write(&entry, plugin).unwrap();
-    let mut h = Harness::new(move |runtime| {
+    let h = Harness::new(move |runtime| {
         let host = ScriptHost::inline(
             runtime,
             "app",
@@ -851,15 +847,36 @@ fn a_plugin_granted_nothing_shows_and_picks_its_own_mesh() {
         host.set_plugins(vec![Plugin {
             name: "cad".into(),
             entry,
-            grants: vec![],
+            grants,
         }]);
         host
     });
     h.frames(2);
+    h
+}
+
+/// A plugin granted `scene3d` shows a scene of its own triangles, and hears
+/// clicks on them.
+#[test]
+fn a_plugin_granted_scene3d_shows_and_picks_its_own_mesh() {
+    let mut h = plugin_scene("scene3d-plugin", vec![zgx_script::Capability::Scene3d]);
     assert_eq!(h.error(), None);
     assert!(frame_id(&mut h, "scene").is_some(), "{}", h.tree());
     press(&mut h, "scene", (100., 100.), 0.);
     assert_eq!(h.text("clicked"), "0.50");
+}
+
+/// Without the grant, a plugin's `ui.scene3d` is an error saying so, and
+/// nothing of it is drawn.
+#[test]
+fn a_plugin_not_granted_scene3d_is_refused() {
+    let mut h = plugin_scene("scene3d-refused", vec![]);
+    let error = h.error().unwrap_or_default();
+    assert!(
+        error.contains("ui.scene3d: a plugin does this only if the host grants it"),
+        "{error:?}"
+    );
+    assert!(frame_id(&mut h, "scene").is_none(), "{}", h.tree());
 }
 
 /// A mesh with no triangles (a boolean of two solids that don't meet) is a
@@ -883,7 +900,7 @@ fn a_mesh_of_no_triangles_shows_nothing() {
 #[test]
 fn a_plugin_meshes_count_against_its_memory() {
     use zgx_script::{Limits, Plugin, ScriptHost};
-    let dir = std::env::temp_dir().join(format!("zgx-scene3d-budget-{}", std::process::id()));
+    let dir = common::temp_dir("scene3d-budget");
     std::fs::create_dir_all(&dir).unwrap();
     let entry = dir.join("init.luau");
     std::fs::write(

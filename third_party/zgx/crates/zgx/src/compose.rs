@@ -158,6 +158,7 @@ impl Context {
         self.runtime.clone()
     }
     /// A signal holding `initial`, made once as the component mounts.
+    #[cfg_attr(feature = "trace", track_caller)]
     pub fn state<T: 'static>(&self, initial: T) -> Signal<T> {
         self.runtime.signal(initial)
     }
@@ -470,6 +471,10 @@ struct PortalOptions {
     /// `View::at_caret`: placed at the caret of the editor in its trigger,
     /// focus left there.
     at_caret: bool,
+    /// A tooltip in the DOM (`__dom::hover`): shown as the pointer rests on
+    /// its anchor for this long, and whether the pointer may enter it.
+    #[cfg(feature = "dom")]
+    dom_hover: Option<(std::time::Duration, bool)>,
 }
 /// A declarative view: a node to mount, its styles, children, handlers and
 /// semantics. Built with the functions here ([`column()`], [`text()`],
@@ -532,6 +537,9 @@ pub(crate) struct Rare {
     /// through each builder call.
     pub(crate) context_menu_style: Option<Box<Styles>>,
     pub(crate) context_menu_below: Option<bool>,
+    /// Whether its context menu shows (`View::context_menu_open`): written
+    /// as it opens and closes.
+    pub(crate) context_menu_open: Option<crate::reactive::Signal<bool>>,
     /// Whether the pointer stops at the view (`pointer_events`), followed.
     pointer_events: Option<Box<dyn FnMut() -> bool>>,
     scrollbar: Option<bool>,
@@ -568,6 +576,10 @@ pub(crate) struct Rare {
     /// An overlay's panel left out of the accessibility tree (a tooltip's,
     /// which describes its view instead).
     panel_hidden: bool,
+    /// A tooltip's wrapper (`View::tooltip`) around a bare button (one with
+    /// no click handler of its own): a menu opening from it takes it for a
+    /// menu button, as it would the button.
+    wraps_bare_button: bool,
     accessible_label: Option<String>,
     accessibility: Option<Box<Accessibility>>,
     placeholder: Option<Box<dyn FnMut() -> String>>,
@@ -580,6 +592,8 @@ pub(crate) struct Rare {
     input_mode: Option<crate::text_edit::InputMode>,
     spellcheck: Option<Box<dyn FnMut() -> bool>>,
     line_numbers: Option<bool>,
+    /// `View::drop_caret`: whether dragged text moves a text area's caret.
+    drop_caret: Option<bool>,
     /// What a code editor adds to a text area (`View::highlighter`, …).
     code: Option<Box<CodeOptions>>,
     /// `WINDOW_DRAG` (`View::window_drag`), `HOLLOW` (`View::hollow`),
@@ -600,6 +614,15 @@ pub(crate) struct Rare {
     grid_fill: Option<Box<dyn FnMut() -> Option<crate::scene::GridFill>>>,
     /// Conditional children (`child_when`), mounted after the others.
     conditional: Vec<RegionBuilder>,
+    /// What a region is to the DOM (`__dom::Region`), beside its builder.
+    #[cfg(feature = "dom")]
+    pub(crate) dom: Option<Box<__dom::Region>>,
+    /// `conditional`'s, to the DOM.
+    #[cfg(feature = "dom")]
+    pub(crate) dom_conditional: Vec<__dom::Region>,
+    /// Its context menu, to the DOM (`context_menu`, `DOM_ONLY`).
+    #[cfg(feature = "dom")]
+    pub(crate) dom_menu: Option<__dom::DomMenu>,
 }
 /// `Rare::merge_into`'s part for assistive technology (a control a row already
 /// stands for, hidden from outside it): each part the outer view set wins.
@@ -662,6 +685,13 @@ impl Rare {
         if self.context_menu.is_some() {
             inner.context_menu = self.context_menu;
             inner.context_menu_spans = self.context_menu_spans;
+        }
+        #[cfg(feature = "dom")]
+        if self.dom_menu.is_some() {
+            inner.dom_menu = self.dom_menu;
+        }
+        if self.context_menu_open.is_some() {
+            inner.context_menu_open = self.context_menu_open;
         }
         if self.context_menu_style.is_some() {
             inner.context_menu_style = self.context_menu_style;
@@ -732,8 +762,26 @@ impl Rare {
 }
 impl View {
     /// The fields few views set, made on first use.
+    /// A button with no click handler of its own (a menu button, opening a
+    /// menu as it is pressed).
+    pub(crate) fn is_bare_button(&self) -> bool {
+        self.click.is_none() && matches!(self.kind, Kind::Button)
+    }
+    /// Said to be a tooltip's wrapper around a bare button
+    /// (`is_bare_button`).
+    pub(crate) fn wrapping_bare_button(mut self) -> Self {
+        self.rare_mut().wraps_bare_button = true;
+        self
+    }
     pub(crate) fn rare_mut(&mut self) -> &mut Rare {
         self.rare.get_or_insert_default()
+    }
+    /// Whether its translation rests on whole device pixels (`pixel_snap`).
+    #[cfg(feature = "dom")]
+    pub(crate) fn pixel_snaps(&self) -> bool {
+        self.rare
+            .as_ref()
+            .is_some_and(|rare| rare.mount_flags & PIXEL_SNAP != 0)
     }
     /// What a slider moves by: an arrow key moves one step (Page Up and
     /// Down, or Shift with an arrow, ten), and dragging lands on steps from
@@ -1070,6 +1118,42 @@ impl View {
             }
         })
     }
+    /// What a copy or cut out of this editor puts on the clipboard (⌘C and ⌘X,
+    /// the Edit menu, its context menu, `EditorHandle::copy_to_clipboard`):
+    /// `hook` is asked with what is selected and whether it is a cut, and
+    /// gives text with HTML beside it, or none for the selection's plain
+    /// text. A cut deletes the selection either way, one undo step. A
+    /// password field never asks it; nor does an empty selection. (Pin line.)
+    #[doc(hidden)]
+    pub fn on_copy(
+        self,
+        hook: impl Fn(&crate::widgets::CopyRequest) -> Option<crate::widgets::ClipboardContent>
+        + 'static,
+    ) -> Self {
+        self.on_mount(move |handle| {
+            if let Some(ui) = handle.ui.upgrade() {
+                ui.set_copy_hook(handle.node, Rc::new(hook));
+            }
+        })
+    }
+    /// What a copy out of this selectable region (`View::selectable`) puts
+    /// on the clipboard (⌘C, the Edit menu, the selection's context menu,
+    /// `Ui::copy_selection`): `hook` is asked with the selection's text and
+    /// HTML and the text nodes it spans, in order, and gives text with HTML
+    /// beside it, or none for the selection's own. A region without one
+    /// asks nothing. (Pin line.)
+    #[doc(hidden)]
+    pub fn on_selection_copy(
+        self,
+        hook: impl Fn(&crate::widgets::SelectionCopyRequest) -> Option<crate::widgets::ClipboardContent>
+        + 'static,
+    ) -> Self {
+        self.on_mount(move |handle| {
+            if let Some(ui) = handle.ui.upgrade() {
+                ui.set_selection_copy_hook(handle.node, Rc::new(hook));
+            }
+        })
+    }
     /// The item this view is on while focus stays in it (`aria-activedescendant`):
     /// the id of a node, as `id()` names it, or `None`. An editor driving a
     /// list of suggestions (a mention's, `View::at_caret`) keeps focus and
@@ -1183,6 +1267,16 @@ impl View {
         self.children.extend(children);
         self
     }
+    /// `children`, already a vector: taken as it is when this view has none,
+    /// where `children` would move each view (hundreds of bytes) again.
+    #[inline]
+    pub fn children_vec(mut self, mut children: Vec<View>) -> Self {
+        match self.children.is_empty() {
+            true => self.children = children,
+            false => self.children.append(&mut children),
+        }
+        self
+    }
     /// A child that exists only while `select` returns `Some`: built from
     /// its value, mounted directly under this view after its other
     /// children, and removed when it returns `None`. Unlike `switch` it
@@ -1190,11 +1284,20 @@ impl View {
     /// subscription to what `select` reads). A changed value rebuilds the
     /// child; an equal one keeps it. For overlays such as an error banner
     /// (an `absolute` child paints over its siblings and takes no room).
+    #[cfg_attr(feature = "dom", allow(unused_mut))]
     pub fn child_when<K: PartialEq + Clone + 'static>(
         mut self,
         mut select: impl FnMut() -> Option<K> + 'static,
         mut build: impl FnMut(K, &mut Context) -> View + 'static,
     ) -> Self {
+        #[cfg(feature = "dom")]
+        if __dom::DOM_ONLY {
+            let (_, _, region) = __dom::share_when(select, build);
+            self.rare_mut().dom_conditional.push(region);
+            return self;
+        }
+        #[cfg(feature = "dom")]
+        let (mut select, mut build, dom) = __dom::share_when(select, build);
         self.rare_mut()
             .conditional
             .push(Box::new(move |ui: &mut Ui, parent, environment| {
@@ -1233,6 +1336,8 @@ impl View {
                     selected = key;
                 });
             }));
+        #[cfg(feature = "dom")]
+        self.rare_mut().dom_conditional.push(dom);
         self
     }
     /// Name the view, so tests and `ViewHandle::find` can reach its node.
@@ -1433,6 +1538,18 @@ impl View {
     /// (`aria-checked`). A checked radio is where Tab lands in its group.
     pub fn checked_when(mut self, checked: impl FnMut() -> bool + 'static) -> Self {
         self.accessibility_mut().checked = Some(Box::new(checked));
+        self
+    }
+    /// Whether this toggle button is pressed, followed (`aria-pressed`): a
+    /// button that stays on or off, as a toolbar's bold. It reads as a
+    /// toggle button with its state.
+    #[doc(hidden)]
+    pub fn pressed_when(mut self, pressed: impl FnMut() -> bool + 'static) -> Self {
+        // `checked`'s closure, read as pressed (`toggle`): no field of its
+        // own in every element's accessibility.
+        let accessibility = self.accessibility_mut();
+        accessibility.checked = Some(Box::new(pressed));
+        accessibility.toggle = true;
         self
     }
     /// A checkable menu item (`Role::MenuItem` with `checked_when`) that is
@@ -1803,6 +1920,15 @@ impl View {
         self.rare_mut().line_numbers = Some(numbered);
         self
     }
+    /// Whether text dragged over a text area moves its caret to where it
+    /// would drop (on by default). Off, the drag is still taken and drops
+    /// where it is let go, the caret and selection staying where they were
+    /// meanwhile: the app shows where it would drop. (Pin line.)
+    #[doc(hidden)]
+    pub fn drop_caret(mut self, shows: bool) -> Self {
+        self.rare_mut().drop_caret = Some(shows);
+        self
+    }
     fn code_mut(&mut self) -> &mut CodeOptions {
         self.rare_mut().code.get_or_insert_with(Default::default)
     }
@@ -1888,6 +2014,15 @@ impl View {
         self.rare_mut().mount_flags |= WINDOW_DRAG;
         self
     }
+    /// Its translation (a spring's, a tween's, a reactive style's, a drag
+    /// preview's) shows on whole device pixels, so its edges and text don't
+    /// land between them; zgx-script gives it to a box a tween or spring
+    /// drives `x` or `y` of. Its writers set it exactly, and the scene rounds
+    /// it once a frame as it flushes (`Scene::set_pixel_snap`).
+    pub fn pixel_snap(mut self) -> Self {
+        self.rare_mut().mount_flags |= PIXEL_SNAP;
+        self
+    }
     /// Let the pointer select the text in this view and everything it holds,
     /// as CSS's `user-select: text` does: drag across any of its text, a
     /// double press selects a word and a triple press a paragraph, Shift
@@ -1954,6 +2089,29 @@ impl View {
     /// it, only mounted rows copy. For a virtual list.
     pub fn row_text(mut self, text: impl Fn(usize) -> Option<String> + 'static) -> Self {
         self.rare_mut().row_text = Some(std::rc::Rc::new(text));
+        self
+    }
+    /// `row_text`, for a list that also says how many rows it has
+    /// (`count`): a copy's hook asked where a selection ends past them all
+    /// reads the count, building no row.
+    #[doc(hidden)]
+    pub fn row_text_counted(
+        mut self,
+        count: impl Fn() -> usize + 'static,
+        text: impl Fn(usize) -> Option<String> + 'static,
+    ) -> Self {
+        struct Counted<C, T>(C, T);
+        impl<C: Fn() -> usize, T: Fn(usize) -> Option<String>> crate::selection::ListRows
+            for Counted<C, T>
+        {
+            fn text(&self, index: usize) -> Option<String> {
+                (self.1)(index)
+            }
+            fn len(&self) -> Option<usize> {
+                Some((self.0)())
+            }
+        }
+        self.rare_mut().row_text = Some(std::rc::Rc::new(Counted(count, text)));
         self
     }
     /// A virtual list's rows for a selection: their text and its keys.
@@ -2285,10 +2443,13 @@ fn bordered(styles: &Styles) -> bool {
 #[derive(Default)]
 struct CanvasLabels {
     group: Option<NodeId>,
-    /// Each line's node, reused by position, and what it shows now: a line
-    /// drawn as it was touches nothing, so a chart redrawn every frame
-    /// costs what changed.
-    nodes: Vec<(NodeId, crate::canvas::CanvasText)>,
+    /// Each line's node, reused by position.
+    nodes: Vec<NodeId>,
+    /// The drawing they show now, line by line (the canvas's own, shared
+    /// with its node): a line drawn as it was touches nothing, so a chart
+    /// redrawn every frame costs what changed, and no line is copied to be
+    /// compared.
+    shown: Option<std::sync::Arc<crate::canvas::Canvas>>,
     size: (f32, f32),
     view: Option<crate::scene::CanvasView>,
 }
@@ -2297,9 +2458,10 @@ impl CanvasLabels {
         &mut self,
         scene: &mut crate::scene::Scene,
         root: NodeId,
-        texts: &[crate::canvas::CanvasText],
+        content: &std::sync::Arc<crate::canvas::Canvas>,
         (width, height): (f32, f32),
     ) {
+        let texts = content.texts();
         let group = match self.group {
             Some(group) => group,
             None => {
@@ -2330,15 +2492,15 @@ impl CanvasLabels {
                 },
             );
         }
-        for (gone, _) in self.nodes.drain(texts.len().min(self.nodes.len())..) {
-            scene.remove(gone);
+        // In and out of the group, a box of the canvas's size: the walk
+        // stops there (`Scene::append_held`).
+        for gone in self.nodes.drain(texts.len().min(self.nodes.len())..) {
+            scene.remove_held(gone);
         }
+        let was = self.shown.as_ref().map_or(&[][..], |shown| shown.texts());
         for (index, text) in texts.iter().enumerate() {
-            if self
-                .nodes
-                .get(index)
-                .is_some_and(|(_, shown)| shown == text)
-            {
+            // Each node shows the line at its place in the last drawing.
+            if index < self.nodes.len() && was.get(index) == Some(text) {
                 continue;
             }
             let kind = NodeKind::Text {
@@ -2346,14 +2508,13 @@ impl CanvasLabels {
                 color: text.color,
                 font_size: text.size,
             };
-            let node = match self.nodes.get_mut(index) {
-                Some((node, shown)) => {
-                    scene.set_kind(*node, kind);
-                    *shown = text.clone();
-                    *node
+            let node = match self.nodes.get(index) {
+                Some(&node) => {
+                    scene.set_kind(node, kind);
+                    node
                 }
                 None => {
-                    let node = scene.append(
+                    let node = scene.append_held(
                         group,
                         kind,
                         crate::scene::Style {
@@ -2361,18 +2522,27 @@ impl CanvasLabels {
                             ..Default::default()
                         },
                     );
-                    self.nodes.push((node, text.clone()));
+                    self.nodes.push(node);
                     node
                 }
             };
-            scene.set_font(node, text.font.clone());
-            let size = match (text.anchor, text.baseline) {
-                (crate::canvas::TextAnchor::Start, crate::canvas::TextBaseline::Top) => (0., 0.),
+            scene.set_font_from(node, &text.font);
+            // A size its maker knows (a terminal's run on its grid) is
+            // kept, for layout and damage not to measure the text again.
+            if let Some(size) = text.known_size {
+                scene.state_text_size(node, size);
+            }
+            let size = match (text.anchor, text.baseline, text.known_size) {
+                (crate::canvas::TextAnchor::Start, crate::canvas::TextBaseline::Top, _) => (0., 0.),
+                (_, _, Some(size)) => size,
                 _ => scene.measure_text_with_font(&text.text, text.size, None, &text.font),
             };
             let (x, y) = text.origin(size);
             scene.set_transform(node, crate::scene::Transform { x, y });
         }
+        // One count more on the canvas its node holds, not a copy of each
+        // line.
+        self.shown = Some(content.clone());
     }
     /// Pans and zooms the text with its canvas's drawing.
     fn follow(&mut self, scene: &mut crate::scene::Scene, view: crate::scene::CanvasView) {
@@ -2465,6 +2635,8 @@ pub use crate::compose_rich::{
 };
 pub use crate::compose_scrollbar::{ScrollbarEase, ScrollbarStyle};
 pub use crate::compose_tooltip::{Tooltip, TooltipTiming, set_tooltip_timing};
+#[doc(hidden)]
+pub use crate::scroll_reveal::ScrollIntoView;
 /// Reactive inline children; equal resolved content preserves paragraph layout/paint.
 pub fn rich_text_signal(compute: impl FnMut() -> Vec<TextSpan> + 'static) -> View {
     View::new(Kind::RichText(Box::new(compute)))
@@ -3085,11 +3257,21 @@ impl Hold for FocusHold {
         self.0.taken.borrow_mut().take()
     }
 }
+#[cfg_attr(feature = "dom", allow(unused_mut))]
 fn switch_with<K: PartialEq + Clone + 'static, const KEEP_FOCUS: bool, H: Hold>(
     hold: H,
     mut select: impl FnMut() -> K + 'static,
     mut build: impl FnMut(K, &mut Context) -> Option<View> + 'static,
 ) -> View {
+    #[cfg(feature = "dom")]
+    if __dom::DOM_ONLY {
+        let (_, _, region) = __dom::share_switch(select, build);
+        let mut view = __dom::region_only(region);
+        view.contents = Contents::ChildIfUnstyled;
+        return view;
+    }
+    #[cfg(feature = "dom")]
+    let (mut select, mut build, dom) = __dom::share_switch(select, build);
     let mut region = View::new(Kind::Region(Box::new(move |ui, root, environment| {
         let weak = ui.downgrade();
         let runtime = ui.runtime.clone();
@@ -3144,6 +3326,8 @@ fn switch_with<K: PartialEq + Clone + 'static, const KEEP_FOCUS: bool, H: Hold>(
         });
     })));
     region.contents = Contents::ChildIfUnstyled;
+    #[cfg(feature = "dom")]
+    let region = __dom::attach(region, dom);
     region
 }
 /// Keyed children retain their local state and subscriptions across reorder.
@@ -3173,11 +3357,19 @@ pub enum Keys<K> {
 /// [`keyed`] whose keys say how many are the last pass's: a list growing at
 /// its end (a streamed reply's rows) is passed in what it adds, its keys
 /// neither compared, copied nor dropped whole.
+#[cfg_attr(feature = "dom", allow(unused_mut))]
 pub fn keyed_grown<K: Eq + std::hash::Hash + Clone + 'static>(
     mut keys: impl FnMut() -> Keys<K> + 'static,
     mut build: impl FnMut(K, &mut Context) -> View + 'static,
 ) -> View {
-    View::new(Kind::Region(Box::new(move |ui, root, environment| {
+    #[cfg(feature = "dom")]
+    if __dom::DOM_ONLY {
+        let (_, _, region) = __dom::share_keyed(keys, build);
+        return __dom::region_only(region);
+    }
+    #[cfg(feature = "dom")]
+    let (mut keys, mut build, dom) = __dom::share_keyed(keys, build);
+    let view = View::new(Kind::Region(Box::new(move |ui, root, environment| {
         let weak = ui.downgrade();
         let runtime = ui.runtime.clone();
         // Each key's child, where the last pass that saw the key placed it,
@@ -3366,7 +3558,10 @@ pub fn keyed_grown<K: Eq + std::hash::Hash + Clone + 'static>(
             });
             finished = true;
         });
-    })))
+    })));
+    #[cfg(feature = "dom")]
+    let view = __dom::attach(view, dom);
+    view
 }
 /// A `keyed` child: its node, the last pass that showed its key, and where.
 struct Keyed {
@@ -3444,6 +3639,9 @@ impl<K: Eq + 'static, L: Fn() -> Option<usize>> SourceRows<K, L> {
     }
 }
 impl<K: Eq + 'static, L: Fn() -> Option<usize>> crate::selection::ListRows for SourceRows<K, L> {
+    fn len(&self) -> Option<usize> {
+        (self.len)()
+    }
     fn text(&self, index: usize) -> Option<String> {
         if index >= (self.len)().unwrap_or(0) {
             return None;
@@ -3600,6 +3798,52 @@ fn merge_kept<K: Eq + std::hash::Hash + Clone>(
         )
     });
 }
+#[cfg(debug_assertions)]
+thread_local! {
+    static LIST_PASSES: Cell<u64> = const { Cell::new(0) };
+    static LIST_RUNS: Cell<u64> = const { Cell::new(0) };
+}
+/// How many times virtual lists' rows bindings have run so far on this
+/// thread, whether or not they placed anything (`virtual_list_passes`).
+/// Debug builds count; a release build says 0.
+#[doc(hidden)]
+pub fn virtual_list_runs() -> u64 {
+    #[cfg(debug_assertions)]
+    return LIST_RUNS.with(Cell::get);
+    #[cfg(not(debug_assertions))]
+    0
+}
+/// How many times virtual lists have placed their rows so far on this
+/// thread: a test's measure of their work. Debug builds count; a release
+/// build says 0.
+#[doc(hidden)]
+pub fn virtual_list_passes() -> u64 {
+    #[cfg(debug_assertions)]
+    return LIST_PASSES.with(Cell::get);
+    #[cfg(not(debug_assertions))]
+    0
+}
+/// Whether a list's pass would place its rows as they are: its `viewport`
+/// already `width` by `height` (its rows' whole height), and `entries`
+/// holding `keys` alone (each a row already), each placed at its index and
+/// at `width`.
+#[inline(never)]
+fn placed_as<K: Eq + std::hash::Hash>(
+    scene: &crate::scene::Scene,
+    viewport: NodeId,
+    height: f32,
+    entries: &HashMap<K, (NodeId, Signal<usize>, Placed), rustc_hash::FxBuildHasher>,
+    keys: &[(K, usize)],
+    width: f32,
+) -> bool {
+    scene.given_size(viewport) == (Some(width), Some(height))
+        && entries.len() == keys.len()
+        && keys.iter().all(|(key, index)| {
+            entries
+                .get(key)
+                .is_some_and(|(.., placed)| placed.at == Some((*index, width.to_bits())))
+        })
+}
 /// Fixed-height keyed rows; only the visible range plus overscan is mounted.
 /// `count` and `key` track reactive reads. `build` runs once per mounted key;
 /// its index signal updates when that key moves. Offscreen rows are disposed,
@@ -3614,6 +3858,15 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
     build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
 ) -> View {
     assert!(row_height.is_finite() && row_height > 0.0);
+    #[cfg(feature = "dom")]
+    if __dom::DOM_ONLY {
+        let (_, _, _, region) =
+            __dom::share_virtual(offset, row_height, overscan, count, key, build);
+        return __dom::region_only(region);
+    }
+    #[cfg(feature = "dom")]
+    let (count, key, build, dom) =
+        __dom::share_virtual(offset.clone(), row_height, overscan, count, key, build);
     let count = Rc::new(RefCell::new(count));
     let rows = RowSource::new(key, build);
     let source = rows.rows({
@@ -3622,7 +3875,7 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
     });
     let (mut key, mut build, mounted_in) = (rows.key(), rows.build(), rows.mounted_in.clone());
     let count = move || (count.borrow_mut())();
-    View::new(Kind::VirtualList(Box::new(
+    let view = View::new(Kind::VirtualList(Box::new(
         move |ui, root, environment, options: ListOptions| {
             // With spare time its overscan is spare time's too: the frame
             // builds what shows alone.
@@ -3659,7 +3912,27 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
             if !ancestor {
                 ui.scene.borrow_mut().set_scroll_copy(content, true);
             }
-            let window = ancestor.then(|| AncestorWindow::new(ui, root, viewport));
+            let window = ancestor.then(|| Rc::new(AncestorWindow::new(ui, root, viewport)));
+            // The part the view around it shows, worked out apart from the
+            // rows: the view's every step moves every list in it, and most
+            // (scrolled past) show nothing either side of it, so their rows
+            // aren't placed again (`Signal::set` keeps an equal value).
+            let shown = window.as_ref().map(|window| {
+                let shown = ui.signal((0_f32, 0_f32));
+                let read = (shown.clone(), Cell::new(false));
+                let (window, part, extent, weak) = (
+                    window.clone(),
+                    shown.clone(),
+                    extent.clone(),
+                    ui.downgrade(),
+                );
+                ui.bind(root, move || {
+                    if let Some(now) = window.shown(&weak, extent.get()) {
+                        part.set(now);
+                    }
+                });
+                read
+            });
             let stretch = ListStretch::new(
                 ui,
                 root,
@@ -3754,6 +4027,8 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
             );
             let mut handled_reveal = 0;
             ui.bind(root, move || {
+                #[cfg(debug_assertions)]
+                LIST_RUNS.with(|runs| runs.set(runs.get() + 1));
                 let length = count();
                 let (width, mut height) = size.get();
                 let model = crate::virtual_list::VirtualList::new(length, row_height, overscan);
@@ -3767,10 +4042,13 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
                     requested.clamp(0.0, limit)
                 };
                 // The part the view around it shows.
-                if let Some(window) = &window
-                    && let Some(shown) = window.shown(&weak, model.content_height())
-                {
-                    (position, height) = shown;
+                // Subscribed once, for as long as the rows' binding lives, and
+                // read untracked: it reads the part on every run.
+                if let Some((shown, subscribed)) = &shown {
+                    if !subscribed.replace(true) {
+                        shown.subscribe();
+                    }
+                    (position, height) = shown.with_untracked(|part| *part);
                 }
                 let request = navigation
                     .as_ref()
@@ -3845,9 +4123,28 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
                 let Some(mut ui) = weak.upgrade() else {
                     return;
                 };
-                if !ui.scene.borrow().contains(root) {
+                // Scrolled with the view around it, which runs this at each of
+                // its steps: where that shows the rows it placed, each where it
+                // placed it, at the same width and count, all below would be
+                // as it was (a row asked for went to that view, above; a list
+                // the keyboard moves through has its focus to follow).
+                if !ui.scene.borrow().contains(root)
+                    || (fresh == 0
+                        && navigation.is_none()
+                        && window.is_some()
+                        && placed_as(
+                            &ui.scene.borrow(),
+                            viewport,
+                            model.content_height(),
+                            &entries,
+                            &keys,
+                            width,
+                        ))
+                {
                     return;
                 }
+                #[cfg(debug_assertions)]
+                LIST_PASSES.with(|passes| passes.set(passes.get() + 1));
                 runtime.untracked(|| {
                     let _theme = ui.enter_theme(&environment.theme);
                     let mut transaction = MountTransaction::new(&ui, content);
@@ -3976,7 +4273,10 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
             });
         },
     )))
-    .list_rows(source)
+    .list_rows(source);
+    #[cfg(feature = "dom")]
+    let view = __dom::attach(view, dom);
+    view
 }
 // Roll back newly appended roots if a component constructor or initial binding
 // panics. Existing siblings are never removed by this guard. This is ownership
@@ -4250,10 +4550,12 @@ fn mount_portal(
             }
         });
     }
-    // A button with no click handler of its own.
-    let bare = anchor
-        .as_ref()
-        .is_some_and(|a| a.click.is_none() && matches!(a.kind, Kind::Button));
+    // A button with no click handler of its own, or a tooltip's wrapper
+    // around one.
+    let bare = anchor.as_ref().is_some_and(|a| {
+        (a.click.is_none() && matches!(a.kind, Kind::Button))
+            || a.rare.as_ref().is_some_and(|r| r.wraps_bare_button)
+    });
     let anchor = anchor.map(|anchor| mount(ui, owner, *anchor, environment.clone()));
     if let Some(anchor) = anchor {
         ui.listen_popup_soon(anchor);
@@ -5001,6 +5303,8 @@ fn paragraph_effect<const LOCATING: bool>(
         // Room for what it holds, made once: most spans add one run.
         let mut content = String::with_capacity(spans.iter().map(|span| span.text.len()).sum());
         let mut runs = Vec::with_capacity(spans.len());
+        // Whether a span is a box of its own (`TextSpan::inline_box`).
+        let mut box_spans = false;
         let mut links = Vec::new();
         let mut icons = Vec::new();
         let mut spanned = Vec::new();
@@ -5013,8 +5317,8 @@ fn paragraph_effect<const LOCATING: bool>(
             // With an icon, or room after the text other than before it, the
             // room is kept apart from the text's run: `room_after` is then
             // what follows the text. Negative (no room is), otherwise.
-            let (hover, icon, menu, plain, room_after) = match span.extras.take() {
-                None => (None, None, None, false, -1.),
+            let (hover, icon, rare, plain, room_after, boxed) = match span.extras.take() {
+                None => (None, None, None, false, -1., false),
                 Some(extras) => {
                     let extras = *extras;
                     let end = extras.padding_end.unwrap_or(span.padding[0]);
@@ -5028,9 +5332,10 @@ fn paragraph_effect<const LOCATING: bool>(
                     (
                         extras.hover,
                         extras.icon,
-                        extras.menu,
+                        extras.link,
                         extras.plain,
                         if apart { end } else { -1. },
+                        extras.boxed,
                     )
                 }
             };
@@ -5068,13 +5373,14 @@ fn paragraph_effect<const LOCATING: bool>(
                     href: span.href.clone(),
                 });
             }
-            if link || menu.is_some() {
+            // A link, or a run with a menu or a label of its own.
+            if link || rare.is_some() {
                 links.push(crate::compose_rich::Link {
                     range: start..content.len(),
                     action: span.action,
                     href: span.href,
                     styled_hover,
-                    menu,
+                    rare,
                 });
             }
             let mut font = base.font_in(Some(&theme));
@@ -5107,6 +5413,10 @@ fn paragraph_effect<const LOCATING: bool>(
             }
             if let Some(value) = spacing {
                 font.letter_spacing = value;
+            }
+            if boxed {
+                font.features = font.features.with_box_span();
+                box_spans = true;
             }
             // An underlined paragraph underlines its runs (CSS's
             // `text-decoration` reaches inline children).
@@ -5242,9 +5552,12 @@ fn paragraph_effect<const LOCATING: bool>(
         if LOCATING && let Some(kept) = &locating {
             *kept.borrow_mut() = spanned;
         }
-        let rich = crate::rich_text::RichText::new(content.as_str(), runs)
+        let mut rich = crate::rich_text::RichText::new(content.as_str(), runs)
             .expect("normalized inline spans")
             .with_options(base.display);
+        if box_spans {
+            rich = rich.with_box_spans();
+        }
         // Recomputed but unchanged (its inputs animate for a sibling):
         // nothing to lay out, paint, describe or relabel.
         if content_state.with_untracked(|current| {
@@ -5852,8 +6165,10 @@ fn open_element(
         "select_on_focus is only supported on editor views"
     );
     assert!(
-        rare.as_deref().is_none_or(|r| r.line_numbers.is_none()) || is_editor,
-        "line_numbers is only supported on editor views"
+        rare.as_deref()
+            .is_none_or(|r| r.line_numbers.is_none() && r.drop_caret.is_none())
+            || is_editor,
+        "line_numbers and drop_caret are only supported on editor views"
     );
     assert!(
         rare.as_deref().is_none_or(|r| r.code.is_none()) || is_editor,
@@ -6310,7 +6625,16 @@ fn open_element(
             .as_deref()
             .and_then(|r| r.context_menu_below)
             .unwrap_or(false);
-        crate::compose_context_menu::mount(ui, root, build, style, below, environment.clone());
+        let open = rare.as_deref_mut().and_then(|r| r.context_menu_open.take());
+        crate::compose_context_menu::mount(
+            ui,
+            root,
+            build,
+            style,
+            below,
+            open,
+            environment.clone(),
+        );
     }
     for callback in view.events.into_iter().rev() {
         let binding = ui.input.listen_first(root, callback);
@@ -6490,6 +6814,7 @@ fn open_element(
             }
             let mut scene = scene.borrow_mut();
             scene.set_kind(child, NodeKind::Svg(data));
+            scene.mark_drawn_in_box(child);
             scene.set_style(
                 child,
                 crate::scene::Style {
@@ -6527,18 +6852,18 @@ fn open_element(
             if width.is_nan() || height.is_nan() {
                 return;
             }
-            let content = if width > 0. && height > 0. {
+            let content = std::sync::Arc::new(if width > 0. && height > 0. {
                 crate::canvas::drawing_for(&scene, || draw((width, height)))
             } else {
                 crate::canvas::Canvas::new()
-            };
+            });
             let mut scene = scene.borrow_mut();
             if !content.texts().is_empty() || !shown.borrow().nodes.is_empty() {
                 shown
                     .borrow_mut()
-                    .show(&mut scene, root, content.texts(), (width, height));
+                    .show(&mut scene, root, &content, (width, height));
             }
-            scene.set_kind(drawing, NodeKind::Canvas(std::sync::Arc::new(content)));
+            scene.set_kind(drawing, NodeKind::Canvas(content));
             scene.set_style(
                 drawing,
                 crate::scene::Style {
@@ -6622,6 +6947,9 @@ fn open_element(
         }
         if let Some(numbered) = rare.as_deref().and_then(|r| r.line_numbers) {
             editor.set_line_numbers(numbered);
+        }
+        if let Some(shows) = rare.as_deref().and_then(|r| r.drop_caret) {
+            editor.set_drop_caret(shows);
         }
         if let Some(code) = rare.as_deref_mut().and_then(|r| r.code.take()) {
             let CodeOptions {
@@ -6921,6 +7249,8 @@ fn close_element(ui: &mut Ui, opened: Opened) -> NodeId {
         mounted(NodeHandle {
             ui: ui.downgrade(),
             node: root,
+            #[cfg(feature = "dom")]
+            dom: None,
         });
     }
     root
@@ -6941,6 +7271,9 @@ const CONTAINER: u8 = 16;
 /// `Rare::mount_flags`: a press on it leaves focus where it is
 /// (`View::focus_on_press`).
 const KEEPS_FOCUS: u8 = 32;
+/// `Rare::mount_flags`: its translation rests on whole device pixels
+/// (`View::pixel_snap`).
+const PIXEL_SNAP: u8 = 64;
 /// `View::window_drag`, `View::hollow`, `View::focus_on_press`,
 /// `View::container`, and an editor's `autocorrect` and `smart_punctuation`, rare: apart from the element's
 /// common path.
@@ -6987,6 +7320,9 @@ fn mount_flagged(
         ui.input
             .set_options(root, ui.input.options(root).unwrap_or_default());
         ui.input.set_keeps_focus(root);
+    }
+    if flags & PIXEL_SNAP != 0 {
+        ui.scene.borrow_mut().set_pixel_snap(root, true);
     }
 }
 /// `View::window_drag`: a primary press on `region`, or on a descendant
@@ -7179,6 +7515,9 @@ pub(crate) fn focus_movement(
 pub(crate) struct AncestorWindow {
     viewport: NodeId,
     list: Signal<crate::scene::Rect>,
+    /// The innermost scroll view around it, if any: a list it has scrolled
+    /// wholly past shows nothing, told without the list's clips.
+    view: Option<NodeId>,
     /// The innermost scroll view around it (else the window) first, then
     /// the others, the window and the boxes between it and that view.
     around: Vec<Signal<crate::scene::Rect>>,
@@ -7202,11 +7541,13 @@ impl AncestorWindow {
                 .collect();
             (views, clips)
         };
+        let view = views.first().copied();
         views.push(ui.root());
         views.extend(clips);
         Self {
             viewport,
             list: ui.observe_bounds(viewport),
+            view,
             around: views
                 .into_iter()
                 .map(|view| ui.observe_bounds(view))
@@ -7233,7 +7574,17 @@ impl AncestorWindow {
             return (0., 0.);
         }
         let list = scene.world_bounds(self.viewport);
-        match scene.visible_bounds(self.viewport) {
+        // Wholly above or below the view: as `visible_bounds` would tell,
+        // without it (most of a long transcript's lists, every frame).
+        let shown = match self.view {
+            Some(view) if scene.misses_view(self.viewport, list, view) => None,
+            _ => {
+                #[cfg(test)]
+                WINDOW_CLIP_WALKS.with(|walks| walks.set(walks.get() + 1));
+                scene.visible_bounds(self.viewport)
+            }
+        };
+        match shown {
             Some(shown) if shown.height > 0. => {
                 let top = (shown.y - list.y).clamp(0., total);
                 (top, shown.height.min(total - top))
@@ -7831,6 +8182,7 @@ fn mount_image(
         );
         let mut scene = scene.borrow_mut();
         scene.set_kind(bitmap, NodeKind::Image(data));
+        scene.mark_drawn_in_box(bitmap);
         // A crop is a picture past the box: its corners cut that too.
         scene.set_corners_clip(root, crop);
         scene.set_style(
@@ -8304,6 +8656,9 @@ pub(crate) struct Accessibility {
     checked: Option<Box<dyn FnMut() -> bool>>,
     radio_item: bool,
     expanded: Option<Box<dyn FnMut() -> bool>>,
+    /// `View::pressed_when`: `checked` is whether it is pressed, a toggle
+    /// button's state (`aria-pressed`), not a checkbox's.
+    toggle: bool,
     value: Option<Box<dyn FnMut() -> String>>,
     numeric: Option<(f64, f64, NumericValue)>,
     live: Option<Live>,
@@ -8341,6 +8696,7 @@ impl Accessibility {
         if outer.expanded.is_some() {
             inner.expanded = outer.expanded;
         }
+        inner.toggle |= outer.toggle;
         if outer.value.is_some() {
             inner.value = outer.value;
         }
@@ -8407,8 +8763,9 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility, 
         role,
         level,
         selected,
-        checked,
+        mut checked,
         radio_item,
+        toggle,
         expanded,
         value,
         numeric,
@@ -8505,6 +8862,14 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility, 
             });
         });
     }
+    if let Some(mut pressed) = checked.take_if(|_| toggle) {
+        let tree = ui.semantics.clone();
+        ui.bind(root, move || {
+            let pressed = pressed();
+            tree.borrow_mut()
+                .update(root, |node| node.pressed = Some(pressed));
+        });
+    }
     if let Some(mut checked) = checked {
         let tree = ui.semantics.clone();
         let weak = ui.downgrade();
@@ -8554,6 +8919,7 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility, 
                 .update(root, |node| node.expanded = Some(expanded));
         });
     }
+
     if let Some((min, max, mut value)) = numeric {
         let tree = ui.semantics.clone();
         ui.bind(root, move || {
@@ -8691,6 +9057,9 @@ fn name_content(ui: &Ui, scene: &crate::scene::Scene, id: NodeId) {
 pub struct NodeHandle {
     ui: WeakUi,
     node: NodeId,
+    /// A DOM node's measurements, when `zgx-dom` mounted it.
+    #[cfg(feature = "dom")]
+    dom: Option<Rc<dyn __dom::Hooks>>,
 }
 impl NodeHandle {
     /// The mounted node.
@@ -8797,15 +9166,55 @@ impl NodeHandle {
     pub fn refresh_interval(&self) -> Option<std::time::Duration> {
         self.ui.upgrade().map(|ui| ui.refresh_interval())
     }
+    /// What has keyboard focus in its window, and a text field's
+    /// selection (`Ui::focus_snapshot`).
+    #[doc(hidden)]
+    pub fn focus_snapshot(&self) -> Option<crate::widgets::FocusSnapshot> {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            let (node, tag, selection) = dom.focus_snapshot()?;
+            return Some(crate::widgets::FocusSnapshot {
+                node: NodeId::outside_tagged(node, tag),
+                selection,
+            });
+        }
+        self.ui.upgrade()?.focus_snapshot()
+    }
+    /// Focus back where `snapshot` found it in its window
+    /// (`Ui::restore_focus`).
+    #[doc(hidden)]
+    pub fn restore_focus(&self, snapshot: &crate::widgets::FocusSnapshot) -> bool {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            // A snapshot of the document's names a DOM node and its tag.
+            let node = snapshot.node;
+            return dom.restore_focus(node.number(), node.outside_tag(), snapshot.selection);
+        }
+        self.ui
+            .upgrade()
+            .is_some_and(|mut ui| ui.restore_focus(snapshot))
+    }
     /// Whether the node is still in the scene.
     pub fn is_mounted(&self) -> bool {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            return dom.is_mounted();
+        }
         self.ui
             .upgrade()
             .is_some_and(|ui| ui.scene.borrow().contains(self.node))
     }
     /// The node's world bounds, republished after each frame's layout: for
-    /// animating a container to the size of what it holds.
+    /// animating a container to the size of what it holds. Once a frame,
+    /// before paint, as the web's observers: preparations made ahead of the
+    /// frame's (to dispatch input) leave it be, so a handler between two
+    /// frames reads the frame before's. `window_bounds` reads the node as
+    /// the latest layout and scroll left it.
     pub fn observe_bounds(&self) -> Option<Signal<crate::scene::Rect>> {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            return dom.observe_bounds();
+        }
         let ui = self.ui.upgrade()?;
         ui.scene
             .borrow()
@@ -8816,6 +9225,10 @@ impl NodeHandle {
     /// layout that changes it: for what depends on a size alone (a
     /// ResizeObserver), at no cost when only something above it moves.
     pub fn observe_size(&self) -> Option<Signal<(f32, f32)>> {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            return dom.observe_size();
+        }
         let ui = self.ui.upgrade()?;
         ui.scene
             .borrow()
@@ -8828,10 +9241,20 @@ impl NodeHandle {
     pub fn observe_text_geometry(&self) -> Option<Signal<u64>> {
         Some(self.ui.upgrade()?.observe_text_geometry_revision())
     }
+    /// Whether assistive technology reads the UI (`Ui::assistive_technology`),
+    /// as it changes: for what keeps an order only readers meet.
+    pub fn observe_assistive_technology(&self) -> Option<Signal<bool>> {
+        Some(self.ui.upgrade()?.assistive())
+    }
     /// Whether any of the node shows (inside every clip and viewport above
     /// it), republished after each frame's layout: for building what only
-    /// matters on screen.
+    /// matters on screen. Once a frame, before paint, as an
+    /// IntersectionObserver (see `observe_bounds`).
     pub fn observe_visibility(&self) -> Option<Signal<bool>> {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            return dom.observe_visibility(0.);
+        }
         let ui = self.ui.upgrade()?;
         ui.scene
             .borrow()
@@ -8845,6 +9268,10 @@ impl NodeHandle {
     /// scroll into view before it does. A node observed both ways takes the
     /// margin.
     pub fn observe_visibility_within(&self, margin: f32) -> Option<Signal<bool>> {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            return dom.observe_visibility(margin);
+        }
         let ui = self.ui.upgrade()?;
         ui.scene
             .borrow()
@@ -8945,8 +9372,30 @@ impl NodeHandle {
     pub fn snapshot(&self, max_width: u32) -> Option<std::sync::Arc<crate::image::ImageData>> {
         self.ui.upgrade()?.snapshot(self.node, max_width)
     }
+    /// Scroll the scroll views around the node, innermost first, so it shows
+    /// as `how` asks, as the web's `element.scrollIntoView` does: `block`
+    /// down and `inline` across each `Nearest` (as little as shows it all;
+    /// none if it does), `Start`, `Center` or `End`, easing there unless the
+    /// system reduces motion (`animate` says otherwise). Whether any moved:
+    /// a list's row scrolled out of its list (no longer mounted) moves none.
+    /// (Hidden until its API is settled.)
+    #[doc(hidden)]
+    pub fn scroll_into_view(&self, how: ScrollIntoView) -> bool {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            return dom.scroll_into_view(&how);
+        }
+        self.ui
+            .upgrade()
+            .is_some_and(|ui| ui.scroll_node_into_view(self.node, how))
+    }
     /// Keep `resource` until the node is removed, then drop it.
     pub fn retain(&self, resource: impl Any) {
+        #[cfg(feature = "dom")]
+        if let Some(dom) = &self.dom {
+            dom.retain(Box::new(resource));
+            return;
+        }
         if let Some(mut ui) = self.ui.upgrade()
             && ui.scene.borrow().contains(self.node)
         {
@@ -9229,6 +9678,72 @@ pub mod prelude {
 
 #[cfg(test)]
 thread_local! {
+    /// Lists whose shown part `AncestorWindow::window` worked out from
+    /// their clips (not told past without them).
+    static WINDOW_CLIP_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+mod ancestor_window_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A scroll view 200 points high over five lists of 50 rows of 20: as
+    /// it scrolls, only the lists it shows (at most two) work out their
+    /// clips, the rest told past without, and a list coming into view
+    /// builds its rows on the frame it does.
+    #[test]
+    fn lists_scrolled_wholly_past_skip_their_clips() {
+        let mut ui = Ui::new(400., 300.);
+        let offset = ui.signal(0.);
+        let built = Rc::new(RefCell::new(vec![0_usize; 5]));
+        let mut lists = column().w_full();
+        for list in 0..5 {
+            let built = built.clone();
+            lists = lists.child(
+                virtual_list(
+                    ui.signal(0.),
+                    20.,
+                    0,
+                    || 50,
+                    |n| n,
+                    move |_, _, _| {
+                        built.borrow_mut()[list] += 1;
+                        div().w_full().h(20.)
+                    },
+                )
+                .virtualize_in_ancestor()
+                .w_full(),
+            );
+        }
+        ui.mount(scroll(offset.clone()).w(300.).h(200.).child(lists));
+        ui.prepare_frame();
+        for (at, shown) in [(100., 1), (900., 2), (2500., 1), (3900., 2)] {
+            built.borrow_mut().fill(0);
+            WINDOW_CLIP_WALKS.with(|walks| walks.set(0));
+            offset.set(at);
+            ui.prepare_frame();
+            let walks = WINDOW_CLIP_WALKS.with(|walks| walks.get());
+            // Every list's window runs (each moved); only those shown walk.
+            assert!(
+                walks <= shown * 2,
+                "at {at}: {walks} walks for {shown} lists shown"
+            );
+            assert!(
+                walks >= shown,
+                "at {at}: {walks} walks for {shown} lists shown"
+            );
+        }
+        // Back over the seam of the second and third (both away a frame
+        // before): each builds its rows on the frame it comes into view.
+        built.borrow_mut().fill(0);
+        offset.set(1900.);
+        ui.prepare_frame();
+        let counts = built.borrow().clone();
+        assert!(counts[1] > 0 && counts[2] > 0, "{counts:?}");
+    }
+}
+#[cfg(test)]
+thread_local! {
     /// Ancestors `update_button_labels` has looked at.
     static LABEL_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -9254,6 +9769,172 @@ mod button_label_tests {
             ui.semantics.borrow().get(button).unwrap().label,
             "Save deep"
         );
+    }
+}
+#[cfg(test)]
+mod canvas_label_tests {
+    use super::*;
+    use crate::canvas::{Canvas, CanvasText, TextAnchor, TextBaseline};
+    use crate::scene::Color;
+
+    type Runs = Vec<(&'static str, Color)>;
+    /// A screen of `rows` canvases, each absolute in a box a line high (a
+    /// terminal's rows), drawing their runs as text; the middle one's runs
+    /// come from the signal returned.
+    fn screen(rows: usize) -> (Ui, Signal<Runs>, NodeId) {
+        let mut ui = Ui::new(800., 1300.);
+        let runs = ui.signal(vec![
+            ("start", Color(1, 2, 3, 255)),
+            ("end", Color(3, 2, 1, 255)),
+        ]);
+        let lines = (0..rows).map(|row| {
+            let runs = runs.clone();
+            canvas(move |_| {
+                let mut canvas = Canvas::new();
+                let shown = match row == rows / 2 {
+                    true => runs.get(),
+                    false => vec![
+                        ("a line", Color(9, 9, 9, 255)),
+                        ("its end", Color(1, 1, 1, 255)),
+                    ],
+                };
+                for (at, (text, color)) in shown.into_iter().enumerate() {
+                    canvas.text(CanvasText {
+                        text: text.into(),
+                        x: at as f32 * 120.,
+                        y: 0.,
+                        size: 14.,
+                        color,
+                        font: Default::default(),
+                        anchor: TextAnchor::Start,
+                        baseline: TextBaseline::Top,
+                        known_size: None,
+                    });
+                }
+                canvas
+            })
+            .id(if row == rows / 2 { "middle" } else { "row" })
+            .absolute()
+            .left(10.)
+            .top(6. + row as f32 * 19.)
+            .w(780.)
+            .h(19.)
+        });
+        let handle = ui.mount(div().w(800.).h(1300.).child(column().children(lines)));
+        frame(&mut ui);
+        let middle = handle.find("middle").unwrap();
+        std::mem::forget(handle);
+        (ui, runs, middle)
+    }
+    fn frame(ui: &mut Ui) {
+        ui.prepare_frame();
+        ui.scene.borrow_mut().flush();
+    }
+    /// What a canvas's labels show, in order, and where.
+    fn shown(ui: &Ui, root: NodeId) -> Vec<(String, crate::scene::Rect)> {
+        let scene = ui.scene.borrow();
+        let mut texts = Vec::new();
+        let mut stack = vec![root];
+        while let Some(at) = stack.pop() {
+            if let NodeKind::Text { text, .. } = scene.kind(at) {
+                texts.push((text.to_string(), scene.bounds(at)));
+            }
+            stack.extend(scene.children(at).iter().rev().copied());
+        }
+        texts
+    }
+    /// A row's runs coming and going, in other colours, as output scrolls
+    /// it: the frame lays out the row's labels alone, as many measures with
+    /// 30 rows as with 62, each where a row drawn so from the start has it.
+    #[test]
+    fn a_rows_runs_coming_and_going_lay_out_its_labels_alone() {
+        let (red, green, blue) = (
+            Color(200, 0, 0, 255),
+            Color(0, 200, 0, 255),
+            Color(0, 0, 200, 255),
+        );
+        let frames: [Runs; 5] = [
+            vec![("one", red), ("two", green), ("three", blue)],
+            vec![("four", blue)],
+            vec![("five", green), ("six", red)],
+            vec![
+                ("seven", red),
+                ("eight", red),
+                ("nine", green),
+                ("ten", blue),
+            ],
+            vec![("eleven", blue), ("twelve", green)],
+        ];
+        let mut costs = Vec::new();
+        for rows in [30, 62] {
+            let (mut ui, runs, middle) = screen(rows);
+            let mut cost = Vec::new();
+            for now in &frames {
+                let before = ui.scene.borrow().measure_calls;
+                runs.set(now.clone());
+                frame(&mut ui);
+                cost.push(ui.scene.borrow().measure_calls - before);
+                let (mut fresh, fresh_runs, fresh_middle) = screen(rows);
+                fresh_runs.set(now.clone());
+                frame(&mut fresh);
+                assert_eq!(
+                    shown(&ui, middle),
+                    shown(&fresh, fresh_middle),
+                    "{rows} rows"
+                );
+            }
+            costs.push(cost);
+        }
+        assert_eq!(costs[0], costs[1], "flat as the screen grows: {costs:?}");
+    }
+    /// What a canvas's labels draw, in order, by node: their text and colour.
+    fn drawn(ui: &Ui, root: NodeId) -> Vec<(NodeId, String, Color)> {
+        let scene = ui.scene.borrow();
+        let mut texts = Vec::new();
+        let mut stack = vec![root];
+        while let Some(at) = stack.pop() {
+            if let NodeKind::Text { text, color, .. } = scene.kind(at) {
+                texts.push((at, text.to_string(), *color));
+            }
+            stack.extend(scene.children(at).iter().rev().copied());
+        }
+        texts
+    }
+    /// A canvas drawn again is a new drawing each time, and its labels are
+    /// held to the last one, not the first: a line changed and changed
+    /// back, or kept in its text and drawn in another colour, shows what
+    /// the drawing now has, each line keeping its node.
+    #[test]
+    fn labels_follow_the_last_drawing_not_the_first() {
+        let (red, green) = (Color(200, 0, 0, 255), Color(0, 200, 0, 255));
+        let (mut ui, runs, middle) = screen(9);
+        let frames: [Runs; 6] = [
+            vec![("same", red), ("first", red)],
+            vec![("same", red), ("second", red)],
+            // Back to the first drawing's line: drawn again, not taken as
+            // unchanged since the first.
+            vec![("same", red), ("first", red)],
+            // Its text kept, its colour not.
+            vec![("same", green), ("first", red)],
+            vec![("same", green), ("first", red), ("third", green)],
+            vec![("same", green)],
+        ];
+        let mut nodes: Vec<NodeId> = Vec::new();
+        for now in &frames {
+            runs.set(now.clone());
+            frame(&mut ui);
+            let shown = drawn(&ui, middle);
+            let texts: Vec<_> = shown.iter().map(|(_, t, c)| (t.clone(), *c)).collect();
+            let expected: Vec<_> = now.iter().map(|(t, c)| (t.to_string(), *c)).collect();
+            assert_eq!(texts, expected);
+            // Reused by place: the lines both drawings have keep their nodes.
+            for (at, (node, ..)) in shown.iter().enumerate() {
+                if let Some(was) = nodes.get(at) {
+                    assert_eq!(node, was, "line {at} kept its node");
+                }
+            }
+            nodes = shown.iter().map(|(node, ..)| *node).collect();
+        }
     }
 }
 #[cfg(test)]
@@ -9580,3 +10261,8 @@ mod keyed_removal_tests {
         parent.set(None);
     }
 }
+/// Views read out for `zgx-dom` (hidden plumbing, not API).
+#[cfg(feature = "dom")]
+#[doc(hidden)]
+#[path = "dom.rs"]
+pub mod __dom;

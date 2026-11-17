@@ -1,5 +1,7 @@
 //! Input, focus, pointer and drag. One test binary for the area (see AGENTS.md):
 //! a test file goes in the group for its area, listed here.
+#[path = "../acted_input.rs"]
+mod acted_input;
 #[path = "../actions.rs"]
 mod actions;
 #[path = "../active_disable_lifecycle.rs"]
@@ -20,12 +22,16 @@ mod cursors;
 mod document_events;
 #[path = "../drag_drop.rs"]
 mod drag_drop;
+#[path = "../drag_scroll.rs"]
+mod drag_scroll;
 #[path = "../focus_groups.rs"]
 mod focus_groups;
 #[path = "../focus_removal.rs"]
 mod focus_removal;
 #[path = "../focus_visible.rs"]
 mod focus_visible;
+#[path = "../hit_icons.rs"]
+mod hit_icons;
 #[path = "../hit_shared_edge.rs"]
 mod hit_shared_edge;
 #[path = "../hit_targets.rs"]
@@ -46,10 +52,14 @@ mod hover_subtree;
 mod key_activation_target;
 #[path = "../native_pointer.rs"]
 mod native_pointer;
+#[path = "../observed_once_a_frame.rs"]
+mod observed_once_a_frame;
 #[path = "../pointer_drag_buttons.rs"]
 mod pointer_drag_buttons;
 #[path = "../pointer_lock.rs"]
 mod pointer_lock;
+#[path = "../scroll_into_view.rs"]
+mod scroll_into_view;
 #[path = "../switch_keeping_focus.rs"]
 mod switch_keeping_focus;
 #[path = "../zoom.rs"]

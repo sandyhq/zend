@@ -144,6 +144,35 @@ pub struct ShapeBuffer {
 }
 
 impl ShapeBuffer {
+    /// zgx patch: about the bytes it holds on the heap between runs: cached
+    /// shape plans, harfrust's buffer, and the spans, words and lines it
+    /// reuses (each with what it holds), for a memory report.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let word = |w: &ShapeWord| w.glyphs.capacity() * size_of::<ShapeGlyph>();
+        let span = |s: &ShapeSpan| {
+            s.words.capacity() * size_of::<ShapeWord>()
+                + s.words.iter().map(word).sum::<usize>()
+                + s.decoration_spans.capacity() * size_of::<(Range<usize>, GlyphDecorationData)>()
+        };
+        let line = |l: &VisualLine| l.ranges.capacity() * size_of::<VlRange>();
+        self.shape_plan_cache.capacity() * size_of::<(fontdb::ID, harfrust::ShapePlan)>()
+            + self.shape_plan_cache.iter().map(|(_, plan)| plan.heap_bytes()).sum::<usize>()
+            + self.harfrust_buffer.as_ref().map_or(0, harfrust::UnicodeBuffer::heap_bytes)
+            + self.scripts.capacity() * size_of::<Script>()
+            + self.spans.capacity() * size_of::<ShapeSpan>()
+            + self.spans.iter().map(span).sum::<usize>()
+            + self.words.capacity() * size_of::<ShapeWord>()
+            + self.words.iter().map(word).sum::<usize>()
+            + self.hyphenation.as_ref().map_or(0, |h| {
+                size_of::<Hyphenation>()
+                    + h.points.capacity() * size_of::<((usize, usize), Vec<u16>)>()
+                    + h.points.iter().map(|p| p.1.capacity() * 2).sum::<usize>()
+                    + h.soft.capacity() * size_of::<(usize, usize)>()
+            })
+            + (self.visual_lines.capacity() + self.cached_visual_lines.capacity())
+                * size_of::<VisualLine>()
+            + self.visual_lines.iter().chain(&self.cached_visual_lines).map(line).sum::<usize>()
+    }
     /// zgx patch: gives back what the longest text shaped lately left in these
     /// buffers, its lines' lists above all. They fill again as they're needed.
     pub(crate) fn rest(&mut self) {
@@ -613,7 +642,7 @@ fn shape_run(
         None => {
             // zgx patch: its family has no face of its own: what its search
             // found for runs of these scripts.
-            if let Some((font, place)) = font_iter.font_system().first_fallback(&attrs, &scripts) {
+            if let Some((font, place)) = font_iter.first_fallback(&attrs, &scripts) {
                 font_iter.pass_to(place);
                 font
             } else {
@@ -632,9 +661,7 @@ fn shape_run(
                     font_iter.font_system().keep_first_font(&attrs, &fonts, &font);
                 } else if attrs.family != Family::Monospace && font_iter.past_default() {
                     let place = font_iter.place();
-                    font_iter
-                        .font_system()
-                        .keep_first_fallback(&attrs, &scripts, &font, place);
+                    font_iter.keep_first_fallback(&attrs, &scripts, &font, place);
                 }
                 font
             }
@@ -2003,6 +2030,9 @@ pub struct ShapeLine {
     /// `BufferLine::set_inline_boxes`): its lines that hold one take CSS's
     /// line box (`inline_line_box`).
     pub boxes: bool,
+    /// zgx: each of its lines takes CSS's line box
+    /// (`BufferLine::set_css_line_box`), holding a box or not.
+    pub css: bool,
     pub spans: Vec<ShapeSpan>,
     pub metrics_opt: Option<Metrics>,
     ellipsis_span: Option<ShapeSpan>,
@@ -2144,6 +2174,7 @@ impl ShapeLine {
         Self {
             rtl: false,
             boxes: false,
+            css: false,
             spans: Vec::default(),
             metrics_opt: None,
             ellipsis_span: None,
@@ -3161,9 +3192,10 @@ impl ShapeLine {
         font_size: f32,
         glyphs: &mut [LayoutGlyph],
     ) -> Option<(f32, f32)> {
-        if !glyphs
-            .iter()
-            .any(|g| g.cache_key_flags.contains(CacheKeyFlags::INLINE_BOX))
+        if !self.css
+            && !glyphs
+                .iter()
+                .any(|g| g.cache_key_flags.contains(CacheKeyFlags::INLINE_BOX))
         {
             return None;
         }
@@ -4291,7 +4323,7 @@ impl ShapeLine {
             }
 
             // zgx: a line holding an inline box takes CSS's line box.
-            if self.boxes {
+            if self.boxes || self.css {
                 if let Some((above, below)) =
                     self.inline_line_box(visual_line, hyphenation.as_deref(), font_size, &mut glyphs)
                 {

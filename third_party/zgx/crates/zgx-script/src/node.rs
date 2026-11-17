@@ -52,6 +52,28 @@ pub(crate) struct Node {
     /// Handlers, boxed: most nodes have none (read them with `events()`).
     pub events: Option<Box<Events>>,
     pub focusable: Option<bool>,
+    /// `bg_shader`, `shader_params`, `layer_shader` and `layer_params`
+    /// (boxed: few nodes have any).
+    pub shaders: Option<Box<Shaders>>,
+    /// `window_drag = true` (`WINDOW_DRAG`) and `focus_on_press = false`
+    /// (`KEEPS_FOCUS`): rare, tested together where the node is styled.
+    pub press_flags: u8,
+    /// `hook = false` or `private = true`: no plugin may target it
+    /// (`ui.contribute { target }`), whatever matches it.
+    pub private: bool,
+    /// `selectable = true`: the pointer selects the text in it (`false`
+    /// keeps a part of a selectable node out).
+    pub selectable: Option<bool>,
+    /// Where the script created it (`app.luau:12`), recorded only while the
+    /// layout inspector or layout warnings want it.
+    pub source: Option<Rc<str>>,
+    /// What few nodes set (`NodeRare`), boxed: read with `rare()`.
+    pub rare: Option<Box<NodeRare>>,
+}
+/// A node's fields few nodes set, boxed: they took nearly half of every
+/// node's bytes, and a script's rows make thousands of nodes.
+#[derive(Clone, Default)]
+pub(crate) struct NodeRare {
     /// `pointer_events = "none"`: the pointer passes through. A literal, a
     /// state or a function (true or `"auto"` stops it, false or `"none"`
     /// lets it through).
@@ -65,26 +87,6 @@ pub(crate) struct Node {
     /// `mask = { bitmap, w, h, x, y }`: the content shows through the
     /// bitmap's alpha, drawn at `w`×`h` from (`x`, `y`).
     pub mask: Option<Mask>,
-    /// `bg_shader`, `shader_params`, `layer_shader` and `layer_params`
-    /// (boxed: few nodes have any).
-    pub shaders: Option<Box<Shaders>>,
-    /// `window_drag = true` (`WINDOW_DRAG`) and `focus_on_press = false`
-    /// (`KEEPS_FOCUS`): rare, tested together where the node is styled.
-    pub press_flags: u8,
-    /// `hook = false` or `private = true`: no plugin may target it
-    /// (`ui.contribute { target }`), whatever matches it.
-    pub private: bool,
-    /// `selectable = true`: the pointer selects the text in it (`false`
-    /// keeps a part of a selectable node out).
-    pub selectable: Option<bool>,
-    /// `selection_color`, `selected_text_color`: few nodes have them.
-    pub selection_colors: Option<Box<[Option<Source>; 2]>>,
-    /// `tooltip = "text" | node`, `tooltip_placement`: shown over it while
-    /// the pointer rests on it. Boxed: few nodes have one.
-    pub tooltip: Option<Box<Tooltip>>,
-    /// Where the script created it (`app.luau:12`), recorded only while the
-    /// layout inspector or layout warnings want it.
-    pub source: Option<Rc<str>>,
     /// `theme = …`: the subtree's theme scope.
     pub theme: Option<ThemeSpec>,
     /// `provide = { name = value }`: values the components and rows built
@@ -93,6 +95,25 @@ pub(crate) struct Node {
     /// `variants = …` chosen by state, with interaction styles: they follow
     /// it (see `crate::variants`).
     pub variant_interaction: Option<Rc<crate::variants::Selection>>,
+    /// `selection_color`, `selected_text_color`: few nodes have them.
+    pub selection_colors: Option<Box<[Option<Source>; 2]>>,
+    /// `tooltip = "text" | node`, `tooltip_placement`: shown over it while
+    /// the pointer rests on it. Boxed: few nodes have one.
+    pub tooltip: Option<Box<Tooltip>>,
+}
+impl NodeRare {
+    pub(crate) const NONE: NodeRare = NodeRare {
+        pointer_events: None,
+        disabled: None,
+        layout: None,
+        layout_id: None,
+        mask: None,
+        theme: None,
+        provide: None,
+        variant_interaction: None,
+        selection_colors: None,
+        tooltip: None,
+    };
 }
 /// What `theme = …` gives a subtree: fixed, or a state or function that
 /// computes it (the scope follows).
@@ -351,6 +372,29 @@ impl UserData for WebUd {
             });
             Ok(())
         });
+        // `web:clear_site_data(url)`: a promise of how many of the
+        // platform's records for the url's site went (`WebView::clear_site_data`).
+        methods.add_method("clear_site_data", |lua, w, url: String| {
+            let (tell, mut heard) = zgx::task::latest::<Result<usize, String>>();
+            let promise = crate::calls::pending(lua, "web:clear_site_data".to_owned())?;
+            w.0.clear_site_data(&url, move |result| {
+                tell.send(result);
+            });
+            crate::calls::settle_failing(lua, &promise, async move {
+                match heard.recv().await {
+                    Some(Ok(count)) => Ok(Value::Num(count as f64)),
+                    Some(Err(message)) => Err(crate::errors::Failure::new(
+                        crate::errors::Kind::Io,
+                        message,
+                    )),
+                    None => Err(crate::errors::Failure::new(
+                        crate::errors::Kind::Io,
+                        "the web view went before it answered".to_owned(),
+                    )),
+                }
+            })?;
+            Ok(crate::calls::PromiseUd(promise))
+        });
     }
 }
 /// JSON as script data (objects as maps, arrays as lists).
@@ -433,6 +477,9 @@ pub(crate) struct Shaders {
     pub layer: Option<Arc<zgx::decoration::FillShader>>,
     /// `layer_params`: the layer shader's sixteen values, as four vec4s.
     pub layer_params: Option<[[f32; 4]; 4]>,
+    /// Its parameters given as theme colours: the engine's drive resolves
+    /// them (`ShaderDrive::tokens`), and follows the theme.
+    pub layer_tokens: [Option<zgx::theme::TokenId>; 4],
     /// `layer_bleed`: how far past the box the layer shader paints.
     pub layer_bleed: Option<f32>,
     /// `layer_reach`: how far past that its `zgx_backdrop` reads.
@@ -449,6 +496,46 @@ pub(crate) struct GlassSpec {
     pub radius: Option<Source>,
     /// Each corner's own (`{ tl, tr, br, bl }` or four numbers).
     pub corners: Option<Source>,
+}
+/// `ui.map`, made the first time a script names it.
+pub(crate) fn install_map(lua: &Lua, ui: &Table) -> mlua::Result<()> {
+    ui.set(
+        "map",
+        lua.create_function(|lua, (state, opts): (mlua::Value, Table)| {
+            let source = expect_readable(&state, "ui.map's source")?;
+            let env = env(lua)?;
+            let end = |value: mlua::Value, what: &str| -> mlua::Result<MapEnd> {
+                if let Some(state) = state_of(&value) {
+                    return Ok(MapEnd::State(state));
+                }
+                match value {
+                    mlua::Value::Integer(n) => Ok(MapEnd::Num(n as f64)),
+                    mlua::Value::Number(n) => Ok(MapEnd::Num(n)),
+                    mlua::Value::Function(f) => Ok(MapEnd::State(computed(lua, &env, f))),
+                    other => Err(mlua::Error::runtime(format!(
+                        "ui.map's {what} ends are numbers, states or functions, not {}",
+                        other.type_name()
+                    ))),
+                }
+            };
+            let range = |what: &str| -> mlua::Result<[MapEnd; 2]> {
+                let Some(range) = opts.get::<Option<Table>>(what)? else {
+                    return Err(mlua::Error::runtime(format!(
+                        "ui.map needs `{what} = {{ start, end }}`"
+                    )));
+                };
+                Ok([end(range.get(1)?, what)?, end(range.get(2)?, what)?])
+            };
+            let spec = MapSpec {
+                source,
+                from: range("from")?,
+                to: range("to")?,
+                clamp: opts.get::<Option<bool>>("clamp")?.unwrap_or(false),
+            };
+            lua.create_userdata(MapUd(Rc::new(spec)))
+        })?,
+    )?;
+    Ok(())
 }
 /// `ui.glass`, made the first time a script names it.
 pub(crate) fn install_glass(lua: &Lua, ui: &Table) -> mlua::Result<()> {
@@ -689,21 +776,12 @@ impl Node {
             refs: Vec::new(),
             events: None,
             focusable: None,
-            pointer_events: None,
-            disabled: None,
-            layout: None,
-            layout_id: None,
-            mask: None,
             shaders: None,
             press_flags: 0,
             private: false,
             selectable: None,
-            selection_colors: None,
-            tooltip: None,
             source: None,
-            theme: None,
-            provide: None,
-            variant_interaction: None,
+            rare: None,
         }
     }
     /// How the layout inspector names it: its kind, `#id` and `.class`es.
@@ -729,11 +807,14 @@ impl Node {
     /// only those carry an element and its animated values.
     /// Whether layout moves animate: `layout = "position"` or a `layout_id`.
     pub fn tracks_layout(&self) -> bool {
-        self.layout_id.is_some() || self.layout.as_ref().is_some_and(|l| l.position)
+        self.rare().layout_id.is_some() || self.rare().layout.as_ref().is_some_and(|l| l.position)
     }
     /// Whether the node has a box whose size animates (`layout = "height"`).
     pub fn sizes_layout(&self) -> bool {
-        self.layout.as_ref().is_some_and(|l| l.width || l.height)
+        self.rare()
+            .layout
+            .as_ref()
+            .is_some_and(|l| l.width || l.height)
     }
     pub fn targetable(&self) -> bool {
         self.id.is_some()
@@ -745,6 +826,14 @@ impl Node {
     }
     pub fn events(&self) -> &Events {
         self.events.as_deref().unwrap_or(&Events::NONE)
+    }
+    /// What few nodes set, none if it has no box of them.
+    pub fn rare(&self) -> &NodeRare {
+        self.rare.as_deref().unwrap_or(&NodeRare::NONE)
+    }
+    /// What few nodes set, its box made if it had none.
+    pub fn rare_mut(&mut self) -> &mut NodeRare {
+        self.rare.get_or_insert_default()
     }
     /// Animations, scroll offsets, widget bindings and overlays need a
     /// component context.
@@ -772,11 +861,15 @@ impl Node {
             _ => false,
         }) || self.kind.library_needs_context()
             || self.props.iter().any(|(_, s)| matches!(s, Source::Anim(_)))
+            // `context_menu_open`: its state bridged in the component.
+            || (self.events.as_ref())
+                .and_then(|events| events.rare.as_ref())
+                .is_some_and(|rare| rare.context_menu_open.is_some())
             // An icon's tint may be a theme token: it reads the scope.
             || matches!(self.kind, Kind::Svg { .. })
                 && self.props.iter().any(|(p, _)| *p == Prop::Tint)
             // A sweeping mask runs on the component's frame clock.
-            || self.mask.as_ref().is_some_and(|m| m.sweep.is_some())
+            || self.rare().mask.as_ref().is_some_and(|m| m.sweep.is_some())
             // So does a shader the engine keeps up.
             || self.shaders.as_ref().is_some_and(|s| s.drive.is_some())
     }
@@ -879,6 +972,32 @@ pub(crate) struct Events {
     /// it comes within that many points of it (an IntersectionObserver's
     /// `rootMargin`): for building what is about to scroll in.
     pub visible_margin: Option<f32>,
+    /// Drag and drop's handlers (`Drags`), boxed: most nodes have none
+    /// (read them with `drags()`).
+    pub drags: Option<Box<Drags>>,
+    /// `fn({ x, y, local_x, local_y }) -> { menu_item, … }`: a secondary
+    /// click (control-click on macOS) shows what it returns as a menu at
+    /// the pointer; nothing returned, no menu.
+    pub context_menu: Option<Function>,
+    /// `context_menu_style = { bg, rounded, p, backdrop_blur, … }`: the
+    /// menu panel's styles (plain values).
+    pub context_menu_style: Option<Styles>,
+    /// `context_menu_below = true`: the menu opens under the node (a tab's),
+    /// not at the pointer.
+    pub context_menu_below: bool,
+    /// `sound = click`: what plays on the `ui` bus as the node is
+    /// activated, before `on_click` (the `audio` feature).
+    #[cfg(feature = "audio")]
+    pub sound: Option<crate::audio::SoundProp>,
+    /// Whether any input handler is set (`any_input`): set with them, so
+    /// every node reads one flag rather than a dozen handlers.
+    pub input: bool,
+}
+/// A node's drag and drop handlers, boxed in its `Events`: the dozen of
+/// them took more than half of every handler's box, which a row with just
+/// an `on_click` paid for.
+#[derive(Default, Clone)]
+pub(crate) struct Drags {
     /// Drag and drop within the window (payloads are script values):
     /// `on_drag() -> payload` starts a drag after a 4-point move;
     /// `drag_preview(payload) -> node` follows the pointer;
@@ -912,19 +1031,23 @@ pub(crate) struct Events {
     /// platform's spring-loading delay, or Space was pressed (returning
     /// `false` declines: it does not spring open).
     pub drag_spring: Option<Function>,
-    /// `fn({ x, y, local_x, local_y }) -> { menu_item, … }`: a secondary
-    /// click (control-click on macOS) shows what it returns as a menu at
-    /// the pointer; nothing returned, no menu.
-    pub context_menu: Option<Function>,
-    /// `context_menu_style = { bg, rounded, p, backdrop_blur, … }`: the
-    /// menu panel's styles (plain values).
-    pub context_menu_style: Option<Styles>,
-    /// `context_menu_below = true`: the menu opens under the node (a tab's),
-    /// not at the pointer.
-    pub context_menu_below: bool,
-    /// Whether any input handler is set (`any_input`): set with them, so
-    /// every node reads one flag rather than a dozen handlers.
-    pub input: bool,
+}
+impl Drags {
+    const NONE: Drags = Drags {
+        drag: None,
+        drag_preview: None,
+        drag_preview_anchor: None,
+        drag_preview_offset: None,
+        drag_end: None,
+        drag_export: None,
+        drag_outside: None,
+        drag_moves_window: None,
+        drop: None,
+        drop_when: None,
+        drag_over: None,
+        drag_leave: None,
+        drag_spring: None,
+    };
 }
 /// Handlers few nodes have, boxed: a node's `Events` stay small, and one
 /// check covers them all for a node with none (`with_rare`).
@@ -942,6 +1065,13 @@ pub(crate) struct RareEvents {
     /// outside the window (Finder, Explorer, a file manager), each a
     /// `File`; the innermost node with one takes them.
     pub file_drop: Option<Handler>,
+    /// `fn({ text, html, leaves })` on a selectable region: what a copy out
+    /// of it puts on the clipboard, `{ text, html }`, or nil for the
+    /// selection's own (`View::on_selection_copy`).
+    pub copy: Option<Function>,
+    /// `context_menu_open = state`: kept saying whether its context menu
+    /// shows; written false, the menu closes.
+    pub context_menu_open: Option<Signal<Value>>,
     /// `fn(over)`: files dragged from outside the window come over it
     /// (`true`), then leave it, are dropped or the drag ends (`false`).
     pub file_hover: Option<Handler>,
@@ -984,33 +1114,29 @@ impl Events {
         resize: None,
         visible: None,
         visible_margin: None,
-        drag: None,
-        drag_preview: None,
-        drag_preview_anchor: None,
-        drag_preview_offset: None,
-        drag_end: None,
-        drag_export: None,
-        drag_outside: None,
-        drag_moves_window: None,
-        drop: None,
-        drop_when: None,
-        drag_over: None,
-        drag_leave: None,
-        drag_spring: None,
+        drags: None,
         context_menu: None,
         context_menu_style: None,
         context_menu_below: false,
+        #[cfg(feature = "audio")]
+        sound: None,
         input: false,
     };
     pub fn any_input(&self) -> bool {
         self.input
     }
     pub fn any_drag(&self) -> bool {
-        self.drag.is_some()
-            || self.drop.is_some()
-            || self.drag_over.is_some()
-            || self.drag_leave.is_some()
-            || self.drag_spring.is_some()
+        self.drags.as_deref().is_some_and(|d| {
+            d.drag.is_some()
+                || d.drop.is_some()
+                || d.drag_over.is_some()
+                || d.drag_leave.is_some()
+                || d.drag_spring.is_some()
+        })
+    }
+    /// Its drag and drop handlers, none if it has no box of them.
+    pub fn drags(&self) -> &Drags {
+        self.drags.as_deref().unwrap_or(&Drags::NONE)
     }
 }
 
@@ -1083,6 +1209,9 @@ pub(crate) struct InputRare {
     /// substitutions as it is typed (`View::autocorrect`, `smart_punctuation`).
     pub(crate) autocorrect: bool,
     pub(crate) smart_punctuation: bool,
+    /// `drop_caret = false` (internal): text dragged over a textarea leaves
+    /// its caret where it is (`View::drop_caret`).
+    pub(crate) no_drop_caret: bool,
 }
 
 #[derive(Clone)]
@@ -1466,6 +1595,15 @@ pub(crate) struct SpanRare {
     /// `fade_in = { start = ui.now(), ms = 200, power = 1.6 }`: its text
     /// fading in, drawn in Rust a frame at a time (`TextSpan::fade_in`).
     pub fade: Option<zgx::compose::TextFade>,
+    /// `box = true`: a box of its own (CSS's `display: inline-flex`), its
+    /// line height and padding its line's (`TextSpan::inline_box`).
+    /// Internal until its API is settled.
+    pub boxed: bool,
+    /// What assistive technology reads for it instead of its text.
+    pub label: Option<std::sync::Arc<str>>,
+    /// `line_height = 16`: its own line height, in points (a box span's
+    /// box is it and its padding). Internal until its API is settled.
+    pub line_height: Option<f32>,
 }
 /// `ui.span { icon = { src = …, size = 12, gap = 4, tint = …, bg = …,
 /// radius = 4, pad = 2 } }`.
@@ -1609,6 +1747,8 @@ pub(crate) enum Source {
     State(Signal<Value>),
     Computed(Function),
     Anim(Rc<Anim>),
+    /// `ui.map`: a number mapped from a state in Rust.
+    Map(Rc<MapSpec>),
     /// Set by `variants = …` chosen by state: what the choice sets now.
     Variant(Rc<crate::variants::Selection>, Prop),
 }
@@ -1669,6 +1809,10 @@ pub(crate) struct Anim {
     pub curve: Curve,
     pub from: Option<Value>,
     pub to: Option<Value>,
+    /// Where the script made it, while tracing ([`made_at`]): its value's
+    /// writes are named so.
+    #[cfg(feature = "inspect")]
+    pub site: Option<Rc<str>>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct SpringParams {
@@ -1942,6 +2086,8 @@ pub(crate) struct Env {
     pub meter: Option<Rc<crate::meter::Meter>>,
     /// The images the host sets (`host:` sources): pictures scripts take.
     pub assets: Rc<crate::lower::Assets>,
+    /// What a load writes to state that outlives it, while one runs.
+    pub journal: Rc<crate::journal::Journal>,
 }
 /// What a script adds to a slot: the slot, who added it (`ui.slot`'s
 /// `from`) and the node.
@@ -2106,6 +2252,65 @@ pub(crate) struct Provided(pub std::collections::HashMap<Rc<str>, (Weak<Vm>, mlu
 pub(crate) struct NodeUd(pub Rc<Node>);
 impl UserData for NodeUd {}
 pub(crate) struct AnimUd(pub Rc<Anim>);
+/// `ui.map`'s value: a number a state holds, mapped from one range to
+/// another (`from` to `to`) in Rust, so a style that follows it runs no
+/// script as the state changes (a scrollbar thumb's `top` following an
+/// offset). Each end is a number, a state or a function, kept current as
+/// what it reads changes (`computed`).
+pub(crate) struct MapSpec {
+    pub source: Signal<Value>,
+    pub from: [MapEnd; 2],
+    pub to: [MapEnd; 2],
+    pub clamp: bool,
+}
+/// One end of a `ui.map` range.
+pub(crate) enum MapEnd {
+    Num(f64),
+    State(Signal<Value>),
+}
+impl MapEnd {
+    /// Its value now, followed by the reading effect; `None` if it isn't a
+    /// finite number.
+    fn get(&self) -> Option<f64> {
+        let value = match self {
+            MapEnd::Num(v) => *v,
+            MapEnd::State(state) => state.with(|v| v.as_f64())?,
+        };
+        value.is_finite().then_some(value)
+    }
+}
+impl MapSpec {
+    /// The mapped value now: `to`'s start where the source sits at `from`'s
+    /// start, its end at `from`'s end, in a line between, held within `to`
+    /// with `clamp`. A range of no width (or any end not a finite number)
+    /// gives `to`'s start, or 0: a finite value, never NaN.
+    pub(crate) fn value(&self) -> f32 {
+        let at = self.source.with(|v| v.as_f64()).filter(|v| v.is_finite());
+        let [a, b] = [self.from[0].get(), self.from[1].get()];
+        let [c, d] = [self.to[0].get(), self.to[1].get()];
+        let Some(start) = c else {
+            return 0.;
+        };
+        let (Some(at), Some(a), Some(b), Some(d)) = (at, a, b, d) else {
+            return start as f32;
+        };
+        let width = b - a;
+        if width == 0. || !width.is_finite() {
+            return start as f32;
+        }
+        let mut t = (at - a) / width;
+        if self.clamp {
+            t = t.clamp(0., 1.);
+        }
+        let value = start + t * (d - start);
+        match value.is_finite() {
+            true => value as f32,
+            false => start as f32,
+        }
+    }
+}
+pub(crate) struct MapUd(pub Rc<MapSpec>);
+impl UserData for MapUd {}
 impl UserData for AnimUd {}
 pub(crate) struct ActionUd(pub Action);
 impl UserData for ActionUd {}
@@ -2120,9 +2325,15 @@ pub(crate) fn node_ud(lua: &Lua, mut node: Node) -> mlua::Result<mlua::AnyUserDa
     if node.owner.upgrade().is_some_and(|vm| vm.locate.get()) {
         node.source = location(lua);
     }
+    // Written into its place: a node is hundreds of bytes, which `Rc::new`
+    // moves once more on the way.
+    let mut held = Rc::new_uninit();
+    Rc::get_mut(&mut held).expect("just made").write(node);
+    // SAFETY: written just above.
+    let held = unsafe { held.assume_init() };
     // Every `ui.*` call makes one: without the memory limit's protected
     // call around each (see vendor/mlua/ZGX_PATCH.md).
-    lua.create_userdata_relaxed(NodeUd(Rc::new(node)))
+    lua.create_userdata_relaxed(NodeUd(held))
 }
 /// The script line calling the `ui` function running now: `app.luau:12`.
 fn location(lua: &Lua) -> Option<Rc<str>> {
@@ -2133,6 +2344,46 @@ fn location(lua: &Lua) -> Option<Rc<str>> {
         Some(Rc::from(format!("{chunk}:{line}")))
     })
     .flatten()
+}
+/// Where the script made a state, and what made it (`app.luau:30
+/// use_state`), while tracing: devtools' frame log names its writes so.
+/// One text for each place, however many rows made one there.
+#[cfg(feature = "inspect")]
+pub(crate) fn made_at(lua: &Lua, what: &str) -> Option<Rc<str>> {
+    if !zgx::trace::enabled() {
+        return None;
+    }
+    Some(site(format!("{} {what}", location(lua)?)))
+}
+/// One text for each place or kind named, however many signals have it.
+#[cfg(feature = "inspect")]
+fn site(text: String) -> Rc<str> {
+    thread_local! {
+        static SITES: RefCell<std::collections::HashSet<Rc<str>>> = RefCell::default();
+    }
+    SITES.with_borrow_mut(|sites| match sites.get(text.as_str()) {
+        Some(kept) => kept.clone(),
+        None => {
+            let kept: Rc<str> = Rc::from(text);
+            sites.insert(kept.clone());
+            kept
+        }
+    })
+}
+/// Name a signal the engine made for traces by what it is (an element's
+/// restyles), where no script line made it.
+#[cfg(feature = "inspect")]
+pub(crate) fn name_kind<T: 'static>(signal: &Signal<T>, what: &str) {
+    if zgx::trace::enabled() {
+        zgx::trace::name_signal(signal.addr(), site(what.to_owned()));
+    }
+}
+/// Name `signal` for traces by where the script made it ([`made_at`]).
+#[cfg(feature = "inspect")]
+pub(crate) fn name_made<T: 'static>(lua: &Lua, signal: &Signal<T>, what: &str) {
+    if let Some(site) = made_at(lua, what) {
+        zgx::trace::name_signal(signal.addr(), site);
+    }
 }
 /// An overlay's `open` (a modal's, a popover's, a menu's): a state, written
 /// back as it closes; or, controlled, a function saying whether it shows,
@@ -2844,6 +3095,12 @@ fn source_linted(
         mlua::Value::UserData(ud) if ud.is::<AnimUd>() => {
             Ok(Source::Anim(ud.borrow::<AnimUd>()?.0.clone()))
         }
+        mlua::Value::UserData(ud) if ud.is::<MapUd>() => match ty {
+            Ty::Num | Ty::Len => Ok(Source::Map(ud.borrow::<MapUd>()?.0.clone())),
+            _ => Err(mlua::Error::runtime(format!(
+                "`{name}` doesn't take a number: ui.map gives one"
+            ))),
+        },
         other => {
             let raw = crate::design::is_raw(&other);
             // A colour written out, the commonest string a style takes, is
@@ -3093,7 +3350,9 @@ pub(crate) fn array_items(table: &Table) -> mlua::Result<Vec<mlua::Value>> {
         if let mlua::Value::Integer(i) = key
             && i >= 1
         {
-            items.push((i, value));
+            // An `i32` in the browser (Luau's integer on wasm32).
+            #[allow(clippy::unnecessary_cast)]
+            items.push((i as i64, value));
         }
         Ok(())
     })?;
@@ -3132,7 +3391,9 @@ fn child_items(table: &Table) -> mlua::Result<Vec<(i64, Child)>> {
         if let mlua::Value::Integer(i) = key.to_value()?
             && i >= 1
         {
-            items.push((i, Child::of(&value)?));
+            // An `i32` in the browser (Luau's integer on wasm32).
+            #[allow(clippy::unnecessary_cast)]
+            items.push((i as i64, Child::of(&value)?));
         }
         Ok(())
     })?;
@@ -3190,6 +3451,8 @@ pub(crate) struct A11y {
     /// `role = "menuitemradio"`: one of a group of checkable menu items.
     pub radio_item: bool,
     pub expanded: Option<Source>,
+    /// `pressed`: a toggle button's state (`aria-pressed`).
+    pub pressed: Option<Source>,
     pub live: Option<zgx::semantics::Live>,
     pub description: Option<Rc<str>>,
     /// A `description` given as a state or function.
@@ -3573,6 +3836,7 @@ const LATE_FIELDS: &[&str] = &[
     "selection_radius",
     "autocorrect",
     "smart_punctuation",
+    "drop_caret",
     "container",
     "queries",
 ];
@@ -3581,19 +3845,24 @@ const LATE_FIELDS: &[&str] = &[
 /// it, so no style key compares against it: an input's caret (few set it,
 /// read only from those that do), whether plugins may target the node
 /// (`hook`, `private`), an input's `on_paste`, `active_descendant`, `read_only`,
-/// `autocorrect` and `smart_punctuation`, a
+/// `autocorrect`, `smart_punctuation` and `drop_caret`, a
 /// popover's `at_caret`; `inputmode` is read by `ui.input` itself, `on_end` and
 /// `end_distance` by `ui.list`. Any other key is unknown.
 #[cold]
 #[inline(never)]
 fn late_field(lua: &Lua, node: &mut Node, name: &str, value: mlua::Value) -> mlua::Result<()> {
     match name {
+        // A toggle button's state (`aria-pressed`): here, past the style
+        // keys, as few elements have one.
+        "pressed" => {
+            node.a11y.get_or_insert_default().pressed = Some(source(lua, Ty::Bool, name, value)?);
+        }
         // A theme scope of its own: what reads `$selection.radius` below it
         // (a selectable region's highlight, an editor's) follows it.
         "selection_radius" => {
             let radius = source(lua, Ty::Num, name, value)?;
-            let given = node.theme.take();
-            node.theme = Some(ThemeSpec::SelectionRadius(Box::new((given, radius))));
+            let given = node.rare_mut().theme.take();
+            node.rare_mut().theme = Some(ThemeSpec::SelectionRadius(Box::new((given, radius))));
         }
         "caret_color" | "caret_width" => {
             let Kind::Input { rare, .. } = &mut node.kind else {
@@ -3615,7 +3884,7 @@ fn late_field(lua: &Lua, node: &mut Node, name: &str, value: mlua::Value) -> mlu
                     "`hit` takes \"target\" (where an animation is taking it) or \"shown\"",
                 ));
             }
-            let layout = node.layout.get_or_insert(LayoutAnim {
+            let layout = node.rare_mut().layout.get_or_insert(LayoutAnim {
                 width: false,
                 height: false,
                 position: false,
@@ -3666,6 +3935,12 @@ fn late_field(lua: &Lua, node: &mut Node, name: &str, value: mlua::Value) -> mlu
             if let Kind::Input { rare, .. } = &mut node.kind {
                 let read_only = source(lua, Ty::Bool, name, value)?;
                 rare.get_or_insert_default().read_only = Some(read_only);
+            }
+        }
+        "drop_caret" => {
+            if let Kind::Input { rare, .. } = &mut node.kind {
+                let shows: bool = lua.unpack(value)?;
+                rare.get_or_insert_default().no_drop_caret = !shows;
             }
         }
         "autocorrect" | "smart_punctuation" => {
@@ -3781,6 +4056,11 @@ fn set_handler(
     key: &str,
     value: mlua::Value,
 ) -> mlua::Result<Option<mlua::Value>> {
+    #[cfg(feature = "audio")]
+    if key == "sound" {
+        events.get_or_insert_default().sound = crate::audio::sound_prop(&value)?;
+        return Ok(None);
+    }
     if !(key.starts_with("on_")
         || matches!(
             key,
@@ -3814,9 +4094,9 @@ fn set_handler(
         };
         let point = Some((at(1, "x")?, at(2, "y")?));
         if key == "drag_preview_anchor" {
-            events.drag_preview_anchor = point;
+            events.drags.get_or_insert_default().drag_preview_anchor = point;
         } else {
-            events.drag_preview_offset = point;
+            events.drags.get_or_insert_default().drag_preview_offset = point;
         }
         return Ok(None);
     }
@@ -3885,19 +4165,28 @@ fn set_handler(
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime(format!("{key} takes a function")));
             };
+            let drags = events.drags.get_or_insert_default();
             *match key {
-                "on_drag" => &mut events.drag,
-                "drag_preview" => &mut events.drag_preview,
-                "on_drag_end" => &mut events.drag_end,
-                "drag_export" => &mut events.drag_export,
-                "on_drag_outside" => &mut events.drag_outside,
-                "drag_moves_window" => &mut events.drag_moves_window,
-                "on_drop" => &mut events.drop,
-                "drop_when" => &mut events.drop_when,
-                "on_drag_over" => &mut events.drag_over,
-                "on_drag_leave" => &mut events.drag_leave,
-                _ => &mut events.drag_spring,
+                "on_drag" => &mut drags.drag,
+                "drag_preview" => &mut drags.drag_preview,
+                "on_drag_end" => &mut drags.drag_end,
+                "drag_export" => &mut drags.drag_export,
+                "on_drag_outside" => &mut drags.drag_outside,
+                "drag_moves_window" => &mut drags.drag_moves_window,
+                "on_drop" => &mut drags.drop,
+                "drop_when" => &mut drags.drop_when,
+                "on_drag_over" => &mut drags.drag_over,
+                "on_drag_leave" => &mut drags.drag_leave,
+                _ => &mut drags.drag_spring,
             } = Some(f);
+            return Ok(None);
+        }
+        // A region's copy hook: no input handler, so no listener.
+        "on_copy" => {
+            let mlua::Value::Function(f) = value else {
+                return Err(mlua::Error::runtime("on_copy takes a function"));
+            };
+            events.rare.get_or_insert_default().copy = Some(f);
             return Ok(None);
         }
         _ => return Ok(Some(value)),
@@ -4010,7 +4299,9 @@ fn fill_from(
                 mlua::Value::Integer(1) if let Some(text) = text.as_deref_mut() => {
                     text.content = value.to_value()?;
                 }
-                mlua::Value::Integer(i) if i >= 1 => items.push((i, Child::of(&value)?)),
+                // An `i32` in the browser (Luau's integer on wasm32).
+                #[allow(clippy::unnecessary_cast)]
+                mlua::Value::Integer(i) if i >= 1 => items.push((i as i64, Child::of(&value)?)),
                 _ => {}
             }
             return Ok(());
@@ -4087,7 +4378,7 @@ fn fill_from(
             "selectable" => node.selectable = lua.unpack(value)?,
             "selection_color" | "selected_text_color" => {
                 let at = usize::from(key == "selected_text_color");
-                node.selection_colors.get_or_insert_default()[at] =
+                node.rare_mut().selection_colors.get_or_insert_default()[at] =
                     Some(source(lua, Ty::Color, key, value)?);
             }
             "tooltip" => {
@@ -4104,22 +4395,22 @@ fn fill_from(
                         )));
                     }
                 };
-                node.tooltip.get_or_insert_default().content = content;
+                node.rare_mut().tooltip.get_or_insert_default().content = content;
             }
             "tooltip_placement" => {
-                node.tooltip.get_or_insert_default().placement = placement_of(value)?;
+                node.rare_mut().tooltip.get_or_insert_default().placement = placement_of(value)?;
             }
             "tooltip_interactive" => {
-                node.tooltip.get_or_insert_default().interactive = lua.unpack(value)?;
+                node.rare_mut().tooltip.get_or_insert_default().interactive = lua.unpack(value)?;
             }
             // Milliseconds the pointer rests before it shows (300).
             "tooltip_delay" => {
                 let ms: f64 = lua.unpack(value)?;
-                node.tooltip.get_or_insert_default().delay =
+                node.rare_mut().tooltip.get_or_insert_default().delay =
                     Some(crate::duration_ms("tooltip_delay", ms)?);
             }
             "pointer_events" => {
-                node.pointer_events = Some(match &value {
+                node.rare_mut().pointer_events = Some(match &value {
                     mlua::Value::Boolean(_) | mlua::Value::String(_) => {
                         let Some(enabled) = pointer_events(&lua.unpack::<Value>(value)?) else {
                             return Err(mlua::Error::runtime(
@@ -4163,8 +4454,13 @@ fn fill_from(
                         shaders.drive.get_or_insert_default().layer_params_of = Some(f.clone());
                     }
                     _ => {
-                        shaders.layer_params =
-                            Some(shader_params(lua, &value, "layer_params", None)?);
+                        let params =
+                            shader_params(lua, &value, "layer_params", Some(&mut shaders.layer_tokens))?;
+                        shaders.layer_params = Some(params);
+                        // A layer's theme colours are the drive's to keep up.
+                        if shaders.layer_tokens.iter().any(Option::is_some) {
+                            shaders.drive.get_or_insert_default();
+                        }
                     }
                 }
             }
@@ -4240,14 +4536,14 @@ fn fill_from(
                     },
                     None => None,
                 };
-                node.mask = Some(Mask {
+                node.rare_mut().mask = Some(Mask {
                     image: bitmap,
                     size,
                     offset,
                     sweep,
                 });
             }
-            "layout_id" => node.layout_id = Some(lua.unpack::<String>(value)?.into()),
+            "layout_id" => node.rare_mut().layout_id = Some(lua.unpack::<String>(value)?.into()),
             "layout" => {
                 layout_given = true;
                 let (width, height, position) = match &value {
@@ -4271,7 +4567,7 @@ fn fill_from(
                         )));
                     }
                 };
-                let layout = node.layout.get_or_insert(LayoutAnim {
+                let layout = node.rare_mut().layout.get_or_insert(LayoutAnim {
                     width,
                     height,
                     position,
@@ -4285,11 +4581,11 @@ fn fill_from(
                 layout.height = height;
                 layout.position = position;
                 if !width && !height && !position && !layout.hit {
-                    node.layout = None;
+                    node.rare_mut().layout = None;
                 }
             }
             "layout_duration" | "layout_ease" | "layout_enter" | "layout_clip" => {
-                let layout = node.layout.get_or_insert(LayoutAnim {
+                let layout = node.rare_mut().layout.get_or_insert(LayoutAnim {
                     width: false,
                     height: true,
                     position: false,
@@ -4326,7 +4622,12 @@ fn fill_from(
                 }
             }
             "disabled" if !matches!(value, mlua::Value::Table(_)) => {
-                node.disabled = Some(source(lua, Ty::Bool, "disabled", value)?);
+                node.rare_mut().disabled = Some(source(lua, Ty::Bool, "disabled", value)?);
+            }
+            "context_menu_open" => {
+                let open = expect_state(&value, "`context_menu_open`")?;
+                let events = node.events.get_or_insert_default();
+                events.rare.get_or_insert_default().context_menu_open = Some(open);
             }
             "context_menu_below" => {
                 let mlua::Value::Boolean(below) = value else {
@@ -4357,7 +4658,7 @@ fn fill_from(
                 }
                 node.events.get_or_insert_default().context_menu_style = Some(lits.into());
             }
-            "provide" => node.provide = Some(provided(lua, value)?),
+            "provide" => node.rare_mut().provide = Some(provided(lua, value)?),
             "theme" => {
                 let spec = if let Some(state) = state_of(&value) {
                     ThemeSpec::State(state)
@@ -4370,7 +4671,7 @@ fn fill_from(
                     )
                 };
                 // Given after `selection_radius`: inside it.
-                match &mut node.theme {
+                match &mut node.rare_mut().theme {
                     Some(ThemeSpec::SelectionRadius(both)) => both.0 = Some(spec),
                     theme => *theme = Some(spec),
                 }
@@ -4547,9 +4848,9 @@ fn fill_from(
     })?;
     // With a `layout_id`, `layout_duration` and `layout_ease` alone time its
     // moves; they do not ask for a size box.
-    if node.layout_id.is_some()
+    if node.rare().layout_id.is_some()
         && !layout_given
-        && let Some(layout) = &mut node.layout
+        && let Some(layout) = &mut node.rare_mut().layout
     {
         layout.height = false;
         layout.position = true;
@@ -4882,39 +5183,27 @@ fn span(lua: &Lua, arg: mlua::Value, literal: bool) -> mlua::Result<Span> {
                         themed_color(&hover.get::<Value>("color")?),
                     ));
                 }
-                b"icon" => {
-                    let icon: Table = lua.unpack(given)?;
-                    let src = match (
-                        icon.get::<Option<String>>("src")?,
-                        icon.get::<Option<String>>("code")?,
-                    ) {
-                        (Some(src), _) => src,
-                        (None, Some(code)) => format!("code:{code}"),
-                        (None, None) => {
-                            return Err(mlua::Error::runtime(
-                                "a span's icon takes `src` or `code`",
-                            ));
-                        }
-                    };
-                    let tint = icon.get::<Value>("tint")?;
-                    let bg = icon.get::<Value>("bg")?;
-                    rare_mut(&mut span).icon = Some(SpanIcon {
-                        src,
-                        size: icon.get::<Option<f32>>("size")?.unwrap_or(12.),
-                        gap: icon.get::<Option<f32>>("gap")?.unwrap_or(4.),
-                        tint: (!matches!(tint, Value::Nil)).then_some(tint),
-                        bg: (!matches!(bg, Value::Nil)).then_some(bg),
-                        radius: icon.get::<Option<f32>>("radius")?.unwrap_or(0.).max(0.),
-                        pad: icon.get::<Option<f32>>("pad")?.unwrap_or(0.).max(0.),
-                    });
-                }
+                b"icon" => span_icon(lua, given, &mut span)?,
                 b"fade_in" => span_fade_in(lua, given, &mut span)?,
+                b"box" => {
+                    if lua.unpack::<bool>(given)? {
+                        rare_mut(&mut span).boxed = true;
+                    }
+                }
+                b"line_height" => {
+                    if let Some(height) = number(given)? {
+                        rare_mut(&mut span).line_height = Some(height);
+                    }
+                }
                 b"on_click" => span.click = Some(handler(given)?),
                 b"href" => span.href = Some(lua.unpack::<String>(given)?.into()),
                 b"context_menu" => match given {
                     mlua::Value::Function(f) => rare_mut(&mut span).menu = Some(f),
                     _ => return Err(mlua::Error::runtime("context_menu takes a function")),
                 },
+                // Its name for assistive technology: a key no other arm
+                // takes is checked for it, a known key pays nothing.
+                b"label" => span_label(lua, given, &mut span)?,
                 _ => {}
             }
             Ok(())
@@ -4939,6 +5228,43 @@ fn span(lua: &Lua, arg: mlua::Value, literal: bool) -> mlua::Result<Span> {
         }
     }
     Ok(span)
+}
+
+/// `label` on a span: what assistive technology reads for it.
+#[cold]
+#[inline(never)]
+fn span_label(lua: &Lua, given: mlua::Value, span: &mut Span) -> mlua::Result<()> {
+    rare_mut(span).label = Some(lua.unpack::<String>(given)?.into());
+    Ok(())
+}
+/// `icon = { src = …, size, gap, tint, bg, radius, pad }` on a span: out
+/// of the field loop, which most spans run without one.
+#[cold]
+#[inline(never)]
+fn span_icon(lua: &Lua, given: mlua::Value, span: &mut Span) -> mlua::Result<()> {
+    let icon: Table = lua.unpack(given)?;
+    let src = match (
+        icon.get::<Option<String>>("src")?,
+        icon.get::<Option<String>>("code")?,
+    ) {
+        (Some(src), _) => src,
+        (None, Some(code)) => format!("code:{code}"),
+        (None, None) => {
+            return Err(mlua::Error::runtime("a span's icon takes `src` or `code`"));
+        }
+    };
+    let tint = icon.get::<Value>("tint")?;
+    let bg = icon.get::<Value>("bg")?;
+    rare_mut(span).icon = Some(SpanIcon {
+        src,
+        size: icon.get::<Option<f32>>("size")?.unwrap_or(12.),
+        gap: icon.get::<Option<f32>>("gap")?.unwrap_or(4.),
+        tint: (!matches!(tint, Value::Nil)).then_some(tint),
+        bg: (!matches!(bg, Value::Nil)).then_some(bg),
+        radius: icon.get::<Option<f32>>("radius")?.unwrap_or(0.).max(0.),
+        pad: icon.get::<Option<f32>>("pad")?.unwrap_or(0.).max(0.),
+    });
+    Ok(())
 }
 
 /// Installs the read-only `ui` global.
@@ -6148,6 +6474,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             if let Some(meter) = &env.meter {
                 meter.set(&signal, signal.with_untracked(Value::weight));
             }
+            #[cfg(feature = "inspect")]
+            name_made(lua, &signal, "use_state");
             Ok(State::new(signal))
         })?,
     )?;
@@ -6413,7 +6741,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             // A shader that does not compile is the script's error, shown
             // with its line, not a plain fill.
-            zgx_gpu::check_fill_shader(&source)
+            crate::gpu::check_fill_shader(&source)
                 .map_err(|e| mlua::Error::runtime(format!("ui.shader: {e}")))?;
             let key = (source, fps.map(f32::to_bits));
             let shader = SHADERS.with(|shaders| {
@@ -6424,7 +6752,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                         // Compiled from now, off the frame, so the first
                         // frame drawing it need not wait for it.
                         let shader = zgx::decoration::FillShader::new(key.0.clone(), fps);
-                        zgx_gpu::warm_fill_shader(&shader);
+                        crate::gpu::warm_fill_shader(&shader);
                         shader
                     })
                     .clone()
@@ -6441,7 +6769,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             if let Some(inputs) = opts.as_ref().map(shader_inputs).transpose()?.flatten() {
                 // A running effect of its own: textures aren't shared.
-                zgx_gpu::check_layer_inputs(&source, &inputs)
+                crate::gpu::check_layer_inputs(&source, &inputs)
                     .map_err(|e| mlua::Error::runtime(format!("ui.layer_shader: {e}")))?;
                 let shader = zgx::decoration::FillShader::with_inputs(source, fps, inputs);
                 zgx::decoration::declare_layer_shader(&shader);
@@ -6456,7 +6784,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             // A shader that does not compile is the script's error, shown
             // with its line, not a layer composited as painted.
-            zgx_gpu::check_layer_shader(&source)
+            crate::gpu::check_layer_shader(&source)
                 .map_err(|e| mlua::Error::runtime(format!("ui.layer_shader: {e}")))?;
             let key = (source, fps.map(f32::to_bits));
             let shader = LAYER_SHADERS.with(|shaders| {
@@ -6544,7 +6872,11 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             {
                 meter.room(initial.weight())?;
             }
+            let made = env.journal.active() && env.store.get(&key).is_none();
             let signal = env.store.state(&key, initial);
+            if made {
+                env.journal.made_state(&env.store, &key);
+            }
             if let Some(meter) = &env.meter {
                 meter.set(&signal, signal.with_untracked(Value::weight));
             }
@@ -6566,7 +6898,12 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             {
                 meter.room(initial.weight())?;
             }
+            let made = env.journal.active() && env.persist.get(&env.persist_as, &key).is_none();
             let signal = env.persist.state(&env.persist_as, &key, initial);
+            if made {
+                env.journal
+                    .made_persist(&env.persist, &env.persist_as, &key);
+            }
             if let Some(meter) = &env.meter {
                 meter.set(&signal, signal.with_untracked(Value::weight));
             }
@@ -6579,7 +6916,11 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             let env = env(lua)?;
             env.permits(&env.exposed_shared, &key, "ui.shared")?;
             let plugin = matches!(*env.grants, crate::Grants::Only(_));
+            let made = env.journal.active() && env.shared.get(&key).is_none();
             let state = State::new(env.shared.shared(&key, initial, plugin));
+            if made {
+                env.journal.made_state(&env.shared, &key);
+            }
             if plugin && env.read_only_shared.borrow().contains(&key) {
                 let read = crate::value::ReadState(state, key.as_str().into());
                 return lua.create_userdata(read);
@@ -6650,11 +6991,22 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                 "give both `from` and `to`, or neither",
             ));
         }
+        #[cfg(feature = "inspect")]
+        let site = made_at(
+            lua,
+            match curve {
+                Curve::Tween { .. } => "tween",
+                Curve::Spring { .. } => "spring",
+                Curve::Loop { .. } => "loop",
+            },
+        );
         lua.create_userdata(AnimUd(Rc::new(Anim {
             source,
             curve,
             from,
             to,
+            #[cfg(feature = "inspect")]
+            site,
         })))
     };
     use crate::anime::ease::{Base, Ease, Mode};
@@ -6718,7 +7070,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                 let vm = env.vm.clone();
                 let done = std::cell::RefCell::new(done);
                 let elapsed_cell = std::cell::Cell::new(0f64);
-                let began = std::time::Instant::now();
+                let began = crate::time::Instant::now();
                 let (speed_from, shown_from) = (
                     velocity.get(),
                     state
@@ -6881,7 +7233,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         "now",
         lua.create_function(|_, ()| {
             Ok(zgx::clock::system_now()
-                .duration_since(std::time::UNIX_EPOCH)
+                .duration_since(crate::time::SystemTime::UNIX_EPOCH)
                 .map_or(0., |d| d.as_secs_f64() * 1000.))
         })?,
     )?;
@@ -6935,8 +7287,13 @@ pub(crate) fn computed(lua: &Lua, env: &Env, f: Function) -> Signal<Value> {
 }
 /// `ui.computed`: the value `f` makes, kept current as what it reads
 /// changes, and brought up to date when a script reads it.
-pub(crate) fn computed_state(_: &Lua, env: &Env, f: Function) -> crate::value::State {
+pub(crate) fn computed_state(lua: &Lua, env: &Env, f: Function) -> crate::value::State {
     let signal = env.runtime.signal(Value::Nil);
+    // Named for traces by where the script made it (devtools only).
+    #[cfg(feature = "inspect")]
+    name_made(lua, &signal, "computed");
+    #[cfg(not(feature = "inspect"))]
+    let _ = lua;
     let (vm, out) = (env.vm.clone(), signal.clone());
     let meter = env.meter.clone();
     // Its value is there as soon as it is made, even while a component

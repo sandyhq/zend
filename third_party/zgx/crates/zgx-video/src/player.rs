@@ -41,6 +41,9 @@ pub(crate) enum Ask {
     Pixels(bool),
     /// Lose its renderer's device, as a driver reset would (tests).
     LoseDevice,
+    /// Take this long more over each frame it draws (tests: a slow
+    /// machine's draw, with asks arriving while one is under way).
+    SlowDraw(Duration),
     Quit,
 }
 
@@ -344,6 +347,7 @@ pub(crate) fn run(
     // due then. `stale`: a frame it moved to and didn't draw.
     let mut watched = true;
     let mut stale = false;
+    let mut slow_draw = Duration::ZERO;
     let mut keep_for = CACHE_KEPT;
     // Pixel buffers drawn since it last gave back those no one holds: once
     // it rests (paused, nothing asked), a while on, it does (`keep_for`).
@@ -424,6 +428,7 @@ pub(crate) fn run(
                         stage.film.stage.debug_lose_device();
                     }
                 }
+                Ask::SlowDraw(by) => slow_draw = by,
                 Ask::Open(id, props, frame) => {
                     if preview
                         .composition
@@ -540,6 +545,9 @@ pub(crate) fn run(
                         .max(frame * u64::from(preview.composition.is_none())),
                 );
                 if watched {
+                    if !slow_draw.is_zero() {
+                        std::thread::sleep(slow_draw);
+                    }
                     result = preview.show(at, playing.is_none());
                     #[cfg(target_os = "macos")]
                     {
@@ -698,6 +706,13 @@ impl Player {
     #[doc(hidden)]
     pub fn debug_lose_device(&self) {
         let _ = self.asks.send(Ask::LoseDevice);
+    }
+    /// Take `by` more over each frame drawn, as a slow machine would, asks
+    /// that arrive meanwhile waiting for the frame: for tests of a frame
+    /// still on its way as something changes.
+    #[doc(hidden)]
+    pub fn debug_slow_draw(&self, by: Duration) {
+        let _ = self.asks.send(Ask::SlowDraw(by));
     }
     /// Play again from its start at its end (true by default), or stop there.
     pub fn looping(&self, on: bool) {
@@ -1011,5 +1026,65 @@ type Set = Rc<RefCell<Option<(u64, Option<Arc<ImageData>>)>>>;
 impl Drop for Player {
     fn drop(&mut self) {
         let _ = self.asks.send(Ask::Quit);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::task::{Context, Waker};
+
+    /// Frames and the stop that follows them, arriving together (the thread
+    /// told all three before the window's loop came round): the latest
+    /// frame is told first, so what listens sees playback stop on the frame
+    /// it ended on. Before, the stop was told first and the frame after it.
+    #[test]
+    fn a_stop_follows_the_latest_frame_when_events_arrive_together() {
+        let runtime = Runtime::new();
+        let (asks, _asked) = channel();
+        let (tell, told) = channel();
+        let (wake, woken) = zgx::task::latest();
+        #[cfg(target_os = "macos")]
+        let (_surfaces_to, surfaces) = channel();
+        let player = Rc::new(Player {
+            asks,
+            events: RefCell::new(Some((told, woken))),
+            frame: runtime.signal(0),
+            playing: runtime.signal(true),
+            composition: runtime.signal(None),
+            tracks: runtime.signal(Vec::new()),
+            error: runtime.signal(None),
+            image: runtime.signal(None),
+            counts: Arc::new(Counts::default()),
+            #[cfg(target_os = "macos")]
+            surfaces,
+            #[cfg(target_os = "macos")]
+            surface: runtime.signal(None),
+        });
+        for frame in [58, 59] {
+            tell.send(Event::Frame {
+                frame,
+                width: 1,
+                height: 1,
+                pixels: Arc::from([0, 0, 0, 255]),
+            })
+            .unwrap();
+        }
+        tell.send(Event::Stopped).unwrap();
+        wake.send(());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let recorded = seen.clone();
+        let current = player.clone();
+        let mut listen = std::pin::pin!(player.listen(move |event| {
+            recorded.borrow_mut().push(match event {
+                Event::Frame { frame, .. } => ("frame", *frame),
+                Event::Stopped => ("stopped", current.frame.with_untracked(|frame| *frame)),
+                _ => panic!("unexpected event"),
+            });
+        }));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(std::future::Future::poll(listen.as_mut(), &mut context).is_pending());
+        assert_eq!(*seen.borrow(), [("frame", 59), ("stopped", 59)]);
+        assert!(!player.playing.with_untracked(|playing| *playing));
     }
 }

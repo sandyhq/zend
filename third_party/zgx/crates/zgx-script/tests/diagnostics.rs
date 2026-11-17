@@ -20,8 +20,7 @@ return ui.column {
 "#;
 
 fn temp_script(name: &str, code: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("zgx-diag-{}-{name}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::temp_dir(&format!("diag-{name}"));
     let path = dir.join("app.luau");
     std::fs::write(&path, code).unwrap();
     path
@@ -290,8 +289,7 @@ fn a_watching_host_reloads_when_a_file_is_saved() {
 
 #[test]
 fn a_debug_build_lints_its_scripts_after_each_load() {
-    let dir = std::env::temp_dir().join(format!("zgx-lint-on-load-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::temp_dir("lint-on-load");
     let app = dir.join("app.luau");
     std::fs::write(
         &app,
@@ -349,4 +347,42 @@ fn a_repeated_error_reaches_the_error_hook_each_time() {
     h.frames(1);
     assert_eq!(seen.borrow().len(), 2, "{:?}", seen.borrow());
     assert!(seen.borrow().iter().all(|e| e.contains("same-boom")));
+}
+
+#[test]
+fn a_span_label_is_the_runs_accessible_name() {
+    let h = Harness::inline(
+        r##"return ui.column { w = 400, h = 100,
+    ui.rich { id = "p", ui.span { "see " }, ui.span { "1", label = "Citation 1, Sleep study.pdf", on_click = function() end } },
+}"##,
+    );
+    h.settle();
+    h.frames(3);
+    let names: Vec<String> =
+        h.ui.semantics
+            .borrow()
+            .iter()
+            .filter(|(_, s)| s.role == zgx::semantics::Role::Button)
+            .map(|(_, s)| s.label.clone())
+            .collect();
+    assert_eq!(names, vec!["Citation 1, Sleep study.pdf".to_string()]);
+}
+
+#[test]
+fn a_spring_moved_box_rests_on_a_whole_device_pixel() {
+    let mut h = Harness::inline(
+        r##"local go = ui.state("go", false)
+ui.on_mount(function() go:set(true) end)
+return ui.column { w = 200, h = 100,
+    ui.div { id = "b", w = 20, h = 20, x = ui.spring(go, { from = 0, to = 10.3 }) },
+}"##,
+    );
+    h.ui.scene.borrow_mut().set_pixel_scale(2.);
+    h.settle();
+    h.frames(200);
+    // The frame painted, as a renderer flushes it.
+    h.ui.scene.borrow_mut().flush();
+    let b = h.find("b").unwrap();
+    let x = h.ui.scene.borrow().bounds(b).x;
+    assert_eq!(x, 10.5, "rests on a half point at 2x, not at 10.3");
 }

@@ -565,6 +565,14 @@ pub struct CanvasText {
     pub anchor: TextAnchor,
     /// Where `y` falls down it.
     pub baseline: TextBaseline,
+    /// Its size unwrapped, when its maker knows it as shaping would measure
+    /// it (a terminal's run: its cells on the grid, by the line's height):
+    /// the scene keeps it rather than measuring the text again. A debug
+    /// build measures anyway and checks it. Hosts that draw canvas text
+    /// themselves (zgx-dom's Canvas 2D) place it by `x`, `y` and its anchor
+    /// alone, never reading this.
+    #[doc(hidden)]
+    pub known_size: Option<(f32, f32)>,
 }
 impl CanvasText {
     /// Its top left, given its size.
@@ -588,6 +596,14 @@ thread_local! {
     static DRAWING_FOR: RefCell<Option<Rc<RefCell<crate::scene::Scene>>>> =
         const { RefCell::new(None) };
 }
+/// How a DOM host measures text (`TextMeasure`'s width and height).
+#[cfg(feature = "dom")]
+pub(crate) type DomMeasure = Box<dyn Fn(&str, f32, &crate::text_layout::FontStyle) -> (f32, f32)>;
+#[cfg(feature = "dom")]
+thread_local! {
+    /// While a canvas draws in the DOM: what `measure_text` measures with.
+    pub(crate) static DOM_MEASURE: RefCell<Option<DomMeasure>> = const { RefCell::new(None) };
+}
 /// Runs `draw` with `scene` as what `measure_text` measures in.
 pub(crate) fn drawing_for<R>(
     scene: &Rc<RefCell<crate::scene::Scene>>,
@@ -606,6 +622,12 @@ pub fn measure_text(
     size: f32,
     font: &crate::text_layout::FontStyle,
 ) -> Option<(f32, f32)> {
+    #[cfg(feature = "dom")]
+    if let Some(measured) =
+        DOM_MEASURE.with(|slot| slot.borrow().as_ref().map(|m| m(text, size, font)))
+    {
+        return Some(measured);
+    }
     DRAWING_FOR.with(|slot| {
         let scene = slot.borrow();
         let scene = scene.as_ref()?;

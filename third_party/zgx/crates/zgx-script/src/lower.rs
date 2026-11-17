@@ -27,7 +27,7 @@ use zgx::{
 };
 
 /// A remote source's failures in a row: when the last was, how many, why.
-type Failure = (std::time::Instant, u32, Rc<str>);
+type Failure = (crate::time::Instant, u32, Rc<str>);
 
 /// Decoded images and SVGs by source. What a mounted node shows stays;
 /// of the rest, the most recently shown stay while they fit `budget`, so a
@@ -48,7 +48,7 @@ pub(crate) struct Assets {
     /// watching host sees an edited image (see `changed`).
     files: std::cell::RefCell<HashMap<String, (std::path::PathBuf, Option<std::time::SystemTime>)>>,
     /// Where they are read from: the disk, or the app's bundle.
-    source: std::cell::Cell<Option<crate::Files>>,
+    source: std::cell::RefCell<Option<crate::Files>>,
     /// Remote sources (`https://…`) by `remote_key`: fetched once by each
     /// asking (the app, or a plugin), so each request is its own to allow, and
     /// what comes is shared (`images`, `svgs`). What shows one follows its
@@ -367,17 +367,18 @@ impl Assets {
         *self.links.borrow_mut() = Some((timers, fetcher, policy));
     }
     pub(crate) fn set_files(&self, files: crate::Files) {
-        self.source.set(Some(files));
+        *self.source.borrow_mut() = Some(files);
     }
     /// Where its files come from: the disk, or the app's bundle.
     #[cfg(feature = "gltf")]
     pub(crate) fn source(&self) -> crate::Files {
-        self.source.get().unwrap_or(crate::Files::Disk)
+        self.source.borrow().clone().unwrap_or(crate::Files::Disk)
     }
     /// `src`'s bytes from `path`, the file kept to watch for changes.
     pub(crate) fn read(&self, src: &str, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
         let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        let bytes = match self.source.get() {
+        let source = self.source.borrow().clone();
+        let bytes = match source {
             Some(files) => files.read(path)?,
             None => std::fs::read(path)?,
         };
@@ -488,7 +489,7 @@ impl Hooks {
             && (node.id.is_some()
                 || !node.classes.is_empty()
                 || node.hook().is_some()
-                || node.provide.is_some()
+                || node.rare().provide.is_some()
                 || node.private)
     }
     /// Every contribution, in the order the scripts made them.
@@ -1241,8 +1242,8 @@ fn filtered(
                 a11y.label = filtered_source(source.as_ref(), Value::Nil, Ty::Str, plugin, f, &app);
             }
             Filtered::Disabled => {
-                copy.disabled = filtered_source(
-                    copy.disabled.as_ref(),
+                copy.rare_mut().disabled = filtered_source(
+                    copy.rare().disabled.as_ref(),
                     Value::Bool(false),
                     Ty::Bool,
                     plugin,
@@ -1268,7 +1269,7 @@ fn filtered(
             // A tooltip's text is written once: passed through as the
             // element is built.
             Filtered::Tooltip => {
-                if let Some(tooltip) = &mut copy.tooltip
+                if let Some(tooltip) = copy.rare.as_deref_mut().and_then(|r| r.tooltip.as_mut())
                     && let Some(TooltipContent::Text(text)) = &mut tooltip.content
                 {
                     let value = passed(plugin, f, Value::Str(text.as_str().into()));
@@ -1458,16 +1459,16 @@ fn decorated(mut view: View, node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>) -
         tip @ crate::node::Tooltip {
             content: Some(_), ..
         },
-    ) = node.tooltip.as_deref()
+    ) = node.rare().tooltip.as_deref()
     {
         view = tooltip(view, tip, low);
     }
-    if let Some(spec) = &node.theme {
+    if let Some(spec) = &node.rare().theme {
         view = themed(spec, vm, view);
     }
     // Its values over what its ancestors were given, for the components
     // and rows built under it (`ui.use_context`).
-    if let Some(own) = &node.provide {
+    if let Some(own) = &node.rare().provide {
         let own = own.clone();
         view = zgx::compose::provide_with(
             move |cx| {
@@ -1646,7 +1647,7 @@ fn bound_text(cx: &mut Context, value: &Signal<Value>, editor: &LoadedEditor) ->
     }
     let typed = cx.state(value.with_untracked(text_of));
     let runtime = cx.runtime();
-    let edited: Rc<std::cell::Cell<Option<std::time::Instant>>> = Rc::default();
+    let edited: Rc<std::cell::Cell<Option<crate::time::Instant>>> = Rc::default();
     let (v, t, e, loaded) = (value.clone(), typed.clone(), edited.clone(), editor.clone());
     cx.retain(runtime.effect(move || {
         let next = v.with(text_of);
@@ -1668,7 +1669,7 @@ fn bound_text(cx: &mut Context, value: &Signal<Value>, editor: &LoadedEditor) ->
     cx.retain(runtime.effect(move || {
         let next = t.get();
         if !std::mem::take(&mut first) && v.with_untracked(text_of) != next {
-            edited.set(Some(std::time::Instant::now()));
+            edited.set(Some(crate::time::Instant::now()));
             v.set(match next {
                 TextValue::Flat(s) => Value::Str(s.into()),
                 TextValue::Long(t) => Value::Text(t),
@@ -2569,7 +2570,9 @@ fn in_place(node: &Rc<Node>) -> Node {
     let mut held = Node::new(node.owner.clone(), Kind::Div);
     held.props
         .push((Prop::Display, Source::Lit(Lit::Str("contents".into()))));
-    held.provide = node.provide.clone();
+    if let Some(provide) = &node.rare().provide {
+        held.rare_mut().provide = Some(provide.clone());
+    }
     held.children = vec![node.clone()];
     held
 }
@@ -2764,7 +2767,10 @@ fn glass_of(spec: &crate::node::GlassSpec, vm: &Rc<Vm>) -> View {
 fn drive_of(
     shaders: &crate::node::Shaders,
     vm: &Rc<Vm>,
-) -> Option<Box<dyn FnMut() -> zgx::shader_drive::ShaderDrive>> {
+) -> Option<(
+    zgx::shader_drive::ShaderTokens,
+    Box<dyn FnMut() -> zgx::shader_drive::ShaderDrive>,
+)> {
     let vm = vm.clone();
     let props = shaders.drive.as_ref()?;
     let fill = shaders.layer.is_none();
@@ -2774,9 +2780,9 @@ fn drive_of(
     } else {
         props.layer_clock
     };
-    let literal = match fill {
-        true => shaders.params,
-        false => shaders.layer_params,
+    let (literal, tokens) = match fill {
+        true => (shaders.params, shaders.tokens),
+        false => (shaders.layer_params, shaders.layer_tokens),
     };
     let params_of = props.layer_params_of.clone();
     let on = props.layer_on.as_ref().map(resolve_owned);
@@ -2785,7 +2791,7 @@ fn drive_of(
         shaders.layer_reach.unwrap_or(0.),
     );
     let mut last = literal.unwrap_or_default();
-    Some(Box::new(move || {
+    let make: Box<dyn FnMut() -> zgx::shader_drive::ShaderDrive> = Box::new(move || {
         if let Some(f) = &params_of {
             let read = vm.call::<mlua::Value>(f, ()).and_then(|value| {
                 crate::node::shader_params(&vm.lua, &value, "layer_params", None)
@@ -2808,7 +2814,8 @@ fn drive_of(
             frost: 0.,
             running: clock,
         }
-    }))
+    });
+    Some((tokens, make))
 }
 fn web_view_of(spec: &crate::node::WebSpec, vm: &Rc<Vm>, low: &Rc<Lowering>) -> View {
     use zgx::web_view::{WebViewEvent, web_view, web_view_src};
@@ -3323,6 +3330,13 @@ fn kind_view(
             }
             if rare.as_deref().is_some_and(|rare| rare.contain) {
                 view = view.overscroll_contain();
+            }
+            // A test, not a closure: one more closure here would renumber
+            // the arm's, and the inline-scopes check names them by number.
+            if let Some(rare) = rare.as_deref()
+                && rare.no_drop_caret
+            {
+                view = without_drop_caret(view);
             }
             match rare.as_deref().and_then(|rare| rare.read_only.as_ref()) {
                 None | Some(Source::Lit(Lit::Bool(false))) => {}
@@ -3853,7 +3867,7 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
         )
     });
     let mut view = kind_view(node, vm, low, cx.as_deref_mut(), element.as_deref());
-    if let Some(mask) = &node.mask {
+    if let Some(mask) = &node.rare().mask {
         view = view
             .mask(mask.image.clone(), mask.size)
             .mask_offset(mask.offset.0, mask.offset.1);
@@ -3880,15 +3894,20 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
             .then(|| flow(node));
         match &low.hooks {
             None => {
-                view = view.children(node.children.iter().map(|child| {
-                    let mut view = lower(child, low);
+                // Each pushed as `lower` returns it and the vector kept as the
+                // view's (`children_vec`): a view is hundreds of bytes, moved
+                // once more for each through a local, and again by `children`.
+                let mut children: Vec<View> = Vec::with_capacity(node.children.len());
+                for child in &node.children {
+                    children.push(lower(child, low));
                     if let Some(flow) = &flow
                         && child.kind.flows()
+                        && let Some(view) = children.last_mut()
                     {
                         apply_in(view.styles_mut(), flow);
                     }
-                    view
-                }));
+                }
+                view = view.children_vec(children);
             }
             // What plugins add at an element is its sibling, or in its place.
             Some(hooks) => view = hooked_children(view, node, low, hooks, flow.as_deref()),
@@ -3930,6 +3949,9 @@ fn styled(
         match source {
             Source::Lit(lit) => statics.push((*prop, lit.clone())),
             Source::Anim(spec) => {
+                if matches!(prop, Prop::X | Prop::Y) {
+                    view = view.pixel_snap();
+                }
                 let scalar = anim::drive(need(&mut cx), spec);
                 dynamic.push((*prop, resolve_owned(source), Some(scalar)));
             }
@@ -4147,10 +4169,14 @@ fn styled(
                         params: *params,
                     });
                     // Theme colours bind to their slots: resolved where the
-                    // node is styled, and again when the theme changes.
+                    // node is styled, and again when the theme changes. A
+                    // driven fill's are the drive's (`shader_drive::attach_themed`):
+                    // in the style they'd put its time back.
                     let mut styles = styles;
                     for (slot, token) in tokens.iter().enumerate() {
-                        if let Some(token) = token {
+                        if let Some(token) = token
+                            && !driven
+                        {
                             styles =
                                 styles.token(zgx::theme::Field::ShaderParam(slot as u8), *token);
                         }
@@ -4172,7 +4198,7 @@ fn styled(
             }
         });
     }
-    if let Some(selection) = &node.variant_interaction {
+    if let Some(selection) = &node.rare().variant_interaction {
         // Variants chosen by state set interaction styles: the choice's,
         // the element's own over them, swapped when the choice changes.
         let (selection, own) = (selection.clone(), crate::node::interaction_of(&node.pseudo));
@@ -4208,11 +4234,11 @@ fn styled(
     }
     // Its shader kept up by the engine, once it has its style.
     if let Some(s) = shaders.filter(|s| s.drive.is_some())
-        && let Some(make) = drive_of(s, vm)
+        && let Some((tokens, make)) = drive_of(s, vm)
     {
-        view = zgx::shader_drive::attach(need(&mut cx), view, make);
+        view = zgx::shader_drive::attach_themed(need(&mut cx), view, tokens, make);
     }
-    if let Some(disabled) = &node.disabled {
+    if let Some(disabled) = &node.rare().disabled {
         let (disabled, vm) = (resolve_owned(disabled), vm.clone());
         view = view.disabled_when(move || {
             resolve(&disabled, Ty::Bool, None, &vm) == Some(Lit::Bool(true))
@@ -4226,8 +4252,12 @@ fn styled(
     }
     if let Some(selectable) = node.selectable {
         view = view.selectable(selectable);
+        // Its copy hook: read only on a region, as few are.
+        if selectable {
+            view = region_copy(view, node, vm, low);
+        }
     }
-    if let Some(colors) = &node.selection_colors {
+    if let Some(colors) = &node.rare().selection_colors {
         // A token (`"$accent"`) follows the node's theme; anything that
         // does not resolve keeps the theme's own colour.
         let theme = match cx.as_deref().map(Context::theme) {
@@ -4254,7 +4284,7 @@ fn styled(
             };
         }
     }
-    match &node.pointer_events {
+    match &node.rare().pointer_events {
         Some(Source::Lit(Lit::Bool(enabled))) => view = view.pointer_events(*enabled),
         Some(source) => {
             // Followed: a state or a function (`"none"`, `"auto"` or a boolean).
@@ -4277,13 +4307,30 @@ fn styled(
         }
         None => {}
     }
+    // `sound =`: it plays on `ui` as the node is activated, before its
+    // handler runs (a press, Enter or Space, assistive technology's).
+    #[cfg(feature = "audio")]
+    let sound = node.events().sound.clone();
     if let Some(handler) = &node.events().click {
         let (handler, vm, actions) = (handler.clone(), vm.clone(), low.actions.clone());
+        #[cfg(feature = "audio")]
+        let sound = sound.clone();
         // Told the keys held: `{ shift, ctrl, alt, meta }` (a ⌘-click).
         view = view.on_click_with(move |held| {
+            #[cfg(feature = "audio")]
+            if let Some(sound) = &sound {
+                crate::audio::activate(sound, &vm);
+            }
             let keys = modifiers_table(&vm.lua, held).ok();
             run(&handler, &vm, &actions, keys);
         });
+    }
+    #[cfg(feature = "audio")]
+    if node.events().click.is_none()
+        && let Some(sound) = sound
+    {
+        let vm = vm.clone();
+        view = view.on_click_with(move |_| crate::audio::activate(&sound, &vm));
     }
     // The node's handle, for local pointer coordinates and elements: made
     // only for what reads it.
@@ -4304,7 +4351,7 @@ fn styled(
     let handle: Option<Rc<OnceCell<NodeHandle>>> = (element.is_some()
         || events.any_input()
         || events.any_drag()
-        || events.drag_preview.is_some())
+        || events.drags().drag_preview.is_some())
     .then(Rc::default);
     let handle_for = || handle.clone().expect("made for what reads it");
     if events.any_input() {
@@ -4313,7 +4360,7 @@ fn styled(
             view = with_rare(view, rare, vm, low, handle_for());
         }
     }
-    if events.any_drag() || events.drag_preview.is_some() {
+    if events.any_drag() || events.drags().drag_preview.is_some() {
         view = with_drag(view, node, vm, low, handle_for());
     }
     if let Some(style) = &node.events().context_menu_style {
@@ -4332,6 +4379,12 @@ fn styled(
             }),
             _ => view.context_menu(move |e| context_menu_items(&vm, &low, &build, e, None)),
         };
+        // `context_menu_open = state`: read only beside a context menu.
+        if let Some(open) =
+            (node.events().rare.as_ref()).and_then(|rare| rare.context_menu_open.as_ref())
+        {
+            view = view.context_menu_open(bridge(need(&mut cx), open, Value::truthy, Value::Bool));
+        }
     }
     // Input and drag handlers read the node's handle (local coordinates).
     if element.is_some() || node.events().any_input() || node.events().any_drag() {
@@ -4341,11 +4394,11 @@ fn styled(
         // the box's parent.
         let track = node.tracks_layout().then(|| {
             let timing = crate::motion::Timing {
-                ease: node.layout.as_ref().and_then(|l| l.ease.clone()),
-                duration: node.layout.as_ref().and_then(|l| l.duration),
+                ease: node.rare().layout.as_ref().and_then(|l| l.ease.clone()),
+                duration: node.rare().layout.as_ref().and_then(|l| l.duration),
             };
             let depth = if node.sizes_layout() { 2 } else { 0 };
-            (node.layout_id.clone(), timing, depth)
+            (node.rare().layout_id.clone(), timing, depth)
         });
         let (mount, resize, visible, visible_margin, vm) = (
             node.events().mount.clone(),
@@ -4509,6 +4562,12 @@ fn styled(
                 resolve(&expanded, Ty::Bool, None, &vm) == Some(Lit::Bool(true))
             });
         }
+        if let Some(pressed) = &a11y.pressed {
+            let (pressed, vm) = (resolve_owned(pressed), vm.clone());
+            view = view.pressed_when(move || {
+                resolve(&pressed, Ty::Bool, None, &vm) == Some(Lit::Bool(true))
+            });
+        }
         if let Some(live) = a11y.live {
             view = view.live(live);
         }
@@ -4556,7 +4615,7 @@ fn styled(
             };
         }
     }
-    if let Some(layout) = &node.layout {
+    if let Some(layout) = &node.rare().layout {
         if layout.hit {
             view = hit_at_target(view, node, vm, low, element.clone());
         }
@@ -4801,6 +4860,8 @@ fn look_at_functions(
 #[inline(never)]
 fn styles_apart(dynamic: &[(Prop, Owned, Option<Signal<f32>>)], vm: &Rc<Vm>) -> Box<StylesApart> {
     let lits = vm.runtime.signal(Rc::new(Vec::new()));
+    #[cfg(feature = "inspect")]
+    crate::node::name_kind(&lits, "a node's style functions (beside an animated style)");
     let functions: Vec<_> = dynamic
         .iter()
         .filter(|(_, source, _)| matches!(source, Owned::Computed(..)))
@@ -5287,6 +5348,19 @@ fn remote_status_in(
             Ok(bytes) => {
                 // Decoding a large image takes long enough to drop frames.
                 let (tell, mut heard) = zgx::task::latest::<Result<Decoded, String>>();
+                // No threads in the browser (wasm32): decoded here (there,
+                // only SVGs decode; images show their labels).
+                #[cfg(target_arch = "wasm32")]
+                tell.send(if svg {
+                    SvgData::new(bytes)
+                        .map(|svg| Decoded::Svg(Arc::new(svg)))
+                        .map_err(|e| e.to_string())
+                } else {
+                    crate::gpu::decode_image_kept(Arc::from(bytes))
+                        .map(Decoded::Image)
+                        .map_err(|e| e.to_string())
+                });
+                #[cfg(not(target_arch = "wasm32"))]
                 std::thread::spawn(move || {
                     tell.send(if svg {
                         SvgData::new(bytes)
@@ -5294,7 +5368,7 @@ fn remote_status_in(
                             .map_err(|e| e.to_string())
                     } else {
                         // Its file kept, its pixels decoded as it is drawn.
-                        zgx_gpu::assets::decode_image_kept(Arc::from(bytes))
+                        crate::gpu::decode_image_kept(Arc::from(bytes))
                             .map(Decoded::Image)
                             .map_err(|e| e.to_string())
                     });
@@ -5320,7 +5394,7 @@ fn remote_status_in(
                 // the script's: logged, and `fallback` shows in its place.
                 let _ = vm;
                 eprintln!("zgx: {src} didn't load: {error}");
-                let now = std::time::Instant::now();
+                let now = crate::time::Instant::now();
                 let why: Rc<str> = Rc::from(error.as_str());
                 let times = assets
                     .failed
@@ -5419,7 +5493,7 @@ pub(crate) fn try_load_image_in(
     let decoded = (assets.read(src, &path))
         .map_err(|e| e.to_string())
         .and_then(|bytes| {
-            zgx_gpu::assets::decode_image_kept(Arc::from(bytes)).map_err(|e| e.to_string())
+            crate::gpu::decode_image_kept(Arc::from(bytes)).map_err(|e| e.to_string())
         })
         .map_err(|e| format!("{}: {e}", path.display()));
     match decoded {
@@ -6026,21 +6100,26 @@ fn with_drag(
                 }
             })
     }
-    if let Some(drag) = events.drag.clone() {
+    if let Some(drag) = events.drags().drag.clone() {
         let vm = vm.clone();
-        view = view.on_drag(move || -> Value {
+        // Nil (or an error) starts no drag from this press: a row that drags
+        // only some of what it shows.
+        view = view.on_drag_when(move || -> Option<Value> {
             call(&vm, &drag, ())
                 .and_then(|v| Value::from_lua(v, &vm.lua).ok())
-                .unwrap_or(Value::Nil)
+                .filter(|v| !matches!(v, Value::Nil))
         });
     }
-    if let Some(preview) = events.drag_preview.clone() {
+    if let Some(preview) = events.drags().drag_preview.clone() {
         let (vm, low) = (vm.clone(), low.clone());
         let build = move |payload: &Value| {
             let result = vm.call::<mlua::Value>(&preview, payload.clone());
             built(&vm, result, &low)
         };
-        view = match (events.drag_preview_anchor, events.drag_preview_offset) {
+        view = match (
+            events.drags().drag_preview_anchor,
+            events.drags().drag_preview_offset,
+        ) {
             (None, None) => view.drag_preview(build),
             (anchor, offset) => view.drag_preview_anchored(
                 anchor.unwrap_or_default(),
@@ -6049,13 +6128,13 @@ fn with_drag(
             ),
         };
     }
-    if let Some(end) = events.drag_end.clone() {
+    if let Some(end) = events.drags().drag_end.clone() {
         let vm = vm.clone();
         view = view.on_drag_end(move |payload: &Value, accepted| {
             call(&vm, &end, (payload.clone(), accepted));
         });
     }
-    if let Some(export) = events.drag_export.clone() {
+    if let Some(export) = events.drags().drag_export.clone() {
         let vm = vm.clone();
         view = view.drag_export(move |payload: &Value| {
             use zgx::input::DragItem;
@@ -6072,7 +6151,7 @@ fn with_drag(
             out
         });
     }
-    if let Some(outside) = events.drag_outside.clone() {
+    if let Some(outside) = events.drags().drag_outside.clone() {
         let vm = vm.clone();
         view = view.on_drag_outside(move |payload: &Value, event| {
             let at = vm.lua.create_table().ok();
@@ -6089,7 +6168,7 @@ fn with_drag(
             call(&vm, &outside, (payload.clone(), at));
         });
     }
-    if let Some(moves) = events.drag_moves_window.clone() {
+    if let Some(moves) = events.drags().drag_moves_window.clone() {
         let vm = vm.clone();
         view = view.drag_moves_window(move |payload: &Value| {
             call(&vm, &moves, payload.clone()).is_some_and(|moves| {
@@ -6098,11 +6177,11 @@ fn with_drag(
         });
     }
     let (drop, accept, over, leave, spring) = (
-        events.drop.clone(),
-        events.drop_when.clone(),
-        events.drag_over.clone(),
-        events.drag_leave.clone(),
-        events.drag_spring.clone(),
+        events.drags().drop.clone(),
+        events.drags().drop_when.clone(),
+        events.drags().drag_over.clone(),
+        events.drags().drag_leave.clone(),
+        events.drags().drag_spring.clone(),
     );
     if drop.is_none() && over.is_none() && leave.is_none() && spring.is_none() {
         return view;
@@ -6234,6 +6313,8 @@ enum Owned {
     Computed(mlua::Function, std::cell::Cell<Option<CachedHex>>),
     Anim(Option<Value>, Option<Value>),
     Variant(Rc<crate::variants::Selection>, Prop),
+    /// `ui.map`: computed in Rust from the states it reads, no script run.
+    Map(Rc<crate::node::MapSpec>),
 }
 fn resolve_owned(source: &Source) -> Owned {
     match source {
@@ -6242,6 +6323,7 @@ fn resolve_owned(source: &Source) -> Owned {
         Source::Computed(f) => Owned::Computed(f.clone(), std::cell::Cell::default()),
         Source::Anim(a) => Owned::Anim(a.from.clone(), a.to.clone()),
         Source::Variant(selection, prop) => Owned::Variant(selection.clone(), *prop),
+        Source::Map(spec) => Owned::Map(spec.clone()),
     }
 }
 /// A style's value now. What a function returns is checked by the design
@@ -6334,7 +6416,11 @@ impl LineStates {
             mlua::Value::Number(n) if (0. ..KEPT as f64).contains(n) && *n as u32 as f64 == *n => {
                 Some(*n as u32)
             }
+            #[cfg(not(target_arch = "wasm32"))]
             mlua::Value::Integer(n) if (0..KEPT as i64).contains(n) => Some(*n as u32),
+            // Luau's integer is an `i32` in the browser (wasm32).
+            #[cfg(target_arch = "wasm32")]
+            mlua::Value::Integer(n) if (0..KEPT as i64).contains(&i64::from(*n)) => Some(*n as u32),
             _ => None,
         }
     }
@@ -6366,7 +6452,7 @@ impl LineStates {
     }
     fn value(&self, number: u32) -> mlua::Value {
         if number & KEPT == 0 {
-            return mlua::Value::Integer(number as i64);
+            return mlua::Value::Integer(number as mlua::Integer);
         }
         (self.values.get((number & !KEPT) as usize).cloned()).unwrap_or(mlua::Value::Nil)
     }
@@ -6801,6 +6887,13 @@ fn gradient_of(gradient: &crate::node::GradientLit) -> zgx::decoration::Gradient
         },
     }
 }
+/// `resolve` for a `ui.map`: out of line, as few styles have one, to keep
+/// `resolve` the size it was.
+#[cold]
+#[inline(never)]
+fn mapped(spec: &crate::node::MapSpec, ty: Ty) -> Option<Lit> {
+    lit(&Value::Num(spec.value() as f64), ty)
+}
 fn resolve(source: &Owned, ty: Ty, scalar: Option<&Signal<f32>>, vm: &Vm) -> Option<Lit> {
     match source {
         Owned::Lit(l) => Some(l.clone()),
@@ -6810,6 +6903,8 @@ fn resolve(source: &Owned, ty: Ty, scalar: Option<&Signal<f32>>, vm: &Vm) -> Opt
             .iter()
             .find_map(|(p, l)| (p == prop).then(|| l.clone())),
         Owned::State(s) => s.with(|v| lit(v, ty).or_else(|| refused(v, ty, vm))),
+        // Mapped in Rust from the states it reads: no script runs.
+        Owned::Map(spec) => mapped(spec, ty),
         // A colour or a number (most computed styles): read from what the
         // function returned as it is, without making a `Value` of it first.
         Owned::Computed(f, cache) if matches!(ty, Ty::Color | Ty::Num) => {
@@ -7808,6 +7903,11 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
         Some(Lit::Num(n)) => n.max(0.) as usize,
         _ => 0,
     };
+    // How many rows it has, for a copy's hook.
+    let rows_count = {
+        let count = count.clone();
+        move || count()
+    };
     // What a row the list has not mounted copies as, when a selection
     // spans it: `row_text`'s, or what its row would show.
     let copy = {
@@ -7866,7 +7966,9 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
                 measured_rows(offset, rows, *overscan, keys, estimate, row)
             }
         };
-        return list.keyboard_navigation(keyboard).row_text(copy);
+        return list
+            .keyboard_navigation(keyboard)
+            .row_text_counted(rows_count, copy);
     }
     if let Some(heights) = heights {
         let cx = need(&mut cx);
@@ -7882,7 +7984,7 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             }
         }
         .keyboard_navigation(keyboard)
-        .row_text(copy);
+        .row_text_counted(rows_count, copy);
         match sticky {
             None => list,
             Some(sticky) => {
@@ -7912,7 +8014,7 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             Some(_) => virtual_list(offset, *height, *overscan, count, list_key, row),
         }
         .keyboard_navigation(keyboard)
-        .row_text(copy)
+        .row_text_counted(rows_count, copy)
     }
 }
 
@@ -8214,6 +8316,11 @@ fn lower_item_list(
             found
         }
     };
+    // How many rows it has, for a copy's hook.
+    let rows_count = {
+        let items = items.clone();
+        move || items.with_untracked(|l| l.items().len())
+    };
     // A row the list has not mounted copies as `row_text` says (given its
     // index), or as its row would show.
     let copy = {
@@ -8259,8 +8366,12 @@ fn lower_item_list(
             .map(|rule| {
                 let (rows, items) = (rows.clone(), items.clone());
                 let now = Rc::new(move || items.with_untracked(Clone::clone));
-                Rc::new(crate::estimate::Estimator::new(rule, now, rows))
-                    as Rc<dyn zgx::compose::RowsWatch>
+                Rc::new(crate::estimate::Estimator::new(
+                    &cx.runtime(),
+                    rule,
+                    now,
+                    rows,
+                )) as Rc<dyn zgx::compose::RowsWatch>
             });
         let list = match key {
             // Heights by key, kept as rows move, each read here: no item is
@@ -8302,7 +8413,9 @@ fn lower_item_list(
                 }
             }
         };
-        return list.keyboard_navigation(keyboard).row_text(copy);
+        return list
+            .keyboard_navigation(keyboard)
+            .row_text_counted(rows_count, copy);
     }
     if let Some(heights) = heights {
         let cx = need(&mut cx);
@@ -8310,7 +8423,7 @@ fn lower_item_list(
         let (sticky_key, sticky_row) = (list_key.clone(), row.clone());
         let list = variable_virtual_list(offset.clone(), rows.clone(), *overscan, list_key, row)
             .keyboard_navigation(keyboard)
-            .row_text(copy);
+            .row_text_counted(rows_count, copy);
         let Some(sticky) = rare.as_ref().and_then(|rare| rare.sticky.as_ref()) else {
             return list;
         };
@@ -8322,7 +8435,7 @@ fn lower_item_list(
     }
     virtual_list(offset, *height, *overscan, count, list_key, row)
         .keyboard_navigation(keyboard)
-        .row_text(copy)
+        .row_text_counted(rows_count, copy)
 }
 
 /// A variable list with sticky rows: the list, and over it the sticky row
@@ -8708,10 +8821,19 @@ fn lower_rich(spans: &[Span], vm: &Rc<Vm>, low: &Rc<Lowering>) -> View {
                     if let Some(end) = rare.padding_end.filter(|end| *end != padding[0]) {
                         out = out.padding_end(end);
                     }
+                    if rare.boxed {
+                        out = out.inline_box();
+                    }
+                    if let Some(height) = rare.line_height {
+                        out = out.line_height(height);
+                    }
                     if let Some(build) = rare.menu.as_ref() {
                         let (build, vm, low) = (build.clone(), vm.clone(), low.clone());
                         out = out
                             .context_menu(move |e| context_menu_items(&vm, &low, &build, e, None));
+                    }
+                    if let Some(label) = &rare.label {
+                        out = out.label(label.clone());
                     }
                 }
                 if let Some(href) = &span.href {
@@ -9826,12 +9948,126 @@ fn on_paste(view: View, hook: mlua::Function, vm: &Rc<Vm>) -> View {
     })
 }
 
+/// A selectable region's `on_copy`, if it has one.
+#[cold]
+#[inline(never)]
+fn region_copy(view: View, node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>) -> View {
+    match node
+        .events()
+        .rare
+        .as_ref()
+        .and_then(|rare| rare.copy.clone())
+    {
+        Some(hook) => on_selection_copy(view, hook, vm, low.elements.clone()),
+        None => view,
+    }
+}
+/// `on_copy` on a selectable region: handed `{ text, html, leaves }`, the
+/// selection's text and HTML and, for each text node it spans in order, the
+/// id of the element it is in (its own or the nearest around it, `false`
+/// for none), it returns `{ text, html }` for the clipboard (`text` the
+/// selection's where left out), or nil for the selection's own.
+#[cold]
+#[inline(never)]
+fn on_selection_copy(
+    view: View,
+    hook: mlua::Function,
+    vm: &Rc<Vm>,
+    elements: Rc<crate::element::Elements>,
+) -> View {
+    let vm = vm.clone();
+    view.on_selection_copy(move |request| {
+        let lua = &vm.lua;
+        let event = (|| {
+            let event = lua.create_table()?;
+            event.set("text", request.text)?;
+            event.set("html", request.html)?;
+            let leaves = lua.create_table()?;
+            for (i, leaf) in request.leaves.iter().enumerate() {
+                match leaf_id(&elements, request, *leaf, false) {
+                    Some(id) => leaves.raw_set(i + 1, id.as_ref())?,
+                    None => leaves.raw_set(i + 1, false)?,
+                }
+            }
+            event.set("leaves", leaves)?;
+            // Each list's rows it spans, mounted or not, from 1 as Luau
+            // counts: a Select All over rows scrolled away finds theirs.
+            let rows = lua.create_table()?;
+            for (i, span) in request.rows.iter().enumerate() {
+                let row = lua.create_table()?;
+                // The list may be the region itself (`ui.list { id = …,
+                // selectable = true }`): its own id names it.
+                match leaf_id(&elements, request, span.list, true) {
+                    Some(id) => row.raw_set("list", id.as_ref())?,
+                    None => row.raw_set("list", false)?,
+                }
+                row.raw_set("first", span.first + 1)?;
+                row.raw_set("last", span.last + 1)?;
+                rows.raw_set(i + 1, row)?;
+            }
+            event.set("rows", rows)?;
+            Ok(event)
+        })();
+        match event.and_then(|event| vm.call::<mlua::Value>(&hook, event)) {
+            Ok(mlua::Value::Table(content)) => {
+                let text: Option<String> = content.get("text").unwrap_or(None);
+                let html: Option<String> = content.get("html").unwrap_or(None);
+                Some(zgx::widgets::ClipboardContent {
+                    text: text.unwrap_or_else(|| request.text.to_owned()),
+                    html,
+                })
+            }
+            Ok(_) => None,
+            Err(error) => {
+                vm.report(error);
+                None
+            }
+        }
+    })
+}
+
+/// The id of the element `leaf` (a text node, or a list's rows) is in: its
+/// own, else the nearest element with one around it inside the region,
+/// else none.
+fn leaf_id(
+    elements: &crate::element::Elements,
+    request: &zgx::widgets::SelectionCopyRequest,
+    leaf: zgx::scene::NodeId,
+    // The region's own id counts too: for a list, which may be the region.
+    // Not for text, which the region's id would only mislabel.
+    with_region: bool,
+) -> Option<Rc<str>> {
+    let scene = request.ui.scene.borrow();
+    let mut node = Some(leaf);
+    while let Some(at) = node {
+        if at == request.region && !with_region {
+            break;
+        }
+        if let Some(id) = elements.at(at).and_then(|element| element.id.clone()) {
+            return Some(id);
+        }
+        if at == request.region {
+            break;
+        }
+        node = scene.parent(at);
+    }
+    None
+}
+
 /// `autocorrect` and `smart_punctuation`: few inputs ask.
 #[cold]
 #[inline(never)]
 fn substitutions(view: View, rare: &crate::node::InputRare) -> View {
     view.autocorrect(rare.autocorrect)
         .smart_punctuation(rare.smart_punctuation)
+}
+
+/// `drop_caret = false` (internal): few textareas ask. Out of line: the
+/// element's builder inlines its common fields.
+#[cold]
+#[inline(never)]
+fn without_drop_caret(view: View) -> View {
+    view.drop_caret(false)
 }
 
 fn active_descendant(view: View, active: &Source, vm: &Rc<Vm>) -> View {
