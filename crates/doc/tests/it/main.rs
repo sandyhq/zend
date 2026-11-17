@@ -6,3 +6,4 @@
 
 mod attachments_roundtrip;
 mod loro_persistence;
+mod stop_version;

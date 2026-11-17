@@ -2493,3 +2493,321 @@ async fn a_stops_version_is_read_back_from_the_doc_after_a_restart() {
 async fn a_relayed_stops_version_is_read_back_from_the_ledger_after_a_restart() {
     a_stops_version_after_a_restart(true).await;
 }
+/// A row's map the way a half-arrived import leaves it: in the list, with
+/// no id yet. [`complete_row`] gives it one.
+fn bare_row(doc: &zend_doc::SessionDoc) -> loro::LoroMap {
+    let row = doc
+        .doc()
+        .get_list("messages")
+        .push_container(loro::LoroMap::new())
+        .unwrap();
+    doc.commit();
+    row
+}
+
+fn complete_row(doc: &zend_doc::SessionDoc, row: &loro::LoroMap, id: &str) {
+    row.insert("id", id).unwrap();
+    row.insert("role", "user").unwrap();
+    row.insert("createdAt", now()).unwrap();
+    row.insert("deviceId", "other").unwrap();
+    row.insert_container("parts", loro::LoroList::new()).unwrap();
+    doc.commit();
+}
+
+/// GPT review 8, finding 1: a send the Stop's sender saw (its row was in
+/// the sender's version) stays claimed when its row is removed afterwards
+/// (a rewind) and the host restarts: the claim is the Stop's version and
+/// the doc's history, not the row still being in the transcript.
+#[tokio::test]
+async fn a_send_a_stop_saw_stays_claimed_once_its_row_is_rewound_and_the_host_restarts() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    let id = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "hold: seen then removed", vec![])
+        .unwrap();
+    let queued = handle
+        .doc()
+        .read_queue()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    // The queue item is kept off the drain while its row is in the
+    // transcript the Stop's sender sees, and put back after the restart.
+    handle.doc().remove_queued(&id).unwrap();
+    handle
+        .write_user_message(&id, "hold: seen then removed", now())
+        .unwrap();
+    handle
+        .write_user_message("aim-after-seen", "later sender aim", now())
+        .unwrap();
+    let mut stop = relayed_stop(
+        "stop-before-rewind",
+        now(),
+        "aim-after-seen".into(),
+        Some(&[]),
+    );
+    stop.based_on.as_mut().unwrap().frontier = Some(version_of(&rig));
+    ingest(&rig, stop).await;
+    assert!(handle.doc().truncate_from(&id, &[]).unwrap() >= 2);
+    drop(handle);
+    rig.core.doc_host.flush_all();
+    rig.core.sessions.shutdown().await;
+    rig.core.doc_host.shutdown_workers().await;
+    let rig = restart(rig);
+    assert!(!has_row(&rig, &id));
+
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: newer after the rewind"),
+            Some("m-newer".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the newer runtime",
+    )
+    .await;
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    handle.doc().push_queued(&queued).unwrap();
+    let _ = rig.core.doc_host.steer_queued_now(CHAT, &id).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        prompts.len(),
+        2,
+        "a send its Stop's sender saw reached the agent: {prompts:?}"
+    );
+}
+
+/// GPT review 8, finding 2: the Stop reaches the host while the host has
+/// only the map of a row its sender saw, not yet the op that gives the row
+/// its id. Once that arrives, the send is one the Stop saw: a check made
+/// before (any send's) must not be remembered as "that row has no id".
+#[tokio::test]
+async fn a_send_a_stop_saw_is_claimed_when_its_rows_id_arrives_after_the_stop() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    bare_row(handle.doc());
+    let sender = zend_doc::SessionDoc::from_doc(handle.doc().doc().fork());
+    let rows = sender.doc().get_list("messages");
+    let Some(loro::ValueOrContainer::Container(loro::Container::Map(row))) =
+        rows.get(rows.len() - 1)
+    else {
+        panic!("the sender has the row's map");
+    };
+    complete_row(&sender, &row, "late-seen");
+    sender
+        .push_message(&zend_doc::SessionMessageEntry {
+            id: "sender-aim".into(),
+            role: zend_doc::MessageRole::Assistant,
+            created_at: now(),
+            device_id: "sender".into(),
+            parts: vec![],
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })
+        .unwrap();
+    let mut stop = relayed_stop("stop-ahead-of-the-id", now(), "sender-aim".into(), Some(&[]));
+    stop.based_on.as_mut().unwrap().frontier = Some(sender.version_for_command());
+    assert!(sender.read_entries().unwrap().iter().any(|e| e.id == "late-seen"));
+    ingest(&rig, stop).await;
+    assert!(!has_row(&rig, "late-seen"));
+
+    // Another send passes the Stop's check while the row has no id here.
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: newer unknown"),
+            Some("m-newer".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the newer runtime",
+    )
+    .await;
+    handle.doc().import(&sender.export_snapshot().unwrap()).unwrap();
+    assert!(has_row(&rig, "late-seen"));
+    let _ = rig
+        .core
+        .sessions
+        .steer(CHAT, "hold: late seen must not arrive", Some("late-seen".into()))
+        .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        prompts.len(),
+        2,
+        "a send its Stop's sender saw reached the agent: {prompts:?}"
+    );
+}
+
+/// GPT review 8, finding 3: the Stop's sender had a row's map but not its
+/// id or content (the row was no message yet in the transcript it saw). A
+/// send that later takes that row is one the sender never saw: it runs.
+#[tokio::test]
+async fn a_stop_built_before_a_row_had_its_id_lets_that_send_run() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    let row = bare_row(handle.doc());
+    let mut stop = relayed_stop("stop-before-the-id", now(), last_row(&rig), Some(&[]));
+    stop.based_on.as_mut().unwrap().frontier = Some(version_of(&rig));
+    ingest(&rig, stop).await;
+    complete_row(handle.doc(), &row, "m-later");
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: later unseen"),
+            Some("m-later".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the send the Stop's sender never saw to reach an agent",
+    )
+    .await;
+    rig.core.sessions.shutdown().await;
+}
+
+/// The same, for a turn already running when the Stop arrives: the Stop
+/// was built while the row had no id, so the turn that row started is one
+/// its sender never saw. It isn't killed.
+#[tokio::test]
+async fn a_stop_built_before_a_row_had_its_id_leaves_that_turn_running() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let handle = rig.core.doc_host.open(CHAT).unwrap();
+    let row = bare_row(handle.doc());
+    let mut stop = relayed_stop("stop-before-the-id", now(), last_row(&rig), Some(&[]));
+    stop.based_on.as_mut().unwrap().frontier = Some(version_of(&rig));
+    complete_row(handle.doc(), &row, "m-later");
+    rig.core.sessions.interrupt(CHAT).await.unwrap();
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: later content"),
+            Some("m-later".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the later turn",
+    )
+    .await;
+    let before = rig.ledger.kills.load(Ordering::SeqCst);
+    ingest(&rig, stop).await;
+    let after = rig.ledger.kills.load(Ordering::SeqCst);
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        after, before,
+        "the Stop killed a turn whose row had no id when it was built"
+    );
+}
+
+/// GPT review 8, finding 5: a Stop the engine builds for a caller that
+/// names the sends itself (`cancels` given) says its version too. Without
+/// it the host judged what the sender saw by its own transcript's order,
+/// and killed a turn started after the Stop was built.
+#[tokio::test]
+async fn an_engine_stop_with_its_sends_named_says_its_version() {
+    let host = rig();
+    start_hold(&host).await;
+    host.core.sessions.interrupt(CHAT).await.unwrap();
+    let sender = rig();
+    let host_doc = host.core.doc_host.open(CHAT).unwrap();
+    let sender_doc = sender.core.doc_host.open(CHAT).unwrap();
+    sender_doc
+        .doc()
+        .import(&host_doc.doc().export_snapshot().unwrap())
+        .unwrap();
+    // The host's rows sort before the sender's where they are concurrent.
+    host_doc.doc().doc().set_peer_id(1).unwrap();
+    sender_doc.doc().doc().set_peer_id(u64::MAX - 1).unwrap();
+    sender
+        .core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: sender known T"),
+            Some("m-T".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || sender.ledger.prompts.lock().unwrap().len() == 1 && last_row(&sender) != "m-T",
+        "the sender to see the reply",
+    )
+    .await;
+    let before_stop = sender_doc.doc().export_snapshot().unwrap();
+    let stop_id = sender
+        .core
+        .doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Interrupt {
+                cancels: Some(vec![]),
+            },
+        )
+        .unwrap();
+    let stop = sender_doc
+        .doc()
+        .read_commands()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.id == stop_id)
+        .unwrap();
+    let frontier = stop.based_on.as_ref().and_then(|b| b.frontier.clone());
+    sender.core.sessions.shutdown().await;
+    sender.core.doc_host.shutdown_workers().await;
+
+    // U starts on the host after the sender built the Stop, while the Stop
+    // and the sender's last rows are on their way.
+    host.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: unknown U after Stop"),
+            Some("m-U".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || host.ledger.prompts.lock().unwrap().len() == 2,
+        "the turn the sender never saw",
+    )
+    .await;
+    let before = host.ledger.kills.load(Ordering::SeqCst);
+    host_doc.doc().import(&before_stop).unwrap();
+    ingest(&host, stop).await;
+    let after = host.ledger.kills.load(Ordering::SeqCst);
+    host.core.sessions.shutdown().await;
+    assert_eq!(
+        after, before,
+        "the Stop killed a turn started after it was built (its version: {frontier:?})"
+    );
+    assert!(frontier.is_some(), "the Stop carries no version");
+}

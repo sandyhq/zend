@@ -421,8 +421,10 @@ fn stop_version(stop: &SessionCommandEntry) -> Option<loro::VersionVector> {
 /// sender had, and the rows that continue either. A runtime handed anything
 /// else is running a turn the Stop's sender never saw.
 ///
-/// The rows its sender had are those its version holds ([`stop_version`]):
-/// each row's creating op is in it or not, wherever the merge put the row.
+/// The rows its sender had are those its version holds ([`stop_version`],
+/// [`SessionDoc::messages_in_version`]): the op that gave a row its id is
+/// in it or not, wherever the merge put the row, and a row removed since
+/// was still one it had.
 /// A Stop without a version says only the row it was aimed at: the rows
 /// up to that one, in this host's order.
 fn stop_known_messages(
@@ -433,12 +435,7 @@ fn stop_known_messages(
 ) -> std::collections::HashSet<String> {
     let mut known: std::collections::HashSet<String> = named.iter().cloned().collect();
     match stop_version(stop) {
-        Some(version) => known.extend(
-            doc.message_origins()
-                .into_iter()
-                .filter(|(_, origin)| version.includes_id(*origin))
-                .map(|(id, _)| id),
-        ),
+        Some(version) => known.extend(doc.messages_in_version(&version)),
         None => {
             let turn_id = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref());
             let upto = turn_id
@@ -480,7 +477,8 @@ fn stop_seen_key(chat_id: &str, turn_id: &str) -> String {
 
 /// The processed-ledger key that says a Stop carrying its sender's version
 /// was aimed at the row `turn_id`: that row is claimed even before it is on
-/// this host, where its creating op isn't known yet. Read for that row alone.
+/// this host, where the op that gave it its id isn't known yet. Read for
+/// that row alone.
 fn stop_aimed_key(chat_id: &str, turn_id: &str) -> String {
     format!("stop-aimed:{chat_id}:{turn_id}")
 }
@@ -4443,22 +4441,30 @@ impl DocHost {
         }
         let id = new_id();
         let now = now_ms();
-        let messages = handle.doc.read_entries_shared()?;
+        // A Stop says what it saw: the doc's version, read with the
+        // transcript it is built from, no change between the two (the
+        // version holds that transcript's rows and no other).
+        let stop = matches!(payload, SessionCommandPayload::Interrupt { .. });
+        let (messages, version) = handle.doc.settled(|| {
+            let messages = handle.doc.read_entries_shared();
+            (messages, stop.then(|| handle.doc.version_for_command()))
+        });
+        let messages = messages?;
         let mut based_on = messages.last().map(|m| CommandBasedOn {
             turn_id: Some(m.id.clone()),
             frontier: None,
         });
-        // A Stop names the sends it stops: those still on their way. And it
-        // says what it saw: the doc's version, read after the transcript it
-        // was built from (it holds every row of it).
+        if let Some(version) = version {
+            based_on
+                .get_or_insert_with(CommandBasedOn::default)
+                .frontier = Some(version);
+        }
+        // A Stop names the sends it stops: those still on their way, unless
+        // its caller named them.
         let payload = match payload {
             SessionCommandPayload::Interrupt { cancels: None } => {
                 let landed: HashSet<&str> = messages.iter().map(|m| m.id.as_str()).collect();
                 let commands = handle.doc.read_commands()?;
-                let version = handle.doc.version_for_command();
-                based_on
-                    .get_or_insert_with(CommandBasedOn::default)
-                    .frontier = Some(version);
                 SessionCommandPayload::Interrupt {
                     cancels: Some(zend_doc::sends_on_their_way(&commands, &|id| {
                         landed.contains(id)
@@ -6571,11 +6577,13 @@ impl DocHost {
     /// at its row or a later one. Read by every send on its way to an agent
     /// (a revival after a restart too), before its last check under the lock.
     ///
-    /// A Stop carrying its sender's version claims each row whose creating op
-    /// that version holds, and the rows continuing one; its version is read
-    /// from the ledger ([`stop_version_key`]) and from the doc's resolved
-    /// Stops (one another host resolved, or this one before a restart). A
-    /// Stop without one claims by position ([`stop_saw`]).
+    /// A Stop carrying its sender's version claims each row that version
+    /// holds ([`SessionDoc::version_holds_message`]: the op that gave the
+    /// row its id is in it; a row removed since is still claimed), and the
+    /// rows continuing one; its version is read from the ledger
+    /// ([`stop_version_key`]) and from the doc's resolved Stops (one another
+    /// host resolved, or this one before a restart). A Stop without one
+    /// claims by position ([`stop_saw`]).
     pub(crate) fn stop_claimed(&self, chat_id: &str, message_id: &str) -> bool {
         let processed = |key: String| self.inner.store.is_processed(&key).unwrap_or(false);
         // Named, or the very row a Stop was aimed at: both hold without a
@@ -6609,19 +6617,19 @@ impl DocHost {
         }
         // The row, and the rows it continues. A row not here yet isn't
         // known by its op: its claim is its key (aimed at or named, above).
-        let mut id = message_id.to_owned();
+        let mut ids = vec![message_id.to_owned()];
         let mut visited = HashSet::new();
-        while visited.insert(id.clone()) {
-            let Some((origin, continues)) = handle.doc.message_origin(&id) else {
-                return false;
-            };
-            if versions.iter().any(|v| v.includes_id(origin)) {
+        while let Some(id) = ids.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            if versions
+                .iter()
+                .any(|version| handle.doc.version_holds_message(version, &id))
+            {
                 return true;
             }
-            match continues {
-                Some(of) => id = of,
-                None => return false,
-            }
+            ids.extend(handle.doc.message_continues(&id));
         }
         false
     }

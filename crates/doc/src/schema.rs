@@ -625,22 +625,10 @@ pub struct SessionDoc {
     entry_bytes: std::sync::atomic::AtomicUsize,
     command_bytes: std::sync::atomic::AtomicUsize,
     change: ChangeLock,
-    /// Each transcript row's container by its message id, for
-    /// [`Self::message_origin`]: each row read once, caught up when the
-    /// doc changed.
-    row_index: std::sync::Mutex<RowIndex>,
+    /// The transcript's rows as the doc's ops tell them, for
+    /// [`Self::version_holds_message`]: each op read once.
+    row_history: std::sync::Mutex<crate::row_history::RowHistory>,
     _entry_events: loro::Subscription,
-}
-
-/// [`SessionDoc::row_index`].
-#[derive(Default)]
-struct RowIndex {
-    /// The doc's version it was caught up at.
-    at: Option<loro::VersionVector>,
-    /// Each row container's message id, once read.
-    ids: std::collections::HashMap<loro::ContainerID, Option<String>>,
-    /// The rows in the list now, by message id (the newest of an id).
-    by_id: std::collections::HashMap<String, loro::ContainerID>,
 }
 
 impl SessionDoc {
@@ -673,7 +661,7 @@ impl SessionDoc {
             entry_bytes: Default::default(),
             command_bytes: Default::default(),
             change: ChangeLock::default(),
-            row_index: Default::default(),
+            row_history: Default::default(),
             _entry_events,
         }
     }
@@ -1032,84 +1020,64 @@ impl SessionDoc {
     }
 
     /// This doc's version as a Stop carries it, to say what its sender saw
-    /// ([`crate::CommandBasedOn::frontier`]).
+    /// ([`crate::CommandBasedOn::frontier`]): the version of the state the
+    /// doc shows, so the transcript read with it has that version's rows
+    /// and no other (a doc checked out at an older version shows, and
+    /// says, the older one). Read both under [`Self::settled`].
     pub fn version_for_command(&self) -> String {
-        crate::encode_version(&self.doc.oplog_vv())
+        let version = self
+            .doc
+            .try_state_vv()
+            .unwrap_or_else(|_| self.doc.oplog_vv());
+        crate::encode_version(&version)
     }
 
-    /// The op that created each transcript row, with the row's id, in order:
-    /// a doc that has that op had the row ([`loro::VersionVector::includes_id`]).
-    pub fn message_origins(&self) -> Vec<(String, loro::ID)> {
-        self.message_rows().collect()
-    }
-
-    /// [`Self::message_origins`] of the row `message_id` alone (the newest
-    /// of that id), and the row it continues; `None` when there is no such
-    /// row. Costs a lookup; after the doc changed, a pass over the list's
-    /// containers too, reading only the rows it hasn't read before.
-    pub fn message_origin(&self, message_id: &str) -> Option<(loro::ID, Option<String>)> {
-        let mut index = self.row_index.lock().unwrap_or_else(|e| e.into_inner());
-        let now = self.doc.oplog_vv();
-        if index.at.as_ref() != Some(&now) {
-            let RowIndex { ids, by_id, .. } = &mut *index;
-            by_id.clear();
-            for container in self.message_containers() {
-                let id = ids
-                    .entry(container.clone())
-                    .or_insert_with(|| self.row_origin(container.clone()).map(|(id, _)| id));
-                if let Some(id) = id {
-                    by_id.insert(id.clone(), container);
-                }
-            }
-            index.at = Some(now);
+    /// Run `read` with no change of the doc between its ops and its
+    /// events: what `read` reads from the doc is of one version, and every
+    /// change up to it has been told to the doc's subscribers.
+    pub fn settled<R>(&self, read: impl FnOnce() -> R) -> R {
+        let _change = self.change.lock();
+        if self.pending_changes() > 0 {
+            LoroDoc::commit(&self.doc);
         }
-        let container = index.by_id.get(message_id)?.clone();
-        drop(index);
-        let loro::ContainerID::Normal { peer, counter, .. } = container else {
-            return None;
-        };
-        let Some(loro::Container::Map(map)) = self.doc.get_container(container) else {
-            return None;
-        };
-        let continues = match map.get("continuationOf") {
-            Some(loro::ValueOrContainer::Value(LoroValue::String(of))) => Some(of.to_string()),
-            _ => None,
-        };
-        Some((loro::ID::new(peer, counter), continues))
+        read()
     }
 
-    fn message_rows(&self) -> impl Iterator<Item = (String, loro::ID)> + '_ {
-        self.message_containers()
-            .into_iter()
-            .filter_map(|container| self.row_origin(container))
+    /// Whether the transcript at `version` had a row with the id
+    /// `message_id`: the op that gave a row that id is in `version`, and no
+    /// op that removed the row is. Told from the doc's ops, so it holds for
+    /// a row removed since (a rewind), and for one whose map was there
+    /// before it had an id. Costs a lookup, and reading the ops the doc
+    /// gained since the last call.
+    pub fn version_holds_message(&self, version: &loro::VersionVector, message_id: &str) -> bool {
+        self.row_history().holds(version, message_id)
     }
 
-    fn message_containers(&self) -> Vec<loro::ContainerID> {
-        let LoroValue::List(items) = self.doc.get_list("messages").get_value() else {
-            return Vec::new();
-        };
-        items
-            .iter()
-            .filter_map(|item| match item {
-                LoroValue::Container(id) => Some(id.clone()),
-                _ => None,
-            })
-            .collect()
+    /// The ids of every row the transcript at `version` had
+    /// ([`Self::version_holds_message`]).
+    pub fn messages_in_version(
+        &self,
+        version: &loro::VersionVector,
+    ) -> std::collections::HashSet<String> {
+        self.row_history().held(version)
     }
 
-    fn row_origin(&self, container: loro::ContainerID) -> Option<(String, loro::ID)> {
-        let loro::ContainerID::Normal { peer, counter, .. } = container else {
-            return None;
-        };
-        let Some(loro::Container::Map(map)) = self.doc.get_container(container) else {
-            return None;
-        };
-        match map.get("id") {
-            Some(loro::ValueOrContainer::Value(LoroValue::String(id))) => {
-                Some((id.to_string(), loro::ID::new(peer, counter)))
-            }
-            _ => None,
+    /// The rows that the rows with the id `message_id` continue, removed
+    /// rows too.
+    pub fn message_continues(&self, message_id: &str) -> Vec<String> {
+        self.row_history().continues(message_id)
+    }
+
+    /// [`Self::row_history`], caught up with the oplog. (Not from inside
+    /// one of this doc's import events: reading the ops asks Loro for its
+    /// transaction, which that import holds. The next call catches up.)
+    fn row_history(&self) -> std::sync::MutexGuard<'_, crate::row_history::RowHistory> {
+        let _change = self.change.lock();
+        let mut history = self.row_history.lock().unwrap_or_else(|e| e.into_inner());
+        if !Importing::here(self) {
+            history.catch_up(&self.doc);
         }
+        history
     }
 
     /// Read all entries (continuations NOT joined — see `join_continuation_entries`).
