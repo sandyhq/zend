@@ -10,7 +10,8 @@
 # "clean", "CONFLICTS=<n>" (conflict markers left in the file, fork side
 # first), "DELETED" (upstream removed it: not done, see to it by hand) or
 # "MISSING-IN-FORK" (upstream changed a file the fork doesn't have: written as
-# upstream has it). Nothing is staged or committed.
+# upstream has it). Nothing is staged or committed. A revision that isn't a
+# commit here, or a range that changes none of the files, is an error (exit 2).
 #
 # Why not `git format-patch | zend-rebrand.pl --filter | git am -3`: for a
 # branch upstream made before the fork's merge-base, the rebranded patch names
@@ -24,6 +25,14 @@ root="$(git rev-parse --show-toplevel)"
 rebrand="$root/scripts/zend-rebrand.pl"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cd "$root"
+for rev in "$base" "$target"; do
+  git rev-parse -q --verify "$rev^{commit}" > /dev/null \
+    || { echo "zend-pick-range: '$rev' is not a commit here (fetch upstream first?)" >&2; exit 2; }
+done
+# (Listed before the loop: a failing diff in the loop's own input would
+# go unnoticed, and the pick would look done and empty.)
+files="$(git diff --name-only "$base" "$target" -- "$@")"
+[ -n "$files" ] || { echo "zend-pick-range: $base..$target changes no file${*:+ under $*}" >&2; exit 2; }
 status=0
 while IFS= read -r f; do
   ours="$(printf '%s' "$f" | "$rebrand" --filter)"
@@ -42,5 +51,5 @@ while IFS= read -r f; do
   n=0; git merge-file -L fork -L base -L upstream "$tmp/ours" "$tmp/base" "$tmp/theirs" || n=$?
   cp "$tmp/ours" "$ours"
   if [ "$n" -eq 0 ]; then echo "clean $ours"; else echo "CONFLICTS=$n $ours"; status=1; fi
-done < <(git diff --name-only "$base" "$target" -- "$@")
+done <<< "$files"
 exit $status
