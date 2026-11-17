@@ -1651,6 +1651,174 @@ async fn a_stuck_queue_send_does_not_hold_up_the_stop_naming_it() {
     assert_eq!(after, before, "the queue send the Stop named ran after it");
 }
 
+/// A queue row a Stop named never reaches the agent, even sent now into a
+/// newer live runtime after a restart: the Stop is known then only on disk
+/// (GPT review 6, cancelled_queue_steer_after_restart_must_not_run).
+#[tokio::test]
+async fn a_queue_row_a_stop_named_is_not_steered_in_after_a_restart() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    let id = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "hold: queue cancelled before restart", vec![])
+        .unwrap();
+    assert_eq!(
+        ingest(
+            &rig,
+            relayed_stop("stop", now(), aimed, Some(&[id.as_str()]))
+        )
+        .await,
+        "executed"
+    );
+    rig.core.doc_host.flush_all();
+    rig.core.sessions.shutdown().await;
+    rig.core.doc_host.shutdown_workers().await;
+    let Rig { core, ledger, _dir } = rig;
+    drop(core);
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ProcessHarness {
+        ledger: ledger.clone(),
+        adopts_config: false,
+        turn_boundary: false,
+    }));
+    let core = EngineCore::assemble(_dir.path(), Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core reassembles");
+    let rig = Rig { core, ledger, _dir };
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: newer after restart"),
+            Some("m-newer".into()),
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the newer turn to start after the restart",
+    )
+    .await;
+    rig.core.doc_host.steer_queued_now(CHAT, &id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let got = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        got, 2,
+        "the queue row the Stop named reached the live runtime after a restart"
+    );
+}
+
+/// A Stop's sender had every row up to the one it was aimed at: one of
+/// those whose dispatch is still on its way (its row written, its runtime
+/// not registered) never starts after the Stop, named or not (GPT review 6,
+/// seen_relayed_run_stalled_in_dispatch_runs_after_stop).
+#[tokio::test]
+async fn a_send_the_stops_sender_saw_stalled_before_its_runtime_never_starts() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    rig.core.sessions.interrupt(CHAT).await.unwrap();
+    rig.ledger.binary_gate.store(true, Ordering::SeqCst);
+    let run = relayed_run(
+        "stalled-send",
+        "hold: seen stalled send",
+        "m-stalled",
+        now(),
+        aimed,
+    );
+    let host = rig.core.doc_host.clone();
+    let sent = tokio::spawn(async move { host.ingest_relayed_command(CHAT, run).await.unwrap() });
+    wait_for(
+        || rig.ledger.binary_reached.load(Ordering::SeqCst) > 0,
+        "the dispatch to stall in its binary lookup",
+    )
+    .await;
+    assert!(has_row(&rig, "m-stalled"), "the send wrote its row first");
+    assert!(!rig.core.sessions.has_run(CHAT));
+    // Aimed at the stalled send's row, naming nothing.
+    let stop = relayed_stop("stop", now(), "m-stalled".into(), Some(&[]));
+    let result = ingest(&rig, stop).await;
+    let before = rig.ledger.prompts.lock().unwrap().len();
+    release_binary(&rig);
+    sent.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(result, "executed");
+    assert_eq!(after, before, "the send the Stop's sender saw ran after it");
+}
+
+/// A runtime handed a message the Stop's sender never saw (its row not
+/// written yet) keeps its turn, however many named messages it was handed
+/// after it (GPT review 6, routed_handover_256_eviction_must_preserve_unknown_turn:
+/// the runtime kept only its last 256, so the unknown one was forgotten).
+async fn a_stop_leaves_a_runtime_handed_an_unseen_message(named_after: usize) {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    let hold = rig.core.sessions.hold_after_handover("m-unseen");
+    let sessions = rig.core.sessions.clone();
+    let sent = tokio::spawn(async move {
+        sessions
+            .dispatch(
+                CHAT,
+                HarnessId::Mock,
+                request("hold: unseen routed turn"),
+                Some("m-unseen".into()),
+            )
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(10), hold.reached())
+        .await
+        .expect("the routed send to be handed over");
+    assert!(!has_row(&rig, "m-unseen"), "held before its row is written");
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the agent to take the unseen message",
+    )
+    .await;
+    let mut ids = Vec::new();
+    for i in 0..named_after {
+        let id = format!("m-named-{i}");
+        rig.core
+            .sessions
+            .steer(CHAT, &format!("hold: named {i}"), Some(id.clone()))
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2 + named_after,
+        "the named messages to reach the agent",
+    )
+    .await;
+    let names: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let result = ingest(&rig, relayed_stop("stop", now(), aimed, Some(&names))).await;
+    let kills = rig.ledger.kills.load(Ordering::SeqCst);
+    hold.release();
+    sent.await.unwrap();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        (result, kills),
+        ("superseded", 0),
+        "the Stop killed a runtime handed a message its sender never saw"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_leaves_a_runtime_handed_an_unseen_message_alone() {
+    a_stop_leaves_a_runtime_handed_an_unseen_message(0).await;
+}
+
+#[tokio::test]
+async fn a_stop_leaves_a_runtime_handed_an_unseen_message_before_256_named_ones() {
+    a_stop_leaves_a_runtime_handed_an_unseen_message(256).await;
+}
+
 /// A late Stop aimed at a row a rewind removed is moot: it leaves the turn
 /// sent after the rewind alone. (GPT review 3, old_stop_after_rewind_kills_new_turn.)
 #[tokio::test]

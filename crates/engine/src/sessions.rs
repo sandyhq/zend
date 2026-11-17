@@ -196,13 +196,14 @@ struct RunHandle {
     /// is unambiguously before the stop (cancelled with it) or after it
     /// (re-dispatched to a fresh runtime — never lost).
     retiring: Arc<std::sync::atomic::AtomicBool>,
-    /// The user messages this runtime was handed (its first prompt, then
-    /// each routed one), the latest [`HANDED_KEPT`]. Pushed under the
-    /// ledger lock as the message goes into the mailbox, and read under it
-    /// by a Stop that names its sends ([`SessionsEngine::interrupt_if`]):
-    /// a message it was handed that the Stop's sender never saw makes the
-    /// runtime's turn one the Stop leaves alone.
-    handed: Arc<Mutex<std::collections::VecDeque<String>>>,
+    /// Every user message this runtime was handed (its first prompt, then
+    /// each routed one), for as long as it lives: none is ever dropped, so
+    /// no count decides what a Stop may kill. Added under the ledger lock
+    /// as the message goes into the mailbox, and read under it by a Stop
+    /// that names its sends ([`SessionsEngine::interrupt_if`]): a message
+    /// it was handed that the Stop's sender never saw makes the runtime's
+    /// turn one the Stop leaves alone.
+    handed: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The turn was working when the engine's shutdown began, and no Stop
     /// has claimed it since: if the shutdown is what ends it, the next boot
     /// picks it back up (see [`Inner::mark_shutdown_cut`]).
@@ -282,11 +283,16 @@ struct Inner {
     /// it never removes a prompt a turn is starting from, nor races a
     /// dispatch to the resume id ([`SessionsEngine::rewind`]).
     chat_gates: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
-    /// Per chat: messages a Stop named (see
+    /// Per chat: messages a Stop claimed in this engine's life, the ones it
+    /// named and the rows its sender had (see
     /// [`SessionsEngine::cancel_sent_messages`]). A send checks it as the last
-    /// step before the agent gets it: under the run lock as its runtime is
-    /// registered, under the ledger lock as it is handed to a live one.
+    /// step before the agent gets it ([`StopGate`]): under the run lock as
+    /// its runtime is registered, under the ledger lock as it is handed to a
+    /// live one.
     cancelled_sends: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// Test hook ([`SessionsEngine::hold_after_handover`]): a routed message
+    /// held between its handover and its row write.
+    handover_hold: Mutex<Option<HandoverHold>>,
     /// Per chat: how many Stops the user has sent, counted before each one
     /// looks for the run to stop. A retry re-dispatching a failed start
     /// compares it with the count its run started under: a Stop that landed
@@ -384,6 +390,7 @@ impl SessionsEngine {
                 revivals_starting: Mutex::new(std::collections::HashSet::new()),
                 chat_gates: Mutex::new(HashMap::new()),
                 cancelled_sends: Mutex::new(HashMap::new()),
+                handover_hold: Mutex::new(None),
                 user_stops: Mutex::new(HashMap::new()),
                 ipc_port: std::sync::atomic::AtomicU16::new(0),
                 ipc_ready: tokio::sync::Notify::new(),
@@ -1135,8 +1142,10 @@ impl SessionsEngine {
             let user_id = message_id.clone().unwrap_or_else(new_id);
             let mut bootstrap = None;
             let mut noted = None;
-            // Checked again under the ledger lock below, as it is handed over.
-            let mut cancelled = self.inner.send_cancelled(chat_id, &user_id);
+            // A Stop claimed it: checked here, and again under the ledger
+            // lock below, as it is handed over.
+            let gate = self.stop_gate(chat_id, &user_id);
+            let mut cancelled = !gate.lets_through(&self.inner);
             let same_runtime = route.is_some();
             let reconfigure = route == Some(true);
             let accepted = if !cancelled && steerable && same_runtime {
@@ -1178,8 +1187,8 @@ impl SessionsEngine {
                         .registry
                         .while_update_clear(harness_id, || {
                             let mut pending = lock(&ledger);
-                            // A Stop named it: the slot is released unused.
-                            if self.inner.send_cancelled(chat_id, &user_id) {
+                            // A Stop claimed it: the slot is released unused.
+                            if !gate.lets_through(&self.inner) {
                                 cancelled = true;
                                 return;
                             }
@@ -1203,10 +1212,11 @@ impl SessionsEngine {
             if cancelled {
                 let handle = self.doc_handle(chat_id)?;
                 handle.write_user_message(&user_id, &request.prompt, now_ms())?;
-                tracing::info!(chat = %chat_id, "message named by a Stop: not handed to the agent");
+                tracing::info!(chat = %chat_id, "message claimed by a Stop: not handed to the agent");
                 return Ok(String::new());
             }
             if accepted {
+                self.held_after_handover(&user_id).await;
                 if reconfigure {
                     // The runtime runs this configuration from now on: later
                     // sends compare against it, and a re-dispatch of an
@@ -1402,23 +1412,22 @@ impl SessionsEngine {
                 .rev()
                 .find(|entry| entry.role == MessageRole::User)
                 .is_some_and(|entry| entry.id != user_id);
-        // A Stop named this message: never start it, here as the last step
-        // before its runtime is registered (a Stop acting now notes its names
-        // first, then looks for the run under the run lock). A Stop from
-        // before a restart is known only on disk.
-        let durably_cancelled = !idle
-            && self
-                .inner
-                .doc_host()
-                .is_some_and(|host| host.stop_cancelled(chat_id, &user_id));
+        // A Stop claimed this message (named it, or its sender had its row):
+        // never start it, here as the last step before its runtime is
+        // registered (a Stop acting now notes what it claims first, then
+        // looks for the run under the run lock). Revivals come here too.
+        let gate = (!idle).then(|| self.stop_gate(chat_id, &user_id));
         // Under the run lock, where a Stop looks for the run to stop and a
         // message sent meanwhile registers its own: a retry the user stopped
         // (or the shutdown overtook) while no run was live, and a revival a
         // newer message has taken the chat from, end here instead of starting.
         let mut runs = lock(&self.inner.runs);
-        if !idle && (durably_cancelled || self.inner.send_cancelled(chat_id, &user_id)) {
+        if gate
+            .as_ref()
+            .is_some_and(|gate| !gate.lets_through(&self.inner))
+        {
             drop(runs);
-            tracing::info!(chat = %chat_id, "message named by a Stop: not dispatched");
+            tracing::info!(chat = %chat_id, "message claimed by a Stop: not dispatched");
             return Ok(String::new());
         }
         let stops = self.inner.user_stop_count(chat_id);
@@ -1479,9 +1488,9 @@ impl SessionsEngine {
                 fork_history_sent: fork_history_sent.clone(),
                 retiring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 handed: Arc::new(Mutex::new(if idle {
-                    std::collections::VecDeque::new()
+                    std::collections::HashSet::new()
                 } else {
-                    std::collections::VecDeque::from([user_id.clone()])
+                    std::collections::HashSet::from([user_id.clone()])
                 })),
                 shutdown_cut: std::sync::atomic::AtomicBool::new(false),
                 credential,
@@ -1704,6 +1713,8 @@ impl SessionsEngine {
         zend_proto::invocation::validate_harness_invocations(prompt, harness_id)
             .map_err(EngineError::Other)?;
         let user_id = message_id.unwrap_or_else(new_id);
+        // Checked under the ledger lock below, as it is handed over.
+        let gate = self.stop_gate(chat_id, &user_id);
         let bootstrap = self.warm_fork_history(chat_id, harness_id, prompt, &history_sent);
         let delivered = bootstrap.as_deref().unwrap_or(prompt);
         // Visuals the person closed without answers: a line each, told
@@ -1740,8 +1751,8 @@ impl SessionsEngine {
             // The update marker is checked in the same critical section, so an
             // accepted update releases the reserved slot instead.
             let mut pending = lock(&ledger);
-            // A Stop named it: the slot is released unused.
-            if self.inner.send_cancelled(chat_id, &user_id) {
+            // A Stop claimed it: the slot is released unused.
+            if !gate.lets_through(&self.inner) {
                 return false;
             }
             note_handed(&handed, &user_id);
@@ -1761,7 +1772,7 @@ impl SessionsEngine {
         let handle = self.doc_handle(chat_id)?;
         if !accepted {
             handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
-            tracing::info!(chat = %chat_id, "steer named by a Stop: not handed to the agent");
+            tracing::info!(chat = %chat_id, "steer claimed by a Stop: not handed to the agent");
             return Ok(SteerOutcome::Cancelled);
         }
         handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
@@ -1920,9 +1931,56 @@ impl SessionsEngine {
         false
     }
 
-    /// A Stop names these messages: none of them reaches the agent from now
-    /// on, whether its runtime is registered or it is routed to a live one
-    /// ([`Inner::cancelled_sends`]).
+    /// The [`StopGate`] for the message `message_id` on its way to chat
+    /// `chat_id`'s agent: what the disk says is read now, outside any lock.
+    fn stop_gate(&self, chat_id: &str, message_id: &str) -> StopGate {
+        StopGate {
+            chat_id: chat_id.to_owned(),
+            message_id: message_id.to_owned(),
+            on_disk: self
+                .inner
+                .doc_host()
+                .is_some_and(|host| host.stop_claimed(chat_id, message_id)),
+        }
+    }
+
+    /// Test hook: the routed message `message_id` waits after its handover
+    /// to the live runtime, before its row is written, until the test
+    /// releases it. Changes no state and holds no lock while it waits.
+    #[doc(hidden)]
+    pub fn hold_after_handover(&self, message_id: &str) -> HandoverHold {
+        let hold = HandoverHold {
+            message_id: message_id.to_owned(),
+            reached: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        };
+        *lock(&self.inner.handover_hold) = Some(hold.clone());
+        hold
+    }
+
+    async fn held_after_handover(&self, message_id: &str) {
+        let hold = lock(&self.inner.handover_hold)
+            .as_ref()
+            .filter(|hold| hold.message_id == message_id)
+            .cloned();
+        if let Some(hold) = hold {
+            hold.reached.notify_one();
+            hold.release.notified().await;
+        }
+    }
+
+    /// The chat's runtime is registered for a turn whose stream hasn't
+    /// opened yet: its status doesn't say Working yet, but a Stop has a
+    /// turn to stop.
+    pub fn turn_starting(&self, chat_id: &str) -> bool {
+        lock(&self.inner.runs).get(chat_id).is_some_and(|h| {
+            !h.started.load(std::sync::atomic::Ordering::Acquire) && !lock(&h.handed).is_empty()
+        })
+    }
+
+    /// A Stop claims these messages (the ones it names, the rows its sender
+    /// had): none of them reaches the agent from now on, whether its runtime
+    /// is registered or it is routed to a live one ([`StopGate`]).
     pub fn cancel_sent_messages(&self, chat_id: &str, message_ids: Vec<String>) {
         if message_ids.is_empty() {
             return;
@@ -3833,17 +3891,58 @@ fn revival_prompt(original: &str) -> String {
     )
 }
 
-/// How many of the messages it was handed a runtime keeps ([`RunHandle::handed`]).
-const HANDED_KEPT: usize = 256;
-
 /// The runtime `handed` was handed the message `message_id` (the caller
 /// holds its ledger lock).
-fn note_handed(handed: &Mutex<std::collections::VecDeque<String>>, message_id: &str) {
-    let mut handed = lock(handed);
-    if handed.len() >= HANDED_KEPT {
-        handed.pop_front();
+fn note_handed(handed: &Mutex<std::collections::HashSet<String>>, message_id: &str) {
+    lock(handed).insert(message_id.to_owned());
+}
+
+/// Whether a Stop has claimed one message on its way to an agent: named
+/// it, or its sender had its row (one up to the turn the Stop was aimed
+/// at). Every road a message takes to an agent asks it as its last step,
+/// in the same critical section as handing it over: registering a runtime
+/// for it (a fresh send, a retry, a revival after a restart; under the run
+/// lock) and handing it to a live runtime (a routed send, a steer, a queue
+/// row sent now, a steer redelivered; under the runtime's ledger lock).
+/// Made by [`SessionsEngine::stop_gate`] before the lock is taken.
+struct StopGate {
+    chat_id: String,
+    message_id: String,
+    /// What the disk says, read as the gate was made: a Stop from before
+    /// this engine started is known only there. One acting since is in
+    /// [`Inner::cancelled_sends`] too, noted there before it looks for a
+    /// run, so reading that under the lock leaves no gap.
+    on_disk: bool,
+}
+
+impl StopGate {
+    /// May the message reach the agent? The one answer for every road:
+    /// no Stop claimed it, on disk or in this engine's life.
+    fn lets_through(&self, inner: &Inner) -> bool {
+        !self.on_disk && !inner.send_cancelled(&self.chat_id, &self.message_id)
     }
-    handed.push_back(message_id.to_owned());
+}
+
+/// A test's hold on one routed message, between its handover to the live
+/// runtime and its row write ([`SessionsEngine::hold_after_handover`]).
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct HandoverHold {
+    message_id: String,
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl HandoverHold {
+    /// Wait until the message was handed over (its row not written yet).
+    pub async fn reached(&self) {
+        self.reached.notified().await;
+    }
+
+    /// Let it go on to its row write.
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
 }
 
 /// The note a turn the engine's own shutdown cut off ends with.

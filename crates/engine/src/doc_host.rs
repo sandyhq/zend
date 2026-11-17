@@ -441,6 +441,38 @@ fn stop_cancel_key(chat_id: &str, message_id: &str) -> String {
     format!("stop-cancel:{chat_id}:{message_id}")
 }
 
+/// The processed-ledger key that says a Stop aimed at the row `turn_id` of
+/// chat `chat_id` reached this host: its sender had every row up to that
+/// one, and none of them starts after it ([`stop_saw`]).
+fn stop_seen_key(chat_id: &str, turn_id: &str) -> String {
+    format!("stop-seen:{chat_id}:{turn_id}")
+}
+
+/// Whether a Stop's sender had the row `message_id`: a Stop was aimed at
+/// it or at a row after it (`aimed_at` says which rows a Stop was aimed
+/// at), or at the row it continues. False when it has no row.
+fn stop_saw(
+    messages: &[Arc<SessionMessageEntry>],
+    message_id: &str,
+    aimed_at: impl Fn(&str) -> bool,
+) -> bool {
+    let mut id = message_id;
+    let mut visited = std::collections::HashSet::new();
+    while visited.insert(id) {
+        let Some(at) = messages.iter().position(|m| m.id == id) else {
+            return false;
+        };
+        if messages[at..].iter().any(|m| aimed_at(&m.id)) {
+            return true;
+        }
+        match messages[at].continuation_of.as_deref() {
+            Some(of) => id = of,
+            None => return false,
+        }
+    }
+    false
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -5253,6 +5285,7 @@ impl DocHost {
     ) -> Result<Option<bool>, EngineError> {
         if !sessions.turn_in_flight(&handle.chat_id)
             && !sessions.holds_background_work(&handle.chat_id)
+            && !sessions.turn_starting(&handle.chat_id)
         {
             return Ok(Some(false));
         }
@@ -6480,14 +6513,22 @@ impl DocHost {
         }
     }
 
-    /// Whether a Stop named the send `message_id` of chat `chat_id`, as kept
-    /// on disk ([`Self::note_stop_cancels`]): read by a send about to start
-    /// its runtime, a revival after a restart too.
-    pub(crate) fn stop_cancelled(&self, chat_id: &str, message_id: &str) -> bool {
-        self.inner
-            .store
-            .is_processed(&stop_cancel_key(chat_id, message_id))
-            .unwrap_or(false)
+    /// Whether a Stop claimed the message `message_id` of chat `chat_id`, as
+    /// kept on disk ([`Self::note_stop_cancels`]): it named it, or was aimed
+    /// at its row or a later one. Read by every send on its way to an agent
+    /// (a revival after a restart too), before its last check under the lock.
+    pub(crate) fn stop_claimed(&self, chat_id: &str, message_id: &str) -> bool {
+        let processed = |key: String| self.inner.store.is_processed(&key).unwrap_or(false);
+        if processed(stop_cancel_key(chat_id, message_id)) {
+            return true;
+        }
+        let Ok(handle) = self.open(chat_id) else {
+            return false;
+        };
+        let messages = handle.doc.read_entries_shared().unwrap_or_default();
+        stop_saw(&messages, message_id, |row| {
+            processed(stop_seen_key(chat_id, row))
+        })
     }
 
     /// A Stop that names its sends (`cancels`) has reached this host: those
@@ -6499,21 +6540,33 @@ impl DocHost {
     /// (its row written or not) checks it as the last step before the agent
     /// gets it, atomically with starting its runtime or being handed to a
     /// live one. The Stop waits for none of them.
+    ///
+    /// The same holds for what its sender saw: every row up to the turn the
+    /// Stop was aimed at. One of those not with an agent yet (its row
+    /// written, its dispatch on its way) never gets there either. On disk
+    /// that is one key for the row it was aimed at ([`stop_seen_key`]), read
+    /// by position ([`stop_saw`]); in sessions, the rows themselves.
     fn note_stop_cancels(&self, handle: &Arc<ChatDocHandle>, stop: &SessionCommandEntry) {
-        let Some(named) = stop.stop_cancels().filter(|named| !named.is_empty()) else {
+        let Some(named) = stop.stop_cancels() else {
             return;
         };
-        for id in named {
-            if let Err(err) = self
-                .inner
-                .store
-                .mark_processed(&stop_cancel_key(&handle.chat_id, id))
-            {
+        let aimed_at = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref());
+        let keys = named
+            .iter()
+            .map(|id| stop_cancel_key(&handle.chat_id, id))
+            .chain(aimed_at.map(|turn| stop_seen_key(&handle.chat_id, turn)));
+        for key in keys {
+            if let Err(err) = self.inner.store.mark_processed(&key) {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "stop cancel write failed");
             }
         }
         if let Some(sessions) = self.sessions() {
-            sessions.cancel_sent_messages(&handle.chat_id, named.to_vec());
+            // Read after the disk write: a send whose disk check came before
+            // it wrote its row before that check, so its row is in here.
+            let messages = handle.doc.read_entries_shared().unwrap_or_default();
+            let mut claimed = stop_known_messages(&messages, stop, named);
+            claimed.extend(aimed_at.map(str::to_owned));
+            sessions.cancel_sent_messages(&handle.chat_id, claimed.into_iter().collect());
         }
     }
 
