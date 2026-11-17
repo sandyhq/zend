@@ -375,17 +375,19 @@ struct DocHostInner {
 /// its sender neither had nor named, the person's next message, sent after
 /// the Stop or not known to it. What it named, and the replies they bring,
 /// are what it stops: a steer that lands first never makes it moot
-/// (2026-11-17), and no clock is compared. A Stop of an older engine keeps
-/// the turn rule: any row after `turn_id`.
+/// (2026-11-17), and no clock is compared. A `turn_id` that is gone (a
+/// rewind removed it) was a turn that is over too. A Stop of an older engine
+/// keeps the turn rule: any row after `turn_id`, and a missing one isn't over.
 fn stop_turn_is_past(
     messages: &[Arc<SessionMessageEntry>],
     stop: &SessionCommandEntry,
     turn_id: &str,
 ) -> bool {
+    let cancels = stop.stop_cancels();
     let Some(at) = messages.iter().position(|m| m.id == turn_id) else {
-        return false;
+        return cancels.is_some();
     };
-    let Some(cancels) = stop.stop_cancels() else {
+    let Some(cancels) = cancels else {
         return true;
     };
     let named = |id: &str| cancels.iter().any(|c| c == id);
@@ -396,8 +398,22 @@ fn stop_turn_is_past(
     })
 }
 
-/// How many message ids a chat keeps of those its Stops named and acted on.
-const STOPPED_SENDS_KEPT: usize = 256;
+/// Whether the Stop `stop` is moot now: aimed at a turn that is over, as
+/// [`evaluate_command`] judges it against the transcript `messages`.
+fn stop_is_moot(messages: &[Arc<SessionMessageEntry>], stop: &SessionCommandEntry) -> bool {
+    let Some(turn_id) = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref()) else {
+        return false;
+    };
+    messages.last().map(|m| m.id.as_str()) != Some(turn_id)
+        && stop_turn_is_past(messages, stop, turn_id)
+}
+
+/// The processed-ledger key that says a Stop named the send `message_id` of
+/// chat `chat_id`: kept on disk, so the send is cancelled whenever it
+/// arrives, across a restart too.
+fn stop_cancel_key(chat_id: &str, message_id: &str) -> String {
+    format!("stop-cancel:{chat_id}:{message_id}")
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -714,11 +730,6 @@ pub struct ChatDocHandle {
     /// only executes now (a loaded host, a slow agent) was cancelled by it:
     /// running it would start the stopped work again in a fresh runtime.
     stopped_by: Mutex<Option<String>>,
-    /// The sends that Stops naming theirs (`cancels`) have acted on, by
-    /// message id, newest last and bounded: each is cancelled whenever it
-    /// arrives, by relay or by sync, in whatever order. (`stopped_by` is the
-    /// latest Stop of an older engine, judged by ledger order.)
-    stopped_sends: Mutex<std::collections::VecDeque<String>>,
     /// An explicit user interrupt freezes automatic queue delivery. The next
     /// explicit prompt or queue send resumes it; incidental doc/status changes
     /// must not turn Cancel into "send the next row".
@@ -2210,7 +2221,6 @@ impl DocHost {
             steered_rows: Mutex::new(Vec::new()),
             held_sends: Mutex::new(HashMap::new()),
             stopped_by: Mutex::new(None),
-            stopped_sends: Mutex::default(),
             queue_paused: AtomicBool::new(recovered_queue_pending),
             queue_frozen_by_recovery: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
@@ -5768,6 +5778,7 @@ impl DocHost {
         if !lock(&self.inner.executing).insert(entry.id.clone()) {
             return Ok("duplicate");
         }
+        self.note_stop_cancels(&handle, &entry);
         // Claim BEFORE executing (the drain's own mark-before-execute rule).
         let marked = self.inner.store.mark_processed(&entry.id);
         let result = match marked {
@@ -5783,6 +5794,7 @@ impl DocHost {
                     }
                     self.execute(&sessions, &handle, &entry).await
                 } {
+                    Ok((SessionCommandStatus::Superseded, _)) => Ok("superseded"),
                     Ok(_) => Ok("executed"),
                     Err(err) => Err(err),
                 },
@@ -6189,6 +6201,9 @@ impl DocHost {
                 skipped.insert(entry.id.clone());
                 continue;
             }
+            if !matches!(disposition, CommandDisposition::Skip) {
+                self.note_stop_cancels(handle, &entry);
+            }
             // Mark BEFORE executing: a crash mid-execution must never double-run a
             // command whose side effect may already have happened.
             if let Err(err) = self.inner.store.mark_processed(&entry.id) {
@@ -6389,23 +6404,61 @@ impl DocHost {
         }
     }
 
+    /// A Stop that names its sends (`cancels`) has reached this host: those
+    /// sends are cancelled, whether the Stop goes on to act, is moot (the
+    /// person wrote again since) or gives way to a newer Stop. What it names
+    /// is kept in the processed ledger, on disk, before the Stop is claimed,
+    /// so a send arriving later, by relay or by sync, after a restart too,
+    /// never runs; the named sends already on their way to the agent (no
+    /// row yet) are dropped there.
+    fn note_stop_cancels(&self, handle: &Arc<ChatDocHandle>, stop: &SessionCommandEntry) {
+        let Some(named) = stop.stop_cancels().filter(|named| !named.is_empty()) else {
+            return;
+        };
+        for id in named {
+            if let Err(err) = self
+                .inner
+                .store
+                .mark_processed(&stop_cancel_key(&handle.chat_id, id))
+            {
+                tracing::warn!(chat = %handle.chat_id, error = %err, "stop cancel write failed");
+            }
+        }
+        let Some(sessions) = self.sessions() else {
+            return;
+        };
+        let messages = handle.doc.read_entries_shared().unwrap_or_default();
+        let on_their_way = named
+            .iter()
+            .filter(|id| !messages.iter().any(|m| &m.id == *id))
+            .cloned()
+            .collect();
+        sessions.cancel_sent_messages(&handle.chat_id, on_their_way);
+    }
+
     /// `entry` is a prompt sent before a Stop that has already acted on
     /// this chat: the Stop cancelled it. Returns its message id. A Stop that
-    /// names its sends cancels exactly those, whichever arrives first; the
-    /// ledger's applied Stops count too (this host may have restarted since).
-    /// A Stop of an older engine cancels what is before it in the ledger.
+    /// names its sends cancels exactly those, whichever arrives first
+    /// ([`Self::note_stop_cancels`]; the ledger's resolved Stops count too,
+    /// for one another host resolved). A Stop of an older engine cancels what
+    /// is before it in the ledger.
     fn cancelled_by_stop(
         &self,
         handle: &Arc<ChatDocHandle>,
         entry: &SessionCommandEntry,
     ) -> Option<String> {
         let message_id = entry.sent_message_id()?.to_owned();
-        if lock(&handle.stopped_sends).contains(&message_id) {
+        if self
+            .inner
+            .store
+            .is_processed(&stop_cancel_key(&handle.chat_id, &message_id))
+            .unwrap_or(false)
+        {
             return Some(message_id);
         }
         let commands = handle.doc.read_commands().ok()?;
         if commands.iter().any(|c| {
-            c.status == SessionCommandStatus::Applied
+            c.status != SessionCommandStatus::Pending
                 && c.stop_cancels()
                     .is_some_and(|named| named.contains(&message_id))
         }) {
@@ -6600,20 +6653,21 @@ impl DocHost {
             SessionCommandPayload::Interrupt {
                 cancels: Some(named),
             } => {
+                // Its names were noted as it was claimed (note_stop_cancels):
+                // a named send still pending runs no more. Wait for those
+                // mid-dispatch, so the turn they reach is the one stopped.
                 self.await_earlier_prompts(sessions, handle, &entry.id, Some(named))
                     .await;
-                {
-                    let mut stopped = lock(&handle.stopped_sends);
-                    for id in named {
-                        if stopped.len() >= STOPPED_SENDS_KEPT {
-                            stopped.pop_front();
-                        }
-                        stopped.push_back(id.clone());
-                    }
-                }
-                // The named sends still on their way (no row yet: a slow
-                // dispatch the wait above gave up on) are cancelled with it.
+                // Judged again after the wait: a send it doesn't name may
+                // have started the person's next turn meanwhile.
                 let messages = handle.doc.read_entries_shared().unwrap_or_default();
+                if stop_is_moot(&messages, entry) {
+                    return Ok((
+                        SessionCommandStatus::Superseded,
+                        Some("a newer message started a turn while the Stop waited".into()),
+                    ));
+                }
+                // The named sends a dispatch the wait gave up on still holds.
                 let on_their_way = named
                     .iter()
                     .filter(|id| !messages.iter().any(|m| &m.id == *id))

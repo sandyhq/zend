@@ -12,8 +12,8 @@ A Stop (an `interrupt` command) and the sends around it reach the chat's host by
 The Stop carries what it stops. `SessionCommandPayload::Interrupt` gets an optional `cancels`: the message ids of the sends its sender knew of whose rows weren't in its transcript yet (`zend_doc::sends_on_their_way`). Its `based_on.turn_id` (the sender's last row) already says which rows the sender knew. The engine (`queue_command_with_transfers`) and the window's client (`queue_command_as`) fill `cancels` in when they queue a Stop.
 
 On the host:
-- **Cancelling a send.** A send is cancelled if and only if a Stop that acted names it. The host remembers the names, a bounded list per chat, and also checks the Stops applied in the ledger. So the order the two arrive in doesn't matter.
-- **When the Stop is moot.** It is moot only when a user row after its `based_on` turn is one it doesn't name. Such a row is a message its sender didn't know of. No clock is compared.
+- **Cancelling a send.** A send is cancelled if and only if a Stop names it. That holds even when the Stop itself is moot or gives way to a newer Stop: the person stopped that send either way. The host writes the names to its processed ledger on disk as it claims the Stop, before it acts, and also checks the Stops resolved in the doc's ledger. So the order the two arrive in doesn't matter, nor a restart in between.
+- **When the Stop is moot.** It is moot only when a user row after its `based_on` turn is one it doesn't name, or when that turn is gone (a rewind removed it). Such a row is a message its sender didn't know of. No clock is compared. The Stop waits for the named sends still being dispatched, and is judged again after the wait: a send it doesn't name may have started a turn meanwhile.
 
 A Stop without the field (an engine from before this change) keeps the old rules. It is moot when any row comes after its `based_on`, and it cancels the sends before it in the ledger.
 
@@ -26,4 +26,4 @@ Rejected:
 
 - The wire shape of an old Stop is unchanged: `{"kind":"interrupt"}`. Older engines ignore `cancels` and judge a new Stop by the old rules.
 - A send from a third device that the Stop's sender hadn't seen is not stopped by it, even if it was sent a moment earlier by wall time. That is the causal answer: the person couldn't have meant it.
-- The host keeps the names a Stop gave until it has 256 of them per chat, plus the ledger's applied Stops. After a restart the ledger alone answers.
+- The host keeps every name a Stop gave, one processed-ledger key per name (`stop-cancel:<chat>:<message>`), across restarts. (Before 2026-11-17's second review it kept 256 per chat in memory, and lost them on a restart, when the Stop came by relay and its row hadn't synced.)

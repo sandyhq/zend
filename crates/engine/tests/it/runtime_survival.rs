@@ -1284,6 +1284,227 @@ async fn an_older_engines_stop_keeps_the_turn_rule() {
     rig.core.sessions.shutdown().await;
 }
 
+/// A turn held open by the agent, its prompt at the agent.
+async fn start_hold(rig: &Rig) {
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("hold: original"), None)
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 1,
+        "the turn to start",
+    )
+    .await;
+}
+
+/// A Stop is moot when the person wrote again after it, but what it names
+/// is still cancelled: sent M1, Stop (naming M1), M2; delivered M2, the
+/// Stop, then M1. M1 never runs. (GPT review 3, moot_stop_must_still_cancel_its_older_send.)
+#[tokio::test]
+async fn a_moot_stop_still_cancels_the_send_it_names() {
+    let rig = rig();
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("first"), None)
+        .await
+        .unwrap();
+    settle(&rig, 1).await;
+    let aimed = last_row(&rig);
+    let t = now();
+    let old = relayed_run("old-send", "hold: cancelled", "m-old", t, aimed.clone());
+    let stop = relayed_stop("stop", t + 1, aimed.clone(), Some(&["m-old"]));
+    let new = relayed_run("new-send", "hold: after Stop", "m-new", t + 2, aimed);
+    assert_eq!(ingest(&rig, new).await, "executed");
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the new turn",
+    )
+    .await;
+    assert_eq!(ingest(&rig, stop).await, "superseded");
+    ingest(&rig, old).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let got = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(got, 2, "a moot Stop must not let its named send run");
+}
+
+/// A Stop that gives way to a newer one (another device's, naming none)
+/// still cancels what it names. (GPT review 3, coalesced_stop_loses_its_names.)
+#[tokio::test]
+async fn a_stop_giving_way_to_a_newer_stop_still_cancels_what_it_names() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    let second = relayed_stop("stop-second", now() + 1, aimed.clone(), Some(&[]));
+    rig.core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .queue_command(&second)
+        .unwrap();
+    let first = relayed_stop("stop-first", now() - 1, aimed.clone(), Some(&["m-late"]));
+    assert_eq!(ingest(&rig, first).await, "superseded");
+    ingest(&rig, second).await;
+    ingest(
+        &rig,
+        relayed_run("late-send", "hold: cancelled", "m-late", now(), aimed),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let got = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(got, 1, "the coalesced Stop's names were dropped");
+}
+
+/// A relayed Stop's names hold across a restart of the host before its row
+/// syncs: the named send, arriving after, never runs. (GPT review 3,
+/// relay_stop_lost_after_restart.)
+#[tokio::test]
+async fn a_relayed_stop_cancels_its_send_after_a_restart() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    assert_eq!(
+        ingest(
+            &rig,
+            relayed_stop("stop", now(), aimed.clone(), Some(&["m-late"]))
+        )
+        .await,
+        "executed"
+    );
+    rig.core.doc_host.flush_all();
+    rig.core.sessions.shutdown().await;
+    rig.core.doc_host.shutdown_workers().await;
+    let Rig { core, ledger, _dir } = rig;
+    drop(core);
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ProcessHarness {
+        ledger: ledger.clone(),
+        adopts_config: false,
+        turn_boundary: false,
+    }));
+    let core = EngineCore::assemble(_dir.path(), Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core reassembles");
+    let rig = Rig { core, ledger, _dir };
+    ingest(
+        &rig,
+        relayed_run("late-send", "hold: cancelled", "m-late", now(), aimed),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let got = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        got, 1,
+        "the cancelled send ran after the Stop and a restart"
+    );
+}
+
+/// A Stop waiting for a send it names is judged again before it acts: a send
+/// it doesn't name, from the person's next message, that reached the turn
+/// meanwhile is left alone. (GPT review 3, new_turn_during_relay_stop_wait_is_killed;
+/// here the named send waits on its image, so the Stop surely waits.)
+#[tokio::test]
+async fn a_turn_started_while_a_stop_waits_is_left_alone() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    let mut held = relayed_run(
+        "pending",
+        "hold: before Stop",
+        "m-pending",
+        now(),
+        aimed.clone(),
+    );
+    if let SessionCommandPayload::Run { request, .. } = &mut held.payload {
+        request.attachments = vec!["pending://up-held/photo.png".into()];
+    }
+    rig.core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .queue_command(&held)
+        .unwrap();
+    let stop = relayed_stop("stop", now(), aimed.clone(), Some(&["m-pending"]));
+    let host = rig.core.doc_host.clone();
+    let stop_task =
+        tokio::spawn(async move { host.ingest_relayed_command(CHAT, stop).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !stop_task.is_finished(),
+        "the Stop waits for the send it names"
+    );
+    assert_eq!(
+        ingest(
+            &rig,
+            relayed_run("new-send", "hold: after Stop", "m-new", now(), aimed)
+        )
+        .await,
+        "executed"
+    );
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the new send",
+    )
+    .await;
+    let result = stop_task.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let kills = rig.ledger.kills.load(Ordering::SeqCst);
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        (result, kills),
+        ("superseded", 0),
+        "the Stop must not kill a newer send's turn"
+    );
+    assert_eq!(prompts[1].0, "hold: after Stop", "the named send never ran");
+}
+
+/// A late Stop aimed at a row a rewind removed is moot: it leaves the turn
+/// sent after the rewind alone. (GPT review 3, old_stop_after_rewind_kills_new_turn.)
+#[tokio::test]
+async fn a_stop_aimed_at_a_rewound_turn_leaves_the_new_turn_alone() {
+    let rig = rig();
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("first"), None)
+        .await
+        .unwrap();
+    settle(&rig, 1).await;
+    let aimed = last_row(&rig);
+    let stop = relayed_stop("late-stop", now(), aimed.clone(), Some(&[]));
+    rig.core.sessions.rewind(CHAT, &aimed).await.unwrap();
+    ingest(
+        &rig,
+        relayed_run(
+            "new-send",
+            "hold: after rewind",
+            "m-new",
+            now(),
+            last_row(&rig),
+        ),
+    )
+    .await;
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the new turn",
+    )
+    .await;
+    let before = rig.ledger.kills.load(Ordering::SeqCst);
+    let result = ingest(&rig, stop).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let kills = rig.ledger.kills.load(Ordering::SeqCst);
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        (result, kills),
+        ("superseded", before),
+        "the late Stop killed the turn after its anchor was removed"
+    );
+}
+
 /// The idle reaper spares a parked runtime holding background work, so the
 /// user's Stop must reach it and end that work.
 #[tokio::test]
