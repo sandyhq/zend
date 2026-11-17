@@ -58,6 +58,8 @@ pub enum SteerOutcome {
     DeferredByUpdate,
     /// No live steerable run — the caller should dispatch the prompt as a new turn.
     NotSteerable,
+    /// A Stop named this message: it stays in the transcript, unrun.
+    Cancelled,
 }
 
 type PendingInputs = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<UserInputAnswer>>>>>;
@@ -194,6 +196,13 @@ struct RunHandle {
     /// is unambiguously before the stop (cancelled with it) or after it
     /// (re-dispatched to a fresh runtime — never lost).
     retiring: Arc<std::sync::atomic::AtomicBool>,
+    /// The user messages this runtime was handed (its first prompt, then
+    /// each routed one), the latest [`HANDED_KEPT`]. Pushed under the
+    /// ledger lock as the message goes into the mailbox, and read under it
+    /// by a Stop that names its sends ([`SessionsEngine::interrupt_if`]):
+    /// a message it was handed that the Stop's sender never saw makes the
+    /// runtime's turn one the Stop leaves alone.
+    handed: Arc<Mutex<std::collections::VecDeque<String>>>,
     /// The turn was working when the engine's shutdown began, and no Stop
     /// has claimed it since: if the shutdown is what ends it, the next boot
     /// picks it back up (see [`Inner::mark_shutdown_cut`]).
@@ -273,8 +282,10 @@ struct Inner {
     /// it never removes a prompt a turn is starting from, nor races a
     /// dispatch to the resume id ([`SessionsEngine::rewind`]).
     chat_gates: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
-    /// Per chat: messages a Stop cancelled while they were still on their
-    /// way (see [`SessionsEngine::cancel_sent_messages`]).
+    /// Per chat: messages a Stop named (see
+    /// [`SessionsEngine::cancel_sent_messages`]). A send checks it as the last
+    /// step before the agent gets it: under the run lock as its runtime is
+    /// registered, under the ledger lock as it is handed to a live one.
     cancelled_sends: Mutex<HashMap<String, std::collections::HashSet<String>>>,
     /// Per chat: how many Stops the user has sent, counted before each one
     /// looks for the run to stop. A retry re-dispatching a failed start
@@ -1079,6 +1090,7 @@ impl SessionsEngine {
                 h.binary.clone(),
                 h.runtime_config.harness.clone(),
                 h.side_chats_only,
+                h.handed.clone(),
             )
         });
         if let Some((
@@ -1093,6 +1105,7 @@ impl SessionsEngine {
             binary,
             live_harness,
             side_chats_only,
+            handed,
         )) = routed
         {
             if idle {
@@ -1122,9 +1135,11 @@ impl SessionsEngine {
             let user_id = message_id.clone().unwrap_or_else(new_id);
             let mut bootstrap = None;
             let mut noted = None;
+            // Checked again under the ledger lock below, as it is handed over.
+            let mut cancelled = self.inner.send_cancelled(chat_id, &user_id);
             let same_runtime = route.is_some();
             let reconfigure = route == Some(true);
-            let accepted = if steerable && same_runtime {
+            let accepted = if !cancelled && steerable && same_runtime {
                 bootstrap =
                     self.warm_fork_history(chat_id, harness_id, &request.prompt, &history_sent);
                 let delivered = bootstrap.as_deref().unwrap_or(&request.prompt);
@@ -1163,6 +1178,12 @@ impl SessionsEngine {
                         .registry
                         .while_update_clear(harness_id, || {
                             let mut pending = lock(&ledger);
+                            // A Stop named it: the slot is released unused.
+                            if self.inner.send_cancelled(chat_id, &user_id) {
+                                cancelled = true;
+                                return;
+                            }
+                            note_handed(&handed, &user_id);
                             pending.push_back(RoutedSteer {
                                 prompt: request.prompt.clone(),
                                 message_id: user_id.clone(),
@@ -1179,6 +1200,12 @@ impl SessionsEngine {
             } else {
                 false
             };
+            if cancelled {
+                let handle = self.doc_handle(chat_id)?;
+                handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                tracing::info!(chat = %chat_id, "message named by a Stop: not handed to the agent");
+                return Ok(String::new());
+            }
             if accepted {
                 if reconfigure {
                     // The runtime runs this configuration from now on: later
@@ -1243,16 +1270,6 @@ impl SessionsEngine {
             self.terminate(chat_id).await?;
         }
 
-        // A Stop sent after this message cancelled it while it was on its
-        // way: never start the stopped work again in a fresh runtime.
-        if let Some(id) = &message_id
-            && lock(&self.inner.cancelled_sends)
-                .get_mut(chat_id)
-                .is_some_and(|ids| ids.remove(id))
-        {
-            tracing::info!(chat = %chat_id, "message cancelled by a later Stop: not dispatched");
-            return Ok(String::new());
-        }
         let harness = self.inner.registry.resolve(harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
@@ -1385,11 +1402,25 @@ impl SessionsEngine {
                 .rev()
                 .find(|entry| entry.role == MessageRole::User)
                 .is_some_and(|entry| entry.id != user_id);
+        // A Stop named this message: never start it, here as the last step
+        // before its runtime is registered (a Stop acting now notes its names
+        // first, then looks for the run under the run lock). A Stop from
+        // before a restart is known only on disk.
+        let durably_cancelled = !idle
+            && self
+                .inner
+                .doc_host()
+                .is_some_and(|host| host.stop_cancelled(chat_id, &user_id));
         // Under the run lock, where a Stop looks for the run to stop and a
         // message sent meanwhile registers its own: a retry the user stopped
         // (or the shutdown overtook) while no run was live, and a revival a
         // newer message has taken the chat from, end here instead of starting.
         let mut runs = lock(&self.inner.runs);
+        if !idle && (durably_cancelled || self.inner.send_cancelled(chat_id, &user_id)) {
+            drop(runs);
+            tracing::info!(chat = %chat_id, "message named by a Stop: not dispatched");
+            return Ok(String::new());
+        }
         let stops = self.inner.user_stop_count(chat_id);
         let moved_on = superseded || (revival.is_some() && runs.contains_key(chat_id));
         let stopped = stops_seen.is_some_and(|seen| seen != stops);
@@ -1447,6 +1478,11 @@ impl SessionsEngine {
                 routed_steers: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 fork_history_sent: fork_history_sent.clone(),
                 retiring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                handed: Arc::new(Mutex::new(if idle {
+                    std::collections::VecDeque::new()
+                } else {
+                    std::collections::VecDeque::from([user_id.clone()])
+                })),
                 shutdown_cut: std::sync::atomic::AtomicBool::new(false),
                 credential,
                 binary,
@@ -1658,9 +1694,11 @@ impl SessionsEngine {
                     h.routed_steers.clone(),
                     h.fork_history_sent.clone(),
                     h.retiring.clone(),
+                    h.handed.clone(),
                 )
             });
-        let Some((run_id, harness_id, steer_tx, ledger, history_sent, retiring)) = target else {
+        let Some((run_id, harness_id, steer_tx, ledger, history_sent, retiring, handed)) = target
+        else {
             return Ok(SteerOutcome::NotSteerable);
         };
         zend_proto::invocation::validate_harness_invocations(prompt, harness_id)
@@ -1702,6 +1740,11 @@ impl SessionsEngine {
             // The update marker is checked in the same critical section, so an
             // accepted update releases the reserved slot instead.
             let mut pending = lock(&ledger);
+            // A Stop named it: the slot is released unused.
+            if self.inner.send_cancelled(chat_id, &user_id) {
+                return false;
+            }
+            note_handed(&handed, &user_id);
             pending.push_back(RoutedSteer {
                 prompt: prompt.to_string(),
                 message_id: user_id.clone(),
@@ -1710,11 +1753,17 @@ impl SessionsEngine {
                 request: sent_with,
             });
             permit.send(message);
+            true
         });
-        if accepted.is_none() {
+        let Some(accepted) = accepted else {
             return Ok(SteerOutcome::DeferredByUpdate);
-        }
+        };
         let handle = self.doc_handle(chat_id)?;
+        if !accepted {
+            handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
+            tracing::info!(chat = %chat_id, "steer named by a Stop: not handed to the agent");
+            return Ok(SteerOutcome::Cancelled);
+        }
         handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
         // A routed steer is a turn too. Fired here (not only on the confirmed
         // path) — a reclaim falls back to dispatch, which just re-snapshots.
@@ -1871,9 +1920,9 @@ impl SessionsEngine {
         false
     }
 
-    /// A Stop acting now cancels these messages, sent before it but still
-    /// on their way: one that reaches dispatch after the runtime went down
-    /// is dropped rather than run in a fresh runtime.
+    /// A Stop names these messages: none of them reaches the agent from now
+    /// on, whether its runtime is registered or it is routed to a live one
+    /// ([`Inner::cancelled_sends`]).
     pub fn cancel_sent_messages(&self, chat_id: &str, message_ids: Vec<String>) {
         if message_ids.is_empty() {
             return;
@@ -1892,6 +1941,45 @@ impl SessionsEngine {
     pub async fn interrupt(&self, chat_id: &str) -> Result<bool, EngineError> {
         self.note_user_stop(chat_id);
         self.terminate(chat_id).await
+    }
+
+    /// [`Self::interrupt`] for a Stop that names its sends: it stops the live
+    /// runtime only if `may_stop` holds for every message the runtime was
+    /// handed. Decided under the runtime's ledger lock, where a send is
+    /// handed to it, and the runtime is retired in the same step: no message
+    /// reaches it between the decision and the kill. `before_kill` runs
+    /// after that step, before the kill. `None`: it was handed
+    /// one the Stop may not stop (a turn its sender never saw), and is left
+    /// alone. A Stop that noted its names first never finds a named send
+    /// started after this ([`Inner::cancelled_sends`]).
+    pub async fn interrupt_if(
+        &self,
+        chat_id: &str,
+        may_stop: impl Fn(&str) -> bool,
+        before_kill: impl FnOnce(),
+    ) -> Result<Option<bool>, EngineError> {
+        let target = lock(&self.inner.runs).get(chat_id).map(|h| {
+            (
+                h.run_id.clone(),
+                h.routed_steers.clone(),
+                h.handed.clone(),
+                h.retiring.clone(),
+            )
+        });
+        let Some((run_id, ledger, handed, retiring)) = target else {
+            self.note_user_stop(chat_id);
+            return Ok(Some(false));
+        };
+        {
+            let _order = lock(&ledger);
+            if lock(&handed).iter().any(|id| !may_stop(id)) {
+                return Ok(None);
+            }
+            retiring.store(true, std::sync::atomic::Ordering::Release);
+        }
+        before_kill();
+        self.note_user_stop(chat_id);
+        self.terminate_run(chat_id, Some(&run_id)).await.map(Some)
     }
 
     /// A Stop from the user, noted before it looks for the run to stop: it
@@ -1965,16 +2053,28 @@ impl SessionsEngine {
     /// streaming entry stamped `aborted`; this waits (bounded) for that
     /// settlement. Background work the runtime held dies with it.
     pub async fn terminate(&self, chat_id: &str) -> Result<bool, EngineError> {
-        let target = lock(&self.inner.runs).get(chat_id).map(|h| {
-            (
-                h.run_id.clone(),
-                h.interrupt_token.clone(),
-                h.cancel.clone(),
-                h.pending_inputs.clone(),
-                h.routed_steers.clone(),
-                h.retiring.clone(),
-            )
-        });
+        self.terminate_run(chat_id, None).await
+    }
+
+    /// [`Self::terminate`], of the run `run_id` only when given.
+    async fn terminate_run(
+        &self,
+        chat_id: &str,
+        run_id: Option<&str>,
+    ) -> Result<bool, EngineError> {
+        let target = lock(&self.inner.runs)
+            .get(chat_id)
+            .filter(|h| run_id.is_none_or(|id| h.run_id == id))
+            .map(|h| {
+                (
+                    h.run_id.clone(),
+                    h.interrupt_token.clone(),
+                    h.cancel.clone(),
+                    h.pending_inputs.clone(),
+                    h.routed_steers.clone(),
+                    h.retiring.clone(),
+                )
+            });
         let Some((run_id, token, cancel, pending, ledger, retiring)) = target else {
             return Ok(false);
         };
@@ -3287,6 +3387,14 @@ impl Inner {
             .is_some_and(|revival| revival.message_id == message_id)
     }
 
+    /// Whether a Stop named the message `message_id` of chat `chat_id` (in
+    /// this engine's life; one before a restart is on disk only).
+    fn send_cancelled(&self, chat_id: &str, message_id: &str) -> bool {
+        lock(&self.cancelled_sends)
+            .get(chat_id)
+            .is_some_and(|ids| ids.contains(message_id))
+    }
+
     fn user_stop_count(&self, chat_id: &str) -> u64 {
         lock(&self.user_stops).get(chat_id).copied().unwrap_or(0)
     }
@@ -3723,6 +3831,19 @@ fn revival_prompt(original: &str) -> String {
          reference; if it is not in your history yet, handle it now.\n\n\
          <request>\n{original}\n</request>"
     )
+}
+
+/// How many of the messages it was handed a runtime keeps ([`RunHandle::handed`]).
+const HANDED_KEPT: usize = 256;
+
+/// The runtime `handed` was handed the message `message_id` (the caller
+/// holds its ledger lock).
+fn note_handed(handed: &Mutex<std::collections::VecDeque<String>>, message_id: &str) {
+    let mut handed = lock(handed);
+    if handed.len() >= HANDED_KEPT {
+        handed.pop_front();
+    }
+    handed.push_back(message_id.to_owned());
 }
 
 /// The note a turn the engine's own shutdown cut off ends with.

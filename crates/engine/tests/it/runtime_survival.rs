@@ -9,7 +9,7 @@
 //! `run()` is a spawn, the `interrupt` token is its death, a turn stop ends
 //! only the turn, and the test decides when the "background task" finishes.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,6 +49,12 @@ struct Ledger {
     /// `delay-stop`: it acknowledges them only on `stop_release`.
     stop_reached: AtomicUsize,
     stop_release: tokio::sync::Notify,
+    /// While set, a dispatch looking up the harness's binary (after it
+    /// wrote its row, before its runtime is registered) stalls there until
+    /// the test releases `binary_release`.
+    binary_gate: AtomicBool,
+    binary_reached: AtomicUsize,
+    binary_release: (Mutex<bool>, std::sync::Condvar),
 }
 
 /// One persistent agent process per `run()`. A prompt containing `hold`
@@ -81,6 +87,17 @@ impl Harness for ProcessHarness {
     }
     fn display_name(&self) -> &str {
         "Process"
+    }
+    fn executable_path(&self) -> Option<std::path::PathBuf> {
+        if self.ledger.binary_gate.load(Ordering::SeqCst) {
+            self.ledger.binary_reached.fetch_add(1, Ordering::SeqCst);
+            let (released, wake) = &self.ledger.binary_release;
+            let released = released.lock().unwrap();
+            let _released = wake
+                .wait_timeout_while(released, Duration::from_secs(10), |r| !*r)
+                .unwrap();
+        }
+        None
     }
     fn supports_steering(&self) -> bool {
         true
@@ -796,7 +813,11 @@ async fn send_now_keeps_the_runtime_and_stop_tears_it_down() {
 
 /// Stop pressed right after Send: controls bypass the prompt drain, and the
 /// Stop used to run before the send had dispatched — it found no turn, did
-/// nothing, and the turn then ran in full.
+/// nothing, and the turn then ran in full. The Stop names the send (its row
+/// isn't written yet, ADR 0007), so the send gives up as the last step before
+/// its runtime starts: it never reaches the agent, and there is nothing to
+/// kill. (Before the Stop stopped waiting for sends, it waited for this one
+/// to start and killed it: one prompt, one kill.)
 #[tokio::test]
 async fn a_stop_right_after_send_stops_that_turn() {
     let rig = rig();
@@ -815,16 +836,18 @@ async fn a_stop_right_after_send_stops_that_turn() {
         .queue_command(CHAT, SessionCommandPayload::Interrupt { cancels: None })
         .unwrap();
     wait_for(
-        || rig.ledger.kills.load(Ordering::SeqCst) == 1,
-        "the Stop to tear the turn down",
+        || has_row(&rig, "m-1"),
+        "the send to land in the transcript",
     )
     .await;
-    wait_for(
-        || status(&rig.core) == Some(SessionStatus::Idle),
-        "the stopped chat to settle",
-    )
-    .await;
-    assert_eq!(rig.ledger.prompts.lock().unwrap().len(), 1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // No runtime started, so the chat has no live status at all.
+    assert_eq!(status(&rig.core), None, "the chat was left working");
+    assert!(
+        rig.ledger.prompts.lock().unwrap().is_empty(),
+        "the send the Stop named reached the agent"
+    );
+    assert_eq!(rig.ledger.kills.load(Ordering::SeqCst), 0);
     rig.core.sessions.shutdown().await;
 }
 
@@ -1411,12 +1434,14 @@ async fn a_relayed_stop_cancels_its_send_after_a_restart() {
     );
 }
 
-/// A Stop waiting for a send it names is judged again before it acts: a send
-/// it doesn't name, from the person's next message, that reached the turn
-/// meanwhile is left alone. (GPT review 3, new_turn_during_relay_stop_wait_is_killed;
-/// here the named send waits on its image, so the Stop surely waits.)
+/// A Stop naming a send still on its way (waiting on its image) doesn't wait
+/// for it: it stops its turn at once, the send it names never runs, and the
+/// person's next message, which it doesn't name, starts a turn it leaves
+/// alone. (GPT review 3, new_turn_during_relay_stop_wait_is_killed: there
+/// the new send landed while the Stop waited; since attempt 4 the Stop waits
+/// for no send, so there is no such wait to land in.)
 #[tokio::test]
-async fn a_turn_started_while_a_stop_waits_is_left_alone() {
+async fn a_stop_does_not_wait_for_the_send_it_names() {
     let rig = rig();
     start_hold(&rig).await;
     let aimed = last_row(&rig);
@@ -1439,13 +1464,13 @@ async fn a_turn_started_while_a_stop_waits_is_left_alone() {
         .unwrap();
     let stop = relayed_stop("stop", now(), aimed.clone(), Some(&["m-pending"]));
     let host = rig.core.doc_host.clone();
-    let stop_task =
-        tokio::spawn(async move { host.ingest_relayed_command(CHAT, stop).await.unwrap() });
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !stop_task.is_finished(),
-        "the Stop waits for the send it names"
-    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        host.ingest_relayed_command(CHAT, stop),
+    )
+    .await
+    .expect("the Stop waits for no send")
+    .unwrap();
     assert_eq!(
         ingest(
             &rig,
@@ -1459,24 +1484,24 @@ async fn a_turn_started_while_a_stop_waits_is_left_alone() {
         "the new send",
     )
     .await;
-    let result = stop_task.await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let kills = rig.ledger.kills.load(Ordering::SeqCst);
     let prompts = rig.ledger.prompts.lock().unwrap().clone();
     rig.core.sessions.shutdown().await;
+    // The one kill is the turn the Stop was aimed at.
     assert_eq!(
         (result, kills),
-        ("superseded", 0),
+        ("executed", 1),
         "the Stop must not kill a newer send's turn"
     );
+    assert_eq!(prompts.len(), 2, "the named send never ran");
     assert_eq!(prompts[1].0, "hold: after Stop", "the named send never ran");
 }
 
-/// A Stop judges its turn again right before it kills: a send-now that holds
-/// the queue while it ends the turn the Stop was aimed at, then starts the
-/// person's next turn, is not killed by the Stop that waited behind it. (GPT
-/// review 4, stop_recheck_before_drain_lock_still_kills_new_turn; the one kill
-/// is the send-now retiring the original runtime.)
+/// A send-now that holds the queue while it ends the turn a Stop was aimed
+/// at, then starts the person's next turn: the Stop doesn't wait behind it,
+/// and the next turn survives the Stop. (GPT review 4,
+/// stop_recheck_before_drain_lock_still_kills_new_turn.)
 #[tokio::test]
 async fn a_stop_waiting_behind_a_send_now_leaves_its_turn_alone() {
     let rig = rig();
@@ -1512,11 +1537,9 @@ async fn a_stop_waiting_behind_a_send_now_leaves_its_turn_alone() {
     let stop = relayed_stop("late-stop", now(), aimed, Some(&[]));
     let stop_task =
         tokio::spawn(async move { host.ingest_relayed_command(CHAT, stop).await.unwrap() });
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !stop_task.is_finished(),
-        "the Stop waits behind the send-now"
-    );
+    // Past the Stop's bounded try for the queue's lock: it has judged, and
+    // is ending the original runtime alongside the send-now.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     rig.ledger.stop_release.notify_one();
     assert!(send.await.unwrap());
     wait_for(
@@ -1525,14 +1548,107 @@ async fn a_stop_waiting_behind_a_send_now_leaves_its_turn_alone() {
     )
     .await;
     let result = stop_task.await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let kills = rig.ledger.kills.load(Ordering::SeqCst);
+    let prompts = rig.ledger.prompts.lock().unwrap().clone();
     rig.core.sessions.shutdown().await;
+    // What matters: the turn started after the Stop is never killed (the one
+    // kill is the send-now retiring the original runtime). The Stop itself
+    // is "executed", not "superseded" as before attempt 4: it no longer
+    // waits for the send-now, so it judges before the newer turn's row
+    // exists, finds the original runtime (handed nothing its sender didn't
+    // see) and stops that; the newer turn starts after, in a fresh runtime.
     assert_eq!(
         (result, kills),
-        ("superseded", 1),
-        "the Stop killed the turn started after it was judged"
+        ("executed", 1),
+        "the Stop killed the turn started after it"
     );
+    assert_eq!(prompts[1].0, "hold: newer queued turn");
+}
+
+/// Lets the dispatches stalled in the binary lookup go on.
+fn release_binary(rig: &Rig) {
+    *rig.ledger.binary_release.0.lock().unwrap() = true;
+    rig.ledger.binary_release.1.notify_all();
+}
+
+/// A send a Stop names never starts after the Stop, even when its dispatch
+/// had written its row and stalled before its runtime was registered (GPT
+/// review 5, named_relayed_run_stalled_in_dispatch_runs_after_stop).
+#[tokio::test]
+async fn a_named_send_stalled_before_its_runtime_never_starts() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    rig.core.sessions.interrupt(CHAT).await.unwrap();
+    rig.ledger.binary_gate.store(true, Ordering::SeqCst);
+    let run = relayed_run(
+        "stalled-send",
+        "hold: named stalled send",
+        "m-stalled",
+        now(),
+        aimed.clone(),
+    );
+    let host = rig.core.doc_host.clone();
+    let sent = tokio::spawn(async move { host.ingest_relayed_command(CHAT, run).await.unwrap() });
+    wait_for(
+        || rig.ledger.binary_reached.load(Ordering::SeqCst) > 0,
+        "the dispatch to stall in its binary lookup",
+    )
+    .await;
+    assert!(has_row(&rig, "m-stalled"), "the send wrote its row first");
+    assert!(!rig.core.sessions.has_run(CHAT));
+    let stop = relayed_stop("stop", now(), aimed, Some(&["m-stalled"]));
+    let result = ingest(&rig, stop).await;
+    let before = rig.ledger.prompts.lock().unwrap().len();
+    release_binary(&rig);
+    sent.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(result, "executed");
+    assert_eq!(after, before, "the send the Stop named ran after it");
+}
+
+/// A queue send stuck in its dispatch doesn't hold up a Stop that names it,
+/// and never starts after it (GPT review 5,
+/// stalled_queue_dispatch_blocks_stop_past_two_seconds).
+#[tokio::test]
+async fn a_stuck_queue_send_does_not_hold_up_the_stop_naming_it() {
+    let rig = rig();
+    start_hold(&rig).await;
+    let aimed = last_row(&rig);
+    rig.core.sessions.interrupt(CHAT).await.unwrap();
+    rig.ledger.binary_gate.store(true, Ordering::SeqCst);
+    let id = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "hold: stalled queued send", vec![])
+        .unwrap();
+    let queued = id.clone();
+    let host = rig.core.doc_host.clone();
+    let sent = tokio::spawn(async move { host.send_queued_now(CHAT, &id).await.unwrap() });
+    wait_for(
+        || rig.ledger.binary_reached.load(Ordering::SeqCst) > 0,
+        "the queue send to stall in its binary lookup",
+    )
+    .await;
+    let stop = relayed_stop("stop", now(), aimed, Some(&[queued.as_str()]));
+    let host = rig.core.doc_host.clone();
+    let stopped =
+        tokio::spawn(async move { host.ingest_relayed_command(CHAT, stop).await.unwrap() });
+    let result = tokio::time::timeout(Duration::from_secs(5), stopped).await;
+    let before = rig.ledger.prompts.lock().unwrap().len();
+    release_binary(&rig);
+    sent.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = rig.ledger.prompts.lock().unwrap().len();
+    rig.core.sessions.shutdown().await;
+    assert!(
+        result.is_ok(),
+        "the Stop waited for the stuck queue send's dispatch"
+    );
+    assert_eq!(after, before, "the queue send the Stop named ran after it");
 }
 
 /// A late Stop aimed at a row a rewind removed is moot: it leaves the turn

@@ -408,27 +408,37 @@ fn stop_is_moot(messages: &[Arc<SessionMessageEntry>], stop: &SessionCommandEntr
         && stop_turn_is_past(messages, stop, turn_id)
 }
 
+/// What the Stop `stop`, naming `named`, may stop: its names, the
+/// transcript's rows up to the turn it was aimed at (its sender had them),
+/// and the rows that continue either. A runtime handed anything else is
+/// running a turn the Stop's sender never saw.
+fn stop_known_messages(
+    messages: &[Arc<SessionMessageEntry>],
+    stop: &SessionCommandEntry,
+    named: &[String],
+) -> std::collections::HashSet<String> {
+    let mut known: std::collections::HashSet<String> = named.iter().cloned().collect();
+    let turn_id = stop.based_on.as_ref().and_then(|b| b.turn_id.as_deref());
+    let upto = turn_id
+        .and_then(|turn| messages.iter().position(|m| m.id == turn))
+        .map_or(0, |at| at + 1);
+    known.extend(messages[..upto].iter().map(|m| m.id.clone()));
+    for m in &messages[upto..] {
+        if m.continuation_of
+            .as_deref()
+            .is_some_and(|of| known.contains(of))
+        {
+            known.insert(m.id.clone());
+        }
+    }
+    known
+}
+
 /// The processed-ledger key that says a Stop named the send `message_id` of
 /// chat `chat_id`: kept on disk, so the send is cancelled whenever it
 /// arrives, across a restart too.
 fn stop_cancel_key(chat_id: &str, message_id: &str) -> String {
     format!("stop-cancel:{chat_id}:{message_id}")
-}
-
-/// Counts itself in on a counter while it lives.
-struct Counted<'a>(&'a AtomicUsize);
-
-impl<'a> Counted<'a> {
-    fn new(counter: &'a AtomicUsize) -> Self {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Self(counter)
-    }
-}
-
-impl Drop for Counted<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -735,14 +745,6 @@ pub struct ChatDocHandle {
     drain_lock: tokio::sync::Mutex<()>,
     /// Serialize prompt commands while still allowing interrupt/input controls.
     command_drain_lock: tokio::sync::Mutex<()>,
-    /// Prompt commands writing their row and dispatching right now, and
-    /// Stops that name their sends between their last judgement and their
-    /// kill. Each side counts itself in, then looks at the other: a prompt
-    /// waits out a Stop that is acting, and a Stop waits for the prompts
-    /// already starting, so no turn starts between a Stop's judgement and
-    /// its kill. (Queue sends are kept out by `drain_lock`.)
-    prompts_starting: AtomicUsize,
-    stops_acting: AtomicUsize,
     /// Queue rows held as explicit steers for a turn-boundary agent. They
     /// lead ordinary queued rows, in the order they were steered.
     steered_rows: Mutex<Vec<String>>,
@@ -2242,8 +2244,6 @@ impl DocHost {
             changes: changed_rx.clone(),
             drain_lock: tokio::sync::Mutex::new(()),
             command_drain_lock: tokio::sync::Mutex::new(()),
-            prompts_starting: AtomicUsize::new(0),
-            stops_acting: AtomicUsize::new(0),
             steered_rows: Mutex::new(Vec::new()),
             held_sends: Mutex::new(HashMap::new()),
             stopped_by: Mutex::new(None),
@@ -5138,7 +5138,6 @@ impl DocHost {
         sessions: &SessionsEngine,
         handle: &Arc<ChatDocHandle>,
         stop_id: &str,
-        named: Option<&[String]>,
     ) {
         let started = tokio::time::Instant::now();
         loop {
@@ -5153,22 +5152,14 @@ impl DocHost {
             let Ok(commands) = handle.doc.read_commands() else {
                 return;
             };
-            // A Stop that names its sends waits for those; an older one for
-            // the sends before it in the ledger.
-            let earlier_prompt = if let Some(named) = named {
-                commands.iter().any(|c| {
-                    c.status == SessionCommandStatus::Pending
-                        && c.sent_message_id()
-                            .is_some_and(|id| named.iter().any(|n| n == id))
-                })
-            } else {
-                let Some(at) = commands.iter().position(|c| c.id == stop_id) else {
-                    return;
-                };
-                commands[..at].iter().any(|c| {
-                    c.status == SessionCommandStatus::Pending && c.sent_message_id().is_some()
-                })
+            // A Stop that names its sends waits for none (its names keep
+            // them from the agent); this is a Stop of an older engine.
+            let Some(at) = commands.iter().position(|c| c.id == stop_id) else {
+                return;
             };
+            let earlier_prompt = commands[..at].iter().any(|c| {
+                c.status == SessionCommandStatus::Pending && c.sent_message_id().is_some()
+            });
             if !earlier_prompt {
                 return;
             }
@@ -5248,24 +5239,50 @@ impl DocHost {
         }
     }
 
-    /// A prompt command about to write its row and reach the agent: counted
-    /// in while the returned guard lives, after waiting out a Stop that is
-    /// between its judgement and its kill (bounded, as a prompt waits for an
-    /// earlier control), so the turn it starts is never the one killed.
-    async fn start_prompt<'a>(&self, handle: &'a Arc<ChatDocHandle>) -> Counted<'a> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            let starting = Counted::new(&handle.prompts_starting);
-            if handle.stops_acting.load(Ordering::SeqCst) == 0
-                || tokio::time::Instant::now() >= deadline
-            {
-                return starting;
+    /// A Stop that names its sends stops the chat's live runtime, unless it
+    /// was handed a message the Stop's sender never saw: `known` holds what
+    /// the Stop may stop (its names, the rows up to its turn, and what
+    /// continues them). Decided and done in one step in sessions
+    /// ([`SessionsEngine::interrupt_if`]), so no turn reaches the runtime in
+    /// between. `None`: it was left alone.
+    async fn interrupt_named(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<Option<bool>, EngineError> {
+        if !sessions.turn_in_flight(&handle.chat_id)
+            && !sessions.holds_background_work(&handle.chat_id)
+        {
+            return Ok(Some(false));
+        }
+        let paused = handle.queue_paused.load(Ordering::Acquire);
+        handle.queue_paused.store(true, Ordering::Release);
+        match sessions
+            .interrupt_if(
+                &handle.chat_id,
+                |id| known.contains(id),
+                || {
+                    handle
+                        .queue_frozen_by_recovery
+                        .store(false, Ordering::Release);
+                    self.cancel_held_sends(handle);
+                },
+            )
+            .await
+        {
+            Ok(Some(true)) => Ok(Some(true)),
+            Ok(None) => {
+                handle.queue_paused.store(paused, Ordering::Release);
+                Ok(None)
             }
-            drop(starting);
-            while handle.stops_acting.load(Ordering::SeqCst) > 0
-                && tokio::time::Instant::now() < deadline
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            Ok(Some(false)) => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Ok(Some(false))
+            }
+            Err(err) => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Err(err)
             }
         }
     }
@@ -5339,7 +5356,8 @@ impl DocHost {
                 )
                 .await?
             {
-                SteerOutcome::Accepted => return Ok(()),
+                // A Stop named it: it stays in the transcript, unrun.
+                SteerOutcome::Accepted | SteerOutcome::Cancelled => return Ok(()),
                 SteerOutcome::DeferredByUpdate => {
                     return Err(EngineError::Other(
                         "agent update pending; the message remains queued".into(),
@@ -6462,13 +6480,25 @@ impl DocHost {
         }
     }
 
+    /// Whether a Stop named the send `message_id` of chat `chat_id`, as kept
+    /// on disk ([`Self::note_stop_cancels`]): read by a send about to start
+    /// its runtime, a revival after a restart too.
+    pub(crate) fn stop_cancelled(&self, chat_id: &str, message_id: &str) -> bool {
+        self.inner
+            .store
+            .is_processed(&stop_cancel_key(chat_id, message_id))
+            .unwrap_or(false)
+    }
+
     /// A Stop that names its sends (`cancels`) has reached this host: those
     /// sends are cancelled, whether the Stop goes on to act, is moot (the
     /// person wrote again since) or gives way to a newer Stop. What it names
     /// is kept in the processed ledger, on disk, before the Stop is claimed,
     /// so a send arriving later, by relay or by sync, after a restart too,
-    /// never runs; the named sends already on their way to the agent (no
-    /// row yet) are dropped there.
+    /// never runs; and in sessions, where a named send already on its way
+    /// (its row written or not) checks it as the last step before the agent
+    /// gets it, atomically with starting its runtime or being handed to a
+    /// live one. The Stop waits for none of them.
     fn note_stop_cancels(&self, handle: &Arc<ChatDocHandle>, stop: &SessionCommandEntry) {
         let Some(named) = stop.stop_cancels().filter(|named| !named.is_empty()) else {
             return;
@@ -6482,16 +6512,9 @@ impl DocHost {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "stop cancel write failed");
             }
         }
-        let Some(sessions) = self.sessions() else {
-            return;
-        };
-        let messages = handle.doc.read_entries_shared().unwrap_or_default();
-        let on_their_way = named
-            .iter()
-            .filter(|id| !messages.iter().any(|m| &m.id == *id))
-            .cloned()
-            .collect();
-        sessions.cancel_sent_messages(&handle.chat_id, on_their_way);
+        if let Some(sessions) = self.sessions() {
+            sessions.cancel_sent_messages(&handle.chat_id, named.to_vec());
+        }
     }
 
     /// `entry` is a prompt sent before a Stop that has already acted on
@@ -6676,7 +6699,6 @@ impl DocHost {
                 // host got around to draining a queued command. Idempotent by
                 // id, so the dispatch path's own execution-time write dedupes
                 // to a no-op. A provider switch's seam lands with it, above.
-                let _starting = self.start_prompt(handle).await;
                 sessions.note_provider_switch(chat_id, harness, handle);
                 if let Err(err) = handle.write_user_message(
                     message_id,
@@ -6700,7 +6722,6 @@ impl DocHost {
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
-                let _starting = self.start_prompt(handle).await;
                 self.deliver_prompt(
                     sessions,
                     handle,
@@ -6714,44 +6735,36 @@ impl DocHost {
                 cancels: Some(named),
             } => {
                 // Its names were noted as it was claimed (note_stop_cancels):
-                // a named send still pending runs no more. Wait for those
-                // mid-dispatch, so the turn they reach is the one stopped.
-                self.await_earlier_prompts(sessions, handle, &entry.id, Some(named))
-                    .await;
-                // From here to the kill no turn starts: prompt commands wait
-                // this Stop out, and the ones already starting finish first
-                // (bounded: a send wedged on a full mailbox must not keep the
-                // Stop from acting); queue sends wait for `drain_lock`.
-                let _acting = Counted::new(&handle.stops_acting);
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-                while handle.prompts_starting.load(Ordering::SeqCst) > 0
-                    && tokio::time::Instant::now() < deadline
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                let _drain = handle.drain_lock.lock().await;
-                // Judged again, right before the kill: a send it doesn't name
-                // may have started the person's next turn while it waited.
+                // a named send not yet with the agent never gets there, so
+                // the Stop waits for no send. It stops only what is running,
+                // and only a runtime that was handed nothing its sender never
+                // saw (interrupt_named). The queue's lock is tried, bounded,
+                // only so pausing the queue doesn't cross the status watcher:
+                // a wedged queue send must not hold the Stop up.
+                let _drain = tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    handle.drain_lock.lock(),
+                )
+                .await
+                .ok();
                 let messages = handle.doc.read_entries_shared().unwrap_or_default();
                 if stop_is_moot(&messages, entry) {
                     return Ok((
                         SessionCommandStatus::Superseded,
-                        Some("a newer message started a turn while the Stop waited".into()),
+                        Some("a newer message started a turn".into()),
                     ));
                 }
-                // The named sends a dispatch the wait gave up on still holds.
-                let on_their_way = named
-                    .iter()
-                    .filter(|id| !messages.iter().any(|m| &m.id == *id))
-                    .cloned()
-                    .collect();
-                sessions.cancel_sent_messages(&handle.chat_id, on_their_way);
-                self.interrupt_and_pause_queue_locked(sessions, handle)
-                    .await?;
-                Ok((SessionCommandStatus::Applied, None))
+                let known = stop_known_messages(&messages, entry, named);
+                match self.interrupt_named(sessions, handle, &known).await? {
+                    Some(_) => Ok((SessionCommandStatus::Applied, None)),
+                    None => Ok((
+                        SessionCommandStatus::Superseded,
+                        Some("a newer message started a turn".into()),
+                    )),
+                }
             }
             SessionCommandPayload::Interrupt { cancels: None } => {
-                self.await_earlier_prompts(sessions, handle, &entry.id, None)
+                self.await_earlier_prompts(sessions, handle, &entry.id)
                     .await;
                 *lock(&handle.stopped_by) = Some(entry.id.clone());
                 // Sends before this Stop that are still on their way (a slow
@@ -6984,6 +6997,10 @@ impl DocHost {
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
+            SteerOutcome::Cancelled => Ok((
+                SessionCommandStatus::Applied,
+                Some("cancelled by the Stop sent after it".into()),
+            )),
             SteerOutcome::NotSteerable => {
                 if let Some(message_id) = message_id.as_deref() {
                     handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))?;
