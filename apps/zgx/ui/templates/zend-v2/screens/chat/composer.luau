@@ -141,57 +141,68 @@ local TRAY = ui.state("chat_tray", nil :: ("todos" | "tasks" | "queue")?)
 
 -- The pinned visual: on the composer's glass, its height capped (it
 -- scrolls), the same visual the transcript had (the host keeps it).
-local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> number }): Node
+-- `on_height` hears its whole height, the gap under it too (0 once it
+-- goes): the dock's height counts it (`chat_dock_h`).
+local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> number, on_height: (number) -> () }): Node
 	local key = ui.computed(function(): string
 		local b = props.block:get()
 		return if b then b.id else ""
 	end)
 	local tall = ui.use_state(0)
-	return glass.Panel {
-		kind = "island",
-		id = "chat-pinned-visual",
-		class = "visual-pinned",
+	ui.on_cleanup(function()
+		props.on_height(0)
+	end)
+	return ui.div {
 		w_full = true,
-		mb = "$space.2",
-		overflow = "hidden",
-		-- As tall as the visual, up to the cap; past it the visual scrolls.
-		-- (Minimised: its bar alone.)
-		h = function(): number
-			local b = props.block:get()
-			if b and VisualPin.minimised:get()[b.id] == true then
-				return VisualPin.BAR + 2
-			end
-			return math.max(1, math.min(tall:get() + VisualPin.BAR, props.max_h())) + 2
+		pb = "$space.2",
+		on_resize = function(size: { w: number, h: number })
+			props.on_height(size.h)
 		end,
-		VisualPin.Header { block = props.block },
-		ui.show(function(): boolean
-			local b = props.block:get()
-			return not (b and VisualPin.minimised:get()[b.id] == true)
-		end, ui.scroll {
+		glass.Panel {
+			kind = "island",
+			id = "chat-pinned-visual",
+			class = "visual-pinned",
 			w_full = true,
-			grow = 1,
-			min_h = 1,
-			overscroll = "contain",
-			ui.column {
+			overflow = "hidden",
+			-- As tall as the visual, up to the cap; past it the visual scrolls.
+			-- (Minimised: its bar alone.)
+			h = function(): number
+				local b = props.block:get()
+				if b and VisualPin.minimised:get()[b.id] == true then
+					return VisualPin.BAR + 2
+				end
+				return math.max(1, math.min(tall:get() + VisualPin.BAR, props.max_h())) + 2
+			end,
+			VisualPin.Header { block = props.block },
+			ui.show(function(): boolean
+				local b = props.block:get()
+				return not (b and VisualPin.minimised:get()[b.id] == true)
+			end, ui.scroll {
 				w_full = true,
-				shrink = 0,
-				p = "$space.3",
-				on_resize = function(size: { w: number, h: number })
-					if math.abs(tall:peek() - size.h) >= 1 then
-						tall:set(size.h)
-					end
-				end,
-				ui.presence(function(): string
-					return key:get()
-				end, function(id: string): Node
-					local b = props.block:peek()
-					if id == "" or not b then
-						return ui.div {}
-					end
-					return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent, dismissed = b.dismissed }
-				end),
-			},
-		}),
+				grow = 1,
+				min_h = 1,
+				overscroll = "contain",
+				ui.column {
+					w_full = true,
+					shrink = 0,
+					p = "$space.3",
+					on_resize = function(size: { w: number, h: number })
+						if math.abs(tall:peek() - size.h) >= 1 then
+							tall:set(size.h)
+						end
+					end,
+					ui.presence(function(): string
+						return key:get()
+					end, function(id: string): Node
+						local b = props.block:peek()
+						if id == "" or not b then
+							return ui.div {}
+						end
+						return Visual { id = b.id, path = b.path, source = b.source, title = b.title, device = b.device, chat = b.chat, rev = b.rev, sent = b.sent, dismissed = b.dismissed }
+					end),
+				},
+			}),
+		},
 	}
 end)
 
@@ -1239,6 +1250,20 @@ local function Composer(): Node
 	end, "main")
 
 	local composer_sizes = ui.state("chat_composer_sizes", nil :: ds.ComposerSizes?)
+	-- The pinned visual's height over the composer, its gap too (0 with
+	-- none): the transcript keeps clear the composer's presented height
+	-- and this (`chat_dock_h`, read by session.luau and the dock).
+	local pin_h = ui.state("chat_pinned_visual_h", 0)
+	local function publish_dock()
+		local sizes = composer_sizes:peek()
+		if not sizes then
+			return
+		end
+		local h = sizes.presented + pin_h:peek()
+		if math.abs(shared.dock_h:peek() - h) > 0.01 then
+			shared.dock_h:set(h)
+		end
+	end
 	local function composer(): Node
 		return ds.Composer {
 			dictation = dictation,
@@ -1247,9 +1272,7 @@ local function Composer(): Node
 				if sizes.context == snap:peek() and sizes.ready and not sizes.settling then
 					place_snap:set(false)
 				end
-				if math.abs(shared.dock_h:peek() - sizes.presented) > 0.01 then
-					shared.dock_h:set(sizes.presented)
-				end
+				publish_dock()
 			end,
 			-- Its measures, fold and open tray kept across a reload, so it
 			-- is laid out as it was from the first frame.
@@ -1847,6 +1870,12 @@ local function Composer(): Node
 					-- (Up to under half the page: the transcript stays in view.)
 					max_h = function(): number
 						return math.clamp((page.height or 0) * 0.45, 180, 520)
+					end,
+					on_height = function(h: number)
+						if math.abs(pin_h:peek() - h) > 0.01 then
+							pin_h:set(h)
+							publish_dock()
+						end
 					end,
 				}),
 				ui.show(function(): boolean

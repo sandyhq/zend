@@ -573,3 +573,42 @@ fn the_zend_v2_composer_is_the_blessed_one() {
     let hash = crate::plugins::live::hash(&std::fs::read(root.join("screens/chat/composer.luau")).unwrap());
     assert_eq!(base["screens/chat/composer.luau"].as_str(), Some(hash.as_str()));
 }
+
+/// The transcript keeps clear what the dock covers (`chat_dock_h`, read by
+/// session.luau and the dock's jump to latest): with a visual pinned, the
+/// pin and its gap too, not the composer's own height alone; folded, its
+/// bar; closed, the composer alone again.
+#[test]
+fn a_pinned_visual_is_counted_in_the_dock_height_the_transcript_keeps_clear() {
+    fn published(app: &TestApp) -> f64 {
+        let state = app.host.states().into_iter().find(|(n, _)| n.contains("chat_dock_h")).expect("the dock's height is published").1;
+        match state {
+            Value::Num(n) => n,
+            v => panic!("chat_dock_h is {v:?}"),
+        }
+    }
+    fn clears_the_dock(app: &mut TestApp, when: &str) {
+        app.frames(60);
+        let dock = app.bounds("#chat-composer").height as f64;
+        let h = published(app);
+        assert!((h - dock).abs() < 1., "{when}: the transcript keeps {h} points clear but the dock covers {dock}");
+    }
+    let mut app = mount();
+    clears_the_dock(&mut app, "nothing pinned");
+    let alone = published(&app);
+    pin(&mut app);
+    assert!(app.bounds("#chat-pinned-visual").height > 100., "the visual is pinned");
+    clears_the_dock(&mut app, "pinned");
+    let open = published(&app);
+    assert!(open > alone + 100., "pinned {open}, alone {alone}");
+    app.click("#chat-pinned-visual >> role:button \"Minimise\"");
+    clears_the_dock(&mut app, "folded");
+    let folded = published(&app);
+    assert!(folded < open && folded > alone, "folded {folded}, open {open}, alone {alone}");
+    app.click("#chat-pinned-visual >> role:button \"Expand\"");
+    clears_the_dock(&mut app, "opened again");
+    app.click("#chat-pinned-visual >> role:button \"Close\"");
+    app.wait_until(|app| app.find("#chat-pinned-visual").is_none());
+    clears_the_dock(&mut app, "closed");
+    assert!((published(&app) - alone).abs() < 1., "closed {}, alone {alone}", published(&app));
+}
