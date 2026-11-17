@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-17
+
+### Changed
+- zgx updated to zeronsh/zgx 1accd1b7 (vendored in third_party/zgx, the fork's edits listed in its FORK.md); a window drawn on zgx's software raster still pictures nodes for `plugin_status`. The composer takes upstream's coordinated layout (its size and place eased, cd769402..7a188dfe), with 6df5169d and 82d410d7 (the series alone broke a sidebar-drag perf limit); `scripts/zend-pick-range.sh` takes an upstream range file by file (docs/fork.md).
+
 ## 2026-11-16
 
 ### Added
