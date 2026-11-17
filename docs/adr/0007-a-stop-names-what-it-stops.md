@@ -13,7 +13,7 @@ The Stop carries what it stops. `SessionCommandPayload::Interrupt` gets an optio
 
 On the host:
 - **Cancelling a send.** A send is cancelled if and only if a Stop names it. That holds even when the Stop itself is moot or gives way to a newer Stop: the person stopped that send either way. The host writes the names to its processed ledger on disk as it claims the Stop, before it acts, and also checks the Stops resolved in the doc's ledger. So the order the two arrive in doesn't matter, nor a restart in between.
-- **When the Stop is moot.** It is moot only when a user row after its `based_on` turn is one it doesn't name, or when that turn is gone (a rewind removed it). Such a row is a message its sender didn't know of. No clock is compared. The Stop waits for the named sends still being dispatched, and is judged again after the wait: a send it doesn't name may have started a turn meanwhile.
+- **When the Stop is moot.** It is moot only when a user row after its `based_on` turn is one it doesn't name, or when that turn is gone (a rewind removed it). Such a row is a message its sender didn't know of. No clock is compared. The Stop waits for the named sends still being dispatched, and is judged again right before it kills: a send it doesn't name may have started a turn meanwhile. Between that judgement and the kill no turn can start: queue sends wait for the queue's lock, which the Stop holds, and prompt commands wait out a Stop that is acting, while the Stop waits (briefly) for the prompts already starting.
 
 A Stop without the field (an engine from before this change) keeps the old rules. It is moot when any row comes after its `based_on`, and it cancels the sends before it in the ledger.
 

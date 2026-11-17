@@ -415,6 +415,22 @@ fn stop_cancel_key(chat_id: &str, message_id: &str) -> String {
     format!("stop-cancel:{chat_id}:{message_id}")
 }
 
+/// Counts itself in on a counter while it lives.
+struct Counted<'a>(&'a AtomicUsize);
+
+impl<'a> Counted<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -719,6 +735,14 @@ pub struct ChatDocHandle {
     drain_lock: tokio::sync::Mutex<()>,
     /// Serialize prompt commands while still allowing interrupt/input controls.
     command_drain_lock: tokio::sync::Mutex<()>,
+    /// Prompt commands writing their row and dispatching right now, and
+    /// Stops that name their sends between their last judgement and their
+    /// kill. Each side counts itself in, then looks at the other: a prompt
+    /// waits out a Stop that is acting, and a Stop waits for the prompts
+    /// already starting, so no turn starts between a Stop's judgement and
+    /// its kill. (Queue sends are kept out by `drain_lock`.)
+    prompts_starting: AtomicUsize,
+    stops_acting: AtomicUsize,
     /// Queue rows held as explicit steers for a turn-boundary agent. They
     /// lead ordinary queued rows, in the order they were steered.
     steered_rows: Mutex<Vec<String>>,
@@ -2218,6 +2242,8 @@ impl DocHost {
             changes: changed_rx.clone(),
             drain_lock: tokio::sync::Mutex::new(()),
             command_drain_lock: tokio::sync::Mutex::new(()),
+            prompts_starting: AtomicUsize::new(0),
+            stops_acting: AtomicUsize::new(0),
             steered_rows: Mutex::new(Vec::new()),
             held_sends: Mutex::new(HashMap::new()),
             stopped_by: Mutex::new(None),
@@ -5191,6 +5217,16 @@ impl DocHost {
         handle: &Arc<ChatDocHandle>,
     ) -> Result<bool, EngineError> {
         let _drain = handle.drain_lock.lock().await;
+        self.interrupt_and_pause_queue_locked(sessions, handle)
+            .await
+    }
+
+    /// [`Self::interrupt_and_pause_queue`] for a caller holding `drain_lock`.
+    async fn interrupt_and_pause_queue_locked(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+    ) -> Result<bool, EngineError> {
         if !sessions.turn_in_flight(&handle.chat_id)
             && !sessions.holds_background_work(&handle.chat_id)
         {
@@ -5208,6 +5244,28 @@ impl DocHost {
             Err(err) => {
                 handle.queue_paused.store(false, Ordering::Release);
                 Err(err)
+            }
+        }
+    }
+
+    /// A prompt command about to write its row and reach the agent: counted
+    /// in while the returned guard lives, after waiting out a Stop that is
+    /// between its judgement and its kill (bounded, as a prompt waits for an
+    /// earlier control), so the turn it starts is never the one killed.
+    async fn start_prompt<'a>(&self, handle: &'a Arc<ChatDocHandle>) -> Counted<'a> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let starting = Counted::new(&handle.prompts_starting);
+            if handle.stops_acting.load(Ordering::SeqCst) == 0
+                || tokio::time::Instant::now() >= deadline
+            {
+                return starting;
+            }
+            drop(starting);
+            while handle.stops_acting.load(Ordering::SeqCst) > 0
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         }
     }
@@ -6618,6 +6676,7 @@ impl DocHost {
                 // host got around to draining a queued command. Idempotent by
                 // id, so the dispatch path's own execution-time write dedupes
                 // to a no-op. A provider switch's seam lands with it, above.
+                let _starting = self.start_prompt(handle).await;
                 sessions.note_provider_switch(chat_id, harness, handle);
                 if let Err(err) = handle.write_user_message(
                     message_id,
@@ -6641,6 +6700,7 @@ impl DocHost {
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
+                let _starting = self.start_prompt(handle).await;
                 self.deliver_prompt(
                     sessions,
                     handle,
@@ -6658,8 +6718,20 @@ impl DocHost {
                 // mid-dispatch, so the turn they reach is the one stopped.
                 self.await_earlier_prompts(sessions, handle, &entry.id, Some(named))
                     .await;
-                // Judged again after the wait: a send it doesn't name may
-                // have started the person's next turn meanwhile.
+                // From here to the kill no turn starts: prompt commands wait
+                // this Stop out, and the ones already starting finish first
+                // (bounded: a send wedged on a full mailbox must not keep the
+                // Stop from acting); queue sends wait for `drain_lock`.
+                let _acting = Counted::new(&handle.stops_acting);
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                while handle.prompts_starting.load(Ordering::SeqCst) > 0
+                    && tokio::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let _drain = handle.drain_lock.lock().await;
+                // Judged again, right before the kill: a send it doesn't name
+                // may have started the person's next turn while it waited.
                 let messages = handle.doc.read_entries_shared().unwrap_or_default();
                 if stop_is_moot(&messages, entry) {
                     return Ok((
@@ -6674,7 +6746,8 @@ impl DocHost {
                     .cloned()
                     .collect();
                 sessions.cancel_sent_messages(&handle.chat_id, on_their_way);
-                self.interrupt_and_pause_queue(sessions, handle).await?;
+                self.interrupt_and_pause_queue_locked(sessions, handle)
+                    .await?;
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Interrupt { cancels: None } => {

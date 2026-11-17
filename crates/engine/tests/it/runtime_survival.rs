@@ -45,12 +45,17 @@ struct Ledger {
     spawned_models: Mutex<Vec<Option<String>>>,
     /// Ends a turn whose prompt contains `wait`.
     release: tokio::sync::Notify,
+    /// Stop requests that reached a turn whose prompt contains
+    /// `delay-stop`: it acknowledges them only on `stop_release`.
+    stop_reached: AtomicUsize,
+    stop_release: tokio::sync::Notify,
 }
 
 /// One persistent agent process per `run()`. A prompt containing `hold`
 /// stays in flight until stopped; any other prompt completes at once. A
 /// steer containing `vanish` kills the process before it confirms the steer.
-/// A prompt containing `wait` runs until the test releases it.
+/// A prompt containing `wait` runs until the test releases it. One containing
+/// `delay-stop` acknowledges a stop request only when the test releases it.
 struct ProcessHarness {
     ledger: Arc<Ledger>,
     /// Model changes apply to the live process (`set_model`-style).
@@ -164,6 +169,10 @@ impl Harness for ProcessHarness {
                         return;
                     }
                     _ = turn.stop_requested() => {
+                        if request.prompt.contains("delay-stop") {
+                            ledger.stop_reached.fetch_add(1, Ordering::SeqCst);
+                            ledger.stop_release.notified().await;
+                        }
                         if !send(done(DoneStatus::Interrupted)).await {
                             return;
                         }
@@ -1461,6 +1470,69 @@ async fn a_turn_started_while_a_stop_waits_is_left_alone() {
         "the Stop must not kill a newer send's turn"
     );
     assert_eq!(prompts[1].0, "hold: after Stop", "the named send never ran");
+}
+
+/// A Stop judges its turn again right before it kills: a send-now that holds
+/// the queue while it ends the turn the Stop was aimed at, then starts the
+/// person's next turn, is not killed by the Stop that waited behind it. (GPT
+/// review 4, stop_recheck_before_drain_lock_still_kills_new_turn; the one kill
+/// is the send-now retiring the original runtime.)
+#[tokio::test]
+async fn a_stop_waiting_behind_a_send_now_leaves_its_turn_alone() {
+    let rig = rig();
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            request("hold: delay-stop original"),
+            None,
+        )
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 1,
+        "the turn to start",
+    )
+    .await;
+    let aimed = last_row(&rig);
+    let id = rig
+        .core
+        .doc_host
+        .queue_message(CHAT, "hold: newer queued turn", vec![])
+        .unwrap();
+    let host = rig.core.doc_host.clone();
+    let send = tokio::spawn(async move { host.send_queued_now(CHAT, &id).await.unwrap() });
+    wait_for(
+        || rig.ledger.stop_reached.load(Ordering::SeqCst) == 1,
+        "the send-now to end the turn, holding the queue",
+    )
+    .await;
+    let host = rig.core.doc_host.clone();
+    let stop = relayed_stop("late-stop", now(), aimed, Some(&[]));
+    let stop_task =
+        tokio::spawn(async move { host.ingest_relayed_command(CHAT, stop).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !stop_task.is_finished(),
+        "the Stop waits behind the send-now"
+    );
+    rig.ledger.stop_release.notify_one();
+    assert!(send.await.unwrap());
+    wait_for(
+        || rig.ledger.prompts.lock().unwrap().len() == 2,
+        "the queued turn",
+    )
+    .await;
+    let result = stop_task.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let kills = rig.ledger.kills.load(Ordering::SeqCst);
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        (result, kills),
+        ("superseded", 1),
+        "the Stop killed the turn started after it was judged"
+    );
 }
 
 /// A late Stop aimed at a row a rewind removed is moot: it leaves the turn
