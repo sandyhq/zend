@@ -1,5 +1,4 @@
 [package]
-# Vendored: zgx's workspace by path (cargo finds no uncached root for a path dependency).
 workspace = "../.."
 name = "zgx-desktop"
 version.workspace = true
@@ -163,6 +162,8 @@ name = "menu_services"
 harness = false
 
 [dev-dependencies]
+# The perf gate's output check, called by the gate benches each frame.
+zgx-fingerprint = { path = "../../scripts/perf/fingerprint" }
 # The components the Linux probe's example shows (`components_probe`).
 zgx-components = { path = "../zgx-components" }
 # The terminal example's interface is a Luau script. Image formats come
@@ -177,7 +178,7 @@ zgx-workload = { path = "../../comparisons/workload" }
 # The terminal example's session server keeps each shell's screen to redraw
 # it for a new window.
 vt100 = "0.16"
-# The zend example: a client of Zend's local engine WebSocket.
+# The zeron example: a client of Zeron's local engine WebSocket.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }

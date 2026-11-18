@@ -1,5 +1,7 @@
 //! `zgx test`: an app's own Luau tests (`*.test.luau`), each against the
 //! app mounted headless and driven by devtools' targets.
+mod common;
+
 use std::{path::PathBuf, process::Command};
 
 const APP: &str = r#"
@@ -24,8 +26,7 @@ fn zgx() -> Command {
 }
 /// An app with `APP` and the test files `tests`, in a directory of its own.
 fn app(name: &str, tests: &[(&str, &str)]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("zgx-test-cli-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::temp_dir(&format!("test-cli-{name}"));
     std::fs::create_dir_all(dir.join("tests")).unwrap();
     std::fs::write(dir.join("app.luau"), APP).unwrap();
     for (file, code) in tests {
@@ -45,7 +46,7 @@ fn run(dir: &PathBuf, args: &[&str]) -> (Option<i32>, String) {
 
 #[test]
 fn escape_from_a_menu_opened_with_nothing_focused_presses_no_button_after() {
-    // Zend's report: a menu opened by a shortcut and closed with Escape put
+    // Zeron's report: a menu opened by a shortcut and closed with Escape put
     // focus on the window's first button ("New chat"), so Enter pressed it.
     let dir = app(
         "escape-focus",
@@ -1020,7 +1021,7 @@ return ui.column {
 
 #[test]
 fn a_pane_settled_in_ui_after_0_reads_settled_at_once() {
-    // Zend's editor in `zgx test`: a pane rebuilt and read straight away
+    // Zeron's editor in `zgx test`: a pane rebuilt and read straight away
     // (no frame between) showed its layout before `ui.after(0)` from its
     // `on_resize` settled it, as a window never draws it.
     let dir = app(
@@ -1063,7 +1064,7 @@ return ui.column { ui.switch(function() return which:get() end, { a = pane(), b 
 
 #[test]
 fn a_presence_rebuilt_by_set_state_reads_settled_after_one_frame() {
-    // Zend's files fixture: the pane comes back through a `ui.presence`
+    // Zeron's files fixture: the pane comes back through a `ui.presence`
     // keyed on a state the test sets, then one frame, then `tree`.
     let dir = app(
         "after-0-presence",

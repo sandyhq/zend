@@ -24,7 +24,7 @@ function M.tool(svg: string, on_click: () -> (), size: number?, icon: number?): 
 	}
 end
 
--- Zend's sidebar icon: a frame with the sidebar's panel in it, which
+-- Zeron's sidebar icon: a frame with the sidebar's panel in it, which
 -- narrows as the sidebar closes and widens as it opens (280 ms, the icon's
 -- own curve). `size` points square; the icon is drawn on a 24-point grid.
 function M.sidebar_glyph(open: () -> boolean, size: number, tint: Color): Node

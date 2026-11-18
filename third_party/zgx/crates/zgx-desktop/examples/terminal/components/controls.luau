@@ -6,7 +6,7 @@ local kit = require("./kit")
 
 local M = {}
 
--- The motion glass moves with (icons.zend.invalid's ease).
+-- The motion glass moves with (icons.zeron.sh's ease).
 local EASE = "cubicBezier(.22, 1, .36, 1)"
 
 -- Frosted glass under a row's content (the row must be `relative`): a

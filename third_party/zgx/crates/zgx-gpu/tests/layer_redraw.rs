@@ -2,7 +2,7 @@
 //! while nothing in it changes) draws again whenever what it shows changes:
 //! nodes coming into it or leaving it, a picture in it that finishes
 //! decoding, a layer made anew where one was. Each frame is checked against
-//! a renderer drawing the scene for the first time (Zend's wallpaper under
+//! a renderer drawing the scene for the first time (Zeron's wallpaper under
 //! an effect came up blank as its picture changed).
 use std::sync::Arc;
 use zgx::decoration::FillShader;
@@ -144,7 +144,7 @@ fn a_layer_draws_again_as_a_picture_in_it_decodes() {
 }
 
 /// So through views: a switch inside a view with a layer shader, its
-/// branch swapped, as Zend's wallpaper swaps its picture.
+/// branch swapped, as Zeron's wallpaper swaps its picture.
 #[test]
 fn a_layer_view_draws_again_as_what_it_shows_is_swapped() {
     use zgx::compose::prelude::*;

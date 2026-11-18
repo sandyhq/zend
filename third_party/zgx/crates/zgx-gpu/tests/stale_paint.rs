@@ -1,7 +1,7 @@
 //! A frame's damage covers every pixel that frame changes, frame after
 //! frame, as nodes mount and go while a list moves: a node mounted under a
 //! row in a frame where the list moved, and gone in a later one while it
-//! still moves, leaves nothing where it was drawn (Zend's reply hover lane,
+//! still moves, leaves nothing where it was drawn (Zeron's reply hover lane,
 //! hanging in empty space under the reply).
 use zgx::{compose::prelude::*, reactive::Signal, scene::Rect, widgets::Ui};
 use zgx_gpu::GpuRenderer;

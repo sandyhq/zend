@@ -731,11 +731,15 @@ export type State<T> = {
 	-- Adds to a number (1 by default).
 	add: (self: State<T>, by: number?) -> (),
 	-- Lists: append, insert at an index from 1, remove (returning the item,
-	-- nil outside the list), and the length (tracked, as `get` is).
+	-- nil outside the list), and the length (tracked, as `get` is); a
+	-- string's length is its bytes (`#`), read where it is held.
 	push: (self: State<T>, item: Item<T>) -> (),
 	insert: (self: State<T>, index: number, item: Item<T>) -> (),
 	remove: (self: State<T>, index: number) -> Item<T>?,
 	len: (self: State<T>) -> number,
+	-- Strings: `string.sub` of the string held (tracked, as `get` is), only
+	-- those bytes copied: a long document's part without the rest of it.
+	sub: (self: State<T>, i: number, j: number?) -> string,
 	-- One item of a list (from 1), tracked as `get` is, without the list
 	-- made into a table (a long list's rows, as a list shows them).
 	at: (self: State<T>, index: number) -> Item<T>?,
@@ -833,7 +837,8 @@ end
 -- `ui.set`, `ui.toggle`, `ui.add`, `ui.action`: a handler Rust runs.
 declare extern type Action with
 end
--- `ui.tween`, `ui.spring`, `ui.loop`: a property eased in Rust.
+-- `ui.tween`, `ui.spring`, `ui.loop`: a property eased in Rust; `ui.map`: one
+-- mapped from a state in Rust.
 declare extern type Binding with
 end
 -- Variants chosen from a `ui.variants` recipe: give it to an element as
@@ -1209,6 +1214,20 @@ declare extern type Element with
 	-- The selection replaced by `text`, as typing it would (one step of
 	-- undo): a search's Replace.
 	function replace_selection(self, text: string): boolean
+	-- An editor's text measured at `width` points, whatever its own size,
+	-- without insets or placeholder: its widest hard line, its height
+	-- wrapped at `width`. Read in an effect, it follows the text, an IME
+	-- composition and typography (`revision`), not focus, selection,
+	-- scrolling or size. Nil for other elements, a password field, one
+	-- not mounted and a width that is not positive and finite.
+	function text_metrics(self, width: number): {
+		width: number,
+		unwrapped_width: number,
+		wrapped_height: number,
+		line_height: number,
+		revision: number,
+		exact: boolean,
+	}?
 	-- A picture of it as the window last showed it, at most `max_width`
 	-- pixels wide (480 if not given): the `src` of an image showing it,
 	-- replaced on each call. Nil if it is not laid out or the host takes
@@ -2041,7 +2060,7 @@ export type Styles = {
 	-- main thread, showing a frame later; "sync" waits for it, any size;
 	-- "async" never waits.
 	decode: ("auto" | "sync" | "async")?,
-	-- An image drawn dithered as Zend dithers wallpapers, in dots this many
+	-- An image drawn dithered as Zeron dithers wallpapers, in dots this many
 	-- points square: each lit to its colour's full value or dimmed to 8% by a
 	-- 4x4 Bayer threshold, on the GPU as it draws (it follows the image as it
 	-- moves and scales).
@@ -2507,7 +2526,10 @@ export type NodeProps = {
 	on_resize: ((size: Size, element: Element) -> ...unknown)?,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: ((visible: boolean, element: Element) -> ...unknown)?,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -2935,7 +2957,10 @@ export type Props = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -3612,7 +3637,10 @@ export type ContainerProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -4054,7 +4082,10 @@ export type GlassProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -4505,7 +4536,10 @@ export type ScrollProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -4973,7 +5007,10 @@ export type TextProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -5400,7 +5437,10 @@ export type MarkdownViewProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -5913,7 +5953,10 @@ export type RichProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -6334,7 +6377,10 @@ export type ImageProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -6772,7 +6818,10 @@ export type SvgProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -7321,7 +7370,10 @@ export type Scene3DProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -7765,7 +7817,10 @@ export type CanvasProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -8218,7 +8273,10 @@ export type CheckboxProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -8649,7 +8707,10 @@ export type InputProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -9181,7 +9242,10 @@ export type ProgressProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -9600,7 +9664,10 @@ export type SliderProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -10040,7 +10107,10 @@ export type SegmentedProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -10473,7 +10543,10 @@ export type StepperProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -10907,7 +10980,10 @@ export type DisclosureProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -11352,7 +11428,10 @@ export type AccordionProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -11771,7 +11850,10 @@ export type SectionProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -12215,7 +12297,10 @@ export type SeparatorProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -12642,7 +12727,10 @@ export type TabsProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -13091,7 +13179,10 @@ export type TreeProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -13536,7 +13627,10 @@ export type DataGridProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -13977,7 +14071,10 @@ export type CalendarProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -14411,7 +14508,10 @@ export type DatePickerProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -14843,7 +14943,10 @@ export type TimeFieldProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -15274,7 +15377,10 @@ export type ComboboxProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -15713,7 +15819,10 @@ export type CommandPaletteProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -16140,7 +16249,10 @@ export type SelectProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -16574,7 +16686,10 @@ export type SplitProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -17064,7 +17179,10 @@ export type ListProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -17585,7 +17703,10 @@ export type LayerProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -18026,7 +18147,10 @@ export type ModalProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -18485,7 +18609,10 @@ export type PopoverProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -18950,7 +19077,10 @@ export type MenuItemProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -19380,7 +19510,10 @@ export type SubmenuProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -19824,7 +19957,10 @@ export type WebViewProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -20274,7 +20410,10 @@ export type TerminalProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -20696,7 +20835,10 @@ export type SlotProps = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -21169,7 +21311,10 @@ export type EachOptions = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -21606,7 +21751,10 @@ export type PresenceOptions = {
 	on_resize: Props_on_resize,
 	-- When any of it comes into view or all of it leaves (inside every
 	-- clip and scroll viewport above it), and at its first layout: for
-	-- building what only matters on screen.
+	-- building what only matters on screen. Told once a frame, before
+	-- paint, as an IntersectionObserver: a handler in the same frame reads
+	-- the frame before's; an element's `x`, `y`, `width` and `height` are
+	-- read fresh.
 	on_visible: Props_on_visible,
 	-- With `on_visible`: in view once any of it comes within this many
 	-- points of showing (an IntersectionObserver's `rootMargin`), to build
@@ -21669,6 +21817,12 @@ export type CaseKey = string | number | boolean
 -- Durations are milliseconds, as in `anime`.
 export type TweenEnd = number | string | { number }
 export type TweenOptions = { duration: number?, ease: Easing?, from: TweenEnd?, to: TweenEnd?, [number]: never }
+-- One end of a `ui.map` range: a number, a state, or a function kept
+-- current as what it reads changes.
+export type MapEnd = number | Readable<number> | (() -> number)
+-- `ui.map`: the state's value at `from[1]` gives `to[1]`, at `from[2]`
+-- gives `to[2]`, in a line between; with `clamp`, held within `to`.
+export type MapOptions = { from: { MapEnd }, to: { MapEnd }, clamp: boolean? }
 export type SpringOptions = { stiffness: number?, damping: number?, from: TweenEnd?, to: TweenEnd?, [number]: never }
 export type SpringToOptions = {
 	response: number?,
@@ -22044,12 +22198,15 @@ declare ui: {
 	-- a promise of a `Response`. A plugin needs the host's grant.
 	fetch: (url: string, opts: FetchOptions?) -> Promise<Response>,
 	-- The clipboard's text (nil if it holds none), and putting text on it;
-	-- its image as a `Bitmap` (nil if it holds none), and putting one on
-	-- it: promises, as a large image is decoded and encoded off the main
-	-- thread.
+	-- its HTML (a browser's or word processor's copy; nil if it holds
+	-- none), and putting HTML on it with its text; its image as a `Bitmap`
+	-- (nil if it holds none), and putting one on it: promises, as a large
+	-- image is decoded and encoded off the main thread.
 	clipboard: {
 		read: () -> string?,
 		write: (text: string) -> boolean,
+		read_html: () -> string?,
+		write_html: (text: string, html: string) -> boolean,
 		read_image: () -> Promise<Bitmap?>,
 		write_image: (image: Bitmap) -> Promise<boolean>,
 	},
@@ -22095,6 +22252,10 @@ declare ui: {
 	add: (state: State<number>, by: number?) -> Action,
 	-- The state's truthiness (or number) drives a 0-to-1 scalar, or
 	-- `from` to `to`. Durations are milliseconds, as in `anime`.
+	-- A number mapped from a state in Rust, for a style that follows it
+	-- with no script run as it changes: a scrollbar thumb's `top` from a
+	-- list's offset. A range of no width gives `to[1]`.
+	map: (state: Readable<number>, opts: MapOptions) -> Binding,
 	tween: (state: State<any>, opts: TweenOptions?) -> Binding,
 	spring: (state: State<any>, opts: SpringOptions?) -> Binding,
 	loop: (opts: LoopOptions?) -> Binding,

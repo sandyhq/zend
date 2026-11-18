@@ -214,7 +214,7 @@ fn a_measured_list_or_another_value_is_an_error() {
 /// the list.
 #[test]
 fn a_reload_keeps_focus_on_a_row_of_a_list_in_a_scroll() {
-    let dir = std::env::temp_dir().join(format!("zgx-list-in-scroll-{}", std::process::id()));
+    let dir = common::temp_dir("list-in-scroll");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("app.luau");
     std::fs::write(&path, panel(FIXED)).unwrap();
@@ -257,7 +257,7 @@ fn a_keyed_lists_rows_stay_as_the_scroll_around_it_moves() {
     assert!(built(&mut h).contains(&21));
 }
 
-/// Zend's panel section: the list in a clipping box that eases open and
+/// Zeron's panel section: the list in a clipping box that eases open and
 /// shut. The rows it builds follow the box, not only the scroll: folded
 /// none, opened again (the scroll not moved) the rows it shows, and the box
 /// shrinking keeps only those it still shows.

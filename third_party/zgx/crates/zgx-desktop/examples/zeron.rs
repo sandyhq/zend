@@ -1,11 +1,11 @@
-//! A zgx client for a running Zend: browse sessions, read live transcripts,
+//! A zgx client for a running Zeron: browse sessions, read live transcripts,
 //! send messages, stop a turn and switch the session's model and reasoning.
-//! It speaks the engine's local IPC (see `support/zend_rpc.rs`), the same
-//! protocol the Zend window uses, so both stay in sync.
-//! Run: cargo run --release -p zgx-desktop --example zend
-//! `ZEND_IPC_PORT` selects another engine (e.g. a sandboxed `zend headless`);
-//! `ZEND_SEND=<text>` and `ZEND_MODEL=<id>` drive the composer for tests;
-//! `ZEND_OPEN=<title>` preselects a chat.
+//! It speaks the engine's local IPC (see `support/zeron_rpc.rs`), the same
+//! protocol the Zeron window uses, so both stay in sync.
+//! Run: cargo run --release -p zgx-desktop --example zeron
+//! `ZERON_IPC_PORT` selects another engine (e.g. a sandboxed `zeron headless`);
+//! `ZERON_SEND=<text>` and `ZERON_MODEL=<id>` drive the composer for tests;
+//! `ZERON_OPEN=<title>` preselects a chat.
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
@@ -16,29 +16,29 @@ use std::{
 use zgx::{compose::prelude::*, cursor::Cursor, reactive::Signal, timer::sleep};
 use zgx_desktop::{Application, Glass, GlassMaterial, Titlebar, WindowOptions};
 
-#[path = "support/zend_composer.rs"]
+#[path = "support/zeron_composer.rs"]
 mod composer;
-#[path = "support/zend_markdown.rs"]
+#[path = "support/zeron_markdown.rs"]
 mod markdown;
-#[path = "support/zend_model.rs"]
+#[path = "support/zeron_model.rs"]
 mod model;
-#[path = "support/zend_rpc.rs"]
+#[path = "support/zeron_rpc.rs"]
 mod rpc;
-#[path = "support/zend_sidebar.rs"]
+#[path = "support/zeron_sidebar.rs"]
 mod sidebar;
-#[path = "support/zend_theme.rs"]
+#[path = "support/zeron_theme.rs"]
 #[allow(dead_code)]
 mod theme;
-#[path = "support/zend_tools.rs"]
+#[path = "support/zeron_tools.rs"]
 mod tools;
-#[path = "support/zend_view.rs"]
+#[path = "support/zeron_view.rs"]
 mod view;
 
 use model::{ChatRow, Status, Transcript};
 use rpc::Rpc;
 use view::{Anim, MUTED, TEXT, white};
 
-const TITLE: &str = "Zend · zgx";
+const TITLE: &str = "Zeron · zgx";
 const WIDTH: f64 = 1320.;
 const HEIGHT: f64 = 880.;
 /// The transcript column's text width (832 less 48 px gutters), for
@@ -57,18 +57,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             decorations: cfg!(target_os = "macos"),
             min_size: Some((900., 600.)),
             titlebar: Titlebar::Inset,
-            // Zend's backdrop: the colourless under-window material,
+            // Zeron's backdrop: the colourless under-window material,
             // untinted, unsaturated and blurred at 60 pt, under the shell's
             // own 80% tint.
             glass: Some(Glass::new(GlassMaterial::UnderWindowBackground).plain()),
             ..Default::default()
         })
         .run(move |cx| {
-            // Clear hovers, and Zend's scrollbar thumb: text at 30%.
+            // Clear hovers, and Zeron's scrollbar thumb: text at 30%.
             {
                 use zgx::theme::{DARK, Theme, ThemeKind, tok};
                 cx.ui.theme().register(
-                    Theme::new("zend", ThemeKind::Dark)
+                    Theme::new("zeron", ThemeKind::Dark)
                         .extending(DARK)
                         .with(tok::HOVER, white(0))
                         .with(tok::BUTTON_HOVER, white(0))
@@ -76,11 +76,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .with(tok::SCROLLBAR_TRACK, white(0))
                         .with(tok::ACCENT, theme::alpha(theme::TEXT, 0.3)),
                 );
-                cx.ui.theme().set("zend").unwrap();
+                cx.ui.theme().set("zeron").unwrap();
             }
             // One connection at a time; the UI below remounts on each one.
             let generation = cx.ui.signal(0_u32);
-            let offline = cx.ui.signal(Some("Connecting to Zend…".to_owned()));
+            let offline = cx.ui.signal(Some("Connecting to Zeron…".to_owned()));
             let current: Rc<RefCell<Option<Rpc>>> = Rc::default();
             {
                 let (generation, offline, current) =
@@ -94,12 +94,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 generation.update(|g| *g += 1);
                                 let reason = client.pump().await;
                                 current.borrow_mut().take();
-                                offline.set(Some(format!("Lost Zend: {reason}")));
+                                offline.set(Some(format!("Lost Zeron: {reason}")));
                                 generation.update(|g| *g += 1);
                             }
                             Err(error) => {
                                 offline.set(Some(format!(
-                                    "Waiting for Zend at {} ({error})",
+                                    "Waiting for Zeron at {} ({error})",
                                     rpc::engine_url()
                                 )));
                             }
@@ -108,9 +108,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
-            // ZEND_PREVIEW=<markdown file>: render it offline through the
+            // ZERON_PREVIEW=<markdown file>: render it offline through the
             // transcript view, for checking markdown without a live session.
-            if let Ok(path) = std::env::var("ZEND_PREVIEW") {
+            if let Ok(path) = std::env::var("ZERON_PREVIEW") {
                 cx.render(
                     switch(|| (), move |_, cx| preview(cx, &path))
                         .w_full()
@@ -147,12 +147,12 @@ fn preview(cx: &mut Context, path: &str) -> View {
     let frame = json!({ "reset": [
         { "id": "u", "role": "user", "createdAt": 0, "parts": [{ "kind": "text", "id": "t", "text": "Render this markdown preview." }] },
         { "id": "a", "role": "assistant", "createdAt": 0, "status": "complete", "parts": [
-            { "kind": "reasoning", "id": "r", "text": "Reading the file, then checking tables, lists and code render like Zend's." },
+            { "kind": "reasoning", "id": "r", "text": "Reading the file, then checking tables, lists and code render like Zeron's." },
             tool("t1", json!({ "kind": "readFile", "path": path }), "", json!({})),
-            tool("t2", json!({ "kind": "exec", "command": "cargo test -p zgx-desktop --example zend" }), "running 1 test\ntest markdown::tests::runs_map_back_to_source ... ok\ntest result: ok. 1 passed", json!({})),
-            tool("t3", json!({ "kind": "editFile", "path": "crates/zgx-desktop/examples/zend.rs" }), "", json!({
-                "diffStats": [{ "path": "zend.rs", "additions": 3, "deletions": 1 }],
-                "diff": { "path": "zend.rs", "oldText": "fn main() {\n    run();\n}\n", "newText": "fn main() {\n    // Preview first.\n    preview();\n    run();\n}\n" }
+            tool("t2", json!({ "kind": "exec", "command": "cargo test -p zgx-desktop --example zeron" }), "running 1 test\ntest markdown::tests::runs_map_back_to_source ... ok\ntest result: ok. 1 passed", json!({})),
+            tool("t3", json!({ "kind": "editFile", "path": "crates/zgx-desktop/examples/zeron.rs" }), "", json!({
+                "diffStats": [{ "path": "zeron.rs", "additions": 3, "deletions": 1 }],
+                "diff": { "path": "zeron.rs", "oldText": "fn main() {\n    run();\n}\n", "newText": "fn main() {\n    // Preview first.\n    preview();\n    run();\n}\n" }
             })),
             { "kind": "text", "id": "md", "text": source },
         ]}
@@ -225,7 +225,7 @@ fn waiting(message: Signal<Option<String>>) -> View {
                 .justify_center()
                 .gap(10.)
                 .child(
-                    text("Zend")
+                    text("Zeron")
                         .text_size(24.)
                         .font_weight(650)
                         .letter_spacing(-0.4),
@@ -279,8 +279,8 @@ fn app(cx: &mut Context, rpc: Rpc) -> View {
         );
         move || {
             let joined = model::chat_rows(&raw_chats.borrow(), &spaces.borrow());
-            // ZEND_OPEN=<title text> preselects a chat (for screenshots).
-            let wanted = std::env::var("ZEND_OPEN").ok().map(|t| t.to_lowercase());
+            // ZERON_OPEN=<title text> preselects a chat (for screenshots).
+            let wanted = std::env::var("ZERON_OPEN").ok().map(|t| t.to_lowercase());
             let first = wanted
                 .and_then(|wanted| {
                     joined
@@ -343,7 +343,7 @@ fn app(cx: &mut Context, rpc: Rpc) -> View {
         .w_full()
         .h_full()
     };
-    // As in Zend the transcript sits on the window's glass; ours lets a
+    // As in Zeron the transcript sits on the window's glass; ours lets a
     // little more of the desktop through.
     row()
         .w_full()
@@ -376,11 +376,11 @@ fn chat_view(cx: &mut Context, state: &App, id: String) -> View {
     let follow = Follow::new(cx, page.clone(), heights.clone());
     // The bottom stack's height (status strip, composer, footer): the
     // transcript scrolls on under it, fading over it, with its last row
-    // padded clear of it (Zend's `bottom_clearance`).
+    // padded clear of it (Zeron's `bottom_clearance`).
     let stack = cx.state(STACK);
-    // ZEND_SCROLL_SPEED=<points/s>: sweep the transcript up and down, like a
+    // ZERON_SCROLL_SPEED=<points/s>: sweep the transcript up and down, like a
     // long trackpad fling, for profiling.
-    if let Some(speed) = std::env::var("ZEND_SCROLL_SPEED")
+    if let Some(speed) = std::env::var("ZERON_SCROLL_SPEED")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
     {
@@ -430,14 +430,14 @@ fn chat_view(cx: &mut Context, state: &App, id: String) -> View {
                 );
                 let runtime = cx.runtime();
                 // `openingTail`: the newest 128 entries first, the full history
-                // after, so long sessions paint at once (as Zend opens them).
+                // after, so long sessions paint at once (as Zeron opens them).
                 let params = json!({ "chatId": id, "openingTail": true });
                 let mounted = std::time::Instant::now();
                 let (frames, tasks) = (cx.frames(), cx.tasks());
-                let trace = std::env::var_os("ZEND_TRACE").is_some();
-                // ZEND_REPLAY=<n>: re-stream this chat's last n entries
+                let trace = std::env::var_os("ZERON_TRACE").is_some();
+                // ZERON_REPLAY=<n>: re-stream this chat's last n entries
                 // locally (read-only), for profiling streaming.
-                let replay: Option<usize> = std::env::var("ZEND_REPLAY")
+                let replay: Option<usize> = std::env::var("ZERON_REPLAY")
                     .ok()
                     .and_then(|n| n.parse().ok());
                 let replaying = Rc::new(Cell::new(false));
@@ -571,7 +571,7 @@ fn chat_view(cx: &mut Context, state: &App, id: String) -> View {
     let build = {
         let (ctx, previous, anim) = (ctx.clone(), blocks.clone(), anim.clone());
         let (loaded, working, stack) = (loaded.clone(), working.clone(), stack.clone());
-        // Zend picks the working word from the chat id.
+        // Zeron picks the working word from the chat id.
         let seed = tools::flavour_seed(&id);
         move |_, row: Row, cx: &mut Context| {
             let content = match row {
@@ -605,7 +605,7 @@ fn chat_view(cx: &mut Context, state: &App, id: String) -> View {
                     view::block(cx, &ctx, &block, before)
                 }
                 // The working trailer, then clearance for the bottom stack
-                // and its fade (Zend: clearance + fade band + 8).
+                // and its fade (Zeron: clearance + fade band + 8).
                 Row::Tail => {
                     let stack = stack.clone();
                     column()
@@ -620,10 +620,10 @@ fn chat_view(cx: &mut Context, state: &App, id: String) -> View {
                 .child(column().w_full().max_w(832.).px(48.).child(content))
         }
     };
-    // Zend's column: 736 wide with 48 px gutters, the first row 64 px from
+    // Zeron's column: 736 wide with 48 px gutters, the first row 64 px from
     // the window top (38 of titlebar, then 26). The scroller runs on under
     // the bottom stack: text dissolves over 24 px under the titlebar and
-    // across the composer (Zend's `edge_faded`, squared ramp, per pixel),
+    // across the composer (Zeron's `edge_faded`, squared ramp, per pixel),
     // so it reads through the frosted pill.
     // The transcript's scrollbar, drawn over everything at the end (see
     // `viewport`), reads where the list is from these.
@@ -667,7 +667,7 @@ fn chat_view(cx: &mut Context, state: &App, id: String) -> View {
         .bottom(0.)
         .w_full()
         .items_center()
-        // Zend's status strip: empty unless a send is in flight.
+        // Zeron's status strip: empty unless a send is in flight.
         .child(div().w_full().h(24.).shrink_0())
         .child(
             overlay()
@@ -742,7 +742,7 @@ const COMPOSER_WIDTH: f32 = 768.;
 /// single-line pill and its dock.
 const STACK: f32 = 24. + 49. + 40.;
 
-/// Zend's "Scroll to bottom" pill: 6 px above the composer, frosted (radius
+/// Zeron's "Scroll to bottom" pill: 6 px above the composer, frosted (radius
 /// 15, blur 16) over the popup tint with a hairline border and a hover wash.
 /// It enters with `dialog_in` (180 ms, rising 2 px) and leaves at once.
 fn jump_pill(cx: &mut Context, anim: &Anim, follow: &Rc<Follow>) -> View {
@@ -860,7 +860,7 @@ fn replay_schedule(entries: &[Value], tail: usize) -> (Value, Vec<(u64, Value)>)
     (reset, schedule)
 }
 
-/// Zend's session title row (`render_session_title_bar`): 38 px with the
+/// Zeron's session title row (`render_session_title_bar`): 38 px with the
 /// row centred on the traffic lights, 16 px in from the sidebar, the
 /// harness mark and the session title. The rest of the strip drags.
 fn titlebar(chat: impl Fn() -> Option<ChatRow> + Clone + 'static) -> View {
@@ -893,7 +893,7 @@ fn titlebar(chat: impl Fn() -> Option<ChatRow> + Clone + 'static) -> View {
     )
 }
 
-/// Zend's stick-to-bottom (`transcript.rs`): pinned readers follow new
+/// Zeron's stick-to-bottom (`transcript.rs`): pinned readers follow new
 /// content; scrolling away from the bottom escapes, and scrolling back
 /// within 70 px (or to it) pins again. The jump pill shows past 320 px and
 /// hides at the bottom. Jumps wait a frame: offsets clamp to laid-out
@@ -904,7 +904,7 @@ struct Follow {
     /// The scroller's height, reported by a probe in its overlay.
     viewport: Signal<f32>,
     pinned: Signal<bool>,
-    /// The jump pill, with Zend's hysteresis.
+    /// The jump pill, with Zeron's hysteresis.
     shown: Signal<bool>,
     /// The last distance from the bottom, for the escape / re-pin rules.
     previous: Cell<f32>,
@@ -914,7 +914,7 @@ struct Follow {
     frames: zgx::frame::FrameClock,
 }
 
-/// Zend's `STICK_THRESHOLD_PX`, `SCROLL_BUTTON_THRESHOLD_PX`, `AT_BOTTOM_PX`.
+/// Zeron's `STICK_THRESHOLD_PX`, `SCROLL_BUTTON_THRESHOLD_PX`, `AT_BOTTOM_PX`.
 const STICK: f32 = 70.;
 const JUMP_SHOWS: f32 = 320.;
 const AT_BOTTOM: f32 = 2.;
@@ -1003,7 +1003,7 @@ impl Follow {
             }
         });
     }
-    /// The jump pill: pin, teleport to within 2.5 viewports, then Zend's
+    /// The jump pill: pin, teleport to within 2.5 viewports, then Zeron's
     /// critically damped `StickSpring` the rest of the way (it never
     /// overshoots), landing glued to the end.
     fn jump(self: &Rc<Self>) {

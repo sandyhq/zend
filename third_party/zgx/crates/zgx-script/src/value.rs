@@ -140,12 +140,7 @@ impl Appended {
     /// As a value: folded, opening to the list it holds for scripts and for
     /// Rust reading it as a list.
     pub fn into_value(list: Rc<Appended>) -> Value {
-        Value::Folded(Rc::new(Folded {
-            id: Value::Nil,
-            source: Box::new(list),
-            open: RefCell::default(),
-            kept: std::cell::OnceCell::new(),
-        }))
+        Folded::value(Value::Nil, list)
     }
 }
 impl Unfold for Rc<Appended> {
@@ -180,11 +175,21 @@ pub trait Unfold {
 /// A table's fields, as `Value::Map` holds them.
 type Fields = [(Rc<str>, Value)];
 
-/// A value kept small until it's read (`Value::Folded`).
+/// A value kept small until it's read (`Value::Folded`): its id, what makes
+/// it (`source`, the host's), and what it opened to only once it has (most
+/// of a long list's rows never are). The source stays boxed apart: in the
+/// same allocation, every reach through the `Rc` would read its alignment
+/// from the vtable, 60 instructions a row on a long list's append.
 pub struct Folded {
     /// Its `id` field, which a list reads for each of its rows.
     id: Value,
+    /// What it opened to, made as it first opens for a script or a host.
+    opened: std::cell::OnceCell<Box<Opened>>,
     source: Box<dyn Unfold>,
+}
+/// What a folded value opened to.
+#[derive(Default)]
+struct Opened {
     /// What it last opened to, while something holds that: a script's table
     /// of it, through the conversion cache, so reads while that stands find
     /// one table.
@@ -200,6 +205,14 @@ impl std::fmt::Debug for Folded {
     }
 }
 impl Folded {
+    /// `source` folded, `id` its `id` field.
+    fn value(id: Value, source: impl Unfold + 'static) -> Value {
+        Value::Folded(Rc::new(Folded {
+            id,
+            opened: std::cell::OnceCell::new(),
+            source: Box::new(source),
+        }))
+    }
     /// Its field `key`: `id` without opening it, any other opened for good
     /// (scripts read these, and hosts their own rows).
     #[cold]
@@ -208,21 +221,34 @@ impl Folded {
         if key == "id" {
             return Some(&self.id);
         }
-        self.kept.get_or_init(|| self.opened()).field(key)
+        let opened = self.opened.get_or_init(Box::default);
+        opened.kept.get_or_init(|| self.opened()).field(key)
     }
     /// The value it opens to, opened again only if nothing holds the last.
     fn opened(&self) -> Value {
-        if let Some(kept) = self.kept.get() {
-            return kept.clone();
-        }
-        if let Some(fields) = self.open.borrow().as_ref().and_then(std::rc::Weak::upgrade) {
-            return Value::Map(fields);
+        if let Some(value) = self.held() {
+            return value;
         }
         let value = self.source.unfold();
         if let Value::Map(fields) = &value {
-            *self.open.borrow_mut() = Some(Rc::downgrade(fields));
+            let opened = self.opened.get_or_init(Box::default);
+            *opened.open.borrow_mut() = Some(Rc::downgrade(fields));
         }
         value
+    }
+    /// The value it opens to, for one reading: what holds it if anything
+    /// does, else opened and let go, remembering nothing.
+    fn read(&self) -> Value {
+        self.held().unwrap_or_else(|| self.source.unfold())
+    }
+    /// What it opened to, if that is still held.
+    fn held(&self) -> Option<Value> {
+        let opened = self.opened.get()?;
+        if let Some(kept) = opened.kept.get() {
+            return Some(kept.clone());
+        }
+        let fields = opened.open.borrow().as_ref()?.upgrade()?;
+        Some(Value::Map(fields))
     }
 }
 
@@ -628,12 +654,16 @@ impl Value {
     /// opens to, its table going when no script holds it. `id` is its `id`
     /// field, read without opening it (a list's key). Equal only to itself.
     pub fn folded(id: Rc<str>, source: impl Unfold + 'static) -> Value {
-        Value::Folded(Rc::new(Folded {
-            id: Value::Str(id),
-            source: Box::new(source),
-            open: RefCell::default(),
-            kept: std::cell::OnceCell::new(),
-        }))
+        Folded::value(Value::Str(id), source)
+    }
+    /// It to read through, a folded value opened for this reading only: for
+    /// a pass over many rows (a list's estimate) that `field` would leave
+    /// each kept open.
+    pub(crate) fn opened(&self) -> std::borrow::Cow<'_, Value> {
+        match self {
+            Value::Folded(folded) => std::borrow::Cow::Owned(folded.read()),
+            _ => std::borrow::Cow::Borrowed(self),
+        }
     }
     /// Whether Luau counts it as true: anything but `nil` and `false`.
     pub fn truthy(&self) -> bool {
@@ -1039,6 +1069,12 @@ fn raw_table(t: &Table, old: Option<&Value>) -> Option<mlua::Result<Value>> {
         held: Option<std::cell::Ref<'a, FxHashMap<usize, (Value, usize)>>>,
         /// By the Luau string's address (no script chooses it, so Fx).
         strings: FxHashMap<usize, Rc<str>>,
+        /// The items and fields of the tables being read, on one stack each:
+        /// a table, once read, is its own moved off into one allocation,
+        /// where a vector of its own would grow, then be copied (as
+        /// `json::parse` reads).
+        items: Vec<(usize, Value)>,
+        keyed: Vec<(Rc<str>, Value)>,
     }
     const TABLE: c_int = 1;
     const IDS: c_int = 2;
@@ -1134,8 +1170,8 @@ fn raw_table(t: &Table, old: Option<&Value>) -> Option<mlua::Result<Value>> {
                 Some(Value::Map(f)) => f,
                 _ => &[],
             };
-            let mut items: Vec<(usize, Value)> = Vec::with_capacity(len);
-            let mut keyed: Vec<(Rc<str>, Value)> = Vec::new();
+            let (items_from, keyed_from) = (cx.items.len(), cx.keyed.len());
+            cx.items.reserve(len);
             let mut iter = 0;
             loop {
                 iter = ffi::lua_rawiter(state, idx, iter);
@@ -1149,7 +1185,7 @@ fn raw_table(t: &Table, old: Option<&Value>) -> Option<mlua::Result<Value>> {
                         if n.fract() == 0. && n >= 1. && n as usize <= len {
                             let i = n as usize;
                             read(state, top, was.get(i - 1), depth + 1, cx)
-                                .map(|v| items.push((i, v)))
+                                .map(|v| cx.items.push((i, v)))
                         } else {
                             Err(Unread::General)
                         }
@@ -1167,21 +1203,30 @@ fn raw_table(t: &Table, old: Option<&Value>) -> Option<mlua::Result<Value>> {
                             None => string(cx, data as usize, bytes),
                         };
                         read(state, top, prior.map(|(_, v)| v), depth + 1, cx)
-                            .map(|v| keyed.push((key, v)))
+                            .map(|v| cx.keyed.push((key, v)))
                     }
                     _ => Err(Unread::General),
                 };
                 ffi::lua_pop(state, 2);
-                read_one?;
+                if let Err(unread) = read_one {
+                    // Read by the general walk: what this table put on the
+                    // stacks goes (a table inside it already took its own).
+                    cx.items.truncate(items_from);
+                    cx.keyed.truncate(keyed_from);
+                    return Err(unread);
+                }
             }
-            if !keyed.is_empty() {
-                if len > 0 {
+            if cx.keyed.len() > keyed_from {
+                if cx.items.len() > items_from || len > 0 {
+                    cx.items.truncate(items_from);
+                    cx.keyed.truncate(keyed_from);
                     return Err(Unread::Error(
                         "a state table is a list or has string keys, not both",
                     ));
                 }
+                let keyed = &mut cx.keyed[keyed_from..];
                 keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                let fresh = Value::Map(keyed.into());
+                let fresh = Value::Map(cx.keyed.drain(keyed_from..).collect());
                 return Ok(match old {
                     Some(old) if *old == fresh => old.clone(),
                     _ => fresh,
@@ -1189,19 +1234,24 @@ fn raw_table(t: &Table, old: Option<&Value>) -> Option<mlua::Result<Value>> {
             }
             // The array part comes in order; items run up to the first
             // hole, as a sequence does.
+            let items = &mut cx.items[items_from..];
             if !items.is_sorted_by_key(|(i, _)| *i) {
                 items.sort_unstable_by_key(|(i, _)| *i);
             }
-            let mut list = Vec::with_capacity(items.len());
-            for (at, (i, item)) in items.into_iter().enumerate() {
-                if i != at + 1 {
-                    break;
-                }
-                list.push(item);
-            }
+            let run = items
+                .iter()
+                .enumerate()
+                .take_while(|(at, (i, _))| *i == at + 1)
+                .count();
+            let list: Rc<[Value]> = cx
+                .items
+                .drain(items_from..)
+                .take(run)
+                .map(|(_, item)| item)
+                .collect();
             Ok(match old {
                 Some(old @ Value::List(o)) if o[..] == list[..] => old.clone(),
-                _ => Value::List(list.into()),
+                _ => Value::List(list),
             })
         }
     }
@@ -1211,6 +1261,8 @@ fn raw_table(t: &Table, old: Option<&Value>) -> Option<mlua::Result<Value>> {
     let mut cx = Cx {
         held: cache.as_ref().map(|c| c.held.borrow()),
         strings: FxHashMap::default(),
+        items: Vec::new(),
+        keyed: Vec::new(),
     };
     let mut out = Err(Unread::General);
     // SAFETY: `exec_raw` runs the closure as a C function inside a protected
@@ -1928,6 +1980,7 @@ pub(crate) fn install_cache(lua: &Lua) {
             swept: std::cell::Cell::new(0),
             recent: Default::default(),
             next_recent: std::cell::Cell::new(0),
+            strings: Default::default(),
         });
     }
 }
@@ -1976,6 +2029,8 @@ struct Converted {
     recent: std::cell::RefCell<Vec<(usize, Value, Table)>>,
     /// Where the next one goes once `recent` is full.
     next_recent: std::cell::Cell<usize>,
+    /// The long strings scripts last read (`long_string`), the oldest first.
+    strings: RefCell<Vec<(zgx::text::Text, mlua::LuaString)>>,
 }
 /// Sweeps wait until the cache holds this much (`weight`) at least.
 const SWEPT_FROM: usize = 1 << 12;
@@ -2390,6 +2445,7 @@ pub(crate) fn sweep_idle(lua: &Lua) {
         return;
     };
     cache.bases.borrow_mut().clear();
+    cache.strings.borrow_mut().clear();
     drop(cache);
     let _ = sweep_when(lua, true);
     let _ = rebuild_cache(lua);
@@ -2894,9 +2950,13 @@ impl State {
         written
     }
     fn charge(&self, lua: &Lua, bytes: impl FnOnce(usize) -> usize) -> mlua::Result<()> {
-        let meter = lua
-            .app_data_ref::<crate::node::Env>()
-            .and_then(|env| env.meter.clone());
+        let meter = lua.app_data_ref::<crate::node::Env>().and_then(|env| {
+            // A load running: what this held kept, to undo if it fails.
+            if env.journal.active() {
+                env.journal.write(&self.0);
+            }
+            env.meter.clone()
+        });
         match meter {
             Some(meter) => meter.hold(&self.0, bytes(meter.held_by(&self.0))),
             None => Ok(()),
@@ -3127,6 +3187,9 @@ const OFF_THE_CLOCK_FROM: usize = 256;
 /// transcript took more than the 50 ms a call has, so the script's next
 /// instruction, whatever it was, stopped with its budget spent.
 fn read(value: Value, lua: &Lua) -> mlua::Result<mlua::Value> {
+    if let Value::Text(text) = &value {
+        return script_string(lua, text).map(mlua::Value::String);
+    }
     if value.list().len() < OFF_THE_CLOCK_FROM {
         return value.into_lua(lua);
     }
@@ -3137,6 +3200,71 @@ fn read(value: Value, lua: &Lua) -> mlua::Result<mlua::Value> {
     match vm {
         Some(vm) => vm.off_clock(|| value.into_lua(lua)),
         None => value.into_lua(lua),
+    }
+}
+/// How many long strings a VM keeps as scripts last read them.
+const KEPT_STRINGS: usize = 2;
+/// A long string (`Value::Text`, a document) as a script reads it: made once
+/// for each text and handed to every read of it until it changes. Each
+/// read made it again, copying and hashing the whole of it: a composer whose
+/// draft a dozen bindings read paid a dozen copies of the draft at every
+/// keystroke (5 ms at 30,000 lines). Let go as the host goes idle
+/// (`sweep_idle`), and as other texts are read.
+fn script_string(lua: &Lua, text: &zgx::text::Text) -> mlua::Result<mlua::LuaString> {
+    let Some(cache) = lua.app_data_ref::<Converted>() else {
+        return push_long(lua, text);
+    };
+    if let Some((_, kept)) = cache.strings.borrow().iter().find(|(t, _)| t.ptr_eq(text)) {
+        return Ok(kept.clone());
+    }
+    drop(cache);
+    let made = push_long(lua, text)?;
+    if let Some(cache) = lua.app_data_ref::<Converted>() {
+        let mut strings = cache.strings.borrow_mut();
+        if strings.len() >= KEPT_STRINGS {
+            strings.remove(0);
+        }
+        strings.push((text.clone(), made.clone()));
+    }
+    Ok(made)
+}
+fn push_long(lua: &Lua, text: &zgx::text::Text) -> mlua::Result<mlua::LuaString> {
+    // SAFETY: `push_text` leaves one string, `exec_raw`'s result.
+    unsafe { lua.exec_raw::<mlua::LuaString>((), |state| push_text(state, text)) }
+}
+/// Bytes `from` to `to` (0-based, end excluded, within its length) of the
+/// string `value` holds, read where it is held: a long text's chunks are
+/// copied only where they overlap. Nothing for anything not a string.
+fn byte_range(value: &Value, from: usize, to: usize) -> Vec<u8> {
+    match value {
+        Value::Str(s) => s.as_bytes()[from..to].to_vec(),
+        Value::Text(t) => {
+            let mut out = Vec::with_capacity(to - from);
+            let mut at = 0;
+            for chunk in t.chunks() {
+                let end = at + chunk.len();
+                if end > from && at < to {
+                    let bytes = chunk.as_bytes();
+                    out.extend_from_slice(
+                        &bytes[from.saturating_sub(at)..(to - at).min(bytes.len())],
+                    );
+                }
+                if end >= to {
+                    break;
+                }
+                at = end;
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+/// The byte length of the string `value` holds, else its items' count.
+fn length(value: &Value) -> usize {
+    match value {
+        Value::Str(s) => s.len(),
+        Value::Text(t) => t.len(),
+        v => v.items().len(),
     }
 }
 /// What a state's script handle reads: the same for a state and for a
@@ -3153,8 +3281,23 @@ fn add_reads<T: 'static, M: UserDataMethods<T>>(
     });
     // Of a derived list (a sorted view) as it is now: brought up to date
     // first, as `at` is, inside a batch that wrote what it derives from.
-    methods.add_method("len", move |_, s: &T, ()| {
-        Ok(state(s).fresh().with(|v| v.items().len()))
+    // Of a string, its length in bytes (`#`), tracked as `get` is: a long
+    // document is not copied into the script for it.
+    methods.add_method("len", move |_, s: &T, ()| Ok(state(s).fresh().with(length)));
+    // Of a string, `string.sub`'s bytes (from 1, negative from the end,
+    // `j` the end by default), tracked as `get` is: a long document's
+    // part (a draft's line at the caret) without the rest of it copied.
+    methods.add_method("sub", move |lua, s: &T, (i, j): (i64, Option<i64>)| {
+        let bytes = state(s).fresh().with(|v| {
+            let len = length(v) as i64;
+            let at = |n: i64| if n < 0 { (len + n + 1).max(0) } else { n };
+            let (start, end) = (at(i).max(1), at(j.unwrap_or(-1)).min(len));
+            match start <= end {
+                true => byte_range(v, start as usize - 1, end as usize),
+                false => Vec::new(),
+            }
+        });
+        lua.create_string(bytes)
     });
     // Where the first item whose `field` is `value` is (from 1), or nil,
     // tracked as `get` is: `messages:index_of("id", 42)`, found without
@@ -3431,6 +3574,11 @@ impl Store {
             .or_insert_with(|| self.runtime.signal(initial))
             .clone()
     }
+    /// `key` gone: a load that made it failed (`journal`).
+    pub(crate) fn remove(&self, key: &str) {
+        self.signals.borrow_mut().remove(key);
+        self.provisional.borrow_mut().remove(key);
+    }
     /// The state for `key`, if there is any.
     pub fn get(&self, key: &str) -> Option<Signal<Value>> {
         self.signals.borrow().get(key).cloned()
@@ -3456,6 +3604,36 @@ mod tests {
     #[test]
     fn a_value_is_three_words() {
         assert_eq!(std::mem::size_of::<Value>(), 24);
+    }
+
+    /// A folded row holds its id, a word and the host's source until
+    /// something keeps what it opens to: a long transcript's rows out of
+    /// view hold no more.
+    #[test]
+    fn a_folded_row_holds_what_it_opened_to_only_once_kept() {
+        struct Row;
+        impl Unfold for Row {
+            fn unfold(&self) -> Value {
+                Value::record([("id", Value::from("r1")), ("text", Value::from("hello"))])
+            }
+        }
+        let value = Value::folded(Rc::from("r1"), Row);
+        let Value::Folded(folded) = &value else {
+            panic!("folded")
+        };
+        assert_eq!(
+            std::mem::size_of::<Folded>(),
+            24 + 8 + 16,
+            "its id, one word, the host's source"
+        );
+        // Read for one pass (a list's estimate): nothing made to keep.
+        assert_eq!(value.opened().field("text"), Some(&Value::from("hello")));
+        assert!(folded.opened.get().is_none(), "read once, nothing kept");
+        assert_eq!(value.field("id"), Some(&Value::from("r1")));
+        assert!(folded.opened.get().is_none(), "its id needs no opening");
+        // A host's field keeps what it opened to.
+        assert_eq!(value.field("text"), Some(&Value::from("hello")));
+        assert!(folded.opened.get().is_some());
     }
 
     fn map(pairs: &[(&str, Value)]) -> Value {

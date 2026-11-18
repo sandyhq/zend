@@ -20,6 +20,13 @@ impl PartialEq for InlineAction {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }
+#[cfg(feature = "dom")]
+impl InlineAction {
+    /// Run it, told the keys held: whether it handled the click.
+    pub(crate) fn call(&self, held: crate::input::Modifiers) -> bool {
+        (self.0.borrow_mut())(held)
+    }
+}
 /// A span's own context menu (`TextSpan::context_menu`).
 #[derive(Clone)]
 pub(crate) struct SpanMenu(Rc<RefCell<MenuBuild>>);
@@ -180,7 +187,7 @@ impl TextFade {
 /// thread's clock (`ui.now()`'s).
 pub fn fade_now() -> f64 {
     crate::clock::system_now()
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(crate::time::SystemTime::UNIX_EPOCH)
         .map_or(0., |d| d.as_secs_f64() * 1000.)
 }
 /// How a link span looks under the pointer (`TextSpan::hover`): CSS's
@@ -682,7 +689,7 @@ impl SpanLocator {
 
 /// Whether a link opens through the system's handler: web and mail links
 /// only (see `TextSpan::href`).
-fn opens(url: &str) -> bool {
+pub(crate) fn opens(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         ["http", "https", "mailto"]
             .iter()

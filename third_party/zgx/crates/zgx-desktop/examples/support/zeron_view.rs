@@ -1,6 +1,6 @@
 //! The transcript: user bubbles, streamed markdown under a fading veil, tool
 //! groups with a connector tree, error chips and the hover metadata strip.
-//! Layout and motion follow Zend's `crates/ui/src/transcript.rs`,
+//! Layout and motion follow Zeron's `crates/ui/src/transcript.rs`,
 //! `markdown/render.rs` and `notice.rs`; colours are white at graded alpha so
 //! glass shows through.
 //!
@@ -24,7 +24,7 @@ use zgx::{
 
 // Palette ---------------------------------------------------------------------
 
-// Zend's dark tokens (`theme.text`, `text_muted`, `text_faint`, `border`).
+// Zeron's dark tokens (`theme.text`, `text_muted`, `text_faint`, `border`).
 pub const TEXT: Color = super::theme::TEXT;
 pub const BODY: Color = super::theme::TEXT;
 pub const MUTED: Color = super::theme::TEXT_MUTED;
@@ -107,7 +107,7 @@ impl RowKind {
     }
 }
 
-/// Zend's `top_gap_for`: nothing above the first row (the column pads it),
+/// Zeron's `top_gap_for`: nothing above the first row (the column pads it),
 /// 16 at a turn start (an entry's first row), 12 to or from a tool group,
 /// 8 else. Markdown blocks of one part sit 12 apart inside their part's view.
 pub fn top_gap(previous: Option<(RowKind, bool)>, this: RowKind) -> f32 {
@@ -145,7 +145,7 @@ const USER_COLLAPSED: f32 = USER_COLLAPSED_TEXT + USER_LINE;
 /// The expander: `mt 8` over one 22 px line.
 const USER_TOGGLE: f32 = 8. + USER_LINE;
 
-/// Zend's fold decision: more than five source lines, or measured taller
+/// Zeron's fold decision: more than five source lines, or measured taller
 /// than five lines, or (not yet measured) longer than 400 characters.
 pub fn user_needs_collapse(text: &str, measured: f32) -> bool {
     text.lines().count() > USER_LINES
@@ -153,12 +153,12 @@ pub fn user_needs_collapse(text: &str, measured: f32) -> bool {
         || (measured <= 0. && text.chars().count() > USER_CHARS)
 }
 
-/// Zend's `user_resize_duration_ms`: travel-scaled, 220 ms up to 850 ms.
+/// Zeron's `user_resize_duration_ms`: travel-scaled, 220 ms up to 850 ms.
 pub fn user_resize_ms(delta: f32) -> f32 {
     (220. + delta.max(0.) * 0.32).min(850.).round()
 }
 
-/// Zend's `user_resize_spec`: ease-out, or ease-in-out past 500 px.
+/// Zeron's `user_resize_spec`: ease-out, or ease-in-out past 500 px.
 pub fn user_resize_spec(delta: f32) -> Spec {
     let curve = if delta > 500. {
         super::theme::EASE_IN_OUT
@@ -171,7 +171,7 @@ pub fn user_resize_spec(delta: f32) -> Spec {
 /// Error chip text: 12 px on gpui's default φ line height.
 const ERROR_LINE: f32 = 12. * 1.618;
 
-/// Zend's `single_line`: whitespace runs collapse to one space.
+/// Zeron's `single_line`: whitespace runs collapse to one space.
 fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -291,8 +291,8 @@ pub fn estimate(
 }
 
 /// One transcript row: its top gap (padding, so the gap is part of the
-/// entry's hover area, as in Zend), its content and, under an entry's
-/// last row, the reserved metadata strip. Rows appear instantly: Zend has
+/// entry's hover area, as in Zeron), its content and, under an entry's
+/// last row, the reserved metadata strip. Rows appear instantly: Zeron has
 /// no entrance motion for messages; only the streaming veil fades text.
 pub fn block(cx: &mut Context, ctx: &Ctx, block: &Block, previous: Option<Block>) -> View {
     let (gap, entry) = {
@@ -459,7 +459,7 @@ fn icon_switch(size: f32, color: Color, name: impl Fn() -> &'static str + 'stati
 }
 
 /// A quiet icon button: its background blends `base` → `over` over 150 ms
-/// on hover (Zend's `hover_blend`).
+/// on hover (Zeron's `hover_blend`).
 fn faded_button(
     cx: &mut Context,
     anim: &Anim,
@@ -494,7 +494,7 @@ fn civil_from_days(days: i64) -> (i64, usize, i64) {
     (year, month as usize, day)
 }
 
-/// Zend's `format_timestamp`: `%b %-d, %-I:%M %p` ("Jul 1, 3:45 PM") at a
+/// Zeron's `format_timestamp`: `%b %-d, %-I:%M %p` ("Jul 1, 3:45 PM") at a
 /// UTC offset of `offset` seconds.
 pub fn format_timestamp(ms: i64, offset: i64) -> String {
     let seconds = ms.div_euclid(1000) + offset;
@@ -574,7 +574,7 @@ impl Fold {
     }
 }
 
-/// Zend's user bubble: `wash(.08)`, radius 16, `px 16 py 10`, right-aligned
+/// Zeron's user bubble: `wash(.08)`, radius 16, `px 16 py 10`, right-aligned
 /// and capped at 80% of the column. Past five lines the text is clipped to
 /// five line boxes over a "..." line, with a "Show more" link; toggling eases
 /// the clip's height over a travel-scaled duration.
@@ -778,7 +778,7 @@ fn user_bubble(cx: &mut Context, ctx: &Ctx, entry: &str) -> View {
 
 // Error chip -------------------------------------------------------------------------
 
-/// Zend's transcript `ErrorChip` (`notice_chip` with the tile): a red-washed
+/// Zeron's transcript `ErrorChip` (`notice_chip` with the tile): a red-washed
 /// card with a danger tile, "Error", a copy button and the wrapped message.
 fn error_chip(cx: &mut Context, ctx: &Ctx, key: &str) -> View {
     let message = ctx
@@ -855,7 +855,7 @@ fn error_chip(cx: &mut Context, ctx: &Ctx, key: &str) -> View {
 /// A streamed chunk: (source offset, arrival, fade seconds).
 type Chunk = (usize, f32, f32);
 
-/// Veil alpha for a source offset (Zend's `veil.rs`): the chunk holding it
+/// Veil alpha for a source offset (Zeron's `veil.rs`): the chunk holding it
 /// fades `1 - (1 - p)^1.6`, sped up by 30% per chunk beyond two still fading.
 fn veil_alpha(chunks: &[Chunk], offset: usize, now: f32) -> f32 {
     let active = chunks
@@ -913,7 +913,7 @@ fn styled_span(text: String, style: Style, base: Color, alpha: f32) -> TextSpan 
             line
         }),
         // Geist Mono at the surrounding size, accent on the accent wash. The
-        // wash is not veiled (Zend paints it under the text).
+        // wash is not veiled (Zeron paints it under the text).
         Style::Code => span
             .font_family(super::theme::MONO)
             .text_color(fade(ACCENT, alpha))
@@ -985,7 +985,7 @@ fn markdown(cx: &mut Context, ctx: &Ctx, key: &str, part: Rc<model::Part>) -> Vi
             })
         },
         move |(index, this, before), cx| {
-            // Zend: 12 px between blocks, 4 px between list items.
+            // Zeron: 12 px between blocks, 4 px between list items.
             let gap = match before {
                 None => 0.,
                 Some(1) if this == 1 => 4.,
@@ -1152,7 +1152,7 @@ fn md_block(
     }
 }
 
-/// Zend's runtime syntax palette.
+/// Zeron's runtime syntax palette.
 fn token_color(token: Token) -> Color {
     match token {
         Token::Text => Color(232, 232, 234, 255),
@@ -1166,7 +1166,7 @@ fn token_color(token: Token) -> Color {
     }
 }
 
-/// Code block metrics (Zend's `CODE_HEADER_HEIGHT`, `CODE_PADDING_*` and
+/// Code block metrics (Zeron's `CODE_HEADER_HEIGHT`, `CODE_PADDING_*` and
 /// 12.5 px Geist Mono on 18 px lines).
 const CODE_HEADER: f32 = 28.;
 const CODE_LINE: f32 = 18.;
@@ -1178,7 +1178,7 @@ fn code_lines(code: &str) -> usize {
     code.trim_end_matches('\n').lines().count().max(1)
 }
 
-/// Zend's code block: a 10 px rounded frame on `ink(.035)` with a 28 px
+/// Zeron's code block: a 10 px rounded frame on `ink(.035)` with a 28 px
 /// header (language; fit toggle and copy button) over the highlighted body,
 /// which scrolls sideways unless fit is on.
 fn code_block(
@@ -1376,7 +1376,7 @@ fn row_view() -> View {
     row()
 }
 
-/// Zend's column sizing: each column's natural width is max(content, 48)
+/// Zeron's column sizing: each column's natural width is max(content, 48)
 /// + 24; widths share the table in that proportion.
 fn column_weights(header: &[md::Run], rows: &[Vec<md::Run>]) -> Vec<f32> {
     (0..header.len())
@@ -1464,7 +1464,7 @@ fn table(
                 }
             }
         };
-        // Frameless, as in Zend: only 1 px rules between rows.
+        // Frameless, as in Zeron: only 1 px rules between rows.
         let rule = || zgx::scene::Insets {
             top: 0.,
             right: 0.,
@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_format_like_zend() {
+    fn timestamps_format_like_zeron() {
         // 2024-07-01T15:45:00Z.
         let ms = 1_719_848_700_000;
         assert_eq!(format_timestamp(ms, 0), "Jul 1, 3:45 PM");

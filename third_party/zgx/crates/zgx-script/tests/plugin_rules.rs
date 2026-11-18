@@ -4,23 +4,12 @@
 mod common;
 
 use common::Harness;
-use std::{
-    cell::RefCell,
-    path::PathBuf,
-    rc::Rc,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 use zgx_script::{Capability, GuardKind, Plugin, ScriptHost, Value};
 
 fn plugin_dir(name: &str, files: &[(&str, &str)]) -> PathBuf {
     // One of its own: tests run at once, some with plugins of one name.
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "zgx-plugin-rules-{}-{}-{name}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::temp_dir(&format!("plugin-rules-{name}"));
     for (file, code) in files {
         std::fs::write(dir.join(file), code).unwrap();
     }
@@ -175,20 +164,20 @@ fn a_plugin_offers_only_slots_of_its_own() {
     assert_eq!(h.error(), None);
 }
 
-const CONTRIBUTES: &str = r#"ui.contribute("zend.sidebar", ui.text { id = "seen", "seen" })"#;
+const CONTRIBUTES: &str = r#"ui.contribute("zeron.sidebar", ui.text { id = "seen", "seen" })"#;
 const POSING: &str = r#"
-ui.contribute("zend.x", ui.slot("zend.x.panel"))
+ui.contribute("zeron.x", ui.slot("zeron.x.panel"))
 "#;
 
 #[test]
 fn a_reserved_prefix_is_the_apps_alone() {
     // Even a plugin named under it, which would otherwise own the name.
-    let entry = entry("zend.x", POSING);
+    let entry = entry("zeron.x", POSING);
     let h = Harness::new(move |runtime| {
-        let host = ScriptHost::inline(runtime, "app", r#"return ui.slot("zend.sidebar")"#);
-        host.reserve_prefix("zend.");
+        let host = ScriptHost::inline(runtime, "app", r#"return ui.slot("zeron.sidebar")"#);
+        host.reserve_prefix("zeron.");
         host.set_plugins(vec![Plugin {
-            name: "zend.x".into(),
+            name: "zeron.x".into(),
             entry,
             grants: vec![],
         }]);
@@ -196,14 +185,14 @@ fn a_reserved_prefix_is_the_apps_alone() {
     });
     let error = error_of(&h);
     assert!(
-        error.contains("`zend.` names are the app's alone"),
+        error.contains("`zeron.` names are the app's alone"),
         "{error}"
     );
     // The app's VM offers it, and plugins still contribute to it.
     let entry = self::entry("adds", CONTRIBUTES);
     let mut h = Harness::new(move |runtime| {
-        let host = ScriptHost::inline(runtime, "app", r#"return ui.slot("zend.sidebar")"#);
-        host.reserve_prefix("zend");
+        let host = ScriptHost::inline(runtime, "app", r#"return ui.slot("zeron.sidebar")"#);
+        host.reserve_prefix("zeron");
         host.set_plugins(vec![Plugin {
             name: "adds".into(),
             entry,
@@ -219,11 +208,11 @@ fn a_reserved_prefix_is_the_apps_alone() {
 fn a_reserved_prefix_holds_past_the_hosts_later_configuring() {
     let entry = entry(
         "later",
-        r#"ui.command { id = "zend.new", run = function() end }"#,
+        r#"ui.command { id = "zeron.new", run = function() end }"#,
     );
     let h = Harness::new(move |runtime| {
         let host = ScriptHost::inline(runtime, "app", "return ui.text { \"app\" }");
-        host.reserve_prefix("zend");
+        host.reserve_prefix("zeron");
         // A builder makes the host anew: what was asked stays asked.
         let host = host.error_banner(true);
         host.set_plugins(vec![Plugin {
@@ -235,10 +224,10 @@ fn a_reserved_prefix_holds_past_the_hosts_later_configuring() {
     });
     let error = error_of(&h);
     assert!(
-        error.contains("`zend.` names are the app's alone"),
+        error.contains("`zeron.` names are the app's alone"),
         "{error}"
     );
-    assert!(!has_command(&h, "later/zend.new"));
+    assert!(!has_command(&h, "later/zeron.new"));
 }
 
 #[test]
@@ -247,23 +236,23 @@ fn a_command_id_under_a_reserved_prefix_is_the_apps_alone() {
         let host = ScriptHost::inline(
             runtime,
             "app",
-            r#"ui.command { id = "zend.new", run = function() end }
+            r#"ui.command { id = "zeron.new", run = function() end }
             return ui.text { "app" }"#,
         );
-        host.reserve_prefix("zend");
+        host.reserve_prefix("zeron");
         host
     });
     assert_eq!(h.error(), None);
-    assert!(has_command(&h, "zend.new"));
+    assert!(has_command(&h, "zeron.new"));
     // A plugin's ids are its own otherwise.
     let h = inline(
         APP,
         "mine",
-        r#"ui.command { id = "zend.new", run = function() end }"#,
+        r#"ui.command { id = "zeron.new", run = function() end }"#,
         vec![],
     );
     assert_eq!(h.error(), None);
-    assert!(has_command(&h, "mine/zend.new"));
+    assert!(has_command(&h, "mine/zeron.new"));
 }
 
 // R27: a key alone is taken from every field, page and terminal.

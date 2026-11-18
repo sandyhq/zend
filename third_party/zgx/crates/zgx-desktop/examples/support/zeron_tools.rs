@@ -1,12 +1,12 @@
-//! Tool groups and the working trailer, after Zend's `crates/ui/src/
+//! Tool groups and the working trailer, after Zeron's `crates/ui/src/
 //! transcript.rs` (`render_tool_group`, `activity_rail`, `chip_header_row`,
 //! `detail_body`, `render_working_trailer`), `roll_text.rs` and `loaders.rs`.
 //!
 //! A group is a quiet past-tense summary over an activity rail: each row
 //! hangs off a trunk by a rounded elbow, rows arriving live stagger in (the
 //! connector draws, then the content rises along the branch), and the fold,
-//! the row details and the summary all move on Zend's motion specs. Heights
-//! are analytic, as in Zend, so every fold tweens without measuring.
+//! the row details and the summary all move on Zeron's motion specs. Heights
+//! are analytic, as in Zeron, so every fold tweens without measuring.
 
 use super::markdown::{self as md, Change};
 use super::model::{self, Block, PartKind, Tool};
@@ -349,9 +349,9 @@ fn glyph_xs(measure: &TextMeasure, text: &str, size: f32) -> (Vec<(usize, char, 
 
 /// A label that rolls when `text` changes: the shared ends stay (the tail
 /// slides with the width), the changed middle rolls out upward and in from
-/// below, staggered left to right, over Zend's 550 ms quint; the width
+/// below, staggered left to right, over Zeron's 550 ms quint; the width
 /// glides on `RESIZE`. The first value never rolls. Rolls run on the 30 Hz
-/// ambient clock, like Zend's pulse lease.
+/// ambient clock, like Zeron's pulse lease.
 pub fn roll_text(
     cx: &mut Context,
     anim: &Anim,
@@ -526,7 +526,7 @@ fn roll_glyphs(
 // Working trailer helpers (transcript.rs:2250-2320) ----------------------------
 
 pub const FLAVOUR_WORDS: [&str; 21] = [
-    "Zending",
+    "Zeroning",
     "Thinking",
     "Pondering",
     "Scheming",
@@ -564,8 +564,8 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// The trailer seed for a chat: Zend's 64-bit FNV-1a reduced mod 21, so
-/// the word sequence matches Zend's for the same chat id.
+/// The trailer seed for a chat: Zeron's 64-bit FNV-1a reduced mod 21, so
+/// the word sequence matches Zeron's for the same chat id.
 pub fn flavour_seed(chat_id: &str) -> u32 {
     (fnv1a(chat_id.as_bytes()) % FLAVOUR_WORDS.len() as u64) as u32
 }
@@ -1248,7 +1248,7 @@ impl Group {
                     .with_untracked(|m| m.last().map(String::as_str) == Some(key))
             }
     }
-    /// Zend's `auto_open`: streaming, and this fold holds the entry's last part.
+    /// Zeron's `auto_open`: streaming, and this fold holds the entry's last part.
     fn auto_open(&self) -> bool {
         self.live_tail(true)
             && self
@@ -1294,7 +1294,7 @@ impl Group {
 // Tool groups ---------------------------------------------------------------------
 
 /// A transcript block of consecutive tool calls and thoughts. Subagent calls
-/// leave the fold (Zend splits them into their own always-open rows), so a
+/// leave the fold (Zeron splits them into their own always-open rows), so a
 /// block renders as one or more segments.
 pub fn tool_group(cx: &mut Context, ctx: &Ctx, key: &str, members: Signal<Vec<String>>) -> View {
     let (streaming, blocks) = {
@@ -1396,7 +1396,7 @@ fn fold_group(cx: &mut Context, group: Rc<Group>, head: &str) -> View {
     let user_key = format!("group-user:{head}");
     let memory = format!("group:{head}");
     let user = cx.state(group.ctx.toggles.get(&user_key));
-    // Rows still arriving hold the fold open (Zend's `arrival_pending`).
+    // Rows still arriving hold the fold open (Zeron's `arrival_pending`).
     let arrival_pending = {
         let (group, anim) = (group.clone(), anim.clone());
         move || {
@@ -1748,7 +1748,7 @@ fn rail_drawing(
     canvas
 }
 
-/// Zend's 2×3 mini glyph spinner: brightness chases round the ring.
+/// Zeron's 2×3 mini glyph spinner: brightness chases round the ring.
 fn mini_spinner(anim: &Anim) -> View {
     const RING: [[usize; 2]; 3] = [[0, 1], [5, 2], [4, 3]];
     column().gap(1.).shrink_0().children((0..3).map(|r| {
@@ -2073,7 +2073,7 @@ fn tool_row(cx: &mut Context, group: Rc<Group>, state: Rc<RowState>) -> View {
         )
         .w_full()
     };
-    // Zend: the card is `row height − base + 30`, centred by `my`.
+    // Zeron: the card is `row height − base + 30`, centred by `my`.
     let card_height_offset = base - CARD_HEIGHT;
     let card = column()
         .min_w(0.)
@@ -2494,7 +2494,7 @@ fn detail_panel(detail: &Detail, rail: bool, ctx: &Ctx, state: &Rc<RowState>) ->
 
 // Working trailer (transcript.rs:7013) ----------------------------------------------
 
-/// Zend's gradient spinner: 3×3 round cells tinted per row, a linear pulse
+/// Zeron's gradient spinner: 3×3 round cells tinted per row, a linear pulse
 /// travelling upward every 750 ms.
 fn gradient_spinner(anim: &Anim) -> View {
     const CELL: f32 = 2.5;
@@ -2602,7 +2602,7 @@ mod tests {
     }
 
     #[test]
-    fn summaries_follow_zend() {
+    fn summaries_follow_zeron() {
         assert_eq!(
             summary(&[
                 item("Run", "ls", false),
@@ -2707,10 +2707,10 @@ mod tests {
         assert_eq!(format_elapsed(61), "1m 1s");
         assert_eq!(format_elapsed(3_725), "1h 2m");
         assert_eq!(format_elapsed(90_000), "1d 1h");
-        assert_eq!(flavour_word(0, 0), "Zending");
-        assert_eq!(flavour_word(0, 6), "Zending");
+        assert_eq!(flavour_word(0, 0), "Zeroning");
+        assert_eq!(flavour_word(0, 6), "Zeroning");
         assert_eq!(flavour_word(0, 7), "Thinking");
-        assert_eq!(flavour_word(20, 7), "Zending");
+        assert_eq!(flavour_word(20, 7), "Zeroning");
         let seed = flavour_seed("chat-1");
         assert!(seed < 21);
         assert_eq!(

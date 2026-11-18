@@ -1,4 +1,4 @@
-//! Zend's look, shared by the sidebar, transcript and composer: the dark
+//! Zeron's look, shared by the sidebar, transcript and composer: the dark
 //! theme's resolved tokens (`crates/theme/src/builtins.rs` seeds through
 //! `Theme::from_variant`), its fonts and icons, the motion curves and specs
 //! of `crates/ui/src/motion.rs`, and the page clock every animation reads.
@@ -77,7 +77,7 @@ pub fn wash(a: f32) -> Color {
     alpha(Color(235, 235, 235, 255), a)
 }
 
-/// Zend's `motion::mix`: sRGB lerp with premultiplied alpha.
+/// Zeron's `motion::mix`: sRGB lerp with premultiplied alpha.
 pub fn mix(from: Color, to: Color, t: f32) -> Color {
     let t = t.clamp(0., 1.);
     let (fa, ta) = (f32::from(from.3) / 255., f32::from(to.3) / 255.);
@@ -102,7 +102,7 @@ pub fn mix(from: Color, to: Color, t: f32) -> Color {
 pub const SANS: &str = "Geist";
 pub const MONO: &str = "Geist Mono";
 
-/// Zend's bundled faces, registered before anything shapes.
+/// Zeron's bundled faces, registered before anything shapes.
 pub fn fonts() -> Vec<FontData> {
     [
         &include_bytes!("fonts/Geist.ttf")[..],
@@ -121,7 +121,7 @@ pub fn fonts() -> Vec<FontData> {
 
 // Motion ------------------------------------------------------------------------
 
-/// A CSS cubic-bezier, solved as Zend's `CubicBezier`: Newton steps, then
+/// A CSS cubic-bezier, solved as Zeron's `CubicBezier`: Newton steps, then
 /// bisection, output clamped to [0, 1].
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Curve(pub f32, pub f32, pub f32, pub f32);
@@ -202,7 +202,7 @@ pub const GLYPH_STATE: Spec = Spec(0.28, EASE_OUT_QUINT);
 pub const RESORT: Spec = Spec(0.26, EASE_OUT_QUINT);
 pub const SCROLL_GLIDE: Spec = Spec(0.5, EASE_IN_OUT);
 
-/// Zend's activity-grid opacity (`gspin_opacity`): 1 down to `dim`
+/// Zeron's activity-grid opacity (`gspin_opacity`): 1 down to `dim`
 /// linearly over the first 45% of a cycle, held until 92%, back to 1.
 pub fn gspin(phase: f32, dim: f32) -> f32 {
     let t = phase.rem_euclid(1.);
@@ -249,7 +249,7 @@ impl Tween {
 
 // Clock ---------------------------------------------------------------------------
 
-/// Looping ambient motion (shimmer, pulses) runs at Zend's pulse rate.
+/// Looping ambient motion (shimmer, pulses) runs at Zeron's pulse rate.
 const AMBIENT_HZ: f64 = 30.;
 
 /// The page clock: full rate until `until`, `AMBIENT_HZ` while any ambient
@@ -360,7 +360,7 @@ impl Drop for AmbientGuard {
     }
 }
 
-/// A pointer-hover blend (Zend's `hover_blend`): 0 at rest, 1 hovered,
+/// A pointer-hover blend (Zeron's `hover_blend`): 0 at rest, 1 hovered,
 /// eased over `HOVER_FADE` and reversible mid-way.
 #[derive(Clone)]
 pub struct Hover {
@@ -479,7 +479,7 @@ const ICONS: &[(&str, &[u8])] = &[
     ("search", include_bytes!("icons/magnifer.svg")),
 ];
 
-/// Polychrome file icons (Zend's file-icon theme), by icon name.
+/// Polychrome file icons (Zeron's file-icon theme), by icon name.
 const FILE_ICONS: &[(&str, &[u8])] = &[
     (
         "brackets-purple",

@@ -1,5 +1,5 @@
-//! Zend's chats, projects, session status and transcripts as zgx signals.
-//! Wire shapes follow Zend's `crates/proto` (entities, agent, view) and
+//! Zeron's chats, projects, session status and transcripts as zgx signals.
+//! Wire shapes follow Zeron's `crates/proto` (entities, agent, view) and
 //! `crates/doc` (schema, parts, transcript_delta); unknown fields are ignored.
 
 use serde_json::Value;
@@ -184,7 +184,7 @@ pub enum PartKind {
     Other,
 }
 
-/// A tool call as Zend's `view::tool_chip_content` labels it.
+/// A tool call as Zeron's `view::tool_chip_content` labels it.
 #[derive(Clone, PartialEq, Default)]
 pub struct Tool {
     pub verb: &'static str,
@@ -317,7 +317,7 @@ pub struct Part {
     /// Recently streamed chunks as (byte offset, arrival, fade seconds), for
     /// the fade-in veil. Older chunks are dropped once fully faded.
     pub chunks: Signal<Vec<(usize, f32, f32)>>,
-    /// Zend's veil paces fades to the stream: an average of the gaps
+    /// Zeron's veil paces fades to the stream: an average of the gaps
     /// between appends (ms), and when the last one arrived.
     pace: std::cell::Cell<(f32, f32)>,
     /// When the part first appeared, if it arrived live (not in a snapshot).
@@ -331,12 +331,12 @@ struct Entry {
     born: Option<f32>,
     /// `createdAt`, in ms since the Unix epoch.
     created_ms: Option<i64>,
-    /// `continuationOf`: the root entry this one continues (Zend joins
+    /// `continuationOf`: the root entry this one continues (Zeron joins
     /// continuations into their root before building rows).
     continuation_of: Option<String>,
 }
 
-/// What a transcript row knows about the entry it belongs to (Zend's
+/// What a transcript row knows about the entry it belongs to (Zeron's
 /// `Row::entry_id`, `timestamp` and `copy_text`).
 #[derive(Clone, PartialEq, Debug)]
 pub struct EntryInfo {
@@ -350,7 +350,7 @@ pub struct EntryInfo {
 }
 
 impl EntryInfo {
-    /// Zend reserves the hover metadata strip (timestamp, copy) under every
+    /// Zeron reserves the hover metadata strip (timestamp, copy) under every
     /// user bubble and under the last row of a settled assistant entry.
     pub fn has_strip(&self) -> bool {
         self.role == "user" || (self.last && !self.streaming)
@@ -367,7 +367,7 @@ fn created_ms(entry: &Value) -> Option<i64> {
 }
 
 /// A row of the transcript: parts of consecutive tool calls and thoughts
-/// share a group, as in Zend.
+/// share a group, as in Zeron.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Block {
     User(String),
@@ -689,7 +689,7 @@ impl Transcript {
                         chunks: self.runtime.signal(Vec::new()),
                         pace: std::cell::Cell::new((160., f32::NEG_INFINITY)),
                         // Parts in a snapshot were already there. Tool rows
-                        // arriving together enter 65 ms apart, as in Zend.
+                        // arriving together enter 65 ms apart, as in Zeron.
                         born: (!self.snapshot).then(|| {
                             let delay = if matches!(kind, PartKind::Tool | PartKind::Reasoning) {
                                 self.staggered += 1;

@@ -184,7 +184,7 @@ unsafe extern "system" fn next_above(window: HWND, search: LPARAM) -> BOOL {
 
 /// Whether nothing shows through `window`, as far as can be told. Layered,
 /// click-through and tool windows (overlays, the taskbar), those composed by
-/// their own swap chain (`WS_EX_NOREDIRECTIONBITMAP`: Zend, WinUI apps), an
+/// their own swap chain (`WS_EX_NOREDIRECTIONBITMAP`: Zeron, WinUI apps), an
 /// acrylic backdrop and a shaped region can all show what's behind them; and
 /// `target`'s own popups come and go with it.
 fn covers(window: HWND, target: HWND) -> bool {

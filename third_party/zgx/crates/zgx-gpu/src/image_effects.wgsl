@@ -72,7 +72,7 @@ fn characters(v:Out)->vec4<f32> {
 }
 // Dithered: one sample per dot, at its centre on the screen's grid (the uv
 // there through the quad's own slopes, so moved, scaled and covering images
-// dither alike), then Zend's two levels: the colour at full value where its
+// dither alike), then Zeron's two levels: the colour at full value where its
 // brightest channel passes the dot's 4x4 Bayer threshold, else 8% of it.
 // Premultiplied.
 fn dithered(v:Out)->vec4<f32> {

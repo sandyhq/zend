@@ -1,5 +1,7 @@
 //! Input, focus, pointer and drag. One test binary for the area (see AGENTS.md):
 //! a test file goes in the group for its area, listed here.
+#[path = "../acted_input.rs"]
+mod acted_input;
 #[path = "../actions.rs"]
 mod actions;
 #[path = "../active_disable_lifecycle.rs"]
@@ -46,6 +48,8 @@ mod hover_subtree;
 mod key_activation_target;
 #[path = "../native_pointer.rs"]
 mod native_pointer;
+#[path = "../observed_once_a_frame.rs"]
+mod observed_once_a_frame;
 #[path = "../pointer_drag_buttons.rs"]
 mod pointer_drag_buttons;
 #[path = "../pointer_lock.rs"]

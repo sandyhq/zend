@@ -26,10 +26,11 @@
 //! clipboard and file dialogs ([`FakeDesktop`]) that answer as the test
 //! says a person would: open and save run as they do in a window.
 use crate::ScriptHost;
+use crate::time::Instant;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use zgx::{
     compose::{TaskRunner, View, ViewHandle, provide},
@@ -52,6 +53,10 @@ use zgx::{
 #[derive(Default)]
 pub struct FakeDesktop {
     clipboard: RefCell<String>,
+    html: RefCell<Option<String>>,
+    /// The clipboard holds an image alone (its last write was one): no
+    /// text, as a system clipboard after an image's copy.
+    image_only: std::cell::Cell<bool>,
     image: RefCell<Option<std::sync::Arc<zgx::image::ImageData>>>,
     files: RefCell<Vec<std::path::PathBuf>>,
     opens: RefCell<std::collections::VecDeque<Vec<std::path::PathBuf>>>,
@@ -127,6 +132,19 @@ impl FakeDesktop {
     /// Put `text` on the clipboard, as another app copies it.
     pub fn copy(&self, text: impl Into<String>) {
         *self.clipboard.borrow_mut() = text.into();
+        *self.html.borrow_mut() = None;
+        self.image_only.set(false);
+    }
+    /// The clipboard's HTML, if it holds some.
+    pub fn clipboard_html(&self) -> Option<String> {
+        self.html.borrow().clone()
+    }
+    /// Put `html` on the clipboard with `text` beside it, as a browser or
+    /// word processor copies rich text.
+    pub fn copy_html(&self, text: impl Into<String>, html: impl Into<String>) {
+        *self.clipboard.borrow_mut() = text.into();
+        *self.html.borrow_mut() = Some(html.into());
+        self.image_only.set(false);
     }
     /// The clipboard's image: its width, height and RGBA pixels.
     pub fn clipboard_image(&self) -> Option<(u32, u32, Vec<u8>)> {
@@ -154,10 +172,21 @@ impl zgx::platform::Platform for FakeDesktop {
         self.files.borrow().clone()
     }
     fn clipboard_text(&self) -> Option<String> {
-        Some(self.clipboard.borrow().clone())
+        (!self.image_only.get()).then(|| self.clipboard.borrow().clone())
     }
     fn set_clipboard_text(&self, text: String) -> bool {
         *self.clipboard.borrow_mut() = text;
+        *self.html.borrow_mut() = None;
+        self.image_only.set(false);
+        true
+    }
+    fn clipboard_html(&self) -> Option<String> {
+        self.html.borrow().clone()
+    }
+    fn set_clipboard_rich_text(&self, text: String, html: String) -> bool {
+        *self.clipboard.borrow_mut() = text;
+        *self.html.borrow_mut() = Some(html);
+        self.image_only.set(false);
         true
     }
     fn clipboard_image(&self) -> zgx::platform::Pending<Option<zgx::image::ImageData>> {
@@ -170,7 +199,10 @@ impl zgx::platform::Platform for FakeDesktop {
         &self,
         image: std::sync::Arc<zgx::image::ImageData>,
     ) -> zgx::platform::Pending<bool> {
+        // An image's copy replaces the text and HTML there.
         *self.image.borrow_mut() = Some(image);
+        *self.html.borrow_mut() = None;
+        self.image_only.set(true);
         Box::pin(async { true })
     }
     fn open_files(

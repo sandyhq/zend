@@ -1,4 +1,5 @@
 //! Retained widgets with reactive values, keyboard input and accessibility semantics.
+use crate::time::Instant;
 use crate::{
     input::{EventPhase, InputBinding, InputDispatcher, InputEvent, Key, PointerButton},
     reactive::{Effect, Runtime, Signal},
@@ -13,7 +14,7 @@ use std::{
     any::Any,
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -241,6 +242,109 @@ fn follow(editor: &mut TextEditor, text: &Text, current: &TextValue) -> bool {
 fn is_canonical(text: &Text, multiline: bool) -> bool {
     !text.has_returns() && (multiline || text.line_count() == 1)
 }
+/// Exact content metrics in local points, excluding placeholder, padding,
+/// borders and line-number gutter. Includes the displayed IME composition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorTextMetrics {
+    /// Requested wrapping width, independent of the editor viewport.
+    pub width: f32,
+    /// Width of the widest hard line without wrapping.
+    pub unwrapped_width: f32,
+    /// Height at `width`, including a final empty line.
+    pub wrapped_height: f32,
+    /// The editor's base line height.
+    pub line_height: f32,
+    /// Changes with displayed content or typography, not focus/selection/scroll.
+    pub revision: u64,
+}
+#[derive(PartialEq)]
+struct NaturalMetricsKey {
+    text: u64,
+    composition: Option<(String, std::ops::Range<usize>)>,
+    size: f32,
+    font: FontStyle,
+    shaper: u64,
+    spans: u64,
+}
+struct NaturalMetrics {
+    /// Something has asked for metrics: until then an edit tracks nothing
+    /// (most editors are never measured, and their refreshes stay as cheap
+    /// as before).
+    wanted: Cell<bool>,
+    key: RefCell<Option<NaturalMetricsKey>>,
+    revision: Cell<u64>,
+    published: Signal<u64>,
+    queued: Cell<bool>,
+    spans: Cell<u64>,
+    wrapped: Rc<crate::editor_lines::LineCache>,
+    unwrapped: Rc<crate::editor_lines::LineCache>,
+    sample: Cell<Option<EditorTextMetrics>>,
+}
+impl NaturalMetrics {
+    fn new(runtime: &Runtime) -> Self {
+        Self {
+            wanted: Cell::new(false),
+            key: RefCell::new(None),
+            revision: Cell::new(0),
+            published: runtime.signal(0),
+            queued: Cell::new(false),
+            spans: Cell::new(0),
+            wrapped: Rc::default(),
+            unwrapped: Rc::default(),
+            sample: Cell::new(None),
+        }
+    }
+    fn invalidate_spans(&self) {
+        self.spans.set(self.spans.get().wrapping_add(1));
+        self.sample.set(None);
+    }
+    /// What the metrics depend on, as the editor shows it now; `None` while
+    /// `root` isn't in the scene. Selection counts only while an IME
+    /// composition replaces it.
+    fn key_of(
+        &self,
+        editor: &TextEditor,
+        scene: &Scene,
+        root: NodeId,
+        typography: &(Color, f32, FontStyle),
+        secure: bool,
+    ) -> Option<NaturalMetricsKey> {
+        if !scene.contains(root) {
+            return None;
+        }
+        let (_, size, font) = typography;
+        let mut font = editor_font(scene, root, font).into_owned();
+        font.masked = secure;
+        Some(NaturalMetricsKey {
+            text: editor.revision(),
+            composition: editor
+                .preedit()
+                .map(|p| (p.text.clone(), editor.selection().range())),
+            size: *size,
+            font,
+            shaper: scene.text_shaper_revision(),
+            spans: self.spans.get(),
+        })
+    }
+    /// Takes `key` as the current one: a change starts a new revision.
+    /// Whether it changed.
+    fn take_key(&self, key: NaturalMetricsKey) -> bool {
+        if self.key.borrow().as_ref() == Some(&key) {
+            return false;
+        }
+        *self.key.borrow_mut() = Some(key);
+        self.revision.set(self.revision.get().wrapping_add(1));
+        self.sample.set(None);
+        true
+    }
+}
+impl Drop for NaturalMetrics {
+    fn drop(&mut self) {
+        // Each line cache and its last layout hold each other.
+        self.wrapped.forget_last();
+        self.unwrapped.forget_last();
+    }
+}
 /// A mounted text editor (a `text_input` or `text_area`): its editing
 /// model and the value it is bound to, for hosts, tests and commands.
 #[derive(Clone)]
@@ -266,6 +370,7 @@ pub struct EditorHandle {
     geometry: Rc<RefCell<Option<EditorGeometry>>>,
     position: Rc<Cell<TextPosition>>,
     hint: Rc<EditorHint>,
+    natural: Rc<NaturalMetrics>,
 }
 /// What an editor shows while it is empty, whether focus selects all, and
 /// the value it is bound to (here, once, for its handle and handlers).
@@ -657,6 +762,104 @@ pub struct Caret {
     pub focus: usize,
 }
 impl EditorHandle {
+    /// Exact natural metrics at a finite, positive content width. A reactive
+    /// reader follows content, IME and typography changes after layout settles.
+    /// Passwords and unmounted editors return `None`.
+    ///
+    /// The first query per revision/width visits every hard line, shaping via
+    /// the editor's line caches. Repeated queries are O(1); this opt-in API does
+    /// not turn a virtualized long editor's viewport into a full-document layout.
+    /// Consumers should keep the requested width stable during animations.
+    pub fn text_metrics(&self, width: f32) -> Option<EditorTextMetrics> {
+        self.natural.published.get();
+        if !width.is_finite() || width <= 0. || self.hint.secure.get() {
+            return None;
+        }
+        // The first query starts tracking: its key is taken here, and from
+        // now on every refresh keeps it current.
+        if !self.natural.wanted.replace(true) || self.natural.key.borrow().is_none() {
+            let key = {
+                let e = self.editor.borrow();
+                let scene = self.scene.borrow();
+                self.natural.key_of(
+                    &e,
+                    &scene,
+                    self.node,
+                    &self.typography.borrow(),
+                    self.hint.secure.get(),
+                )
+            };
+            self.natural.take_key(key?);
+        }
+        if !self.scene.borrow().contains(self.node) {
+            return None;
+        }
+        let revision = self.natural.revision.get();
+        if let Some(sample) = self.natural.sample.get()
+            && sample.revision == revision
+            && sample.width == width
+        {
+            return Some(sample);
+        }
+        // The layouts are made with the scene and model borrowed, and their
+        // lines shaped with neither: a script highlighter runs as a line is,
+        // and may edit or measure this editor.
+        let (unwrapped, wrapped) = {
+            let scene = self.scene.borrow();
+            let e = self.editor.borrow();
+            let mut source = e
+                .long_text()
+                .cloned()
+                .unwrap_or_else(|| self.natural.wrapped.text_of(&e.text()));
+            if let Some(preedit) = e.preedit() {
+                source.replace_range(e.selection().range(), &preedit.text);
+            }
+            drop(e);
+            let (_, size, font) = self.typography.borrow().clone();
+            let font = editor_font(&scene, self.node, &font);
+            // Separate width caches keep a query from evicting viewport shaping.
+            // Both use the editor's rich/plain shapers and span highlighter.
+            let unwrapped = long_layout(
+                &self.natural.unwrapped,
+                &scene,
+                || source.clone(),
+                Some(revision),
+                size,
+                None,
+                &font,
+            );
+            let wrapped = long_layout(
+                &self.natural.wrapped,
+                &scene,
+                || source,
+                Some(revision),
+                size,
+                Some(width),
+                &font,
+            );
+            (unwrapped, wrapped)
+        };
+        let mut unwrapped_width = 0f32;
+        for i in 0..unwrapped.line_count() {
+            self.natural.unwrapped.spans(&unwrapped, i);
+            unwrapped_width = unwrapped_width.max(unwrapped.line(i).size().0);
+        }
+        let mut wrapped_height = 0.;
+        for i in 0..wrapped.line_count() {
+            self.natural.wrapped.spans(&wrapped, i);
+            wrapped.line(i);
+            wrapped_height += wrapped.height(i);
+        }
+        let sample = EditorTextMetrics {
+            width,
+            unwrapped_width,
+            wrapped_height,
+            line_height: wrapped.height(0).min(unwrapped.height(0)),
+            revision,
+        };
+        self.natural.sample.set(Some(sample));
+        Some(sample)
+    }
     /// The value it is bound to; edits set it.
     pub fn value(&self) -> &EditorValue {
         &self.hint.value
@@ -922,7 +1125,10 @@ impl EditorHandle {
         if !self.multiline {
             return;
         }
-        self.hint.line_cache().set_highlighter(highlighter);
+        self.hint.line_cache().set_highlighter(highlighter.clone());
+        self.natural.wrapped.set_highlighter(highlighter.clone());
+        self.natural.unwrapped.set_highlighter(highlighter);
+        self.natural.invalidate_spans();
         self.refresh();
     }
     /// The caret's colour (`None`: the text's, as by default) and width in
@@ -936,6 +1142,9 @@ impl EditorHandle {
     /// Ask the highlighter for the lines anew (what it gives changed: a
     /// theme's colours).
     pub fn rehighlight(&self) {
+        self.natural.wrapped.rehighlight();
+        self.natural.unwrapped.rehighlight();
+        self.natural.invalidate_spans();
         if let Some(lines) = self.hint.code().and_then(|c| c.lines.borrow().clone()) {
             lines.rehighlight();
         }
@@ -1049,6 +1258,9 @@ impl EditorHandle {
     /// Refresh it if its size changed; whether it did. `laid_out`: another
     /// was refreshed in this step of the frame, which laid out all but what
     /// its own draw dirtied, which the frame's next pass lays out.
+    // Inlined: both preparations (a frame's, one ahead of it) call it, and
+    // the frame's inlined it while it had the one caller.
+    #[inline(always)]
     fn refresh_if_resized(&self, laid_out: bool) -> bool {
         let scene = self.scene.borrow();
         if !scene.contains(self.node) {
@@ -1242,6 +1454,10 @@ const SIZE_NOISE: f32 = 1. / 1024.;
 /// The passes it takes once layout has failed to settle
 /// (`Ui::contain_layout_feedback`): each change is tried again, cheaply.
 const RETRY_LAYOUT_PASSES: usize = 16;
+/// Marks a geometry revision (`UiStorage::bounds_geometry_revision`) that a
+/// preparation ahead of the frame's settled on but left its observations
+/// of to the frame's. Revisions count from zero by one: none reaches it.
+const SEEN_AHEAD: u64 = 1 << 63;
 /// Layout notifications repeatedly changed their own allocation without settling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutFeedbackError {
@@ -1529,6 +1745,25 @@ pub enum WheelTape {
     /// Play `tape` back, its events at their times, at `at` (in points).
     Play { tape: String, at: (f32, f32) },
 }
+/// An observed node's bounds (`observe_bounds`) or visibility
+/// (`observe_visibility`), and what of the work behind it holds while only
+/// scroll content moves (`Scene::world_bounds_kept`,
+/// `Scene::shows_within_kept`): kept from one scroll's frame to the next,
+/// in the entry itself (a box of its own made every observed node mounted
+/// allocate), going with the observation.
+struct Observed<T, K> {
+    signal: Signal<T>,
+    kept: Cell<Option<K>>,
+}
+impl<T, K> Observed<T, K> {
+    fn new(signal: Signal<T>) -> Self {
+        Self {
+            signal,
+            kept: Cell::new(None),
+        }
+    }
+}
+
 pub(crate) struct UiStorage {
     runtime: Runtime,
     pub(crate) themes: Rc<Themes>,
@@ -1598,6 +1833,9 @@ pub(crate) struct UiStorage {
     paste_hooks: RefCell<crate::scene::NodeMap<PasteHook>>,
     editor_layout: RefCell<Option<EditorLayoutEntry>>,
     editor_layout_revision: Cell<Option<u64>>,
+    /// The geometry revision observed bounds and visibility were last
+    /// gathered at, or (`SEEN_AHEAD`) one a preparation ahead of the frame
+    /// settled on, owed to the frame's; `None`: gather at the next.
     bounds_geometry_revision: Cell<Option<u64>>,
     preparing_frame: Cell<bool>,
     /// A host keeps going past layout that doesn't settle
@@ -1622,8 +1860,8 @@ pub(crate) struct UiStorage {
     content_revision: RefCell<Option<Signal<u64>>>,
     /// Nodes' laid-out sizes (`observe_size`): read only when layout runs.
     observed_sizes: RefCell<crate::scene::NodeMap<Signal<(f32, f32)>>>,
-    observed_bounds: RefCell<crate::scene::NodeMap<Signal<Rect>>>,
-    observed_visibility: RefCell<crate::scene::NodeMap<Signal<bool>>>,
+    observed_bounds: RefCell<crate::scene::NodeMap<Observed<Rect, crate::scene::ScrollAnchor>>>,
+    observed_visibility: RefCell<crate::scene::NodeMap<Observed<bool, crate::scene::ShownAnchor>>>,
     /// Of those, the ones that count as shown within a margin of the view
     /// (`observe_visibility_within`): only nodes asked so are here.
     visibility_margins: RefCell<crate::scene::NodeMap<f32>>,
@@ -2224,6 +2462,7 @@ impl Ui {
     /// [`Ui::bind`]. `mount_pure`: `f` reads no layout, so a mount's
     /// deferred input draws need not be made before it runs
     /// (`watch_geometry`).
+    #[inline]
     pub(crate) fn bind_marked(
         &mut self,
         owner: NodeId,
@@ -2235,28 +2474,41 @@ impl Ui {
             "cannot bind a removed UI node"
         );
         let mut initial = self.storage.mount_initialization.borrow().clone();
-        let callback: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(move || {
-            let Some(token) = initial.take() else {
+        // Its place made first and the callback built in it: `f` holds what
+        // the binding renders from (a node's styles, hundreds of bytes), moved
+        // again otherwise by `Rc::new`.
+        let mut callback = Rc::new_uninit();
+        Rc::get_mut(&mut callback)
+            .expect("just made")
+            .write(RefCell::new(move || {
+                let Some(token) = initial.take() else {
+                    f();
+                    return;
+                };
+                if token.failed.get()
+                    || token
+                        .ui
+                        .upgrade()
+                        .is_none_or(|ui| !ui.scene.borrow().contains(owner))
+                {
+                    return;
+                }
+                let scope = token.enter();
+                let mut guard = InitialBindingGuard {
+                    token,
+                    scope: Some(scope),
+                    completed: false,
+                };
                 f();
-                return;
-            };
-            if token.failed.get()
-                || token
-                    .ui
-                    .upgrade()
-                    .is_none_or(|ui| !ui.scene.borrow().contains(owner))
-            {
-                return;
-            }
-            let scope = token.enter();
-            let mut guard = InitialBindingGuard {
-                token,
-                scope: Some(scope),
-                completed: false,
-            };
-            f();
-            guard.completed = true;
-        }));
+                guard.completed = true;
+            }));
+        // SAFETY: written just above.
+        let callback: Rc<RefCell<dyn FnMut()>> = unsafe { callback.assume_init() };
+        self.add_binding(owner, mount_pure, callback);
+    }
+    /// `bind_marked`'s effect, kept by `owner`: apart, so what is generic
+    /// over the callback stays small enough to inline where it is built.
+    fn add_binding(&mut self, owner: NodeId, mount_pure: bool, callback: Rc<RefCell<dyn FnMut()>>) {
         self.runtime.clone().batch(|| {
             let effect = self.runtime.effect_callback(mount_pure, callback);
             #[cfg(feature = "trace")]
@@ -2850,8 +3102,8 @@ impl Ui {
     /// Observe world bounds, including ancestor translations without layout work.
     /// Like content-size observations, registrations are owned by their nodes.
     pub(crate) fn observe_bounds(&self, node: NodeId) -> Signal<Rect> {
-        if let Some(signal) = self.storage.observed_bounds.borrow().get(&node) {
-            return signal.clone();
+        if let Some(observed) = self.storage.observed_bounds.borrow().get(&node) {
+            return observed.signal.clone();
         }
         // Current bounds, possibly before this frame's layout: the frame's
         // layout publishes them. Laying out here, mid-mount, would measure
@@ -2860,7 +3112,7 @@ impl Ui {
         self.storage
             .observed_bounds
             .borrow_mut()
-            .insert(node, signal.clone());
+            .insert(node, Observed::new(signal.clone()));
         self.storage.bounds_geometry_revision.set(None);
         signal
     }
@@ -2892,7 +3144,10 @@ impl Ui {
         });
         true
     }
-    fn run_layout_listeners(&self) {
+    // One for each preparation (a frame's, one ahead of it), with closures
+    // of its own: the frame's copy keeps the one caller each, inlined as it
+    // was.
+    fn run_layout_listeners<const AHEAD: bool>(&self) {
         let listeners: Vec<(NodeId, LayoutListener)> = {
             let listeners = self.storage.layout_listeners.borrow();
             if listeners.is_empty() {
@@ -3554,14 +3809,14 @@ impl Ui {
         self.storage.margins_checked.set(observed.len());
     }
     pub(crate) fn observe_visibility(&self, node: NodeId) -> Signal<bool> {
-        if let Some(signal) = self.storage.observed_visibility.borrow().get(&node) {
-            return signal.clone();
+        if let Some(observed) = self.storage.observed_visibility.borrow().get(&node) {
+            return observed.signal.clone();
         }
         let signal = self.signal(false);
         self.storage
             .observed_visibility
             .borrow_mut()
-            .insert(node, signal.clone());
+            .insert(node, Observed::new(signal.clone()));
         self.storage.bounds_geometry_revision.set(None);
         signal
     }
@@ -3601,6 +3856,48 @@ impl Ui {
             editor.paste(text);
         }
     }
+    /// What a desktop window does with ⌘C, ⌘X and ⌘V (Ctrl elsewhere) that
+    /// nothing in the view took: copy, cut or paste in the focused editor
+    /// through `platform` (its `View::on_paste` hearing a paste first), or
+    /// copy the selected display text, with its HTML. For what sends keys
+    /// straight to the view (`zgx inspect key`, tests) to reach the paths a
+    /// window's keys do. Whether it took the key.
+    #[doc(hidden)]
+    pub fn clipboard_shortcut(
+        &self,
+        key: &Key,
+        modifiers: crate::input::Modifiers,
+        platform: &dyn crate::platform::Platform,
+    ) -> bool {
+        let Key::Character(k) = key else {
+            return false;
+        };
+        if !modifiers.primary_shortcut() || modifiers.alt {
+            return false;
+        }
+        let k = k.to_ascii_lowercase();
+        let Some(editor) = self.focused_editor() else {
+            if k != "c" || !self.has_text_selection() {
+                return false;
+            }
+            platform.set_clipboard_rich_text(self.selected_text(), self.selected_html());
+            return true;
+        };
+        match k.as_str() {
+            "v" => {
+                let text = platform.clipboard_text();
+                self.paste_into(&editor, text.as_deref());
+            }
+            "c" | "x" => {
+                let text = editor.copy();
+                if !text.is_empty() && platform.set_clipboard_text(text) && k == "x" {
+                    editor.cut();
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
     /// Prepare allocated control geometry before rendering a frame or dispatching input.
     /// Native hosts call this automatically. Headless hosts should call it before `Scene::flush`.
     pub fn prepare_frame(&self) {
@@ -3614,6 +3911,20 @@ impl Ui {
     /// and call again. Under [`contain_layout_feedback`](Self::contain_layout_feedback),
     /// as in a window, this is reported and the frame goes on instead.
     pub fn try_prepare_frame(&self) -> Result<(), LayoutFeedbackError> {
+        self.prepare_for::<false>()
+    }
+    /// `try_prepare_frame` ahead of the frame's own (a host's spare-time
+    /// work before it draws): it lays out and settles, and leaves observed
+    /// bounds and visibility for the frame's to deliver. Renderer and host
+    /// plumbing, not a stable API.
+    #[doc(hidden)]
+    pub fn try_prepare_frame_ahead(&self) -> Result<(), LayoutFeedbackError> {
+        self.prepare_for::<true>()
+    }
+    /// `try_prepare_frame`, for a frame or (`AHEAD`) ahead of the frame's own
+    /// (dispatching input, spare-time work): that one leaves observed bounds
+    /// and visibility to the frame's.
+    fn prepare_for<const AHEAD: bool>(&self) -> Result<(), LayoutFeedbackError> {
         if self.storage.preparing_frame.get() {
             return Ok(());
         }
@@ -3624,15 +3935,30 @@ impl Ui {
             self.storage.pixel_scale_seen.set(scale);
             self.storage.pixel_scale.set(scale);
         }
-        self.prepare_frame_once()?;
+        self.prepare_frame_once::<AHEAD>()?;
         // Find in page's marks where text mounted or moved, and what its
-        // bar asked for.
+        // bar asked for: ahead of the frame too, as each ask waits in one
+        // slot (a character typed, then Enter, in one turn: the search
+        // first). Ahead, out of line, so the frame's inlines it as it did.
         if self.storage.find.borrow().is_some() {
-            crate::find::sync(self);
+            match AHEAD {
+                false => crate::find::sync(self),
+                true => self.sync_find_ahead(),
+            }
         }
-        // Whether the host draws the caret, now that it is laid out.
-        crate::caret_blink::settle(self);
+        // Whether the host draws the caret, now that it is laid out: the
+        // frame's alone, as nothing reads it before the frame paints.
+        if !AHEAD {
+            crate::caret_blink::settle(self);
+        }
         Ok(())
+    }
+    /// `find::sync` for a preparation ahead of the frame's (see
+    /// `prepare_for`).
+    #[cold]
+    #[inline(never)]
+    fn sync_find_ahead(&self) {
+        crate::find::sync(self);
     }
     /// Keep `padding` clear inside scroll view `viewport` (its root) when
     /// something scrolls into view there (focus, find, `scroll_into_view`),
@@ -4145,7 +4471,14 @@ impl Ui {
             None => Err(list),
         }
     }
-    fn prepare_frame_once(&self) -> Result<(), LayoutFeedbackError> {
+    /// One preparation. `AHEAD` (one made ahead of the frame's: to dispatch
+    /// input, for spare-time work): observed bounds and visibility are left
+    /// for the frame's, which delivers them once, as
+    /// the web delivers resize and intersection observations once a frame
+    /// before paint. Gathered before each dispatch too, a scroll's every
+    /// notch walked each observed node to the root again (232 of them, 30
+    /// levels deep, in a transcript under glass: ~1 ms a frame).
+    fn prepare_frame_once<const AHEAD: bool>(&self) -> Result<(), LayoutFeedbackError> {
         if self.storage.preparing_frame.replace(true) {
             return Ok(());
         }
@@ -4177,8 +4510,14 @@ impl Ui {
                 (scene.layout_revision(), scene.geometry_revision())
             };
             let layout_changed = self.storage.editor_layout_revision.get() != Some(layout_revision);
-            let geometry_changed =
-                self.storage.bounds_geometry_revision.get() != Some(geometry_revision);
+            // Geometry a preparation ahead of the frame's settled on left
+            // unpublished (`SEEN_AHEAD`): not new to the next ahead, and the
+            // frame's to publish, as any geometry it has not.
+            let geometry_changed = self.storage.bounds_geometry_revision.get()
+                != Some(geometry_revision)
+                && (!AHEAD
+                    || self.storage.bounds_geometry_revision.get()
+                        != Some(geometry_revision | SEEN_AHEAD));
             if !layout_changed && !geometry_changed {
                 if !self.run_after_layout() {
                     // Settled: a removed focused node's focus falls to its
@@ -4199,38 +4538,66 @@ impl Ui {
                 }
                 continue;
             }
-            let hidden_focus = self
-                .input
-                .focused()
-                .is_some_and(|id| !self.scene.borrow().layout_visible(id));
-            if hidden_focus {
-                self.input.focus(&self.scene, None);
+            // Unless a preparation ahead did, for this geometry: found again,
+            // what the pointer is over sets off restyling (a hover style) for
+            // nothing.
+            if AHEAD
+                || layout_changed
+                || self.storage.bounds_geometry_revision.get()
+                    != Some(geometry_revision | SEEN_AHEAD)
+            {
+                let hidden_focus = self
+                    .input
+                    .focused()
+                    .is_some_and(|id| !self.scene.borrow().layout_visible(id));
+                if hidden_focus {
+                    self.input.focus(&self.scene, None);
+                }
+                self.input.refresh_hover(&self.scene);
             }
-            self.input.refresh_hover(&self.scene);
             self.storage
                 .editor_layout_revision
                 .set(Some(layout_revision));
-            self.storage
-                .bounds_geometry_revision
-                .set(Some(geometry_revision));
+            match AHEAD {
+                false => self
+                    .storage
+                    .bounds_geometry_revision
+                    .set(Some(geometry_revision)),
+                true if geometry_changed => self
+                    .storage
+                    .bounds_geometry_revision
+                    .set(Some(geometry_revision | SEEN_AHEAD)),
+                true => {}
+            }
+            let gather = geometry_changed && !AHEAD;
             let (sizes, bounds): (Vec<_>, Vec<_>) = {
                 let scene = self.scene.borrow();
+                // Only those resized, as the bounds below: most observed
+                // nodes keep their size as something else lays out (each of
+                // a terminal's rows, a line streaming in). Published below
+                // if still resized then.
                 let sizes = if layout_changed {
                     let content = self.storage.content_sizes.borrow();
                     let own = self.storage.observed_sizes.borrow();
-                    content
-                        .iter()
-                        .filter(|(node, _)| scene.contains(**node))
-                        .map(|(node, signal)| {
-                            (*node, signal.clone(), allocated_content_size(&scene, *node))
-                        })
-                        .chain(own.iter().filter(|(node, _)| scene.contains(**node)).map(
-                            |(node, signal)| {
-                                let b = scene.layout_box(*node);
-                                (*node, signal.clone(), (b.width, b.height))
-                            },
-                        ))
-                        .collect()
+                    let mut sizes = Vec::new();
+                    for (node, signal) in content.iter() {
+                        if scene.contains(*node) {
+                            let size = allocated_content_size(&scene, *node);
+                            if signal.with_untracked(|told| resized(*told, size)) {
+                                sizes.push((*node, signal.clone(), size));
+                            }
+                        }
+                    }
+                    for (node, signal) in own.iter() {
+                        if scene.contains(*node) {
+                            let b = scene.layout_box(*node);
+                            let size = (b.width, b.height);
+                            if signal.with_untracked(|told| resized(*told, size)) {
+                                sizes.push((*node, signal.clone(), size));
+                            }
+                        }
+                    }
+                    sizes
                 } else {
                     Vec::new()
                 };
@@ -4238,10 +4605,13 @@ impl Ui {
                 // were as something else changes (a reply's last paragraph
                 // growing, the others not).
                 let mut bounds = Vec::new();
-                if geometry_changed {
-                    for (node, signal) in self.storage.observed_bounds.borrow().iter() {
+                if gather {
+                    for (node, observed) in self.storage.observed_bounds.borrow().iter() {
                         if scene.contains(*node) {
-                            let now = scene.world_bounds(*node);
+                            let mut kept = observed.kept.get();
+                            let now = scene.world_bounds_kept(*node, &mut kept);
+                            observed.kept.set(kept);
+                            let signal = &observed.signal;
                             if signal.with_untracked(|told| moved(*told, now)) {
                                 bounds.push((*node, signal.clone(), now));
                             }
@@ -4251,7 +4621,7 @@ impl Ui {
                 (sizes, bounds)
             };
             let mut visibility = Vec::new();
-            if geometry_changed {
+            if gather {
                 // Margins of nodes no longer observed go here, not as each
                 // node is removed: removal stays as it is for every node.
                 if !self.storage.visibility_margins.borrow().is_empty() {
@@ -4259,15 +4629,17 @@ impl Ui {
                 }
                 let scene = self.scene.borrow();
                 let margins = self.storage.visibility_margins.borrow();
-                for (node, signal) in self.storage.observed_visibility.borrow().iter() {
+                let mut pass = crate::scene::ShownPass::default();
+                for (node, observed) in self.storage.observed_visibility.borrow().iter() {
                     if scene.contains(*node) {
-                        let now = match margins.is_empty() {
-                            true => scene.visible_bounds(*node).is_some(),
-                            false => match margins.get(node) {
-                                Some(margin) => scene.shows_within(*node, *margin),
-                                None => scene.visible_bounds(*node).is_some(),
-                            },
+                        let margin = match margins.is_empty() {
+                            true => None,
+                            false => margins.get(node).copied(),
                         };
+                        let mut kept = observed.kept.get();
+                        let now = scene.shows_within_kept(*node, margin, &mut kept, &mut pass);
+                        observed.kept.set(kept);
+                        let signal = &observed.signal;
                         if signal.with_untracked(|told| *told != now) {
                             visibility.push((*node, signal.clone(), now));
                         }
@@ -4290,21 +4662,25 @@ impl Ui {
                     self.content_sizes_published();
                 }
                 // Changed, as gathered above (what reads them runs after
-                // the batch): set without comparing again.
-                for (node, signal, visible) in visibility {
-                    if self.scene.borrow().contains(node) {
-                        signal.mutate(|told| {
-                            *told = visible;
-                            true
-                        });
+                // the batch): set without comparing again. The frame's alone
+                // (none are gathered ahead of it), which keeps what it calls
+                // the frame's alone, inlined as it was.
+                if !AHEAD {
+                    for (node, signal, visible) in visibility {
+                        if self.scene.borrow().contains(node) {
+                            signal.mutate(|told| {
+                                *told = visible;
+                                true
+                            });
+                        }
                     }
-                }
-                for (node, signal, bounds) in bounds {
-                    if self.scene.borrow().contains(node) {
-                        signal.mutate(|told| {
-                            *told = bounds;
-                            true
-                        });
+                    for (node, signal, bounds) in bounds {
+                        if self.scene.borrow().contains(node) {
+                            signal.mutate(|told| {
+                                *told = bounds;
+                                true
+                            });
+                        }
                     }
                 }
             });
@@ -4316,7 +4692,7 @@ impl Ui {
                 for editor in editors {
                     refreshed |= editor.refresh_if_resized(refreshed);
                 }
-                self.run_layout_listeners();
+                self.run_layout_listeners::<AHEAD>();
             }
             self.run_after_layout();
             // Internal geometry bindings are constrained by their viewport.
@@ -4396,9 +4772,11 @@ impl Ui {
                 .collect::<Vec<_>>()
         };
         let bounds = self.storage.observed_bounds.borrow();
-        let bounds = bounds.iter().filter(|(node, signal)| {
+        let bounds = bounds.iter().filter(|(node, observed)| {
             scene.contains(**node)
-                && signal.with_untracked(|told| moved(*told, scene.world_bounds(**node)))
+                && observed
+                    .signal
+                    .with_untracked(|told| moved(*told, scene.world_bounds(**node)))
         });
         let mut moving = sizes;
         moving.extend(bounds.map(|(node, _)| *node));
@@ -4491,7 +4869,7 @@ impl Ui {
         &mut self,
         event: InputEvent,
     ) -> Result<crate::input::DispatchResult, LayoutFeedbackError> {
-        self.try_prepare_frame()?;
+        self.prepare_for::<true>()?;
         let _span = crate::profile::span(crate::profile::Phase::Input);
         crate::profile::input_event();
         let after = (
@@ -4530,7 +4908,7 @@ impl Ui {
     /// dispatched there). A cell crossed between two moves of a turn is
     /// entered and left.
     pub fn try_pointer_passed(&mut self, x: f32, y: f32) -> Result<(), LayoutFeedbackError> {
-        self.try_prepare_frame()?;
+        self.prepare_for::<true>()?;
         let _span = crate::profile::span(crate::profile::Phase::Input);
         self.storage.dispatching.set(true);
         self.input.pointer_passed(&self.scene, x, y);
@@ -4544,7 +4922,7 @@ impl Ui {
         event: InputEvent,
         modifiers: crate::input::Modifiers,
     ) -> Result<crate::input::DispatchResult, LayoutFeedbackError> {
-        self.try_prepare_frame()?;
+        self.prepare_for::<true>()?;
         let _span = crate::profile::span(crate::profile::Phase::Input);
         crate::profile::input_event();
         let after = (
@@ -4567,6 +4945,26 @@ impl Ui {
         self.storage.dispatching.set(false);
         Ok(result)
     }
+    /// When input that acts (a press or release, a key, text, an action)
+    /// was last dispatched: the frames it makes answer someone, and a host
+    /// draws each at once and shows it as soon as it's ready, rather than on
+    /// the refresh's tick and the cadence of frames before (zgx-desktop's
+    /// refresh grid). Renderer plumbing, not a stable API.
+    #[doc(hidden)]
+    pub fn acted_at(&self) -> Option<Instant> {
+        let ui = Rc::as_ptr(&self.storage) as usize;
+        ACTED
+            .with(Cell::get)
+            .and_then(|(by, at)| (by == ui).then_some(at))
+    }
+    /// Input that acts is being dispatched (`acted_at`). Cold and out of
+    /// line: `route`'s inlined body stays as it was for every other event.
+    #[cold]
+    #[inline(never)]
+    fn mark_acted(&self) {
+        let ui = Rc::as_ptr(&self.storage) as usize;
+        ACTED.with(|acted| acted.set(Some((ui, Instant::now()))));
+    }
     /// Whether the wheel being dispatched is a platform's, in the window's
     /// points, rather than one the engine made in a scroll view's own.
     pub(crate) fn wheel_in_window(&self) -> bool {
@@ -4585,6 +4983,9 @@ impl Ui {
         ),
         dispatch: impl FnOnce(&Self, InputEvent) -> crate::input::DispatchResult,
     ) -> crate::input::DispatchResult {
+        if acts(&event) {
+            self.mark_acted();
+        }
         let elastic = self.storage.elastic.borrow().enabled;
         let event = match event {
             InputEvent::ScrollGesture(phase) => {
@@ -4818,7 +5219,7 @@ impl Ui {
             self.shrink_storage();
             return false;
         }
-        let started = std::time::Instant::now();
+        let started = crate::time::Instant::now();
         loop {
             // A chunk at a time between looks at the clock.
             let chunk: Vec<NodeId> = {
@@ -6327,10 +6728,15 @@ impl Ui {
         });
         // Geometry refresh may make an existing stationary drag scrollable.
         // The weak callback avoids refresh -> arm -> tick -> refresh ownership cycles.
+        let natural = Rc::new(NaturalMetrics::new(&self.runtime));
         let interaction_refresh: InteractionRefresh = Rc::new(RefCell::new(None));
         let refresh: Rc<dyn Fn()> = {
             let hook = interaction_refresh.clone();
             let told = hint.clone();
+            let metrics = natural.clone();
+            let metric_editor = editor.clone();
+            let metric_scene = self.scene.clone();
+            let metric_typography = typography.clone();
             let storage = Rc::downgrade(&self.storage);
             Rc::new(move || {
                 refresh();
@@ -6344,6 +6750,39 @@ impl Ui {
                     refresh();
                 }
                 EditorHint::watch_theme(&told, &storage, root, &watched_theme);
+                // Publish only after layout, with no scene/model borrow held,
+                // and only for an editor something has measured.
+                let key = if metrics.wanted.get() {
+                    let e = metric_editor.borrow();
+                    let scene = metric_scene.borrow();
+                    let key = metrics.key_of(
+                        &e,
+                        &scene,
+                        root,
+                        &metric_typography.borrow(),
+                        told.secure.get(),
+                    );
+                    if key.is_none() {
+                        return;
+                    }
+                    key
+                } else {
+                    None
+                };
+                if let Some(key) = key
+                    && metrics.take_key(key)
+                    && !metrics.queued.replace(true)
+                    && let Some(storage) = storage.upgrade()
+                {
+                    let weak = Rc::downgrade(&metrics);
+                    storage.after_layout.borrow_mut().push(Box::new(move || {
+                        if let Some(metrics) = weak.upgrade() {
+                            metrics.queued.set(false);
+                            metrics.published.set(metrics.revision.get());
+                        }
+                    }));
+                }
+
                 // Where the caret is, told once drawn (nothing borrowed),
                 // if it moved. The callback is out while it runs: a refresh
                 // it causes finds none and leaves the telling to this one,
@@ -6405,6 +6844,7 @@ impl Ui {
             geometry,
             position: position.clone(),
             hint: hint.clone(),
+            natural,
         };
         self.storage
             .editors
@@ -8054,6 +8494,36 @@ fn input_draw_pending(node: NodeId, scene: &Rc<RefCell<Scene>>) -> bool {
     })
 }
 
+thread_local! {
+    /// The `Ui` that last dispatched input that acts (its storage's
+    /// address), and when (`Ui::acted_at`): kept here rather than in
+    /// `UiStorage`, whose layout the hot paths read (a field there moved
+    /// headless scenes that never act by up to 0.12%). Another window's input
+    /// takes its place: the one before had acted already.
+    static ACTED: Cell<Option<(usize, Instant)>> = const { Cell::new(None) };
+}
+/// Whether `event` is input that acts (a press or its release, where a
+/// click lands, a key, text, an action), which a frame answers: not a
+/// pointer passing over, nor focus moving, nor a scroll, which keeps the
+/// refresh's pace and has a liveness of its own (`Ui::acted_at`).
+fn acts(event: &InputEvent) -> bool {
+    matches!(
+        event,
+        InputEvent::PointerDown { .. }
+            | InputEvent::PointerUp { .. }
+            | InputEvent::KeyDown { .. }
+            | InputEvent::Text(_)
+            | InputEvent::ImePreedit { .. }
+            | InputEvent::ImeCommit(_)
+            | InputEvent::Action(_)
+            | InputEvent::Activate
+            | InputEvent::Increment
+            | InputEvent::Decrement
+            | InputEvent::SetValue(_)
+            | InputEvent::SetNumericValue(_)
+    )
+}
+
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
@@ -8373,6 +8843,237 @@ fn slider_content_bounds(scene: &Scene, root: NodeId) -> (f32, f32) {
         bounds.x + padding.left,
         (bounds.width - padding.left - padding.right).max(0.),
     )
+}
+
+#[cfg(test)]
+mod bounds_anchor_tests {
+    use super::*;
+    use crate::compose::prelude::*;
+
+    /// After each frame, every observed node's bounds are what the whole
+    /// walk gives (`world_bounds`), and every kept anchor gives them to the
+    /// bit.
+    fn published_as_walked(ui: &Ui) -> usize {
+        let scene = ui.scene.borrow();
+        let mut checked = 0;
+        for (node, observed) in ui.storage.observed_bounds.borrow().iter() {
+            if scene.contains(*node) {
+                let walked = scene.world_bounds(*node);
+                let told = observed.signal.with_untracked(|told| *told);
+                assert!(
+                    !moved(told, walked),
+                    "{node:?}: told {told:?}, walked {walked:?}"
+                );
+                checked += 1;
+            }
+        }
+        let margins = ui.storage.visibility_margins.borrow();
+        for (node, observed) in ui.storage.observed_visibility.borrow().iter() {
+            if scene.contains(*node) {
+                let walked = match margins.get(node) {
+                    Some(margin) => scene.shows_within(*node, *margin),
+                    None => scene.visible_bounds(*node).is_some(),
+                };
+                let told = observed.signal.with_untracked(|told| *told);
+                assert_eq!(told, walked, "{node:?}: visibility");
+                checked += 1;
+            }
+        }
+        let bits = |r: Rect| [r.x, r.y, r.width, r.height].map(f32::to_bits);
+        for (node, observed) in ui.storage.observed_bounds.borrow().iter() {
+            let mut kept = observed.kept.get();
+            if kept.is_some() {
+                assert!(scene.contains(*node), "an anchor kept for {node:?}, gone");
+                let walked = scene.world_bounds(*node);
+                assert_eq!(
+                    bits(scene.world_bounds_kept(*node, &mut kept)),
+                    bits(walked)
+                );
+            }
+            observed.kept.set(kept);
+        }
+        checked
+    }
+
+    /// A row moved from one scroll view to another, a scroll view moved
+    /// under a translated parent, and a row laid out again, each in the
+    /// frame a scroll moves them, with scroll views nested: what observers
+    /// hear is what the whole walk gives, every frame.
+    #[test]
+    fn observed_bounds_hold_across_moves_reparenting_and_layout_mid_scroll() {
+        let mut ui = Ui::new(300., 400.);
+        let (a, b, c) = (ui.signal(0_f32), ui.signal(0_f32), ui.signal(0_f32));
+        let side = ui.signal(0_u8);
+        let moved_b = ui.signal(false);
+        let tall = ui.signal(20_f32);
+        fn observed(view: View) -> View {
+            view.on_mount(|handle| {
+                handle.observe_bounds();
+                // Seen, and seen within a margin, by turns.
+                match handle.node().number() % 3 {
+                    0 => handle.observe_visibility(),
+                    1 => handle.observe_visibility_within(25.5),
+                    _ => handle.observe_visibility_within(0.),
+                };
+            })
+        }
+        // A row nested a few boxes deep, as a transcript's are.
+        fn row(name: &'static str, tall: &Signal<f32>) -> View {
+            let tall = tall.clone();
+            let mut view = observed(
+                div()
+                    .w(80.)
+                    .reactive_style(move || Styles::new().h(tall.get()))
+                    .child(observed(text(name).text_size(12.))),
+            );
+            for level in 0..4 {
+                view = div().w_full().pl(level as f32 * 0.5).child(view);
+            }
+            view
+        }
+        fn held(at: u8, side: &Signal<u8>, tall: &Signal<f32>) -> View {
+            let (side, tall) = (side.clone(), tall.clone());
+            switch_or_none(
+                move || side.get() == at,
+                move |here, _| here.then(|| row("moved", &tall)),
+            )
+        }
+        fn view_b(b: &Signal<f32>, c: &Signal<f32>, side: &Signal<u8>, tall: &Signal<f32>) -> View {
+            let inner = scroll(c.clone()).w(200.).h(60.).child(
+                column()
+                    .child(div().h(37.))
+                    .child(row("inner", tall))
+                    .child(div().h(400.)),
+            );
+            observed(
+                scroll(b.clone()).w(240.).h(120.).child(
+                    column()
+                        .child(div().h(45.5))
+                        .child(held(1, side, tall))
+                        .child(inner)
+                        .child(div().h(500.)),
+                ),
+            )
+        }
+        let b_where = |want: bool| {
+            let (moved_b, b, c, side, tall) = (
+                moved_b.clone(),
+                b.clone(),
+                c.clone(),
+                side.clone(),
+                tall.clone(),
+            );
+            switch_or_none(
+                move || moved_b.get() == want,
+                move |here, _| here.then(|| view_b(&b, &c, &side, &tall)),
+            )
+        };
+        let translated = ui.signal(None::<NodeId>);
+        let keep = translated.clone();
+        let mounted = ui.mount(
+            column()
+                .child(
+                    scroll(a.clone()).w(260.).h(150.).child(
+                        column()
+                            .child(div().h(70.25))
+                            .child(held(0, &side, &tall))
+                            .child(row("stays", &tall))
+                            .child(div().h(600.)),
+                    ),
+                )
+                .child(div().h(130.).child(b_where(false)))
+                .child(
+                    div()
+                        .h(130.)
+                        .on_mount(move |handle| {
+                            keep.set(Some(handle.node()));
+                        })
+                        .child(b_where(true)),
+                ),
+        );
+        ui.prepare_frame();
+        ui.scene.borrow_mut().flush();
+        let parent = translated.with_untracked(|at| *at).expect("mounted");
+        ui.scene
+            .borrow_mut()
+            .set_transform(parent, Transform { x: 7.5, y: 13.25 });
+        let frame = |ui: &mut Ui| {
+            ui.prepare_frame();
+            assert!(published_as_walked(ui) >= 6);
+            ui.scene.borrow_mut().flush();
+        };
+        frame(&mut ui);
+        for step in 0..60 {
+            let n = step as f32;
+            // Scrolls by whole and by fractional points, in all three.
+            a.set(n * 3.7 % 300.);
+            b.set(n * 2.25 % 250.);
+            if step % 3 == 0 {
+                c.set(n * 1.4 % 200.);
+            }
+            match step % 10 {
+                // In the frame of that scroll: the row goes to the other
+                // scroll view, a scroll view goes under the translated
+                // parent and back, a row's box is laid out again.
+                2 => {
+                    side.set(1 - side.with_untracked(|at| *at));
+                }
+                5 => {
+                    moved_b.set(!moved_b.with_untracked(|at| *at));
+                }
+                7 => {
+                    tall.set(20. + n % 13.);
+                }
+                // The parent of a scroll view moves.
+                8 => ui.scene.borrow_mut().set_transform(
+                    parent,
+                    Transform {
+                        x: 7.5 - n / 9.,
+                        y: 13.25,
+                    },
+                ),
+                // An observed leaf (a row's text) moves by itself, which
+                // drops no other node's kept sum: by a fraction, to -0.,
+                // and back.
+                3 | 6 | 9 => {
+                    let leaves: Vec<NodeId> = {
+                        let scene = ui.scene.borrow();
+                        let observed = ui.storage.observed_bounds.borrow();
+                        observed
+                            .keys()
+                            .filter(|&&id| scene.contains(id) && scene.children(id).is_empty())
+                            .copied()
+                            .collect()
+                    };
+                    assert!(!leaves.is_empty(), "observed leaves");
+                    let to = match step % 10 {
+                        3 => Transform {
+                            x: n / 7.,
+                            y: -n / 3.,
+                        },
+                        6 => Transform { x: -0., y: 0.25 },
+                        _ => Transform::default(),
+                    };
+                    let translated = ui.scene.borrow().translated();
+                    for leaf in leaves {
+                        ui.scene.borrow_mut().set_transform(leaf, to);
+                    }
+                    assert_eq!(ui.scene.borrow().translated(), translated, "a leaf's move");
+                }
+                _ => {}
+            }
+            frame(&mut ui);
+        }
+        let bounds = ui.storage.observed_bounds.borrow();
+        assert!(bounds.values().any(|o| o.kept.get().is_some()));
+        drop(bounds);
+        let shown = ui.storage.observed_visibility.borrow();
+        assert!(shown.values().any(|o| o.kept.get().is_some()));
+        drop(shown);
+        mounted.unmount();
+        assert!(ui.storage.observed_bounds.borrow().is_empty());
+        assert!(ui.storage.observed_visibility.borrow().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -9195,6 +9896,15 @@ mod input_draw_pass_tests {
                     && line.y + line.height <= bounds.y + bounds.height,
                 "{line:?} in {bounds:?}"
             );
+        }
+    }
+}
+/// A handle to no `Ui`, for a node `zgx-dom` mounted.
+#[cfg(feature = "dom")]
+impl WeakUi {
+    pub(crate) fn none() -> WeakUi {
+        WeakUi {
+            storage: Weak::new(),
         }
     }
 }

@@ -115,8 +115,8 @@ impl Rules {
     pub fn set_guard(&self, guard: Rc<Guard>) {
         *self.guard.borrow_mut() = Some(guard);
     }
-    /// The reserved prefix `name` falls under, if any: `zend` holds `zend`
-    /// and `zend.x`, not `zendish`.
+    /// The reserved prefix `name` falls under, if any: `zeron` holds `zeron`
+    /// and `zeron.x`, not `zeronish`.
     fn reserving(&self, name: &str) -> Option<String> {
         self.reserved
             .borrow()
@@ -374,10 +374,10 @@ mod tests {
     #[test]
     fn a_reserved_prefix_holds_its_name_and_what_is_under_it() {
         let rules = Rules::default();
-        rules.reserve("zend.");
-        assert!(rules.reserving("zend").is_some());
-        assert!(rules.reserving("zend.sidebar").is_some());
-        assert!(rules.reserving("zendish").is_none());
-        assert!(rules.reserving("git.zend").is_none());
+        rules.reserve("zeron.");
+        assert!(rules.reserving("zeron").is_some());
+        assert!(rules.reserving("zeron.sidebar").is_some());
+        assert!(rules.reserving("zeronish").is_none());
+        assert!(rules.reserving("git.zeron").is_none());
     }
 }

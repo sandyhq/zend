@@ -20,7 +20,7 @@ use zgx_script::ScriptHost;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/agents_intro/app.luau");
     let mut application = Application::new();
-    // Instrument Serif for the title (zend.invalid's), Geist for the rest.
+    // Instrument Serif for the title (zeron.sh's), Geist for the rest.
     for bytes in [
         &include_bytes!("support/fonts/InstrumentSerif-Regular.ttf")[..],
         include_bytes!("support/fonts/InstrumentSerif-Italic.ttf"),
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     application
         .window(WindowOptions {
-            title: "Zend".into(),
+            title: "Zeron".into(),
             transparent: true,
             decorations: false,
             resizable: false,

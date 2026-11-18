@@ -1,4 +1,4 @@
-//! Zend's left sidebar, after `crates/ui/src/shell.rs` (`render_chat_sidebar`,
+//! Zeron's left sidebar, after `crates/ui/src/shell.rs` (`render_chat_sidebar`,
 //! `render_chat_row`, the titlebar cluster) and `shell/spaces.rs` (the
 //! "Sessions" disclosure): the 38 px titlebar strip with the window
 //! controls, compact 29 px session rows with
@@ -65,7 +65,7 @@ fn monogram_tone(seed: &str) -> Color {
 }
 
 /// `color` with its HSL lightness raised by `amount` (capped at .95), as
-/// Zend's monogram hover text.
+/// Zeron's monogram hover text.
 fn lighten(color: Color, amount: f32) -> Color {
     let [r, g, b] = [color.0, color.1, color.2].map(|c| f32::from(c) / 255.);
     let (max, min) = (r.max(g).max(b), r.min(g).min(b));
@@ -101,7 +101,7 @@ fn lighten(color: Color, amount: f32) -> Color {
     Color(channel(r), channel(g), channel(b), color.3)
 }
 
-/// Zend's `format_time_ago` for an age in seconds.
+/// Zeron's `format_time_ago` for an age in seconds.
 fn time_ago(age: i64) -> String {
     let seconds = age.max(0);
     if seconds < 60 {
@@ -167,7 +167,7 @@ fn monogram_letter(name: &str) -> String {
         .to_string()
 }
 
-/// A project's monogram seed. Zend seeds with the space's path; rows carry
+/// A project's monogram seed. Zeron seeds with the space's path; rows carry
 /// the chat's cwd (falling back to the space path), so use the shortest cwd
 /// among the project's rows, which is the checkout root unless every chat
 /// runs in a worktree.
@@ -180,7 +180,7 @@ fn project_seed(rows: &[ChatRow], project: &str) -> String {
 }
 
 /// A row's project name and monogram seed; chats outside a project read as
-/// Zend's "Home".
+/// Zeron's "Home".
 fn row_identity(rows: &[ChatRow], row: &ChatRow) -> (String, String) {
     match row.space_id {
         Some(_) => (row.project.clone(), project_seed(rows, &row.project)),
@@ -232,7 +232,7 @@ fn monogram(name: &str, seed: &str, size: f32, lit: Rc<dyn Fn() -> bool>) -> Vie
         )
 }
 
-/// Zend's sidebar toggle glyph (`icons::sidebar_glyph`), from quads: an
+/// Zeron's sidebar toggle glyph (`icons::sidebar_glyph`), from quads: an
 /// 18×16 frame and the panel, scaled from a 24-unit box.
 fn sidebar_glyph(open: f32, size: f32, color: Color) -> View {
     let s = size / 24.;
@@ -367,11 +367,11 @@ pub fn sidebar(cx: &mut Context, state: &App) -> View {
             left: 0.,
         })
         .border_color(BORDER)
-        // Zend's hairline rides a tone layer under the column, taking no
+        // Zeron's hairline rides a tone layer under the column, taking no
         // room from it: the rows keep the full 256.
         .border_over(true)
         .child(titlebar)
-        // With the project filter hidden, Zend keeps a 4 px spacer.
+        // With the project filter hidden, Zeron keeps a 4 px spacer.
         .child(div().w_full().h(4.).shrink_0())
         .child(list)
         .child(banner)
@@ -588,7 +588,7 @@ fn session_list(
             })
     };
 
-    // Edge fades only at edges with hidden overflow, as Zend's EdgeFade:
+    // Edge fades only at edges with hidden overflow, as Zeron's EdgeFade:
     // the content's height is known (fixed rows), the viewport's is probed.
     let offset = cx.state(0_f32);
     let viewport = cx.state(0_f32);
@@ -848,7 +848,7 @@ fn dot(color: Color) -> View {
     div().size(6., 6.).rounded(3.).bg(color)
 }
 
-/// Zend's mini glyph spinner (`loaders.rs`): 2×3 round 2 px cells, 1 px
+/// Zeron's mini glyph spinner (`loaders.rs`): 2×3 round 2 px cells, 1 px
 /// apart, rows tinted light / mid / deep, a snake chasing round the ring.
 fn mini_spinner(anim: &Anim) -> View {
     /// Clockwise ring index of each (row, col), top-left first.
@@ -917,7 +917,7 @@ fn star_banner(cx: &mut Context) -> View {
                 .on_click(move || {
                     #[cfg(target_os = "macos")]
                     let _ = std::process::Command::new("open")
-                        .arg("https://github.com/sandyhq/comet")
+                        .arg("https://github.com/zeronsh/comet")
                         .spawn();
                     visit.set(true);
                 })
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn monogram_tone_is_palette_entry_by_hash() {
-        for seed in ["home", "/Users/w/zend", "/tmp/x", ""] {
+        for seed in ["home", "/Users/w/zeron", "/tmp/x", ""] {
             let expected = rgb(MONOGRAM_PALETTE[fnv1a(seed) as usize % 8]);
             assert_eq!(monogram_tone(seed), expected);
         }
@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn time_ago_matches_zend_format() {
+    fn time_ago_matches_zeron_format() {
         assert_eq!(time_ago(-7200), "now");
         assert_eq!(time_ago(0), "now");
         assert_eq!(time_ago(59), "now");
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn monogram_letter_uppercases_first_char() {
-        assert_eq!(monogram_letter("  zend"), "Z");
+        assert_eq!(monogram_letter("  zeron"), "Z");
         assert_eq!(monogram_letter("ärger"), "Ä");
         assert_eq!(monogram_letter(""), "?");
     }

@@ -1,6 +1,6 @@
 # {{title}}
 
-A [zgx](https://zgx.zend.invalid) app in Luau, made with `zgx new {{name}} --template {{template}}`.
+A [zgx](https://zgx.zeron.sh) app in Luau, made with `zgx new {{name}} --template {{template}}`.
 
 ## Run it
 
@@ -36,6 +36,6 @@ Point your editor's luau-lsp at `.zgx/types.d.luau` (`luau-lsp.types.definitionF
 
 ## Learn more
 
-- [Getting started](https://zgx.zend.invalid/luau/getting-started) and [Coming from React](https://zgx.zend.invalid/luau/coming-from-react)
-- [The API reference](https://zgx.zend.invalid/luau/reference)
-- [Testing an app](https://zgx.zend.invalid/luau/elements#testing-an-app)
+- [Getting started](https://zgx.zeron.sh/luau/getting-started) and [Coming from React](https://zgx.zeron.sh/luau/coming-from-react)
+- [The API reference](https://zgx.zeron.sh/luau/reference)
+- [Testing an app](https://zgx.zeron.sh/luau/elements#testing-an-app)

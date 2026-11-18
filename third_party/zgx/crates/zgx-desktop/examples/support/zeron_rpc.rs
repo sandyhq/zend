@@ -1,8 +1,8 @@
-//! A small client for the running Zend engine's local IPC: one WebSocket at
-//! `ws://127.0.0.1:27654` (or `ZEND_IPC_PORT`), no auth, one JSON object per
+//! A small client for the running Zeron engine's local IPC: one WebSocket at
+//! `ws://127.0.0.1:27654` (or `ZERON_IPC_PORT`), no auth, one JSON object per
 //! message. Requests are `{"id","method","params"}`; replies are
 //! `{"id","ok"}` or `{"id","err"}`; watches stream `{"id","item"}` until
-//! `{"id","done"}` and stop with `{"id","cancel":true}`. See Zend's
+//! `{"id","done"}` and stop with `{"id","cancel":true}`. See Zeron's
 //! `crates/rpc/src/lib.rs` and `crates/engine/src/rpc.rs`.
 //!
 //! A background thread owns the socket; the UI thread routes frames by id.
@@ -20,7 +20,7 @@ use std::{
 };
 
 pub fn engine_url() -> String {
-    let port = std::env::var("ZEND_IPC_PORT")
+    let port = std::env::var("ZERON_IPC_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(27654);
@@ -85,7 +85,7 @@ pub fn connect() -> impl Future<Output = Result<Rpc, String>> {
         }
     };
     std::thread::Builder::new()
-        .name("zend-ipc".into())
+        .name("zeron-ipc".into())
         .spawn(move || {
             // A long session's snapshot can pass tungstenite's 16 MiB default
             // in one message; local IPC allows up to 256 MiB.
@@ -130,7 +130,7 @@ pub fn connect() -> impl Future<Output = Result<Rpc, String>> {
                         }
                     }
                     Ok(tungstenite::Message::Close(_)) => {
-                        thread_frames.push(None, Some("Zend closed the connection".into()));
+                        thread_frames.push(None, Some("Zeron closed the connection".into()));
                         return;
                     }
                     Ok(_) => {}
@@ -286,7 +286,7 @@ impl Rpc {
             Some(Pending::Watch(callback)) => {
                 if frame.get("done").is_some() || frame.get("err").is_some() {
                     if let Some(error) = frame.get("err") {
-                        eprintln!("zend: watch {id} failed: {error}");
+                        eprintln!("zeron: watch {id} failed: {error}");
                     }
                     pending.remove(&id);
                     return;

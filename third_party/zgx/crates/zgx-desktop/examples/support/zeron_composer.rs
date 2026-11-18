@@ -1,8 +1,8 @@
-//! Zend's docked composer: the frosted pill (compact single row or the
+//! Zeron's docked composer: the frosted pill (compact single row or the
 //! expanded two-row layout, morphing between them), its text input, attach
 //! and send / stop buttons, the combined model + effort chip with its frosted
 //! picker card, and the checkout footer under it.
-//! Follows Zend's `crates/ui/src/composer.rs`, `pickers.rs`,
+//! Follows Zeron's `crates/ui/src/composer.rs`, `pickers.rs`,
 //! `pickers/compact.rs`, `popover.rs` and `frost.rs`.
 
 use super::model::ChatRow;
@@ -213,7 +213,7 @@ pub fn chip_width(label: f32, suffix: Option<f32>, fast: bool) -> f32 {
     width.min(CHIP_MAX)
 }
 
-/// Zend's `reasoning_label` for a wire level.
+/// Zeron's `reasoning_label` for a wire level.
 pub fn effort_label(level: &str) -> String {
     match level {
         "minimal" => "Minimal".into(),
@@ -306,7 +306,7 @@ fn content_height(m: &TextMeasure, draft: &str, width: f32) -> f32 {
 
 // Footer -------------------------------------------------------------------------
 
-/// Under the composer: checkout and branch, as in Zend's session footer.
+/// Under the composer: checkout and branch, as in Zeron's session footer.
 pub fn footer(chat: impl Fn() -> Option<ChatRow> + Clone + 'static) -> View {
     let ink_ = alpha(TEXT_MUTED, 0.6);
     let label = |glyph: &'static str, value: View| {
@@ -450,7 +450,7 @@ fn build(
             sending.set(true);
             tasks.spawn(async move {
                 let result = if busy {
-                    // Mid-turn: queue it to run when the turn ends, as Zend does.
+                    // Mid-turn: queue it to run when the turn ends, as Zeron does.
                     rpc.call(
                         "QueueMessage",
                         json!({ "chatId": chat.id, "text": prompt, "holdForTurnEnd": true }),
@@ -506,14 +506,14 @@ fn build(
             });
         }
     };
-    // Test hook: ZEND_SEND=<text> sends it through this composer once.
-    if let Ok(text_) = std::env::var("ZEND_SEND") {
+    // Test hook: ZERON_SEND=<text> sends it through this composer once.
+    if let Ok(text_) = std::env::var("ZERON_SEND") {
         static SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !SENT.swap(true, std::sync::atomic::Ordering::Relaxed) {
             let (draft, send) = (draft.clone(), send.clone());
             cx.tasks().spawn(async move {
                 sleep(Duration::from_millis(2500)).await;
-                println!("ZEND_SEND {text_:?}");
+                println!("ZERON_SEND {text_:?}");
                 draft.set(text_);
                 send();
             });
@@ -850,7 +850,7 @@ fn build(
             .child(picker)
             .child(row().pl(8.).items_center().shrink_0().child(action))
     };
-    // Zend's frosted pill: radius 22, a 16 px backdrop blur over a faint
+    // Zeron's frosted pill: radius 22, a 16 px backdrop blur over a faint
     // tint, a cool hairline; no shadow, no focus ring. The bottom edge stays
     // put (the dock is bottom-anchored), so only the height animates.
     let pill = {
@@ -966,7 +966,7 @@ fn send_config(state: &App, id: &str, config: Value) {
             )
             .await
         {
-            eprintln!("zend: updating the chat config failed: {error}");
+            eprintln!("zeron: updating the chat config failed: {error}");
         }
     });
 }
@@ -979,7 +979,7 @@ struct OptionChoice {
     label: String,
 }
 
-/// A model option as `ListModels` sends it (`zend_proto::ModelOption`).
+/// A model option as `ListModels` sends it (`zeron_proto::ModelOption`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ModelOption {
     id: String,
@@ -988,7 +988,7 @@ struct ModelOption {
     default: String,
 }
 
-/// A catalog model (`zend_proto::Model`).
+/// A catalog model (`zeron_proto::Model`).
 #[derive(Clone, Debug, PartialEq)]
 struct ModelInfo {
     id: String,
@@ -1054,7 +1054,7 @@ thread_local! {
     /// The full catalog per harness (options included), beside `App::models`.
     static CATALOGS: RefCell<HashMap<String, Signal<Vec<ModelInfo>>>> =
         RefCell::new(HashMap::new());
-    /// Starred models per harness. Zend keeps them in its local defaults;
+    /// Starred models per harness. Zeron keeps them in its local defaults;
     /// the clone has no store, so they last the session.
     static FAVORITES: RefCell<HashMap<String, Signal<Vec<String>>>> =
         RefCell::new(HashMap::new());
@@ -1691,7 +1691,7 @@ fn thumb_plate(view: View, radius: f32) -> View {
 
 // Icons ------------------------------------------------------------------------------
 
-/// Zend icons the theme doesn't ship.
+/// Zeron icons the theme doesn't ship.
 const ALT_ARROW_LEFT_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.75 17.5 9.25 12 14.75 6.5"/></svg>"#;
 const STAR_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M12 3.2l2.66 5.39 5.95.86-4.3 4.2 1.01 5.92L12 16.77l-5.32 2.8 1.01-5.92-4.3-4.2 5.95-.86L12 3.2z"/></svg>"#;
 
@@ -1908,7 +1908,7 @@ enum Page {
 }
 
 /// A config written but not yet echoed by the chat row: the picks show at
-/// once (Zend stamps the row optimistically).
+/// once (Zeron stamps the row optimistically).
 #[derive(Clone, Debug, PartialEq)]
 struct Pending {
     config: Value,
@@ -2299,8 +2299,8 @@ fn picker(cx: &mut Context, state: &App, id: &str, harness: String, chip: Chip) 
         search_focused: cx.state(false),
         submenu: cx.state(None),
     };
-    // Test hook: ZEND_MODEL=<model id> picks it once the list loads.
-    if let Ok(wanted) = std::env::var("ZEND_MODEL") {
+    // Test hook: ZERON_MODEL=<model id> picks it once the list loads.
+    if let Ok(wanted) = std::env::var("ZERON_MODEL") {
         let (p2, models) = (p.clone(), models.clone());
         let done = Cell::new(false);
         let effect = cx.runtime().effect(move || {
@@ -2310,7 +2310,7 @@ fn picker(cx: &mut Context, state: &App, id: &str, harness: String, chip: Chip) 
                 && let Some(chat) = p2.rt.untracked(|| p2.chat())
             {
                 println!(
-                    "ZEND_MODEL switching {} from {:?} to {wanted}",
+                    "ZERON_MODEL switching {} from {:?} to {wanted}",
                     chat.id,
                     chat.model()
                 );
@@ -2350,7 +2350,7 @@ fn picker(cx: &mut Context, state: &App, id: &str, harness: String, chip: Chip) 
 
     // Open / close with motion: the card plays MENU_IN on open and MENU_OUT
     // on close, so dismissals (backdrop, Escape) are held open for the exit
-    // before the popover really closes. Picks keep it open, as Zend does.
+    // before the popover really closes. Picks keep it open, as Zeron does.
     let shown = cx.state(false);
     let phase = cx.state(Phase::Closed);
     let begin_close: Rc<dyn Fn()> = {
@@ -2494,7 +2494,7 @@ fn picker(cx: &mut Context, state: &App, id: &str, harness: String, chip: Chip) 
             .focus(|s| s)
             .reactive_style(move || {
                 let (opacity, travel, blur) = card_motion(phase.get(), &anim);
-                // Placement leaves 4 px above the anchor; Zend's gap is 6.
+                // Placement leaves 4 px above the anchor; Zeron's gap is 6.
                 Styles::new()
                     .opacity(opacity)
                     .translate(0., travel - (CARD_GAP - 4.))

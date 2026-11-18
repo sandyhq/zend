@@ -26,6 +26,15 @@ pub trait GridCell: Sized {
     /// Perform an opinionated cell reset based on a template cell.
     fn reset(&mut self, template: &Self);
 
+    /// Each of `cells` reset as `reset` resets it.
+    // zgx: so a cell type can reset a row's at once.
+    #[inline]
+    fn reset_all(cells: &mut [Self], template: &Self) {
+        for cell in cells {
+            cell.reset(template);
+        }
+    }
+
     fn flags(&self) -> &Flags;
     fn flags_mut(&mut self) -> &mut Flags;
 }
@@ -135,6 +144,13 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+
+    /// zgx: lines scrolled off the top into the history (or past it, when
+    /// it holds none), ever, and never fewer than the history holds: with a
+    /// line's place, a number for it that stays as it scrolls (`pushed() +
+    /// line`), until a resize reflows it.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) pushed: u64,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -147,7 +163,16 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             cursor: Cursor::default(),
             lines,
             columns,
+            pushed: 0,
         }
+    }
+
+    /// zgx: lines scrolled off the screen's top since the grid was made; a
+    /// line's number that stays as it scrolls is `pushed() + line` (its
+    /// `Line` negative in the history).
+    #[inline]
+    pub fn pushed(&self) -> u64 {
+        self.pushed
     }
 
     /// Update the size of the scrollback history.
@@ -271,6 +296,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if region.start == 0 {
+            self.pushed += positions as u64;
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
 

@@ -1,5 +1,5 @@
 //! Mends half-streamed inline markdown for display (after streamdown's
-//! `remend`; ported from Zend's incremental parser).
+//! `remend`; ported from Zeron's incremental parser).
 //!
 //! While a block is streaming, an unclosed `**bold`, `*em`, `` `code ``,
 //! `~~strike` or `[link](partial-url` parses as literal text; the closing

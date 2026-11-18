@@ -16,7 +16,7 @@ local PIXEL = 2
 local HORIZON = 0.62
 -- The reveal (`shader_params` of every layer): front, band, ragged; centre.
 local BAND, RAGGED = 0.36, 0.14
--- The agents Zend runs (their marks from zend.invalid), as T3 Code's landing
+-- The agents Zeron runs (their marks from zeron.sh), as T3 Code's landing
 -- page floats its harnesses: scattered loosely about the words, no two alike
 -- in place, size or tilt, flying in from outside (`fx`, `fy`) and drifting
 -- each on its own period. `x` is a fraction of the width from the middle, `y`

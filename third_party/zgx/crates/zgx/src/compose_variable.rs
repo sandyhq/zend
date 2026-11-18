@@ -121,6 +121,19 @@ impl VariableHeights {
         self.index.borrow().row_at(offset)
     }
 }
+#[cfg(feature = "dom")]
+impl VariableHeights {
+    /// Measured rows' one-pixel floor, as a measured list applies it.
+    pub(crate) fn floor_measured(&self) {
+        if self.index.borrow_mut().enforce_minimum(1.) {
+            self.changed();
+        }
+    }
+    /// Whether a viewport resting at its end stays there (`anchor_end`).
+    pub(crate) fn anchors_end(&self) -> bool {
+        self.end.get()
+    }
+}
 struct Anchor {
     revision: u64,
     length: usize,
@@ -260,7 +273,7 @@ fn rows_of<K: Eq + std::hash::Hash + Clone + 'static, W: WatchKind>(
             );
             let runtime = cx.runtime();
             move |slice: Option<std::time::Duration>| {
-                let started = std::time::Instant::now();
+                let started = crate::time::Instant::now();
                 let default = heights.index.borrow().estimate();
                 let mut exact = Vec::new();
                 {
@@ -396,6 +409,12 @@ fn anchor_moved<K: Eq + Clone>(
     entries: &HashMap<K, Entry, rustc_hash::FxBuildHasher>,
     key: &mut impl FnMut(usize) -> K,
 ) -> Option<usize> {
+    // An anchor with no position (a list scrolled by the view around it)
+    // never moves its list: nothing asked for equals NaN.
+    debug_assert!(
+        previous.position.is_finite(),
+        "an anchor with no position moved"
+    );
     let shifted = previous.index as i64 + length as i64 - previous.length as i64;
     if !(0..length as i64).contains(&shifted) {
         return None;
@@ -475,6 +494,55 @@ struct PassInputs {
     request: Option<(u64, usize)>,
     reveal: u64,
 }
+/// Where a list scrolled by the view around it (`virtualize_in_ancestor`)
+/// shows, and the rows that shows, which its pass follows in place of the
+/// boxes around it: those move on every frame of a scroll or an animation,
+/// the rows shown only as one comes or goes. Rows sit at their places in
+/// the list, wherever the view around it has it.
+struct AncestorView {
+    window: Rc<crate::compose::AncestorWindow>,
+    /// The first row shown and the one past the last.
+    rows: Signal<(usize, usize)>,
+}
+impl AncestorView {
+    fn new(ui: &mut Ui, root: NodeId, viewport: NodeId, heights: &VariableHeights) -> Self {
+        let window = Rc::new(crate::compose::AncestorWindow::new(ui, root, viewport));
+        let rows = ui.signal((0, 0));
+        let (followed, shown, heights, weak) = (
+            window.clone(),
+            rows.clone(),
+            heights.clone(),
+            ui.downgrade(),
+        );
+        ui.bind(root, move || {
+            heights.revision.get();
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let range = {
+                let model = heights.index.borrow();
+                let (top, height) = followed.window(&ui, model.content_height());
+                model.visible_range_and_row(top, height, 0).0
+            };
+            shown.set((range.start, range.end));
+        });
+        Self { window, rows }
+    }
+    /// The part of the list's `total` points shown (`AncestorWindow::window`),
+    /// its pass run again as the rows shown change. Out of the pass's line.
+    #[inline(never)]
+    fn shown(&self, ui: &crate::widgets::WeakUi, total: f32) -> Option<(f32, f32)> {
+        self.rows.get();
+        let ui = ui.upgrade()?;
+        let shown = ui.runtime.untracked(|| self.window.window(&ui, total));
+        Some(shown)
+    }
+    /// `AncestorWindow::reveal`, for its pass: out of its line.
+    #[inline(never)]
+    fn reveal_from(&self, ui: &crate::widgets::WeakUi, top: f32, height: f32) {
+        self.window.reveal_from(ui, top, height);
+    }
+}
 /// `keys`, with what spare time adds (`crate::spare`).
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
@@ -529,6 +597,12 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static, W: WatchKind>(
     build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
     measured: bool,
 ) -> View {
+    #[cfg(feature = "dom")]
+    if __dom::DOM_ONLY {
+        return __dom::region_only(__dom::variable_region(
+            offset, heights, measured, overscan, key, build,
+        ));
+    }
     let rows = RowSource::new(key, build);
     let source = rows.rows({
         let heights = heights.clone();
@@ -577,7 +651,7 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static, W: WatchKind>(
             if !ancestor {
                 ui.scene.borrow_mut().set_scroll_copy(content, true);
             }
-            let window = ancestor.then(|| crate::compose::AncestorWindow::new(ui, root, viewport));
+            let window = ancestor.then(|| AncestorView::new(ui, root, viewport, &heights));
             let stretch = crate::compose::ListStretch::new(
                 ui,
                 root,
@@ -1032,7 +1106,9 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static, W: WatchKind>(
                 }
                 // Measured, anchor on the first row in view measured at this
                 // width: rows coming into view above it, estimates until
-                // measured, grow above it rather than push it down.
+                // measured, grow above it rather than push it down. Resting
+                // at the top, nothing anchors: a row come in above (a feed's
+                // newest) shows from the top as it is measured.
                 let next_anchor = next_anchor.map(|mut anchor| {
                     let measured_row = |key: &K| {
                         entries
@@ -1045,6 +1121,7 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static, W: WatchKind>(
                             })
                     };
                     if measured
+                        && anchor.position > 0.
                         && let Some((_, index, top, _)) =
                             keys.iter().find(|(key, _, top, row_height)| {
                                 top + row_height > anchor.position && measured_row(key)
@@ -1205,7 +1282,16 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static, W: WatchKind>(
                         anchor = next_anchor;
                         offset.set(position);
                     } else {
-                        anchor = None;
+                        // One scrolled by the view around it keeps the
+                        // heights its last pass saw, so that a move with the
+                        // same is the view scrolling, not its rows settling
+                        // (spare time builds ahead of a scroll); never where
+                        // it is, which that view says (with no position, no
+                        // pass moves it to its anchor row).
+                        anchor = next_anchor.filter(|_| ancestor).map(|anchor| Anchor {
+                            position: f32::NAN,
+                            ..anchor
+                        });
                     }
                     let keep_reveal = measured
                         && request_unchanged
