@@ -11,7 +11,7 @@
 # Rules, in order:
 #  - Repositories we build from but don't own keep their real address:
 #    zeronsh/zui, zeronsh/gpui-component, zeronsh/zgx (upstream of
-#    third_party/zgx).
+#    sandyhq/zengx, which apps/zgx builds against).
 #  - github.com/zeronsh/ (and zeron-sh) is ours now: github.com/sandyhq/.
 #  - Zeron's domains (zeron.sh and its subdomains) become *.zend.invalid
 #    (RFC 6761: never resolves), never zend.sh: that name isn't ours, and a

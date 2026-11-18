@@ -256,10 +256,41 @@ audit; each line names the mistake it keeps out):
   the gallery, then keep it or delete it.
 - **Agents:** `--inspect`, then `zgx inspect tree`, `zgx inspect snapshot`,
   `zgx inspect click '"Continue"'`, or `claude mcp add zgx -- zgx inspect mcp`.
-  Install the CLI with `cargo install --git https://github.com/zeronsh/zgx
+  Install the CLI at the commit the app builds against (see "zgx" below):
+  `cargo install --git https://github.com/sandyhq/zengx --rev <rev>
   zgx-script --bin zgx --features inspect`.
 - **Checks:** `zgx lint ui` (performance rules) and `zgx check ui` (types, needs
   luau-lsp).
+
+## zgx
+
+zgx comes from [sandyhq/zengx](https://github.com/sandyhq/zengx):
+[zeronsh/zgx](https://github.com/zeronsh/zgx) with the edits this app needs
+as commits on its `main` (its `FORK.md` lists them). It is pinned at one
+commit: every `rev = "…"` in `Cargo.toml`, for the zgx crates and for zgx's
+patched crates under `[patch.crates-io]`. CI builds its zgx CLI at the same
+commit, read from `Cargo.lock` (`.github/workflows/zgx-tests.yml`).
+
+- **Move it:** in zengx, merge zeronsh/zgx's `main` into `main` and push it,
+  a fast-forward (zengx's `FORK.md`, "Taking upstream": never rebase or
+  force-push, since this app pins its commits). Set every `rev` in
+  `Cargo.toml` to the new commit and build (Cargo updates `Cargo.lock`).
+  Record the engine's copy of zgx's types:
+  `ZEND_ZGX_TYPES_BLESS=1 cargo test --bin zend-zgx the_engine_s_zgx_types`.
+  Then `scripts/ci/test-zgx.sh rust`, and `scripts/ci/test-zgx.sh ui <zgx>`
+  with the CLI installed at that commit: a new zgx can change what the UI
+  tests see.
+- **Work on zgx and the app together:** check out zengx beside this repo and
+  point Cargo at it for your own builds only, with a file you don't commit:
+  `cargo --config ../../../zengx-local.toml run …` (from `apps/zgx`). The
+  file patches every package `Cargo.lock` has from sandyhq/zengx with its
+  folder in that checkout, in two tables: the zgx crates under
+  `[patch."https://github.com/sandyhq/zengx"]` (`zgx = { path =
+  "/path/to/zengx/crates/zgx" }`, `zgx-mlua` = `vendor/mlua`, …), and the
+  seven zgx patches in `Cargo.toml` (`wgpu-hal`, `winit`, `accesskit_*`)
+  under `[patch.crates-io]`, since those come from crates.io. It rewrites
+  `Cargo.lock` to the checkout: `git checkout Cargo.lock` before you commit.
+  Land the zgx change in zengx, then move the commit here.
 
 ## The intro's hand-off
 

@@ -20,7 +20,7 @@
 ```
 
 - **Engine** (`crates/engine`, binary `zend-engine`): runs agents through harness adapters, hosts the chats' docs, and is the only thing the MCP server and the CLI talk to.
-- **Window** (`apps/zgx`, binary `zend-zgx`): the desktop interface. Rust host with the interface written in Luau (`apps/zgx/ui`: `screens/`, `ds/` components) on the zgx toolkit (`third_party/zgx`). This is the window the fork installs. `crates/ui` holds the gpui interface ARCHITECTURE.md describes.
+- **Window** (`apps/zgx`, binary `zend-zgx`): the desktop interface. Rust host with the interface written in Luau (`apps/zgx/ui`: `screens/`, `ds/` components) on the zgx toolkit ([sandyhq/zengx](https://github.com/sandyhq/zengx), pinned in `apps/zgx/Cargo.toml`; see [fork.md](fork.md#zgx)). This is the window the fork installs. `crates/ui` holds the gpui interface ARCHITECTURE.md describes.
 - **MCP server** (`crates/mcp`, run as `zend mcp`): the tools agents use to drive Zend. Started per agent with `ZEND_CHAT_ID` naming the chat it speaks for. Reference: [mcp.md](mcp.md).
 - **CLI** (`apps/zend`, `crates/cli`): `zend status`, `zend plugin …`, `zend mcp`.
 

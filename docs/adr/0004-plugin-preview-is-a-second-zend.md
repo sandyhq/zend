@@ -21,4 +21,4 @@ Rejected: a sandbox inside the one window (a failure there is a failure in the p
 - An agent can iterate (edit, check, preview, picture, click) with no person present, and what breaks stays in the preview.
 - The preview's plugin runs with real permissions on the real machine: programs it runs (`commands`) run as the person. Only Zend's data folder is separate.
 - Keeping is the person's decision, as allowing a plugin is.
-- The offscreen window needs changes in `third_party/zgx` (`ZGX_OFFSCREEN`), which makes merging upstream harder.
+- The offscreen window needs changes in zgx (`ZGX_OFFSCREEN`), which makes merging upstream harder. (2026-11-17: upstream has its own `ZGX_OFFSCREEN` now; what Linux needs beyond it is an edit in sandyhq/zengx, its FORK.md.)

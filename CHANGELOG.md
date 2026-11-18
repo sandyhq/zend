@@ -5,6 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-17
 
 ### Changed
+- zgx comes from sandyhq/zengx, pinned (`apps/zgx/Cargo.toml`), no longer vendored in third_party/zgx: zengx is zeronsh/zgx main 558554440 (49 commits past 1accd1b7) with the fork's four zgx edits as commits on top, listed in its FORK.md; Zend's rebrand stays out of zgx. Upstream zgx comes in by merging into zengx main (docs/fork.md, "zgx"). The engine's plugin check reads its own copy of zgx's types, kept in step by `the_engine_s_zgx_types_are_the_window_s`.
 - zgx updated to zeronsh/zgx 1accd1b7 (vendored in third_party/zgx, the fork's edits listed in its FORK.md); a window drawn on zgx's software raster still pictures nodes for `plugin_status`. The composer takes upstream's coordinated layout (its size and place eased, cd769402..7a188dfe), with 6df5169d and 82d410d7 (the series alone broke a sidebar-drag perf limit); `scripts/zend-pick-range.sh` takes an upstream range file by file (docs/fork.md).
 
 ### Fixed

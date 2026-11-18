@@ -4208,6 +4208,25 @@ end)
     assert_eq!(app.error(), None);
 }
 
+/// The engine's copy of zgx's types is this window's zgx's.
+#[test]
+fn the_engine_s_zgx_types_are_the_window_s() {
+    // The engine checks plugins (zend plugin check) against zgx's window
+    // API without building zgx: its copy must be what this window's zgx
+    // embeds. Moving the zengx pin moves it:
+    // ZEND_ZGX_TYPES_BLESS=1 cargo test --bin zend-zgx the_engine_s_zgx_types.
+    let copy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/engine/src/plugins/zgx.d.luau");
+    if std::env::var_os("ZEND_ZGX_TYPES_BLESS").is_some() {
+        std::fs::write(&copy, zgx_script::check::DEFINITIONS).unwrap();
+    }
+    let have = std::fs::read_to_string(&copy).unwrap_or_default();
+    assert!(
+        have == zgx_script::check::DEFINITIONS,
+        "crates/engine/src/plugins/zgx.d.luau isn't the window's zgx types; record them: \
+         ZEND_ZGX_TYPES_BLESS=1 cargo test --bin zend-zgx the_engine_s_zgx_types"
+    );
+}
+
 /// Every copy of the SDK in this repository (Zend's own plugins, the
 /// examples) is the canonical one (plugins-sdk/zend.luau), byte for byte: a
 /// copy is signed into each plugin and Zend's own ship as they lie, so a

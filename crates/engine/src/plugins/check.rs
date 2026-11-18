@@ -30,8 +30,11 @@ use serde::Serialize;
 
 pub mod fetch;
 
-/// zgx's window API, as luau-lsp definitions (`ui`, its nodes and states).
-const DEFINITIONS: &str = include_str!("../../../../third_party/zgx/crates/zgx-script/types/zgx.d.luau");
+/// zgx's window API, as luau-lsp definitions (`ui`, its nodes and states):
+/// a copy of what the window's zgx embeds (`zgx_script::check::DEFINITIONS`
+/// of the sandyhq/zengx commit apps/zgx builds against). apps/zgx's
+/// `the_engine_s_zgx_types_are_the_window_s` keeps it in step.
+const DEFINITIONS: &str = include_str!("zgx.d.luau");
 
 /// How the root `init.luau` is named in the copy luau-lsp reads: an
 /// `init.luau` is its folder's module to luau-lsp, so its `./zend` would

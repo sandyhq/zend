@@ -1,9 +1,0 @@
-# zgx patch to accesskit_atspi_common 0.19.1
-
-Vendored from crates.io with `accesskit_unix` 0.22.1 and patched with it:
-AT-SPI's `Table` and `TableCell` interfaces, and the `expandable`,
-`expanded` and `collapsed` states. See `vendor/accesskit_unix/ZGX_PATCH.md`.
-
-A node whose author ID embeds another process's tree (`EMBED`, a web page's
-root) says it is focused when focus moves to it, and names the embedded
-tree's toolkit (`embedded_toolkit`) as its `toolkit` attribute.
