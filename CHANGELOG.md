@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-20
+
+### Fixed
+- File viewer: a Markdown file's front matter shows as a table of keys and values above the preview instead of as text, and a long Markdown file is parsed and built lazily around the view (`Markdown { window }`), so it opens and scrolls without stalling.
+
 ## 2026-11-17
 
 ### Changed

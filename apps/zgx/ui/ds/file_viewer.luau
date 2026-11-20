@@ -240,6 +240,38 @@ local function tick_task(text: string, k: number, done: boolean): string
 	return if changed then table.concat(out) else text
 end
 
+-- A Markdown file's front matter (a `---` block on its first line, closed by
+-- `---` or `...`): its length in bytes (with the closing line's break) and its
+-- fields as { key, value } rows; nil when there is none. Read apart from the
+-- body, which would otherwise take it for a rule and a heading.
+local function front_matter(text: string): (number?, { { string } }?)
+	local bom = if string.sub(text, 1, 3) == "\239\187\191" then 4 else 1
+	local s, e = string.find(text, "^%-%-%-[ \t]*\r?\n", bom)
+	if not s then
+		return nil, nil
+	end
+	local rows: { { string } } = {}
+	local at = (e :: number) + 1
+	while at <= #text do
+		local nl = string.find(text, "\n", at, true)
+		local line = string.sub(text, at, if nl then nl - 1 else #text)
+		line = string.gsub(line, "\r$", "")
+		at = if nl then nl + 1 else #text + 1
+		if string.match(line, "^%-%-%-[ \t]*$") or string.match(line, "^%.%.%.[ \t]*$") then
+			return at - 1, rows
+		end
+		local key, value = string.match(line, "^([%w_%-%.]+):%s*(.-)%s*$")
+		if key then
+			table.insert(rows, { key, value })
+		elseif #rows > 0 and string.match(line, "%S") then
+			local last = rows[#rows]
+			local more = string.match(line, "^%s*(.-)%s*$") :: string
+			last[2] = if last[2] == "" then more else last[2] .. "\n" .. more
+		end
+	end
+	return nil, nil
+end
+
 local function is_markdown(path: string): boolean
 	local e = ext(path)
 	return e == "md" or e == "markdown" or e == "mdx"
@@ -1694,6 +1726,18 @@ local function component(props: Props): Node
 			end)
 		end
 		if k == "markdown" then
+			-- The text read apart: front matter (shown as fields) and body.
+			-- (The body is windowed: a long file builds only what's near
+			-- the view, as a long reply does.)
+			local fm_len = ui.computed(function(): number
+				return (front_matter(text:get())) or 0
+			end)
+			local fm_rows = ui.computed(function(): { { string } }
+				local _, rows = front_matter(text:get())
+				return rows or {}
+			end)
+			local view = ui.ref()
+			local scrolled = ui.state(`file_viewer_md_offset:{doc_.path}`, 0)
 			return ui.presence(rendered, function(on: boolean): Node
 				if on then
 					return SelectionMenu { w_full = true, h_full = true, ui.scroll {
@@ -1701,15 +1745,34 @@ local function component(props: Props): Node
 						h_full = true,
 						scrollbar = true,
 						items = "center",
+						ref = view,
+						offset = scrolled,
 						ui.column {
 							w_full = true,
 							-- (A theme number: max_w takes points.)
 							max_w = ui.theme.get("zend.prose.measure") :: number?,
 							px = "$space.6",
 							py = "$space.5",
+							ui.show(function(): boolean
+								return #fm_rows:get() > 0
+							end, ui.column {
+								w_full = true,
+								gap = "$space.1",
+								pb = "$space.4",
+								ui.each(fm_rows, function(r: { string })
+									return ui.row {
+										w_full = true,
+										gap = "$space.3",
+										items = "start",
+										ui.text { r[1], literal = true, w = 110, shrink = 0, text_size = "$font.size.sm", color = "$text.secondary" },
+										ui.text { r[2], literal = true, grow = 1, min_w = 0, wrap = true, text_size = "$font.size.sm", color = "$text.primary" },
+									}
+								end),
+							}),
 							Markdown {
+								window = { key = `file:{doc_.path}`, view = view, offset = scrolled },
 								text = function(): string
-									return text:get()
+									return string.sub(text:get(), fm_len:get() + 1)
 								end,
 								image = if props.picture
 									then function(src: string): string?
@@ -1727,7 +1790,9 @@ local function component(props: Props): Node
 								task = if readonly
 									then nil
 									else function(k: number, done: boolean)
-										text:set(tick_task(text:peek(), k, done))
+										local whole = text:peek()
+										local n = fm_len:peek()
+										text:set(string.sub(whole, 1, n) .. tick_task(string.sub(whole, n + 1), k, done))
 									end,
 							},
 						},
