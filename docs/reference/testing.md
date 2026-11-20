@@ -53,6 +53,26 @@ machine (Ryzen 7 7800X3D, 16 threads, 30 GB), Rust 1.100.0, November 2026.
 - The parallel rustc frontend and Cranelift are nightly-only, so they are not
   used.
 
+## The build container (infra/dev), measured 2026-11-20
+
+On the build server (12 cores, 31 GB), `cargo check -p zend-engine`, one run each:
+
+| | stable | nightly, `--jobs-frontend=8` |
+|---|---|---|
+| cold, no kache | 105.9 s | 77.1 s |
+| new target, kache store warm (a new worktree) | 16.9 s | 10.5 s |
+| real edit in `crates/engine/src/lib.rs`, no kache, 3 edits | 6.0 / 5.8 / 6.2 s | 6.4 / 6.7 / 6.2 s |
+| same, kache (adaptive, the default) | 43.3 / 5.6 / 5.9 s | 11.0 / 6.6 / 6.2 s |
+| same, kache with `KACHE_PRESERVE_INCREMENTAL=1` | 6.1 / 5.7 / 5.9 s | 6.5 / 6.7 / 6.3 s |
+
+- The parallel frontend helps cold builds (-27 %), not the rebuild after an edit.
+- kache turns rustc's incremental mode off for a crate until it sees the crate edited:
+  the first edit after a build compiles the whole crate (11-43 s), the next ones are
+  incremental. `KACHE_PRESERVE_INCREMENTAL=1` keeps workspace crates incremental from the
+  start, at the price of building them in each new worktree (59.8 s instead of 21.5 s
+  for that first check, stable).
+- An after-edit run needs a real edit: kache keys by content, so after `touch` it is a hit.
+
 ## Optional local tools
 
 - **[kache](https://github.com/kunobi-ninja/kache):** a compile cache used as

@@ -10,7 +10,7 @@
 #             Its own target volume: stable and nightly artifacts don't mix.
 # TARGET=x    the target volume's name part (default: the checkout's folder name), so
 #             each worktree has its own target and two builds never wait on one lock.
-# KACHE=0     no rustc wrapper.
+# KACHE=0     no rustc wrapper. KACHE_* variables are passed to kache.
 # The image is rebuilt when the Dockerfile or the nextest pin changes.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -32,6 +32,8 @@ else
   env+=(-e RUSTUP_TOOLCHAIN=stable)
 fi
 [ "${KACHE:-1}" = 1 ] && env+=(-e RUSTC_WRAPPER=kache)
+# kache's own settings (KACHE_PRESERVE_INCREMENTAL, KACHE_PROGRESS, …) pass through.
+for v in $(compgen -e | grep '^KACHE_' || true); do env+=(-e "$v"); done
 
 tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-it)
 exec docker run --rm "${tty[@]}" --init \
