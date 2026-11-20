@@ -171,8 +171,18 @@ impl Normalizer {
             // A throwing extension handler is the extension's failure, not
             // the turn's: the model run goes on, so it is shown, not fatal.
             "extension_error" => {
+                // Name the extension and event: with several loaded, the bare
+                // error text does not say which one threw.
+                let path = string(frame, "extensionPath");
+                let event = string(frame, "event");
+                let origin = match (path.is_empty(), event.is_empty()) {
+                    (true, true) => String::new(),
+                    (false, true) => format!(" ({path})"),
+                    (true, false) => format!(" ({event})"),
+                    (false, false) => format!(" ({path}, {event})"),
+                };
                 events.push(AgentEvent::Error {
-                    message: format!("Pi extension: {}", string(frame, "error")),
+                    message: format!("Pi extension{origin}: {}", string(frame, "error")),
                 });
             }
             _ => {}
@@ -333,7 +343,7 @@ mod tests {
         let mut n = Normalizer::default();
         let events = n.map(&json!({"type":"extension_error","extensionPath":"/x.ts","event":"tool_call","error":"boom"}));
         assert!(
-            matches!(&events[0], AgentEvent::Error {message} if message == "Pi extension: boom")
+            matches!(&events[0], AgentEvent::Error {message} if message == "Pi extension (/x.ts, tool_call): boom")
         );
         assert_eq!(n.status(), DoneStatus::Completed);
     }

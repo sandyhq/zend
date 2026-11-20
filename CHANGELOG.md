@@ -7,6 +7,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ### Fixed
 - File viewer: a Markdown file's front matter shows as a table of keys and values above the preview instead of as text, and a long Markdown file is parsed and built lazily around the view (`Markdown { window }`), so it opens and scrolls without stalling.
 
+### Changed
+- Pi: an extension's error names the extension and the event it threw in (`Pi extension (<path>, <event>): <error>`), not only the error text.
+
 ## 2026-11-17
 
 ### Changed
