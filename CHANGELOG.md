@@ -10,6 +10,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ### Changed
 - Pi: an extension's error names the extension and the event it threw in (`Pi extension (<path>, <event>): <error>`), not only the error text.
 
+### Added
+- Build container (`infra/dev`): every Rust build and test runs in it, on the build server (`infra/dev/run.sh <cmd>`, `infra/dev/stage.sh` for an installable build): CI's packages, stable and nightly (parallel frontend), cargo-nextest and kache, caches in Docker volumes. blaze is left out: it fails on this workspace (testing.md).
+
 ## 2026-11-17
 
 ### Changed

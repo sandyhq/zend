@@ -56,7 +56,7 @@ machine (Ryzen 7 7800X3D, 16 threads, 30 GB), Rust 1.100.0, November 2026.
 ## Optional local tools
 
 - **[kache](https://github.com/kunobi-ninja/kache):** a compile cache used as
-  `rustc-wrapper` (`kache init`). It helps clean builds and switching between
+  `rustc-wrapper` (in infra/dev's container: `RUSTC_WRAPPER=kache`, on by default). It helps clean builds and switching between
   worktrees, not the rebuild after an edit. Use one wrapper only (not kache
   and sccache together).
 - **[blaze](https://github.com/indexable-inc/blaze):** `blaze check -p <crate>`
@@ -65,6 +65,14 @@ machine (Ryzen 7 7800X3D, 16 threads, 30 GB), Rust 1.100.0, November 2026.
   It uses its own toolchain, so `cargo check` stays the final word. `blaze
   build` and `blaze test` fail on this workspace (the zend-mobile staticlib
   and a `macro_rules_attribute` proc macro).
+  **Since 2026-11-20 `blaze check` fails too** (Linux, in infra/dev's
+  container), so infra/dev leaves blaze out. Stable 0.20261027.0: `blake3`
+  1.8.7's build script (cc's jobserver reaches a writable std static,
+  [#1643](https://github.com/indexable-inc/blaze/issues/1643), fix #857 not yet
+  released). Canary 0.20261105.4: needs io_uring, which Docker's seccomp profile
+  refuses, and with that allowed, the `zui` git dependency's sibling crates
+  ([#2186](https://github.com/indexable-inc/blaze/issues/2186)). Try again when
+  those are closed and released.
 
 ## Writing tests that find real problems
 

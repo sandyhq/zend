@@ -12,26 +12,22 @@ How a branch becomes the Zend that runs on the owner's Linux machine, and how to
 | `~/.zend/` | data: chats, plugins, logs, docs. A switch never touches it |
 
 ## 1. Build and stage
-Release builds of the engine and the window, with the flags the VM build uses (`infra/ai-vm/build/build-zend.sh` in the owner's home repo). In the background; it takes minutes.
+On the build server, in the build container ([infra/dev](../../infra/dev/README.md)): release builds of the engine and the window (stable, thin LTO off), staged with `ui/` and `plugins-builtin/` in the checkout's `target/zend-next`. In the background; it takes minutes.
 
 ```sh
-#!/bin/sh
-set -e
-SRC=$HOME/Projects/zend-integration          # the worktree to build
-T=$HOME/.cache/zend-target-deploy
-export CARGO_PROFILE_RELEASE_LTO=off LUAU_CXXFLAGS=-DNDEBUG
-cd $SRC
-cargo build --release -p zend --bin zend-engine --target-dir $T/engine
-cd apps/zgx && cargo build --release --locked --target-dir $T/zgx
-S=$HOME/.local/opt/zend-next; rm -rf $S; mkdir -p $S
-cp $T/zgx/release/zend-zgx $T/engine/release/zend-engine $S/
-cp -r ui $S/ui; rm -rf $S/ui/.zgx $S/ui/tests
-cp -r plugins-builtin $S/plugins-builtin; rm -rf $S/plugins-builtin/*/.zgx
-for d in $S/plugins-builtin/*/; do cp plugins-sdk/zend.luau $d/zend.luau; done
-echo BUILD_OK
+ssh AI 'cd ~/zend-build/<checkout> && nohup infra/dev/stage.sh > ~/zend-build/stage.log 2>&1 &'
+ssh AI 'tail -1 ~/zend-build/stage.log'      # BUILD_OK <path> (<commit>)
 ```
 
-Run it as `nohup sh build.sh > build.log 2>&1 &` and wait for `BUILD_OK`.
+Then bring it to the machine that runs Zend, as `~/.local/opt/zend-next`:
+
+```sh
+rm -rf ~/.local/opt/zend-next
+ssh AI 'tar c -C ~/zend-build/<checkout>/target zend-next' | tar x -C ~/.local/opt
+cat ~/.local/opt/zend-next/BUILT_FROM
+```
+
+The container is Ubuntu 24.04 (glibc 2.39); the binaries run on a host with that glibc or newer.
 
 ## 2. Check before installing
 - What is the installed build made from? If it holds commits the new one lacks, installing takes them away. Compare first.

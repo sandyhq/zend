@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Run a command in this repository's build container (infra/dev/Dockerfile),
+# with the checkout mounted at /src and the caches kept in Docker volumes.
+#
+#   infra/dev/run.sh cargo nextest run -p zend-harness
+#   NIGHTLY=1 infra/dev/run.sh cargo check -p zend-engine      # parallel frontend
+#   KACHE=0 infra/dev/run.sh cargo build -p zend               # without the cache
+#
+# NIGHTLY=1   nightly toolchain, -Zunstable-options --jobs-frontend=$FRONTEND (default 8).
+#             Its own target volume: stable and nightly artifacts don't mix.
+# TARGET=x    the target volume's name part (default: the checkout's folder name), so
+#             each worktree has its own target and two builds never wait on one lock.
+# KACHE=0     no rustc wrapper.
+# The image is rebuilt when the Dockerfile or the nextest pin changes.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+HASH="$(cat "$ROOT/infra/dev/Dockerfile" "$ROOT/scripts/ci/install-nextest.sh" | sha256sum | cut -c1-12)"
+IMAGE="zend-dev:$HASH"
+
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "run.sh: building $IMAGE" >&2
+  docker build -t "$IMAGE" -f "$ROOT/infra/dev/Dockerfile" "$ROOT/scripts/ci" >&2
+fi
+
+env=(-e CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-auto}")
+name="${TARGET:-$(basename "$ROOT" | tr -c 'a-zA-Z0-9_.\n-' '_')}"
+target="zend-dev-target-$name"
+if [ "${NIGHTLY:-0}" = 1 ]; then
+  env+=(-e RUSTUP_TOOLCHAIN=nightly -e RUSTFLAGS="-Zunstable-options --jobs-frontend=${FRONTEND:-8}")
+  target="$target-nightly"
+else
+  env+=(-e RUSTUP_TOOLCHAIN=stable)
+fi
+[ "${KACHE:-1}" = 1 ] && env+=(-e RUSTC_WRAPPER=kache)
+
+tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-it)
+exec docker run --rm "${tty[@]}" --init \
+  -v "$ROOT:/src" \
+  -v "$target:/opt/target" \
+  -v zend-dev-registry:/opt/cargo/registry \
+  -v zend-dev-git:/opt/cargo/git \
+  -v zend-dev-kache:/opt/kache-store \
+  "${env[@]}" -w /src "$IMAGE" "$@"

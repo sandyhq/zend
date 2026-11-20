@@ -23,11 +23,13 @@ The sandyhq fork of Zend: a controller for coding agents. A Rust engine (`crates
 
 ## Build and test
 Full rules and numbers: [docs/reference/testing.md](docs/reference/testing.md).
-- While editing: `cargo check -p <crate>`, tests with `cargo nextest run --no-fail-fast -p <crate>`. nextest skips doctests: also `cargo test --doc`.
+- **Every Rust build and test runs in the build container, on the build server**: prefix the command with `infra/dev/run.sh` ([infra/dev/README.md](infra/dev/README.md)). The owner's laptop builds nothing; reach the server with `ssh AI '<command>'`, its checkouts are under `~/zend-build/`. The container has CI's packages, stable and nightly, nextest and kache; don't install toolchains or wrappers on a host.
+- While editing: `infra/dev/run.sh cargo check -p <crate>`, tests with `infra/dev/run.sh cargo nextest run --no-fail-fast -p <crate>`. nextest skips doctests: also `cargo test --doc`.
+- An installable build: `infra/dev/stage.sh` stages `target/zend-next` ([build-and-deploy.md](docs/reference/build-and-deploy.md)).
 - Before calling work done: the whole workspace once, and `apps/zgx` if you touched it.
 - About 10 tests fail on unmodified `main` on the dev machine (see testing.md, "Known failures"), about 11 more in `apps/zgx`. Compare against that baseline; don't chase them in unrelated work.
 - Integration tests go into `tests/it/` of the crate, never a new top-level `tests/*.rs`.
-- Long builds: in the background with `nohup`, poll the log. Give each worktree its own target dir outside the repo (`CARGO_TARGET_DIR=~/.cache/zend-target-<name>`).
+- Long builds: in the background with `nohup`, poll the log; foreground calls get aborted. Each checkout gets its own target volume from run.sh (by folder name, `TARGET=` to choose). One benchmark at a time; time cold, warm and after-edit runs separately, and an after-edit run needs a real edit (kache keys by content, `touch` is a cache hit).
 - A green build is not installed behaviour. To try a change, run a stand-in instance: [docs/reference/test-instance.md](docs/reference/test-instance.md).
 
 ## Never
