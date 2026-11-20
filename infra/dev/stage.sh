@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
-NIGHTLY=0 "$ROOT/infra/dev/run.sh" bash -c '
+NIGHTLY=0 KACHE_PRESERVE_INCREMENTAL=0 "$ROOT/infra/dev/run.sh" bash -c '
   set -e
   export CARGO_PROFILE_RELEASE_LTO=off LUAU_CXXFLAGS=-DNDEBUG
   cargo build --release --locked -p zend --bin zend-engine --target-dir /opt/target/engine

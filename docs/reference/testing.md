@@ -72,6 +72,8 @@ On the build server (12 cores, 31 GB), `cargo check -p zend-engine`, one run eac
   start, at the price of building them in each new worktree (59.8 s instead of 21.5 s
   for that first check, stable).
 - An after-edit run needs a real edit: kache keys by content, so after `touch` it is a hit.
+- So run.sh defaults to nightly and `KACHE_PRESERVE_INCREMENTAL=1` (owner, 2026-11-20):
+  the fastest cold build and no rebuild spike on the first edit. Releases stay stable.
 
 ## Optional local tools
 

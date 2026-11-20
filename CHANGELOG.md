@@ -8,6 +8,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - File viewer: a Markdown file's front matter shows as a table of keys and values above the preview instead of as text, and a long Markdown file is parsed and built lazily around the view (`Markdown { window }`), so it opens and scrolls without stalling.
 
 ### Changed
+- Build container: `infra/dev/run.sh` defaults to nightly with the parallel frontend and to kache keeping workspace crates incremental (`KACHE_PRESERVE_INCREMENTAL=1`); `NIGHTLY=0` builds stable as CI does, and `stage.sh` builds releases stable.
 - Pi: an extension's error names the extension and the event it threw in (`Pi extension (<path>, <event>): <error>`), not only the error text.
 
 ### Added

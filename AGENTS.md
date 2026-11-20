@@ -23,7 +23,7 @@ The sandyhq fork of Zend: a controller for coding agents. A Rust engine (`crates
 
 ## Build and test
 Full rules and numbers: [docs/reference/testing.md](docs/reference/testing.md).
-- **Every Rust build and test runs in the build container, on the build server**: prefix the command with `infra/dev/run.sh` ([infra/dev/README.md](infra/dev/README.md)). The owner's laptop builds nothing; reach the server with `ssh AI '<command>'`, its checkouts are under `~/zend-build/`. The container has CI's packages, stable and nightly, nextest and kache; don't install toolchains or wrappers on a host.
+- **Every Rust build and test runs in the build container, on the build server**: prefix the command with `infra/dev/run.sh` ([infra/dev/README.md](infra/dev/README.md)). The owner's laptop builds nothing; reach the server with `ssh AI '<command>'`, its checkouts are under `~/zend-build/`. The container has CI's packages, stable and nightly, nextest and kache; run.sh defaults to nightly (parallel frontend) and kache with incremental kept, `NIGHTLY=0` for stable as CI builds; don't install toolchains or wrappers on a host.
 - While editing: `infra/dev/run.sh cargo check -p <crate>`, tests with `infra/dev/run.sh cargo nextest run --no-fail-fast -p <crate>`. nextest skips doctests: also `cargo test --doc`.
 - An installable build: `infra/dev/stage.sh` stages `target/zend-next` ([build-and-deploy.md](docs/reference/build-and-deploy.md)).
 - Before calling work done: the whole workspace once, and `apps/zgx` if you touched it.
