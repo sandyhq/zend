@@ -19,6 +19,22 @@ test("relative, absolute and file:// links resolve inside the project, with thei
 	expect(at("zend-file:src/a%20file%23%5Bx%5D.rs")).to_be("src/a file#[x].rs|-|-|in")
 end)
 
+-- Agents write `./plans/x.md` and `src/../x.md`: read from the project's
+-- folder, a path that stays inside it is the file it names, one that
+-- climbs out of it is no link.
+test("./ and ../ in a relative link are read from the project's folder", function()
+	expect(at("./plans/android-zgx-poc/reports/G1-3.md")).to_be("plans/android-zgx-poc/reports/G1-3.md|-|-|in")
+	expect(at("./plans/p/reports/../setup.md")).to_be("plans/p/setup.md|-|-|in")
+	expect(at("src/./lib.rs")).to_be("src/lib.rs|-|-|in")
+	expect(at("./src/lib.rs#L12")).to_be("src/lib.rs|12|-|in")
+	expect(at("./src/lib.rs:12:5")).to_be("src/lib.rs|12|5|in")
+	expect(at("./a%20b.md")).to_be("a b.md|-|-|in")
+	expect(at("./Makefile")).to_be(nil)
+	expect(at("./../secret.rs")).to_be(nil)
+	expect(at("src/../../secret.rs")).to_be(nil)
+	expect(at("./.env")).to_be(".env|-|-|in")
+end)
+
 test("paths decode once; unsafe decodes never resolve", function()
 	expect(at("2026-09-26/Some%20Folder/it's%20here.txt")).to_be("2026-09-26/Some Folder/it's here.txt|-|-|in")
 	expect(at("file:///work/comet/a%20b.md")).to_be("a b.md|-|-|in")
@@ -95,7 +111,8 @@ test("only file-shaped paths are links", function()
 			"mailto:dev@example.com",
 			"../secret.rs",
 			"src/../../secret.rs",
-			"src/./lib.rs",
+			"./",
+			"./..",
 			"src//lib.rs",
 			"docs.v2/readme",
 			"//work/comet/a.rs",
@@ -108,6 +125,27 @@ test("only file-shaped paths are links", function()
 	expect(at("/work/comet-other/src/lib.rs")).to_be("/work/comet-other/src/lib.rs|-|-|outside")
 	expect(at(".env")).to_be(".env|-|-|in")
 	expect(at("docs/.env")).to_be("docs/.env|-|-|in")
+end)
+
+test("a reply's ./ links open in the session's panel from the chat's folder", function()
+	local app = mount("chat_fixture.luau")
+	app:resize(900, 700)
+	app:command("go_s2")
+	app:frames(30)
+	app:command("dot_link_turn")
+	app:frames(30)
+	app:click('role:link ~"G1-3"')
+	app:click('role:link "here"')
+	app:click('role:link "at a line"')
+	-- Climbing out of the folder: styled, opening nothing.
+	app:click('role:link "out of the folder"')
+	app:frames(5)
+	local calls = app:state("calls")
+	expect(calls).to_contain("open_file:s2:plans/p/reports/G1-3.md")
+	expect(calls).to_contain("open_file:s2:plans/p/setup.md")
+	expect(calls).to_contain("open_file:s2:src/parse.rs")
+	expect(calls).never.to_contain("secret.rs")
+	expect(app:error()).to_be(nil)
 end)
 
 test("a reply's file links and a prompt's mention open in the session's panel", function()

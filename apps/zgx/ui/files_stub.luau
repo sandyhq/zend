@@ -318,6 +318,114 @@ ui.command {
 		end
 	end,
 }
+-- A real report (plans/android-zgx-poc/reports/G1-3.md, as it was) that
+-- links ../setup.md, two folders deep; and the file the link names.
+ui.command {
+	id = "disk_md_deep",
+	title = "A report linking ../setup.md",
+	run = function()
+		disk["plans/android-zgx-poc/reports/G1-3.md"] = [==[
+---
+key: android-zgx-poc/G1-3/1
+doer: 470fecad-79a3-451c-a121-8aa08041e319
+result: done
+---
+## Result
+
+The same Zend sidebar screen (apps/zgx/ui, real `ds.Sidebar` in a fixture with fixed data) with a plugin button placed by real `zend.place` runs on the desktop (offscreen), on the x86_64 emulator and on the owner's phone (Galaxy S25+, Android 17, arm64 APK). The plugin runs in a **minimal POC host** (`apps/zgx-android/src/lib.rs`: zend.* reads, plugin.<id>.* actions as no-ops, ui.add granted by hand), not in Zend's production plugin host (`apps/zgx/src/plugins`). All four criteria are observed; the phone run (criterion 4) went through adb, and the owner used the app himself (10 taps after unlocking). Known limitation: on the phone the content overlaps the status bar (zgx reads no window insets). Scope was offline only; real data (crates/mobile) and a host chat are a separate follow-up, not part of this approval.
+
+Revisions: zengx 09b3b10fa was G1 (emulator entry) only; everything from G2 on, including the phone APK, is built from **777a87565** (zengx) and **6a76bec70** (zend).
+
+| Criterion | State | Evidence |
+|---|---|---|
+| 1 One source for screen and plugin | observed | `apps/zgx/ui/android_poc_fixture.luau` + `apps/zgx/plugins-dev/poc-tap/`; desktop runs them from the repo, build.rs packs the same files at the same repo paths into the APK. No Android-only Luau. |
+| 2 Desktop snapshot before/after tap | observed | `~/.cache/android-poc/shots/g2-desktop-before-tap.png`, `g2-desktop-after-2-taps.png`, log `g2-desktop-inspect.txt` |
+| 3 APK builds reproducibly, own id | observed (x86_64) | `app.zend.zgxpoc`, beside `sh.zend.android` (never touched); command below |
+| 4 Phone: tap, lock/unlock | **adb-observed: passed**. Starts, 2 taps, survives screen off and PIN lock/unlock (same pid), re-tap works. The owner's own look is separate. | `g4-phone-before-tap.png`, `g4-phone-after-2-taps.png`, `g4-phone-after-wake.png` (keyguard), `g4-phone-after-unlock.png`, `g4-phone-after-unlock-tap.png` |
+
+## Revisions actually built
+- zengx: worktree ~/Projects/zengx-android-poc, branch android-poc, base cc93f0add, commits 09b3b10fa (G1) and 777a87565 (G2/G3). The zend side pins 2415cb77 in Cargo.toml but `[patch]`es every zgx crate to this worktree, so the code built is 777a87565.
+- zend: worktree ~/Projects/zend-android-poc, branch android-poc, base 701dca026, commits fe0074fb7 (G1), 189663fe0 (G2/G3) and 6a76bec70 (insets, lint). Not pushed or merged.
+
+## Build commands
+- APK (on the **host** with the NDK, not in the build container):
+  `source ~/.cache/android-poc/env.sh && ~/Projects/zend-android-poc/apps/zgx-android/build-apk.sh --abi x86_64`
+  → `~/.cache/android-poc/apk/zgxpoc.apk` (312,431,128 bytes, debug, unstripped). It uses cargo-ndk, aapt2, zipalign and apksigner with a debug key (`~/.cache/android-poc/debug.keystore`), with no Gradle and no Java code. Without `--abi` it builds x86_64 and arm64-v8a; the phone used the arm64-v8a build below.
+- Desktop binary (in Zend's build container, both worktrees mounted): `~/.cache/android-poc/desktop-poc-build.sh` → `~/.cache/android-poc/desktop-bin/zgx-poc`.
+- Desktop run: `env -i PATH=$PATH XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WAYLAND_DISPLAY=$WAYLAND_DISPLAY HOME=<tmp> ZGX_OFFSCREEN=1 ZGX_POPUP_WINDOWS=0 zgx-poc --inspect ~/Projects/zend-android-poc`, then `zgx inspect --app <pid> contributions | click '#poc-tap' | snapshot '#poc'`.
+- Emulator: `adb install -r zgxpoc.apk; adb shell am start -n app.zend.zgxpoc/android.app.NativeActivity`. Toolchain: [../setup.md](../setup.md).
+
+## Observed
+- **G1** (hello app, 2026-11-21): first draw on the emulator (Android 16, x86_64, `-gpu swiftshader_indirect`). Tap counter 0 → 2, and after KEYCODE_SLEEP/WAKEUP the same pid 5365 and the same state. Shots: `g1-before-tap.png`, `g1-after-2-taps.png`, `g1-after-lock-unlock.png`.
+- **G2 desktop**: `zgx inspect contributions` → `poc-tap after #sidebar-actions: 1 matching`. The orange "Tap me" turns into a green "Tapped 2 times" after two `click '#poc-tap'`.
+- **G3 emulator** (pid 5996 throughout):
+  - At start, the orange "Tap me" button sits under New chat/Search.
+  - `adb shell input tap 336 258` ×2 → green "Tapped 2 times".
+  - `KEYCODE_SLEEP` (mWakefulness=Asleep), then WAKEUP and dismiss-keyguard (Awake) → redrawn, still "Tapped 2 times".
+  - One more tap → "Tapped 3 times".
+
+## Before the phone (lead's round 2, 2026-11-21)
+- **arm64-v8a APK** (host, NDK): `source ~/.cache/android-poc/env.sh && OUT=~/.cache/android-poc/apk/arm64 apps/zgx-android/build-apk.sh --abi arm64-v8a`.
+  - Output `~/.cache/android-poc/apk/arm64/zgxpoc.apk`: **325,595,678 bytes**, debug and unstripped.
+  - Its .so is 316 MB, plus libc++_shared 9.5 MB.
+  - aapt2 reports native-code 'arm64-v8a' and targetSdk 34.
+  - Cold build 2 min 10 s.
+- **x86_64 APK**: same command with `--abi x86_64` and `OUT=.../apk/x86_64`. 314,319,384 bytes.
+- **Status bar:** targetSdk 36 → 34 and theme `Theme.DeviceDefault.NoActionBar` (AndroidManifest.xml).
+  - Below API 35, Android lays the window out between the system bars.
+  - zgx itself still reads no window insets, so this is a workaround, not inset support.
+- **Dev-lint toast:** `ZGX_LINT=0` is set in `android_main` before start.
+- Emulator check, observed (pid 6222 throughout):
+  - Content starts under the status bar and no toast shows: `g3b-emu-before-tap.png`.
+  - 2 taps, then `g3b-emu-after-2-taps.png`.
+  - Sleep (Asleep), wake and one more tap → "Tapped 3 times": `g3b-emu-after-unlock-tap.png`.
+- The arm64 APK has not run anywhere yet. It waits for the phone.
+
+## Phone (adb, 2026-11-21 10:45)
+- Device: Galaxy S25+ SM-S936B, serial R5CY225858F, Android 17, arm64-v8a, 1080x2340 at 450 dpi. Adreno Vulkan.
+- `app.zend.zgxpoc` was not installed before. Installed with `adb -s R5CY225858F install ~/.cache/android-poc/apk/arm64/zgxpoc.apk` (no `-r`, 2.7 s). `sh.zend.android` and other apps were not touched.
+- Launched with `am start -n app.zend.zgxpoc/android.app.NativeActivity`. **First draw on the device, with no crash** (crash buffer empty): the sidebar, Geist text and orange "Tap me". The Vulkan debug-label workaround is still set, so whether it is needed on Adreno is untested.
+- `input tap 360 277` ×2 → green "Tapped 2 times", pid 28914.
+- KEYCODE_SLEEP (Dozing) → KEYCODE_WAKEUP (Awake): **a secure keyguard is showing** (`deviceLocked=1`, padlock). Stopped there as briefed. The owner unlocks, then the re-tap check follows.
+- Owner unlocked with PIN; the poll (`dumpsys trust` deviceLocked, every 10 s) saw `deviceLocked=0` at 10:59:37. Keyguard gone, `topResumedActivity` = app.zend.zgxpoc NativeActivity, state kept: the counter read "Tapped 12 times" (the owner had tapped 10 times on his own) → `g4-phone-after-unlock.png`.
+- `input tap 360 277` → "Tapped 13 times" → `g4-phone-after-unlock-tap.png`.
+- Same pid 28914 throughout: before tap, after taps, after wake, after unlock and after re-tap. Crash buffer: no lines for zgxpoc; app log: 0 panic/FATAL lines.
+- Logcat for the pid: 131 lines, no panic or FATAL. Only harmless vendor errors (Adreno QSPM AIDL missing, libpenguin.so dlopen).
+- **New finding: on this phone the content draws under the status bar** ("New chat" overlaps the clock). The targetSdk 34 workaround holds on the emulator (Android 16) but not on Android 17 / One UI, which lays the window out edge-to-edge anyway. Real inset handling (winit `content_rect` / WindowInsets) is needed.
+
+## Diff summary
+- zengx (13 files, +192/−5 vs cc93f0add, all `cfg(target_os = "android")` except the last two):
+  - zgx-desktop: `src/android.rs` (AndroidApp handed to winit's event loop), rfd moved to non-Android targets with a `native_select` stub, clipboard memory-only, Android NativeApplicationEvents, native_prompt stub.
+  - vendored arboard: `unsupported.rs`.
+  - zgx-text: `/system/fonts` with Roboto / Noto Serif / Droid Sans Mono as generic families.
+  - zgx-script `inspect.rs`: `snapshot` falls back to `Ui::draw` where the last frame can't be read (Linux, offscreen).
+  - zgx-run: `add_font()`, so a host can carry its own fonts as Zend's `Application::font` does.
+- zend:
+  - new own-workspace crate `apps/zgx-android`:
+    - `lib.rs` `run(base)`: Geist fonts, `run_hosting` on the fixture, a minimal Zend surface (`zend.*` shared reads, `plugin.<id>.*` actions as no-ops, `zend.ui.add` gate), `set_plugins(poc-tap)` granted `ui.add`;
+    - `android_main` unpacks and runs;
+    - desktop `src/bin/zgx-poc.rs`;
+    - `build.rs` packs `apps/zgx/ui` (without tests) and the plugin;
+    - AndroidManifest, `build-apk.sh`.
+  - `apps/zgx/ui/android_poc_fixture.luau`: ds.Sidebar, fixed offline data.
+  - `apps/zgx/plugins-dev/poc-tap/` (zend.luau = the SDK copy, as ping does).
+
+## Workarounds and findings worth keeping
+- Emulator Vulkan (vulkan.ranchu) aborts in `vkSetDebugUtilsObjectNameEXT`. The POC turns off wgpu debug labels/utils through env before start. A real device is untested.
+- The theme asks for Geist. Without it, Android fell back to the first system face (Carrois Gothic SC, small caps). Fixed by adding Zend's own font files, as `apps/zgx/src/main.rs` does.
+- zgx-run given a relative path resolves `.luaurc` package paths with `..` wrongly. Absolute paths work. This is a zgx bug, not fixed.
+- I didn't use `zgx.json` packages or symlinks, because ds loads `ds/themes/*.json` relative to the app root and zgx rejects symlinks that leave the root. So the fixture runs from inside `apps/zgx/ui`.
+
+## Open
+- Physical phone (criterion 4): passed via adb. The owner's own look is separate.
+- zgx reads no window insets. targetSdk 34 keeps the emulator (Android 16) clear, but **not the Galaxy S25+ (Android 17)**, where content draws under the status bar. Real inset support is needed (winit's `content_rect`).
+- The desktop "same source" run is offscreen only. No visible window was opened.
+- Real Zend plugin host: the POC grants and exposes by hand. It is not `apps/zgx/src/plugins`.
+]==]
+		disk["plans/android-zgx-poc/setup.md"] = "# Setup\n"
+		tell({ { kind = "created", path = "plans" } })
+	end,
+}
 -- A document with a picture beside it and a link to another file.
 ui.command {
 	id = "disk_md_links",

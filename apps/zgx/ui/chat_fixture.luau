@@ -2035,6 +2035,28 @@ ui.command {
 		}
 	end,
 }
+-- A reply linking files as agents write them: `./` from the chat's folder,
+-- with a `..` inside, and a line (the owner's `./plans/…/reports/G1-3.md`).
+ui.command {
+	id = "dot_link_turn",
+	title = "A turn with ./ file links",
+	run = function()
+		local s = table.clone(store.session:peek() or {})
+		s.cwd = "/work/atlas"
+		store.session:set(s)
+		local reply = "The report is [G1-3](./plans/p/reports/G1-3.md), its setup [here](./plans/p/reports/../setup.md) "
+			.. "and the code [at a line](./src/parse.rs#L12). Not [out of the folder](../secret.rs)."
+		store.messages:push {
+			id = "dl1",
+			role = "assistant",
+			text = reply,
+			model = "Opus",
+			at = "Sep 8, 1:50 PM",
+			copy = reply,
+			blocks = { { id = "t", kind = "text", text = reply } },
+		}
+	end,
+}
 -- A turn whose prompt and reply each start a paragraph with a file, a
 -- chat, a skill and a command (chips), then a web link (a link), in a chat
 -- whose folder is /work/atlas.
