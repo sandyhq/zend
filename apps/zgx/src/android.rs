@@ -214,6 +214,11 @@ fn engine() -> std::sync::MutexGuard<'static, Option<zend_engine::InProcessDiale
     ENGINE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Whether an engine thread runs (or starts or stops) in this process.
+pub fn engine_running() -> bool {
+    engine().is_some()
+}
+
 /// A new connection to the engine (one end of a socket pair it serves).
 /// `ConnectionRefused` while none runs: the supervisor then starts one.
 pub fn dial_engine() -> std::io::Result<std::os::unix::net::UnixStream> {
@@ -247,19 +252,6 @@ impl Drop for EngineThread {
     }
 }
 
-/// An endpoint for the log: its scheme and port, not where it is.
-pub(crate) fn redacted(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return "(not a URL)".into();
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host_port = authority.rsplit('@').next().unwrap_or_default();
-    match host_port.rsplit_once(':').filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit())) {
-        Some((_, port)) => format!("{scheme}://…:{port}"),
-        None => format!("{scheme}://…"),
-    }
-}
-
 /// Start the engine on a thread of its own, unless one runs. It takes its
 /// connections from this process alone (`zend_engine::InProcessIpc`): no
 /// port, no token file. Whether one was started. When it stops
@@ -288,9 +280,10 @@ pub fn start_engine(start: EngineStart) -> bool {
         // offline), its dev bearer from `edge-token` there (none: no
         // sync), and no hosted sign-in client (no WorkOS on the phone).
         let edge_token = zend_cli::edge_token_from_env();
+        // (Fixed words: the edge is a code's, anyone's to make.)
         log::info!(
-            "zend: engine: edge {} ({})",
-            redacted(&start.edge),
+            "zend: engine: {} ({})",
+            crate::phone_link::edge_diagnostic(&start.edge),
             if edge_token.is_some() { "with its bearer" } else { "no bearer: offline" }
         );
         let config = zend_engine::EngineConfig {

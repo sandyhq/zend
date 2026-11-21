@@ -36,6 +36,8 @@ beta = []
 layout_probe = []
 
 [dependencies]
+# Checking a relay's address read from a phone link code (src/phone_link.rs).
+url = "2.5"
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 # zgx from sandyhq/zengx (zeronsh/zgx with our edits: its FORK.md), at one
 # commit for every zgx crate and patch below; CI builds its zgx CLI at the

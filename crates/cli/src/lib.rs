@@ -25,7 +25,7 @@ use clap::{CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 
 pub use env::{
     DEFAULT_EDGE_URL, DEFAULT_IPC_PORT, DEFAULT_WORKOS_CLIENT_ID, config_dir, edge_token_from_env, edge_url_from_env, ipc_port_from,
-    ipc_port_from_env, store_edge_config, workos_client_id_from_env,
+    ipc_port_from_env, store_edge_config, workos_client_id_from_env, edge_config_in, edge_from_env, edge_record_in, restore_edge_record,
 };
 pub use logging::{RotatingLog, init_logging, long_running_setup, open_log_file};
 

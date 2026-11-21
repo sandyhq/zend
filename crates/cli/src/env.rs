@@ -25,21 +25,72 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
         .map(|dir| dir.join("zend"))
 }
 
-fn config_file(name: &str) -> Option<String> {
-    let text = std::fs::read_to_string(config_dir()?.join(name)).ok()?;
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.to_owned())
-}
+/// The file that holds the edge and its bearer as one record (written by
+/// [`store_edge_config`]): a first line naming the format, the edge, the
+/// bearer. Read before the older pair of files `edge-url` and `edge-token`
+/// (written by hand, or by an older Zend), which are read only when it's
+/// absent.
+const EDGE_RECORD: &str = "edge";
+const EDGE_RECORD_HEAD: &str = "zend-edge 1";
 
-/// Keep the edge config in `dir` (a [`config_dir`]): `edge-url` and
-/// `edge-token` (the bearer), each written whole or not at all (a new file
+/// Keep the edge config in `dir` (a [`config_dir`]): the edge and its
+/// bearer as one record, `edge`, written whole or not at all (a new file
 /// beside it, flushed, renamed over) and readable by this user alone (mode
 /// 600 from its creation, so the bearer is never readable by others even
-/// for a moment). What the phone keeps after scanning the desktop's code.
+/// for a moment). A store that fails leaves what was kept before, both
+/// halves of it. What the phone keeps after scanning the desktop's code.
 pub fn store_edge_config(dir: &std::path::Path, url: &str, token: &str) -> std::io::Result<()> {
+    let (url, token) = (url.trim(), token.trim());
+    if url.is_empty() || token.is_empty() || url.contains(['\n', '\r']) || token.contains(['\n', '\r']) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "an edge and a bearer on one line each"));
+    }
     std::fs::create_dir_all(dir)?;
-    write_private(&dir.join("edge-url"), url.trim())?;
-    write_private(&dir.join("edge-token"), token.trim())
+    write_private(&dir.join(EDGE_RECORD), &format!("{EDGE_RECORD_HEAD}\n{url}\n{token}"))
+}
+
+/// The record [`store_edge_config`] keeps in `dir`: its edge and bearer.
+/// None when there's none, or it isn't one (then nothing of it is used).
+pub fn edge_record_in(dir: &std::path::Path) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(dir.join(EDGE_RECORD)).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != EDGE_RECORD_HEAD {
+        return None;
+    }
+    let url = lines.next()?.trim();
+    let token = lines.next()?.trim();
+    (!url.is_empty() && !token.is_empty() && lines.all(|l| l.trim().is_empty())).then(|| (url.to_owned(), token.to_owned()))
+}
+
+/// Put back what `dir` kept before a [`store_edge_config`]: that record,
+/// or (none) no record, so the older files, if any, are read again.
+pub fn restore_edge_record(dir: &std::path::Path, before: Option<&(String, String)>) -> std::io::Result<()> {
+    match before {
+        Some((url, token)) => store_edge_config(dir, url, token),
+        None => match std::fs::remove_file(dir.join(EDGE_RECORD)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// The edge and bearer kept in `dir`, read as one: the record, else the
+/// older two files (the edge none: nothing kept).
+pub fn edge_config_in(dir: &std::path::Path) -> Option<(String, Option<String>)> {
+    if dir.join(EDGE_RECORD).exists() {
+        return edge_record_in(dir).map(|(url, token)| (url, Some(token)));
+    }
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    Some((read("edge-url")?, read("edge-token")))
+}
+
+/// The edge and its bearer as [`edge_url_from_env`] and
+/// [`edge_token_from_env`] resolve them, with the config folder read once:
+/// a pair kept together is never seen half old, half new.
+pub fn edge_from_env() -> (String, Option<String>) {
+    let kept = config_dir().and_then(|dir| edge_config_in(&dir));
+    let url = env_url().or_else(|| kept.as_ref().map(|(url, _)| url.clone())).unwrap_or_else(|| DEFAULT_EDGE_URL.into());
+    let token = env_token().or_else(|| kept.and_then(|(_, token)| token));
+    (url, token)
 }
 
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
@@ -65,30 +116,33 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 }
 
 /// The edge's dev bearer: `ZEND_EDGE_TOKEN`, else the file at
-/// `ZEND_EDGE_TOKEN_FILE`, else [`config_dir`]'s `edge-token`.
+/// `ZEND_EDGE_TOKEN_FILE`, else the one kept in [`config_dir`] (its `edge`
+/// record, else `edge-token`).
 pub fn edge_token_from_env() -> Option<String> {
+    env_token().or_else(|| config_dir().and_then(|dir| edge_config_in(&dir)).and_then(|(_, token)| token))
+}
+
+fn env_token() -> Option<String> {
     if let Some(token) = std::env::var("ZEND_EDGE_TOKEN").ok().filter(|t| !t.trim().is_empty()) {
         return Some(token.trim().to_owned());
     }
     if let Some(path) = std::env::var_os("ZEND_EDGE_TOKEN_FILE").filter(|p| !p.is_empty()) {
         return std::fs::read_to_string(path).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
     }
-    config_file("edge-token")
+    None
 }
 
-/// The edge: `ZEND_EDGE_URL`, else [`config_dir`]'s `edge-url`, else
-/// [`DEFAULT_EDGE_URL`] (which never resolves: offline).
+/// The edge: `ZEND_EDGE_URL`, else the one kept in [`config_dir`] (its
+/// `edge` record, else `edge-url`), else [`DEFAULT_EDGE_URL`] (which never
+/// resolves: offline).
 pub fn edge_url_from_env() -> String {
-    if let Some(url) = std::env::var("ZEND_EDGE_URL").ok().filter(|s| !s.trim().is_empty()) {
-        return url;
-    }
-    if let Some(url) = config_file("edge-url") {
-        return url;
-    }
-    std::env::var("ZEND_EDGE_URL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
+    env_url()
+        .or_else(|| config_dir().and_then(|dir| edge_config_in(&dir)).map(|(url, _)| url))
         .unwrap_or_else(|| DEFAULT_EDGE_URL.into())
+}
+
+fn env_url() -> Option<String> {
+    std::env::var("ZEND_EDGE_URL").ok().filter(|s| !s.trim().is_empty())
 }
 
 /// WorkOS client id resolution: explicit env wins (empty string = dev mode);
@@ -125,6 +179,25 @@ pub const DEFAULT_IPC_PORT: u16 = 27871;
 
 #[cfg(test)]
 mod tests {
+    /// A store that fails part way (here: the new file can't be made) leaves
+    /// the pair kept before, whole: never the new edge with the old bearer.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_store_never_leaves_a_mixed_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("zend");
+        super::store_edge_config(&config, "http://100.64.0.1:27640", "u-old@org").unwrap();
+        // Whatever the store writes second can't be made.
+        for name in ["edge", "edge-token"] {
+            std::fs::create_dir_all(config.join(format!(".{name}.{}.new", std::process::id()))).unwrap();
+        }
+        assert!(super::store_edge_config(&config, "http://100.64.0.2:27641", "u-new@org").is_err());
+        assert_eq!(
+            super::edge_config_in(&config),
+            Some(("http://100.64.0.1:27640".to_owned(), Some("u-old@org".to_owned())))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_edge_config_is_written_whole_and_private() {
@@ -133,14 +206,33 @@ mod tests {
         let config = dir.path().join("zend");
         super::store_edge_config(&config, " http://100.64.0.1:27640 ", "u-phone@org\n").unwrap();
         super::store_edge_config(&config, "http://100.64.0.1:27640", "u-phone2@org").unwrap();
-        for (name, text) in [("edge-url", "http://100.64.0.1:27640\n"), ("edge-token", "u-phone2@org\n")] {
-            let path = config.join(name);
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
-        }
-        // No new file left beside them.
-        let mut names: Vec<_> = std::fs::read_dir(&config).unwrap().map(|e| e.unwrap().file_name()).collect();
-        names.sort();
-        assert_eq!(names, ["edge-token", "edge-url"]);
+        let path = config.join("edge");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "zend-edge 1\nhttp://100.64.0.1:27640\nu-phone2@org\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(super::edge_record_in(&config), Some(("http://100.64.0.1:27640".into(), "u-phone2@org".into())));
+        // No new file left beside it.
+        let names: Vec<_> = std::fs::read_dir(&config).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["edge"]);
+        // A bearer can't carry a line of its own into the record.
+        assert!(super::store_edge_config(&config, "http://a", "u\nx").is_err());
+    }
+
+    /// An install that kept the older two files reads them while it has no
+    /// record; once it has one, the record alone; restoring "none" goes back.
+    #[test]
+    fn the_older_two_files_are_read_until_there_is_a_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path();
+        assert_eq!(super::edge_config_in(config), None);
+        std::fs::write(config.join("edge-url"), "http://100.64.0.1:27640\n").unwrap();
+        std::fs::write(config.join("edge-token"), "u-old@org\n").unwrap();
+        assert_eq!(super::edge_config_in(config), Some(("http://100.64.0.1:27640".into(), Some("u-old@org".into()))));
+        super::store_edge_config(config, "http://100.64.0.2:27641", "u-new@org").unwrap();
+        assert_eq!(super::edge_config_in(config), Some(("http://100.64.0.2:27641".into(), Some("u-new@org".into()))));
+        super::restore_edge_record(config, None).unwrap();
+        assert_eq!(super::edge_config_in(config), Some(("http://100.64.0.1:27640".into(), Some("u-old@org".into()))));
+        // A record that isn't one is nothing: not half of it, not the old files.
+        std::fs::write(config.join("edge"), "zend-edge 1\nhttp://x\n").unwrap();
+        assert_eq!(super::edge_config_in(config), None);
     }
 }

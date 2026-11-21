@@ -43,37 +43,76 @@ pub fn encode(edge: &str, token: &str) -> String {
     format!("{PREFIX}v=1&edge={}&token={}", escape(edge.trim()), escape(token.trim()))
 }
 
+/// The longest code read (a QR code holds at most 2953 bytes): longer
+/// text is refused before any of it is decoded.
+const MAX_CODE: usize = 3000;
+/// The longest edge and bearer a code may hold.
+const MAX_EDGE: usize = 256;
+const MAX_TOKEN: usize = 1024;
+
 /// The edge and bearer a code holds (pasted text may come with spaces or
-/// a line break around it), or why it's not one.
+/// a line break around it), or why it's not one. The edge is checked as a
+/// URL (http or https, a host, a valid port, nothing else: no user, path,
+/// query or fragment) and given in its canonical form; the bearer is one
+/// printable word. Fields other than these three are passed over without
+/// decoding them; one of them twice refuses the code.
 pub fn decode(text: &str) -> Result<Connect, &'static str> {
-    let query = text.trim().strip_prefix(PREFIX).ok_or("not a Zend connect code")?;
+    let text = text.trim();
+    if text.len() > MAX_CODE {
+        return Err("too long");
+    }
+    let query = text.strip_prefix(PREFIX).ok_or("not a Zend connect code")?;
     let (mut version, mut edge, mut token) = (None, None, None);
     for pair in query.split('&') {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let value = unescape(value).ok_or("badly encoded")?;
-        match key {
-            "v" => version = Some(value),
-            "edge" => edge = Some(value),
-            "token" => token = Some(value),
-            _ => {}
+        let slot = match key {
+            "v" => &mut version,
+            "edge" => &mut edge,
+            "token" => &mut token,
+            _ => continue,
+        };
+        if slot.is_some() {
+            return Err("a field twice");
         }
+        *slot = Some(unescape(value).ok_or("badly encoded")?);
     }
     if version.as_deref() != Some("1") {
         return Err("a code of another version");
     }
-    let edge = edge.filter(|e| valid_edge(e)).ok_or("no relay address in it")?;
+    let edge = edge.as_deref().and_then(canonical_edge).ok_or("no relay address in it")?;
     let token = token.filter(|t| valid_token(t)).ok_or("no key in it")?;
-    Ok(Connect { edge: edge.trim_end_matches('/').to_owned(), token })
+    Ok(Connect { edge, token })
 }
 
-fn valid_edge(edge: &str) -> bool {
-    let rest = edge.strip_prefix("http://").or_else(|| edge.strip_prefix("https://"));
-    rest.is_some_and(|rest| !rest.is_empty() && rest.len() < 2048)
-        && edge.chars().all(|c| c.is_ascii_graphic())
+/// `edge` in its canonical form (`scheme://host[:port]`, lower case, no
+/// default port), if it's a relay's address and nothing more.
+pub fn canonical_edge(edge: &str) -> Option<String> {
+    if edge.is_empty() || edge.len() > MAX_EDGE || !edge.bytes().all(|b| b.is_ascii_graphic() && b != b'\\') {
+        return None;
+    }
+    // The parser is lenient with what follows the scheme (`http:/a`,
+    // `http:///a`): two slashes and a host right after them, or nothing.
+    let lower = edge.to_ascii_lowercase();
+    let rest = lower.strip_prefix("http://").or_else(|| lower.strip_prefix("https://"))?;
+    if rest.is_empty() || rest.starts_with(['/', '?', '#', '@', ':']) {
+        return None;
+    }
+    let url = url::Url::parse(edge).ok()?;
+    let plain = matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() == "/"
+        && url.port() != Some(0);
+    let host = url.host_str().filter(|host| {
+        !host.is_empty() && host.len() <= 253 && (host.starts_with('[') || host.split('.').all(|label| label.len() <= 63))
+    });
+    (plain && host.is_some()).then(|| url.origin().ascii_serialization())
 }
 
 fn valid_token(token: &str) -> bool {
-    (1..4096).contains(&token.len()) && token.chars().all(|c| c.is_ascii_graphic())
+    (1..=MAX_TOKEN).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_graphic())
 }
 
 fn escape(text: &str) -> String {
@@ -129,20 +168,21 @@ pub fn qr_svg(text: &str) -> Option<(String, usize)> {
     Some((svg, total as usize))
 }
 
-/// Whether `edge` is a relay this computer is on: not the never-answering
-/// default an unconfigured Zend has.
+/// Whether `edge` is a relay this computer is on: an address a phone may
+/// keep, not the never-answering default an unconfigured Zend has.
 fn is_relay(edge: &str) -> bool {
-    let host = edge.split_once("://").map_or("", |(_, rest)| rest.split(['/', ':']).next().unwrap_or(""));
-    !host.is_empty() && !host.ends_with(".invalid")
+    canonical_edge(edge).is_some_and(|edge| {
+        let host = edge.split_once("://").map_or("", |(_, rest)| rest.rsplit_once(':').map_or(rest, |(host, _)| host));
+        !host.ends_with(".invalid")
+    })
 }
 
-/// This computer's code: the edge its engine uses and its bearer.
+/// This computer's code: the edge its engine uses and its bearer, both as
+/// a phone would accept them.
 fn this_computers_code() -> Result<String, String> {
     let edge = crate::auth::endpoint().edge;
-    let token = zend_cli::edge_token_from_env().ok_or("no_edge")?;
-    if !is_relay(&edge) {
-        return Err("no_edge".into());
-    }
+    let token = zend_cli::edge_token_from_env().filter(|t| valid_token(t)).ok_or("no_edge")?;
+    let edge = canonical_edge(&edge).filter(|e| is_relay(e)).ok_or("no_edge")?;
     Ok(encode(&edge, &token))
 }
 
@@ -157,26 +197,72 @@ pub fn install(host: &ScriptHost) {
     crate::android_camera::install(host);
 }
 
+/// What the log says of an edge: a fixed word, never text of the edge
+/// itself (a code is anyone's to make).
+pub fn edge_diagnostic(edge: &str) -> &'static str {
+    match canonical_edge(edge) {
+        Some(edge) if edge.starts_with("https://") => "an https relay",
+        Some(_) => "an http relay",
+        None => "no relay address",
+    }
+}
+
+/// What the page shows of a kept edge (canonical, so only a scheme and a
+/// port of digits): its scheme and port, not where it is.
+pub fn shown_edge(edge: &str) -> String {
+    let Some(edge) = canonical_edge(edge) else { return String::new() };
+    let (scheme, rest) = edge.split_once("://").unwrap_or(("", ""));
+    match rest.rsplit_once(':').filter(|(host, port)| !host.ends_with(']') || !port.is_empty()) {
+        Some((_, port)) if port.bytes().all(|b| b.is_ascii_digit()) => format!("{scheme}://…:{port}"),
+        _ => format!("{scheme}://…"),
+    }
+}
+
+/// Keep `connect` in `dir` as the edge and bearer, then `restart` the
+/// engine on them. A restart that fails puts back what was kept before
+/// (both halves, or none), so the running engine and the kept pair agree.
+pub async fn keep_and_restart<F, Fut>(dir: &std::path::Path, connect: &Connect, restart: F) -> Result<(), &'static str>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let before = zend_cli::edge_record_in(dir);
+    zend_cli::store_edge_config(dir, &connect.edge, &connect.token).map_err(|_| "store")?;
+    if restart().await.is_err() {
+        if zend_cli::restore_edge_record(dir, before.as_ref()).is_err() {
+            eprintln!("zend: phone link: the engine didn't stop, and the relay kept before couldn't be put back");
+        }
+        return Err("engine");
+    }
+    Ok(())
+}
+
 /// Keep the code's edge and bearer as this app's (`zend_cli::config_dir`)
 /// and start its engine again on them: the running one is asked to stop,
-/// and the supervisor starts the next, which reads them.
+/// and the supervisor starts the next, which reads them. An engine that
+/// won't stop keeps what it had, and so does the config folder.
 #[cfg(target_os = "android")]
 pub async fn connect(code: &str) -> Result<Value, String> {
-    let Connect { edge, token } = decode(code).map_err(|why| {
-        log::warn!("zend: phone link: not a code: {why}");
+    let connect = decode(code).map_err(|why| {
+        log::warn!("zend: phone link: not a code ({why})");
         "bad_code".to_owned()
     })?;
     let dir = zend_cli::config_dir().ok_or("store")?;
-    zend_cli::store_edge_config(&dir, &edge, &token).map_err(|error| {
-        log::error!("zend: phone link: keeping the code: {error}");
-        "store".to_owned()
+    log::info!("zend: phone link: keeping {} and its key, then starting the engine on them", edge_diagnostic(&connect.edge));
+    keep_and_restart(&dir, &connect, || async {
+        match crate::engine::get().stop().await {
+            // No connection and no engine thread: none runs, and the next
+            // to start reads what's kept.
+            Err(error) if error == "offline" && !crate::android::engine_running() => Ok(()),
+            other => other,
+        }
+    })
+    .await
+    .map_err(|word| {
+        log::error!("zend: phone link: {}", if word == "store" { "the code couldn't be kept" } else { "the engine didn't stop: nothing changed" });
+        word.to_owned()
     })?;
-    log::info!("zend: phone link: kept the relay {} and its key; starting the engine on them", crate::android::redacted(&edge));
-    crate::engine::get().stop().await.map_err(|error| {
-        log::error!("zend: phone link: the engine didn't stop: {error}");
-        "engine".to_owned()
-    })?;
-    Ok(Value::record([("edge", Value::from(crate::android::redacted(&edge).as_str()))]))
+    Ok(Value::record([("edge", Value::from(shown_edge(&connect.edge).as_str()))]))
 }
 
 #[cfg(test)]
@@ -201,6 +287,95 @@ mod tests {
             "zend://connect?v=1&edge=http%3A%2F%2Fa&token=%zz",
         ] {
             assert!(decode(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Codes made to hurt: each refused before anything is kept.
+    #[test]
+    fn a_malicious_code_is_refused() {
+        let code = |edge: &str| encode(edge, "u-x@org");
+        let long_field = format!("zend://connect?v=1&junk={}&edge=http%3A%2F%2Fa&token=t", "A".repeat(100_000));
+        for bad in [
+            code("http://user:pw@relay.example:27640"),
+            code("http://user@relay.example"),
+            code("http://relay.example:27640/?next=x"),
+            code("http://relay.example:27640#frag"),
+            code("http://relay.example/api"),
+            code("http:///"),
+            code("http://"),
+            code("https:////relay.example"),
+            code("http://relay.example:99999"),
+            code("http://relay.example:0"),
+            code("http://relay.example:12ab"),
+            code("http:\\\\relay.example"),
+            code("http://relay.example\n:27640"),
+            code("http://rel ay.example"),
+            code("javascript://relay.example"),
+            code(&format!("http://{}.example", "a".repeat(300))),
+            "zend://connect?v=1&edge=http%3A%2F%2Fa&edge=http%3A%2F%2Fb&token=t".to_owned(),
+            "zend://connect?v=1&edge=http%3A%2F%2Fa&token=t&token=u".to_owned(),
+            "zend://connect?v=1&edge=http%3A%2F%2Fa&token=t%0Ax".to_owned(),
+            encode("http://a", &"t".repeat(5000)),
+            long_field,
+        ] {
+            assert!(decode(&bad).is_err(), "accepted {:.80}", bad);
+        }
+    }
+
+    /// The log's words for an edge are fixed, whatever the code held.
+    #[test]
+    fn the_log_says_nothing_of_the_edge_itself() {
+        for edge in ["http://evil.example:1/\nzend: engine: connected", "https://secret-host.example", "http://a b", "x"] {
+            let said = edge_diagnostic(edge);
+            assert!(["an https relay", "an http relay", "no relay address"].contains(&said));
+            assert!(!said.contains("example") && !said.contains("evil"));
+        }
+        assert_eq!(shown_edge("http://100.64.0.1:27640"), "http://…:27640");
+        assert_eq!(shown_edge("https://relay.example"), "https://…");
+        assert_eq!(shown_edge("http://a\n:1"), "");
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        loop {
+            if let std::task::Poll::Ready(out) = f.as_mut().poll(&mut cx) {
+                return out;
+            }
+        }
+    }
+
+    /// An engine that won't stop leaves the pair kept before, whole; one
+    /// that stops keeps the new pair.
+    #[test]
+    fn a_failed_restart_puts_back_the_relay_kept_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Connect { edge: "http://100.64.0.1:27640".into(), token: "u-old@org".into() };
+        let new = Connect { edge: "http://100.64.0.2:27641".into(), token: "u-new@org".into() };
+        block_on(keep_and_restart(dir.path(), &old, || async { Ok(()) })).unwrap();
+        let failed = block_on(keep_and_restart(dir.path(), &new, || async { Err("busy".to_owned()) }));
+        assert_eq!(failed, Err("engine"));
+        assert_eq!(zend_cli::edge_record_in(dir.path()), Some((old.edge.clone(), old.token.clone())));
+        // With nothing kept before, nothing is kept after.
+        let empty = tempfile::tempdir().unwrap();
+        let _ = block_on(keep_and_restart(empty.path(), &new, || async { Err("busy".to_owned()) }));
+        assert_eq!(zend_cli::edge_config_in(empty.path()), None);
+        block_on(keep_and_restart(dir.path(), &new, || async { Ok(()) })).unwrap();
+        assert_eq!(zend_cli::edge_record_in(dir.path()), Some((new.edge, new.token)));
+    }
+
+    /// What's kept is the edge's canonical form: scheme and host in lower
+    /// case, a default port dropped, no trailing slash.
+    #[test]
+    fn the_edge_kept_is_canonical() {
+        for (given, kept) in [
+            ("http://100.64.0.1:27640/", "http://100.64.0.1:27640"),
+            ("HTTPS://Relay.Example:443", "https://relay.example"),
+            ("http://relay.example:80/", "http://relay.example"),
+            ("http://[fd7a:115c::1]:27640", "http://[fd7a:115c::1]:27640"),
+        ] {
+            assert_eq!(decode(&encode(given, "u-x@org")).map(|c| c.edge), Ok(kept.to_owned()), "{given}");
         }
     }
 
