@@ -12,6 +12,7 @@ local route = require("@app/screens/shell/route")
 local fit = require("@app/screens/shell/fit")
 local boundary = require("@app/screens/shell/boundary")
 local locale = require("@ds/locale")
+local view = require("@app/screens/shell/view")
 
 -- The actions' last width, kept across a reload of the scripts.
 local actions_width = ui.state("shell_titlebar_actions_w", 0)
@@ -60,8 +61,8 @@ local function corner_card(size: number): Node
 	}
 end
 
-return function(props: Props): Node
-	local size = ds.island.metrics().control
+local function Bar(props: Props): Node
+	local size = if view.compact:peek() then ds.TitleBar.TOUCH else ds.island.metrics().control
 	-- The session's lanes (side chats, subagents: screens/chat/lanes), where
 	-- that screen is there.
 	local function lanes(): any
@@ -191,4 +192,15 @@ return function(props: Props): Node
 			actions_width = actions_width,
 		},
 	}
+end
+
+-- Compact (a phone's width), the bar is for touch (ds/title_bar): made again
+-- as the window crosses the line, its controls at their size.
+return function(props: Props): Node
+	local function bar(): Node
+		return Bar(props)
+	end
+	return ui.show(function(): boolean
+		return view.compact:get()
+	end, bar, bar)
 end

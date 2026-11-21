@@ -81,6 +81,17 @@ local LIGHTS_GAP, FULL_SCREEN_IN = 16, 12
 -- moves until it's done, then they slide from where they stood.
 local FULL_SCREEN_SLIDE = { duration = 200, ease = "cubicBezier(0, 0, 0.58, 1)" }
 
+-- Touch (a phone's compact window, `TitleBar.set_touch`): no window buttons
+-- to clear, so the controls start at the edge; each a 44-point target
+-- (Apple's and Material's least, 48 dp less Material's spacing), touching,
+-- their glyphs as ever; no Forward (a phone goes back, never forward). The
+-- bar's line moves to their middle, 22 down: their tops at the window's.
+local TOUCH, TOUCH_IN = 44, 4
+local touch = ui.state("ds_title_bar_touch", false)
+local function touch_now(tracked: boolean?): boolean
+	return if tracked == false then touch:peek() else touch:get()
+end
+
 -- A state of the window's (`ui.window.<name>`), or nil where there's none
 -- (a plugin, lent the design system, has no window of its own).
 local function window_state(name: string): State<any>?
@@ -143,6 +154,9 @@ end
 -- right (the shipping app's), past them at the left (never nearer than
 -- the lights' 88), 88 with none reported.
 local function toggle_in(full: boolean, tracked: boolean?): number
+	if touch_now(tracked) then
+		return TOUCH_IN
+	end
 	if not on_macos() then
 		local side, buttons = window_buttons(tracked)
 		if side == "right" then
@@ -164,9 +178,15 @@ end
 -- (off macOS, the window's buttons at the right), its island holds it
 -- evenly, as far past its end as before its start.
 local function controls_tail(start: number): number
+	if touch:get() then
+		return TOUCH_IN
+	end
 	return if not on_macos() and start == ROW_PAD then ROW_PAD - island.metrics().inset else ROW_PAD
 end
 local function controls_w(start: number): number
+	if touch:get() then
+		return TOUCH + TOUCH + TOUCH_IN
+	end
 	local m = island.metrics()
 	return m.control + m.group + m.control + m.gap + m.control + controls_tail(start)
 end
@@ -262,6 +282,9 @@ local CAPTION_GLYPH, CONTROL_INK = 10, 12
 -- control's glyph to Minimize's as far as from one caption glyph to the
 -- next (a button's width less its glyph), so the two read as one group.
 local function actions_right(): number
+	if touch:get() then
+		return TOUCH_IN
+	end
 	local side, buttons = window_buttons()
 	-- (Linux's buttons, circles in a strip the bar's height or more, keep
 	-- the row's padding before them. Windows' span the bar's whole 38 too,
@@ -296,6 +319,9 @@ end
 -- screen, so nothing moves going in.
 local LIGHTS_LINE = 20
 local function middle(tracked: boolean?): number
+	if touch_now(tracked) then
+		return TOUCH / 2
+	end
 	local side, buttons = window_buttons(tracked)
 	if side == "right" and buttons.height < H then
 		return math.max(buttons.y + buttons.height / 2, island.thickness() / 2)
@@ -319,7 +345,7 @@ local function control(label: Label, glyph: Node, enabled: (() -> boolean)?, on_
 	local function able(): boolean
 		return enabled == nil or enabled()
 	end
-	local size = island.metrics().control
+	local size = if touch:peek() then TOUCH else island.metrics().control
 	return IconButton {
 		label = label,
 		w = size,
@@ -342,6 +368,11 @@ end
 local TitleBar = ui.component(function(props: Props): Node
 	local m = island.metrics()
 	local CONTROL, GROUP_GAP, CONTROL_GAP = m.control, m.group, m.gap
+	-- (Touch: read as it's built; the caller builds it again as it changes.)
+	local touching = touch:peek()
+	if touching then
+		CONTROL, GROUP_GAP, CONTROL_GAP = TOUCH, 0, 0
+	end
 	-- The island: from the window's inset to the control row's end; as tall
 	-- as an island (a control and its padding), a padding's worth less as it
 	-- comes (Zend's 28 to 32). Its end follows the row (full screen).
@@ -466,8 +497,10 @@ local TitleBar = ui.component(function(props: Props): Node
 			),
 			ui.div { w = GROUP_GAP, shrink = 0 },
 			control(locale.t("common.back"), Icon { name = "arrow-left", size = ARROW, glyph_stroke = true }, props.can_back, props.on_back),
-			ui.div { w = CONTROL_GAP, shrink = 0 },
-			control(locale.t("ds.title_bar.forward"), Icon { name = "arrow-right", size = ARROW, glyph_stroke = true }, props.can_forward, props.on_forward),
+			if touching then nil else ui.div { w = CONTROL_GAP, shrink = 0 },
+			if touching
+				then nil
+				else control(locale.t("ds.title_bar.forward"), Icon { name = "arrow-right", size = ARROW, glyph_stroke = true }, props.can_forward, props.on_forward),
 		}
 	)
 	if props.actions then
@@ -594,6 +627,16 @@ local M = setmetatable({
 	window_buttons_right = window_buttons_right,
 	actions_right = actions_right,
 	middle = middle,
+	-- Touch on or off (a phone's compact window), and whether it's on (tracked).
+	set_touch = function(on: boolean)
+		if touch:peek() ~= on then
+			touch:set(on)
+		end
+	end,
+	touch = function(): boolean
+		return touch:get()
+	end,
+	TOUCH = TOUCH,
 	-- What lies beside the controls follows them: `follow(ref, { prop =
 	-- function(full) … end }, settle?)`, with `controls_end(full)`, its
 	-- prop's own style a plain number to start from (`full_screen_now()`).

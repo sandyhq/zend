@@ -207,6 +207,31 @@ end
 function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 	local inset = props ~= nil and props.inset == true
 	local collapsed = if props then props.collapsed else nil
+	-- Compact (a phone's width): the list or the page, each the whole width,
+	-- the page with a way back to the list at its head (`route.settings_list`;
+	-- the shell builds this again as the window crosses the line).
+	local compact = (require("@app/screens/shell/view") :: any).compact:peek() == true
+	local function list_shown(): boolean
+		return route.settings_list:get()
+	end
+	-- (Compact, the row chosen or Back pressed hides as the other shows: the
+	-- focus comes to settings' own, where Escape still goes back.)
+	local root = ui.ref()
+	if compact then
+		local was = route.settings_list:peek()
+		ui.effect(function()
+			local now = route.settings_list:get()
+			if now ~= was then
+				was = now
+				ui.after(0, function()
+					local el = root:peek()
+					if el then
+						el:focus()
+					end
+				end)
+			end
+		end)
+	end
 	-- How open the list is, 0 to 1: its width follows this and the width dragged, at
 	-- once, and what it holds stays at its width, the edge clipping it.
 	local list_open = ui.use_state(if collapsed and collapsed:peek() then 0 else 1)
@@ -272,6 +297,9 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 	end)
 	return ui.row {
 		id = "settings",
+		ref = if compact then root else nil,
+		focusable = if compact then true else nil,
+		focus = if compact then { outline = 0 } else nil,
 		w_full = true,
 		h_full = true,
 		min_h = 0,
@@ -289,23 +317,30 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 			rounded = if inset then "$zend.inset.radius" else nil,
 			bg = if inset then "$zend.inset.bg" else nil,
 			overflow = if inset then "hidden" else nil,
-			w = if inset
-				then function(): number
+			w_full = if compact then true else nil,
+			w = if compact
+				then nil
+				elseif inset then function(): number
 					return ui.raw(list_open:get() * list_w(), "the list's width, folding")
 				end
 				else nil,
-			mr = if inset
-				then function(): number
+			mr = if compact
+				then nil
+				elseif inset then function(): number
 					return ui.raw(list_open:get() * 4, "the window's gap between cards, closing with the list")
 				end
 				else nil,
-			hidden = if inset
+			hidden = if compact
 				then function(): boolean
+					return not list_shown()
+				end
+				elseif inset then function(): boolean
 					return list_open:get() <= 0
 				end
 				else nil,
 			ds.Settings.Nav {
 				card = inset,
+				fill = compact,
 				value = ui.computed(function(): string?
 					return route.current:get().page
 				end) :: any,
@@ -406,8 +441,11 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 			min_w = 0,
 			h_full = true,
 			-- (The panel expanded over it: none of it shows, the list beside the panel.)
-			hidden = if inset
+			hidden = if compact
 				then function(): boolean
+					return list_shown() or (require("@app/screens/shell/view") :: any).expanded:get() == true
+				end
+				elseif inset then function(): boolean
 					return (require("@app/screens/shell/view") :: any).expanded:get() == true
 				end
 				else nil,
@@ -419,6 +457,28 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 			-- (Its strip moves the window, a double click zooming it; inset, the top
 			-- bar does that.)
 			if inset then nil else ui.div { id = "settings-drag", h = TITLE_H, w_full = true, shrink = 0, window_drag = true },
+			-- Compact: back to the list, at the page's head (Escape and the
+			-- system's Back do the same).
+			if compact
+				then ui.row {
+					w_full = true,
+					shrink = 0,
+					px = "$space.1",
+					pt = "$space.1",
+					ds.Button {
+						id = "settings-back",
+						tone = "ghost",
+						h = 44,
+						px = "$space.3",
+						gap = "$space.2",
+						on_click = function()
+							route.settings_list:set(true)
+						end,
+						ds.Icon { name = "arrow-left", size = 16 },
+						ui.t("settings.shell.heading"),
+					},
+				}
+				else nil,
 			ui.scroll {
 				w_full = true,
 				grow = 1,
@@ -437,8 +497,8 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 						laid_out(size.h)
 					end,
 					w_full = true,
-					px = "$space.6",
-					pt = "$space.4",
+					px = if compact then "$space.4" else "$space.6",
+					pt = if compact then "$space.2" else "$space.4",
 					pb = "$space.8",
 					items = "center",
 					ui.presence(function(): string

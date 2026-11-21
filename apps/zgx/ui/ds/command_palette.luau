@@ -185,6 +185,18 @@ local function view_max(): number
 	local room = h - TOP - BOTTOM_CLEAR - SEARCH_H - SCOPES_H - FOOT_H
 	return math.max(VIEW_MIN, math.min(VIEW_MAX, room))
 end
+-- Whether the window is too narrow for the card's full width (a phone's):
+-- the card takes what there is, and the scope row drops its Tab hint so
+-- its scopes fit. Tracked; none known (a headless test), not narrow.
+local function narrow(peek: boolean?): boolean
+	local window = (ui :: any).window
+	local state = if type(window) == "table" or type(window) == "userdata" then window.size else nil
+	local ok, v = pcall(function(): any
+		return if state == nil then nil elseif peek then state:peek() else state:get()
+	end)
+	local w = if ok and type(v) == "table" and type(v.width) == "number" then v.width else 0
+	return w > 1 and w < W + 48
+end
 -- With nothing typed, how many sessions All shows before "Show all"; and
 -- how many recent things.
 local ALL_SESSIONS, RECENT = 6, 5
@@ -1609,6 +1621,9 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			pr = "$space.2",
 			gap = "$zend.space.tight",
 			items = "center",
+			hidden = function(): boolean
+				return narrow()
+			end,
 			Kbd { keys = "tab", tone = "quiet" },
 			ui.text { locale.t("ds.command_palette.next_scope"), text_size = "$font.size.xs", color = "$text.tertiary" },
 		}
@@ -1617,7 +1632,9 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		function(): boolean
 			return depth:get() == 1 and scoped
 		end,
-		ui.column { w_full = true, shrink = 0, ui.row(scope_items), rule() }
+		-- (Narrow, as it opens: the scopes scroll sideways where they don't
+		-- fit, as a phone's row of chips does.)
+		ui.column { w_full = true, shrink = 0, if narrow(true) then ui.scroll_x(scope_items) else ui.row(scope_items), rule() }
 	)
 
 	-- A row's glyph, in its slot: a session's agent, a project's tile, a

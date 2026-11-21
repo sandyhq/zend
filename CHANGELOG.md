@@ -5,6 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-21
 
 ### Added
+- Compact window (under 600 pt wide, a phone's): the sidebar opens as a drawer over the page (title bar toggle, a swipe in from the left edge; a tap beside it, a swipe back, Escape or going anywhere closes it), the panel opens as a sheet over the page, Settings shows its list or one page with a Settings back button (Escape goes back to the list first), the title bar's controls are 44 pt touch targets without Forward, and the palette's scope row drops its Tab hint. Wider windows are unchanged.
 - Ideas & Intents: a page of its own under Search in the desktop sidebar for typed ideas (no title, project or chat) and voice memos, newest first, kept on this device in `<data>/ideas`. A memo is recorded between Record and Stop (at most a minute), written to disk as a WAV before it is transcribed with the local speech model, plays after a restart, and keeps its audio when there is no model or transcription fails. Leaving the page stops and saves a recording (one still starting is dropped); a failed Save keeps the draft. While a memo records, dictation's live waveform shows what the microphone hears. The composer's dictation still keeps no audio.
 
 ## 2026-11-20

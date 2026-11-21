@@ -667,8 +667,16 @@ end
 -- To settings (a page's id; the one open, else the one shown last, else
 -- General). Its pages take one step of the history between them (one
 -- replaces another), so a step back from any of them is back to the chats.
+-- Compact (a phone's width), settings shows its list of pages or one page,
+-- not both: whether it's the list. Going to settings names a page (a link,
+-- Check for Updates…) or not (Settings, ⌘,): not, the list shows first.
+M.settings_list = ui.state("shell_settings_list", true)
 function M.settings(page: string?)
 	local r = at()
+	local list = page == nil and r.name ~= "settings"
+	if M.settings_list:peek() ~= list and (page ~= nil or r.name ~= "settings") then
+		M.settings_list:set(list)
+	end
 	local to = page or (if r.name == "settings" then r.params.page else nil) or reopened()
 	if r.name == "settings" then
 		if r.params.page ~= to then

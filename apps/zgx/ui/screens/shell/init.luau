@@ -432,20 +432,153 @@ return function(): Node
 					end,
 					on_key = function(e): boolean
 						if e.key == "Escape" then
-							route.leave_settings()
+							-- (Compact, a page goes back to the list first.)
+							if view.compact:peek() and not route.settings_list:peek() then
+								route.settings_list:set(true)
+							else
+								route.leave_settings()
+							end
 							return true
 						end
 						return false
 					end,
-					boundary.screen(boundary.named("shell.boundary.screen.settings"), "@app/screens/shell/settings", function(settings): Node
-						return settings.View({ inset = true, collapsed = collapsed :: any })
-					end),
+					-- (Made again as the window crosses compact's line: the list and
+					-- the page side by side, or one at a time.)
+					(function(): Node
+						local function build(): Node
+							return boundary.screen(boundary.named("shell.boundary.screen.settings"), "@app/screens/shell/settings", function(settings): Node
+								return settings.View({ inset = true, collapsed = collapsed :: any })
+							end)
+						end
+						return ui.show(function(): boolean
+							return view.compact:get()
+						end, build, build)
+					end)(),
 				}
 			)
 	end
 	local frosted = ui.computed(function(): number
 		return if material.see_through() then 1 else 0
 	end)
+	-- Compact (a phone's width: screens/shell/fit), the sidebar is a drawer over
+	-- the page: opened by the title bar's toggle (⌘B) or a swipe in from the
+	-- window's left edge; closed by a tap beside it, a swipe back, Escape, or
+	-- going anywhere (a session, a new chat, settings, the panel).
+	local drawer_open = ui.computed(function(): boolean
+		return view.compact:get() and view.drawer:get() and not in_settings()
+	end)
+	local function close_drawer()
+		if view.drawer:peek() then
+			view.drawer:set(false)
+		end
+	end
+	local drawer_route = route.current:peek()
+	ui.effect(function()
+		local now = route.current:get()
+		if now.name ~= drawer_route.name or now.session ~= drawer_route.session or now.page ~= drawer_route.page then
+			close_drawer()
+		end
+		drawer_route = now
+	end)
+	ui.effect(function()
+		if view.files:get() and view.compact:peek() then
+			close_drawer()
+		end
+	end)
+	-- The most the drawer's sidebar may take: the window less a strip of the
+	-- page to tap back to (Material's 56), never wider than the sidebar's most.
+	local DRAWER_PEEK = 56
+	local function drawer_limit(): number
+		return math.min(math.max(window_w() - DRAWER_PEEK, fit.SIDEBAR_MIN), fit.SIDEBAR_MAX)
+	end
+	-- A swipe across this far opens or closes it.
+	local SWIPE = 24
+	local function swipe(open: boolean): { [string]: any }
+		local from: number? = nil
+		return {
+			on_press = function(e: any)
+				from = e.x
+			end,
+			on_pointer_move = function(e: any)
+				if from ~= nil and (if open then e.x - from > SWIPE else from - e.x > SWIPE) then
+					from = nil
+					view.drawer:set(open)
+				end
+			end,
+			on_release = function()
+				from = nil
+			end,
+		}
+	end
+	local edge = swipe(true)
+	local back = swipe(false)
+	local function drawer(): Node
+		local sheet = ui.ref()
+		return ui.div {
+			id = "shell-drawer",
+			absolute = true,
+			left = 0,
+			top = 0,
+			right = 0,
+			bottom = 0,
+			-- (Focus comes here as it opens, so Escape reaches it.)
+			focusable = true,
+			focus = { outline = 0 },
+			on_mount = function(el: Element)
+				el:focus()
+			end,
+			on_key = function(e): boolean
+				if e.key == "Escape" then
+					close_drawer()
+					return true
+				end
+				return false
+			end,
+			-- The page beside it, dimmed: a tap there, or a swipe back, closes it.
+			ui.div {
+				id = "shell-drawer-scrim",
+				absolute = true,
+				left = function(): number
+					return sheet.width or 0
+				end,
+				top = 0,
+				right = 0,
+				bottom = 0,
+				bg = "$zend.lightbox.scrim",
+				opacity = 0.5,
+				on_click = close_drawer,
+				on_press = back.on_press,
+				on_pointer_move = back.on_pointer_move,
+				on_release = back.on_release,
+				on_mount = function(el: Element)
+					anime.animate(el, { opacity = { 0, 0.5 }, duration = motion.sidebar.duration, ease = motion.sidebar.ease })
+				end,
+			},
+			ui.div {
+				id = "shell-drawer-sheet",
+				absolute = true,
+				left = 0,
+				top = 0,
+				bottom = 0,
+				bg = "$zend.window",
+				ref = sheet,
+				on_mount = function(el: Element)
+					anime.animate(el, { x = { -drawer_limit(), 0 }, duration = motion.sidebar.duration, ease = motion.sidebar.ease })
+				end,
+				boundary.screen(boundary.named("shell.boundary.screen.drawer"), "@app/screens/shell/sidebar", function(Sidebar): Node
+					return Sidebar {
+						collapsed = ui.computed(function(): boolean
+							return false
+						end) :: any,
+						limit = drawer_limit,
+						-- (Under a strip as tall as the touch title bar, its view
+						-- options where the bar's controls end, as beside the page.)
+						top = ds.TitleBar.TOUCH,
+					}
+				end),
+			},
+		}
+	end
 	return ui.column {
 		ref = root,
 		-- (The window's width: the columns fit it.)
@@ -565,6 +698,23 @@ return function(): Node
 					end, { pass = true }),
 				}
 				else nil,
+			-- Compact: the window's left edge, where a swipe in opens the drawer
+			-- (under the title bar, clear of its toggle).
+			ui.show(function(): boolean
+				return view.compact:get() and not view.drawer:get() and not in_settings()
+			end, function(): Node
+				return ui.div {
+					id = "shell-drawer-edge",
+					absolute = true,
+					left = 0,
+					top = 48,
+					bottom = 0,
+					w = 16,
+					on_press = edge.on_press,
+					on_pointer_move = edge.on_pointer_move,
+					on_release = edge.on_release,
+				}
+			end),
 			boundary.screen(boundary.named("shell.boundary.screen.title_bar"), "@app/screens/shell/title_bar", function(TitleBar): Node
 				-- (A new chat's art is in its card, under the top bar: nothing there for
 				-- the bar's controls to need glass over.)
@@ -578,6 +728,10 @@ return function(): Node
 				}
 			end, { pass = true }),
 		},
+		-- Compact: the sidebar's drawer, over the page and its title bar.
+		ui.show(function(): boolean
+			return drawer_open:get()
+		end, drawer),
 		-- A session's card, its row rested on (Zend's hover card): over the
 		-- window beside the row, one surface of the menus' glass blurring
 		-- what's under it. (Not zgx's tooltip, whose popup frames it again
