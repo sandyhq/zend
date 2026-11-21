@@ -14,6 +14,10 @@
     <!-- Banners when a session finishes or waits (crates/notify, asked as
          the app starts on Android 13 and later: src/android.rs). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Reading a computer's connect code (Settings > Devices; src/android_camera.rs),
+         asked for when the person taps Scan. Not required: pasting it works without. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- TranslucentDecor: the window under the status and navigation bars
          on every version, as Android 15 and later lay it out anyway; the
          interface keeps clear of them by system.insets (src/android.rs). -->

@@ -462,10 +462,9 @@ fn gives_up_on_session(session_kept: bool) -> bool {
 impl Auth {
     fn new() -> Self {
         let endpoint = endpoint();
-        eprintln!(
-            "zend-zgx: account: {} ({}, callback port {}), kept by the engine",
-            endpoint.name, endpoint.edge, endpoint.port
-        );
+        // (On the phone the edge is a scanned code's: fixed words for it.)
+        let edge = if cfg!(target_os = "android") { crate::phone_link::edge_diagnostic(&endpoint.edge).to_owned() } else { endpoint.edge.clone() };
+        eprintln!("zend-zgx: account: {} ({}, callback port {}), kept by the engine", endpoint.name, edge, endpoint.port);
         Self {
             endpoint,
             accounts: RefCell::default(),

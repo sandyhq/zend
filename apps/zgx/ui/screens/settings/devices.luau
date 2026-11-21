@@ -14,6 +14,13 @@
 -- `Settings.Each`, so a device coming online, renamed, or arriving changes
 -- its row alone. Before the engine answers, skeleton rows hold its place;
 -- with no engine, a callout says so.
+--
+-- Under it, connecting a phone to the owner's relay (src/phone_link.rs):
+-- on a computer, "Show code" draws a QR code with its relay's address and
+-- its own key, for a minute or until Hide (no guess at which device used
+-- it: a join can't be tied to the code); on the phone (Android), the view
+-- of phone_join.luau: "Scan code" reads it with the camera, or its text is
+-- pasted, and the phone's engine starts again on it.
 
 local ds = require("@ds")
 local Menu = require("@ds/menu")
@@ -23,6 +30,8 @@ local status = require("@ds/status")
 local sessions = require("@account/sessions")
 local search = require("@app/screens/settings/search")
 local rename = require("@app/screens/settings/rename_row")
+local host = require("@app/screens/settings/host")
+local phone_join = require("@app/screens/settings/phone_join")
 
 local M = {}
 
@@ -33,6 +42,7 @@ search.index(M.ID, ui.t("settings.devices.title"), ui.t("settings.devices.terms"
 	{ key = "devices", title = ui.t("settings.devices.yours.label"), terms = ui.t("settings.devices.yours.terms") },
 	{ key = "devices", title = ui.t("settings.devices.rename_one.label"), terms = ui.t("settings.devices.rename_one.terms") },
 	{ key = "devices", title = ui.t("settings.devices.remove_one.label"), terms = ui.t("settings.devices.remove_one.terms") },
+	{ key = "phone", title = ui.t("settings.devices.phone.title"), terms = ui.t("settings.devices.phone.terms") },
 })
 
 local PLATFORMS: { [string]: string } = {
@@ -343,6 +353,163 @@ local function list_kind(list: State<{ sessions.Device }>): string
 	return if s == "offline" then "offline" elseif s == "ready" then "none" else "loading"
 end
 
+
+-- Connecting a phone ------------------------------------------------------
+
+-- How long the code shows, in seconds (a fixture shortens it).
+M.SHOWN_FOR = 60
+
+-- The code shown (its QR's SVG; nil: none), why it can't be ("" none), the
+-- seconds it has left, and which showing this is (a hide meant for an
+-- earlier one does nothing).
+local code_svg = ui.state("settings_phone_code", nil :: string?)
+local code_error = ui.state("settings_phone_code_error", "")
+local code_left = ui.state("settings_phone_code_left", 0)
+local code_turn = ui.state("settings_phone_code_turn", 0)
+
+local function hide_code()
+	ui.batch(function()
+		code_svg:set(nil)
+		code_left:set(0)
+		code_turn:set(code_turn:peek() + 1)
+	end)
+end
+
+local function show_code()
+	local turn = code_turn:peek() + 1
+	code_turn:set(turn)
+	code_error:set("")
+	host.call("phone.connect_code", {}):after(function(answer: any)
+		if code_turn:peek() ~= turn then
+			return
+		end
+		ui.batch(function()
+			code_left:set(M.SHOWN_FOR)
+			code_svg:set(answer.svg)
+		end)
+		ui.after(M.SHOWN_FOR * 1000, function()
+			if code_turn:peek() == turn then
+				hide_code()
+			end
+		end)
+	end, function(err: any)
+		if code_turn:peek() == turn then
+			code_error:set(if type(err) == "table" or type(err) == "userdata" then err.message or "failed" else tostring(err))
+		end
+	end)
+end
+
+local function code_view(): Node
+	ui.every(1000, function()
+		if code_svg:peek() == nil then
+			return false
+		end
+		code_left:set(math.max(0, code_left:peek() - 1))
+		return true
+	end)
+	return ui.column {
+		w_full = true,
+		items = "center",
+		gap = "$space.3",
+		py = "$space.4",
+		ui.svg {
+			code = code_svg:peek() :: string,
+			id = "phone-code",
+			label = ui.t("settings.devices.phone.code_name"),
+			w = 240,
+			h = 240,
+		},
+		ui.text {
+			ui.t("settings.devices.phone.scan_steps"),
+			text_size = "$font.size.md",
+			color = "$text.secondary",
+			wrap = true,
+			align = "center",
+		},
+		ui.row {
+			gap = "$space.2",
+			items = "center",
+			ui.text {
+				function(): string
+					return ui.t("settings.devices.phone.hides_in", { n = code_left:get() }):get()
+				end,
+				id = "phone-code-left",
+				text_size = "$font.size.sm",
+				color = "$text.tertiary",
+			},
+			ds.Button {
+				ui.t("settings.devices.phone.hide"),
+				tone = "secondary",
+				size = "sm",
+				on_click = hide_code,
+			},
+		},
+	}
+end
+
+local function computer_section(): Node
+	return search.anchor(
+		"phone",
+		ds.Settings.Section {
+			title = ui.t("settings.devices.phone.title"),
+			description = ui.t("settings.devices.phone.description"),
+			ui.presence(function(): string
+				if code_svg:get() ~= nil then
+					-- (Each showing its own: a new code is drawn anew.)
+					return `code{code_turn:get()}`
+				elseif code_error:get() ~= "" then
+					return "error"
+				end
+				return "ask"
+			end, function(kind: string): Node
+				if string.sub(kind, 1, 4) == "code" then
+					return ds.Settings.Group { ui.component(code_view)({}) }
+				elseif kind == "error" then
+					local no_edge = code_error:peek() == "no_edge"
+					return ds.Callout {
+						tone = if no_edge then "neutral" else "danger",
+						title = (if no_edge then ui.t("settings.devices.phone.no_edge_title") else ui.t("settings.devices.phone.couldnt")) :: any,
+						body = (if no_edge then ui.t("settings.devices.phone.no_edge_body") else ui.t("settings.devices.try_later")) :: any,
+						-- (Set up the relay, or the moment passes: ask again.)
+						action = { label = ui.t("settings.devices.phone.retry"), on_click = show_code },
+					}
+				end
+				return ds.Settings.Group {
+					ds.Settings.Row {
+						label = ui.t("settings.devices.phone.show_label"),
+						description = ui.t("settings.devices.phone.show_hint"),
+						control = ds.Button {
+							ui.t("settings.devices.phone.show"),
+							tone = "secondary",
+							size = "sm",
+							on_click = show_code,
+						},
+					},
+				}
+			end, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
+		}
+	)
+end
+
+-- On the phone: scanning or pasting the computer's code (phone_join.luau,
+-- as onboarding's Connect to a computer has it).
+local function phone_section(): Node
+	return search.anchor(
+		"phone",
+		ds.Settings.Section {
+			title = ui.t("settings.devices.phone.join_title"),
+			description = ui.t("settings.devices.phone.join_description"),
+			ui.component(phone_join.view)({}),
+		}
+	)
+end
+
+-- The page's part about phones: joining on the phone, showing the code on
+-- a computer.
+function M.phone(): Node
+	return if ui.shared("platform", ""):peek() == "android" then phone_section() else computer_section()
+end
+
 function M.view(): Node
 	local list = ui.computed(function(): { sessions.Device }
 		return sessions.computers(sessions.devices:get())
@@ -398,6 +565,7 @@ function M.view(): Node
 					end, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
 				}
 			),
+			M.phone(),
 		},
 		ds.Dialog {
 			open = removing_open,

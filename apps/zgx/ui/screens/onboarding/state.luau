@@ -4,7 +4,7 @@
 
 local api = require("@account/api")
 
-export type Step = "signin" | "appearance" | "username" | "card" | "org" | "invite" | "github" | "providers" | "done"
+export type Step = "signin" | "connect" | "appearance" | "username" | "card" | "org" | "invite" | "github" | "providers" | "done"
 export type Path = "signed_in" | "skipped"
 export type Appearance = "system" | "dark" | "light"
 -- What sign-in was started for: a new account, or one already had.
@@ -36,6 +36,7 @@ M.welcome = ui.shared("onboarding.welcome", false):peek() == true
 -- seen again gets a new id.
 export type Scope = "account" | "device"
 M.PAGES = {
+	connect = "device",
 	appearance = "device",
 	username = "account",
 	card = "account",
@@ -108,10 +109,32 @@ M.appearance = ui.persist("appearance", "system" :: Appearance)
 -- The organization worked in: the one made, or the one the account was in.
 M.last_org = ui.persist("last_org", "")
 
+-- On the phone (Android) every way through joins a computer's relay
+-- first, right after sign-in: the steps after it ask the relay (the
+-- account's name, its organization), and a phone has none of its own.
+local function on_phone(): boolean
+	return ui.shared("platform", ""):peek() == "android"
+end
+
+local function with_connect(steps: { Step }): { Step }
+	if not on_phone() or table.find(steps :: { string }, "connect") then
+		return steps
+	end
+	local out = table.clone(steps) :: { string }
+	table.insert(out, (table.find(out, "signin") or 0) + 1, "connect")
+	return out :: { Step }
+end
+
+-- A path's every step, as this device has it (`M.PATHS`, with Connect to
+-- a computer on the phone).
+function M.full(path: Path): { Step }
+	return with_connect(M.PATHS[path])
+end
+
 -- The way through this run takes.
 local function way(): { Step }
 	local path = M.path:get()
-	return if M.welcome and path == "signed_in" then M.WELCOME else M.PATHS[path]
+	return with_connect(if M.welcome and path == "signed_in" then M.WELCOME else M.PATHS[path])
 end
 
 -- The active path's steps, less the ones this run passes over.

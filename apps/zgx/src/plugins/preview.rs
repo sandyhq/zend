@@ -100,6 +100,8 @@ pub const BLOCKED: &[&str] = &[
     "cloud.sleep",
     "cloud.retry",
     "cloud.set_machine",
+    // (The computer's relay key, shown as a code, and a phone's joining.)
+    "phone.",
 ];
 
 pub fn blocked(action: &str) -> bool {

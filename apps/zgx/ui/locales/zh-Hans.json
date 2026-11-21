@@ -1709,7 +1709,47 @@
       "remove_confirm": "移除设备",
       "couldnt_remove": "无法移除",
       "online_now": "它当前在线。请在该设备上退出 Zend 后重试。",
-      "offline_title": "无法显示你的设备"
+      "offline_title": "无法显示你的设备",
+      "phone": {
+        "title": "连接手机",
+        "terms": "手机 安卓 移动 二维码 扫描 中继 连接 配对 phone android mobile qr code scan relay edge connect join pair",
+        "description": "手机上的 Zend 加入此电脑的中继：你的会话也会显示在那里。",
+        "show_label": "显示要扫描的代码",
+        "show_hint": "其中包含此电脑的中继和它的密钥。显示一分钟。",
+        "show": "显示代码",
+        "hide": "隐藏",
+        "hides_in": "{n} 秒后隐藏",
+        "code_name": "手机连接代码",
+        "scan_steps": "在手机上打开 Zend，进入 设置 > 设备，然后轻点 扫描代码。",
+        "no_edge_title": "没有可共享的中继",
+        "no_edge_body": "此电脑没有自己的中继（~/.config/zend 中的 edge-url 和 edge-token），所以手机无处可加入。",
+        "couldnt": "无法显示代码",
+        "join_title": "加入电脑的中继",
+        "join_description": "在电脑上打开 设置 > 设备，然后轻点 显示代码。",
+        "scan_label": "扫描它的代码",
+        "scan_hint": "使用相机。Zend 第一次会请求权限。",
+        "scan": "扫描代码",
+        "cancel": "停止",
+        "asking": "允许使用相机来扫描代码。",
+        "scanning": "将相机对准电脑上的代码。",
+        "paste_label": "或粘贴代码的文本",
+        "paste_name": "连接代码",
+        "connect": "连接",
+        "joining": "正在连接…",
+        "bad_code": "这不是 Zend 连接代码。",
+        "denied": "未允许使用相机。请在 Android 设置中允许，或粘贴代码。",
+        "no_camera": "这部手机没有 Zend 可用的相机。请改为粘贴代码。",
+        "camera_failed": "相机没有启动。请重试，或粘贴代码。",
+        "store_failed": "无法在这部手机上保存代码。",
+        "engine_failed": "代码已保存，但 Zend 的引擎没有重新启动。请关闭并重新打开 Zend。",
+        "saved_connecting": "已保存。正在连接 {edge} 的中继…",
+        "connected": "已连接到 {edge} 的中继。",
+        "unreachable": "已保存，但 {edge} 的中继还没有响应。请确认这部手机在它的网络上，然后再扫一次。",
+        "busy_title": "这部手机上有会话正在运行",
+        "busy_body": "这里有 {n, plural, other {# 个会话}}正在运行。连接到另一个中继会停止它们。",
+        "busy_go": "仍然连接",
+        "retry": "重试"
+      }
     },
     "projects": {
       "title": "项目",
@@ -2863,7 +2903,11 @@
       "found": "{n, plural, other {在此电脑上找到 # 个智能体。请登录你想使用的智能体。}}",
       "this_mac": "此电脑"
     },
-    "try_again": "重试"
+    "try_again": "重试",
+    "connect": {
+      "title": "连接到电脑",
+      "body": "这部手机上的 Zend 会显示你电脑中继上的会话。在电脑上打开 设置 > 设备 并点按 显示代码，然后在这里扫描。"
+    }
   },
   "intro": {
     "headline": {

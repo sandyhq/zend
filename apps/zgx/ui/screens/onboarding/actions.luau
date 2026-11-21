@@ -29,7 +29,7 @@ function M.next()
 	-- one in turn, finished before or not: only a run's start passes over
 	-- what's finished (`start_run`).
 	local past = false
-	for _, s in state.PATHS[state.path:peek()] do
+	for _, s in state.full(state.path:peek()) do
 		if past and table.find(order, s) then
 			state.step:set(s)
 			return
@@ -230,6 +230,18 @@ function M.skip_sign_in()
 	state.path:set("skipped")
 	state.name_done:set(false)
 	M.start_run({})
+end
+
+-- The phone joined a computer's relay (Connect to a computer): signed in,
+-- the account is asked about again, now that there's a relay to ask, and
+-- the run goes on from the first page left; else on to the next step.
+function M.connected()
+	M.finished("connect")
+	if state.path:peek() == "signed_in" then
+		M.signed_in()
+	else
+		M.next()
+	end
 end
 
 -- It didn't: the screen says so and its way on reads Try again

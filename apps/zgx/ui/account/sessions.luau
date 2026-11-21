@@ -135,6 +135,10 @@ export type Now = {
 	-- "unsaved" (a chat's changes couldn't be saved), "offline",
 	-- "reconnecting"; nil, fine.
 	connection: string?,
+	-- The engine's connectivity as it says it: "disabled" (no relay),
+	-- "offline", "reconnecting", "connected" (its registry room joined);
+	-- nil, not known yet.
+	relay: string?,
 }
 
 M.now = ui.shared("sessions", {
