@@ -359,10 +359,13 @@ impl Spawner {
 
 /// Android's engine, on a thread of this process (src/android.rs).
 pub(crate) fn start_in_process(config: &Config) -> bool {
+    // (The edge read again at each start, not the config's from the app's
+    // start: a phone joined to a relay (src/phone_link.rs) has just written
+    // it, and stopped the engine for this.)
     #[cfg(target_os = "android")]
     return crate::android::start_engine(crate::android::EngineStart {
         data_dir: config.data_dir.clone(),
-        edge: config.edge.clone(),
+        edge: crate::auth::endpoint().edge,
     });
     #[cfg(not(target_os = "android"))]
     {

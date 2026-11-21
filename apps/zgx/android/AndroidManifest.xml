@@ -11,6 +11,10 @@
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
     <!-- The edge (sync). The engine is reached in-process, not on a port. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Reading a computer's connect code (Settings > Devices; src/android_camera.rs),
+         asked for when the person taps Scan. Not required: pasting it works without. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- TranslucentDecor: the window under the status and navigation bars
          on every version, as Android 15 and later lay it out anyway; the
          interface keeps clear of them by system.insets (src/android.rs). -->

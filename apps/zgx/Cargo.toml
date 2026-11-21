@@ -93,6 +93,8 @@ ttf-parser = "0.25"
 mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
 usvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
 resvg = { version = "0.46", default-features = false, features = ["text"] }
+# A phone's connect code drawn as a QR code (src/phone_link.rs).
+qrcodegen = "1.8"
 serde_json = "1"
 # Fast hashing for the per-part caches a long reply's every change looks up
 # (src/chat.rs `LIVE_TOOLS`); already in the tree through zgx.
@@ -193,6 +195,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 android_logger = "0.15"
 log = "0.4"
 jni = "0.21"
+# The computer's connect code read from the camera's frames
+# (src/android_camera.rs).
+rqrr = "0.11"
 # mimalloc (zgx-desktop's `mimalloc`) in a library NativeActivity dlopens:
 # its thread-locals in the dynamic model, not initial-exec, which Android's
 # loader refuses in a dlopened library ("TLS symbol … using IE access
@@ -251,6 +256,8 @@ embed-resource = "3.0.11"
 
 [dev-dependencies]
 tempfile = "3"
+# src/phone_link.rs's test: the drawn QR code read back from its pixels.
+rqrr = "0.11"
 
 # src/terminal.rs's test: the bridge line split as Windows itself splits a
 # command line (CommandLineToArgvW).

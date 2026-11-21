@@ -15,6 +15,9 @@
 --   settings_stub.refuse_next      the next change is refused ("refused")
 --   settings_stub.not_admin        you're a member, not an admin, from now on
 --   settings_stub.signed_in_again  the browser sign-in a delete waits on lands
+--   settings_stub.phone_no_edge    this computer has no relay to share
+--   settings_stub.phone_quick      a phone code shows for 1 s, not 60
+--   settings_stub.on_android       the page as the phone shows it
 
 local host = require("@app/screens/settings/host")
 local api = require("@account/api")
@@ -136,7 +139,22 @@ local function find(list: { any }, id: string): number?
 	return nil
 end
 
+-- A phone's connect code (src/phone_link.rs), with a fake relay and key.
+local phone_edge = ui.state("settings_stub_phone_edge", true)
+local FAKE_CODE = "zend://connect?v=1&edge=http%3A%2F%2F100.64.0.1%3A27640&token=u-fake%40invalid"
+local FAKE_QR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/><path d="M4 4h7v7h-7z" fill="#000"/></svg>'
+
 local answers: { [string]: (arg: any) -> any } = {
+	["phone.connect_code"] = function(): any
+		return if phone_edge:peek() then settled({ svg = FAKE_QR, modules = 29 }) else settled(nil, "no_edge")
+	end,
+	["phone.scan"] = function(): any
+		return settled(FAKE_CODE)
+	end,
+	["phone.connect"] = function(arg: any): any
+		local code = string.match(arg.code or "", "^%s*(.-)%s*$")
+		return if string.sub(code, 1, 15) == "zend://connect?" then settled({ edge = "http://…:27640" }) else settled(nil, "bad_code")
+	end,
 	["account.me"] = function()
 		return settled(table.clone(me))
 	end,
@@ -510,6 +528,27 @@ auths.sign_out = function(done: (() -> ())?)
 end
 
 -- The launch before the engine has answered, and the engine saying signed out.
+ui.command {
+	id = "settings_stub.phone_no_edge",
+	title = "No relay to share",
+	run = function()
+		phone_edge:set(false)
+	end,
+}
+ui.command {
+	id = "settings_stub.phone_quick",
+	title = "A phone code shows for a second",
+	run = function()
+		require("@app/screens/settings/devices").SHOWN_FOR = 1
+	end,
+}
+ui.command {
+	id = "settings_stub.on_android",
+	title = "The page as the phone shows it",
+	run = function()
+		ui.shared("platform", ""):set("android")
+	end,
+}
 ui.command {
 	id = "settings_stub.restoring",
 	title = "The engine hasn't answered yet",

@@ -248,7 +248,7 @@ impl Drop for EngineThread {
 }
 
 /// An endpoint for the log: its scheme and port, not where it is.
-fn redacted(url: &str) -> String {
+pub(crate) fn redacted(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "(not a URL)".into();
     };

@@ -65,6 +65,9 @@ mod pasted;
 mod math;
 mod menu_bar;
 mod mermaid;
+mod phone_link;
+#[cfg(target_os = "android")]
+mod android_camera;
 mod plugins;
 mod previews;
 mod projects;
@@ -872,6 +875,8 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
     // and GitHub for Cloud (src/github.rs): every window but the intro's.
     if entry != "intro.luau" {
         auth::install(cx, &host);
+        // A phone joined to this computer's relay (src/phone_link.rs).
+        phone_link::install(&host);
         agents::install(&host);
         acp_registry::install(cx, &host);
         github::install(cx, &host);
