@@ -1,0 +1,8 @@
+{
+  "id": "poc-tap",
+  "name": "POC tap",
+  "version": "0.0.1",
+  "description": "The Android POC's plugin: a button after the sidebar's New chat and Search that counts its taps.",
+  "entry": "init.luau",
+  "permissions": ["ui.add"]
+}

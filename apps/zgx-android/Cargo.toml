@@ -14,6 +14,11 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 zgx-run = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", default-features = false }
 zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", default-features = false, features = ["png", "svg"] }
+zgx-script = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", default-features = false }
+
+# On the desktop, zgx's devtools (`zgx-poc --inspect`, `zgx inspect`).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+zgx-run = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", default-features = false, features = ["inspect"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

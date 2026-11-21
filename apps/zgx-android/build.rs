@@ -1,33 +1,45 @@
-//! The app's Luau folder (ZGX_POC_APP, default `hello/`) packed into the
-//! library (`OUT_DIR/app.pack`): on Android it is written out to the app's
-//! files folder at start, where zgx-run loads it from as on the desktop.
-use std::{env, fs, path::Path};
+//! The POC's Luau files packed into the library (`OUT_DIR/app.pack`), at
+//! their paths in the repository: Zend's interface (apps/zgx/ui, whose
+//! fixture is the screen; its tests left out) and the poc-tap plugin. On
+//! Android they are written out to the app's files folder at start, in the
+//! same layout, and run from there as the desktop runs them from the
+//! repository.
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+
+const PACKED: &[&str] = &["apps/zgx/ui", "apps/zgx/plugins-dev/poc-tap"];
+const LEFT_OUT: &[&str] = &["apps/zgx/ui/tests"];
 
 fn pack(root: &Path, dir: &Path, out: &mut Vec<u8>) {
     let mut entries: Vec<_> = fs::read_dir(dir).unwrap().flatten().collect();
     entries.sort_by_key(|e| e.path());
     for entry in entries {
         let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        if LEFT_OUT.contains(&rel.as_str()) {
+            continue;
+        }
         if path.is_dir() {
             pack(root, &path, out);
         } else {
-            let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
             let bytes = fs::read(&path).unwrap();
             out.extend((rel.len() as u32).to_le_bytes());
             out.extend(rel.as_bytes());
             out.extend((bytes.len() as u32).to_le_bytes());
             out.extend(bytes);
-            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
 }
 
 fn main() {
-    let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let app = env::var("ZGX_POC_APP").unwrap_or_else(|_| format!("{manifest}/hello"));
-    println!("cargo:rerun-if-env-changed=ZGX_POC_APP");
-    println!("cargo:rerun-if-changed={app}");
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let repo = manifest.join("../..").canonicalize().unwrap();
     let mut out = Vec::new();
-    pack(Path::new(&app), Path::new(&app), &mut out);
+    for dir in PACKED {
+        println!("cargo:rerun-if-changed={}", repo.join(dir).display());
+        pack(&repo, &repo.join(dir), &mut out);
+    }
     fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("app.pack"), out).unwrap();
 }

@@ -3,7 +3,7 @@
 # with cargo-ndk, packed with aapt2, aligned and signed with a debug key.
 # No Gradle, no Java code (NativeActivity).
 #
-#   apps/zgx-android/build-apk.sh [--release] [--abi x86_64|arm64-v8a]... [--app <luau folder>]
+#   apps/zgx-android/build-apk.sh [--release] [--abi x86_64|arm64-v8a]... 
 #
 # Needs: ANDROID_HOME (SDK with build-tools 36.1.0 and platforms;android-36),
 # ANDROID_NDK_HOME, JAVA_HOME, cargo-ndk, rustup targets (setup.md in the plan).
@@ -16,7 +16,6 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --release) profile=release ;;
     --abi) abis+=("$2"); shift ;;
-    --app) export ZGX_POC_APP=$(cd "$2" && pwd); shift ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
   shift
