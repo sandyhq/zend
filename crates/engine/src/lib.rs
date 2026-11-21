@@ -1358,14 +1358,38 @@ impl Engine {
     /// executor, IPC server, and — when edge+auth are ready — the device-room host
     /// relay + peer link cache (targetDeviceId routing).
     pub async fn run(self) -> anyhow::Result<()> {
+        self.run_as(None).await
+    }
+
+    /// [`Engine::run`] inside an app's own process (Android): its clients
+    /// come as the streams `ipc` hands in, not on a port, and it is the
+    /// app's, not a daemon. No update trial, Cloud runner, self-update or
+    /// restart into a newer binary, no signal handlers (the process is the
+    /// app's), no port or token file for agents. It returns, with the
+    /// error, where a daemon would exit; it ends when the app stops it
+    /// (`StopEngine`) or the session it serves signs out.
+    #[cfg(unix)]
+    pub async fn run_in_process(self, ipc: InProcessIpc) -> anyhow::Result<()> {
+        self.run_as(Some(ipc)).await
+    }
+
+    async fn run_as(self, in_process: Option<InProcessIpc>) -> anyhow::Result<()> {
+        #[cfg(not(unix))]
+        let _: &Option<InProcessIpc> = &in_process;
+        let daemon = in_process.is_none();
         let mut config = self.config;
-        tracing::info!(data_dir = %config.data_dir.display(), "engine starting");
+        tracing::info!(data_dir = %config.data_dir.display(), daemon, "engine starting");
 
         std::fs::create_dir_all(&config.data_dir)?;
-        update_trial::boot(&config.data_dir)?;
+        if daemon {
+            update_trial::boot(&config.data_dir)?;
+        } else {
+            update_trial::refuse_mid_update(&config.data_dir)?;
+        }
         // Cloud runner: runner.json wins; else ZEND_RUNNER_ENROLL enrolls
         // first (retrying network failures; a rejected code is fatal).
-        if let Some(identity) = runner::bootstrap(&config.data_dir, &config.edge_url).await? {
+        let enrolled = if daemon { runner::bootstrap(&config.data_dir, &config.edge_url).await? } else { None };
+        if let Some(identity) = enrolled {
             wake_trace::enable(&config.data_dir);
             if identity.edge_url() != config.edge_url.trim_end_matches('/') {
                 tracing::info!(edge = %identity.edge_url(), "runner: using the edge this device enrolled with");
@@ -1402,7 +1426,7 @@ impl Engine {
         let runtime = Self::assemble_runtime(&config, auth, profile).await?;
         // The desktop app or `zend update` may install a newer binary under
         // a running service; restart into it once no run or terminal is live.
-        if let Some(updater) = runtime.core().updater() {
+        if daemon && let Some(updater) = runtime.core().updater() {
             updater.restart_when_superseded();
         }
 
@@ -1416,24 +1440,34 @@ impl Engine {
             stop_tx,
             data_dir: config.data_dir.clone(),
         });
-        let server = serve_ipc(config.ipc_port, &config.data_dir, service).await?;
-        // Only a port this process actually serves goes to agents: the
-        // injected MCP server must dial back into THIS engine. (Its bearer
-        // first: a run revived on boot waits on the port, then reads both.)
-        runtime
-            .core()
-            .sessions
-            .set_ipc_token_file(zend_rpc::ipc_auth::agent_token_path(&config.data_dir));
-        runtime.core().sessions.set_ipc_port(config.ipc_port);
-        update_trial::prove_and_commit(runtime.core(), &config);
-        wake_update::start(runtime.core());
+        let server = match in_process {
+            #[cfg(unix)]
+            Some(ipc) => serve_in_process(ipc, service),
+            #[cfg(not(unix))]
+            Some(_) => unreachable!("run_in_process is unix-only"),
+            None => {
+                let server = serve_ipc(config.ipc_port, &config.data_dir, service).await?;
+                // Only a port this process actually serves goes to agents: the
+                // injected MCP server must dial back into THIS engine. (Its bearer
+                // first: a run revived on boot waits on the port, then reads both.)
+                runtime
+                    .core()
+                    .sessions
+                    .set_ipc_token_file(zend_rpc::ipc_auth::agent_token_path(&config.data_dir));
+                runtime.core().sessions.set_ipc_port(config.ipc_port);
+                update_trial::prove_and_commit(runtime.core(), &config);
+                wake_update::start(runtime.core());
+                server
+            }
+        };
         let corruption_watch = watch_store_corruption(
             runtime.core().doc_host.store().path().to_path_buf(),
-            runner::session().is_some(),
+            // (Never in an app's process: it isn't ours to end.)
+            daemon && runner::session().is_some(),
         );
 
         tokio::select! {
-            result = shutdown_signal() => {
+            result = shutdown_signal(), if daemon => {
                 // Stopped from outside mid-trial (a sleep, a restart): not the
                 // release's fault, and the record should say so.
                 zend_update::transaction::note_trial_interrupted();
@@ -1564,6 +1598,83 @@ pub async fn serve_ipc(
     Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(
         listener, service, tokens,
     )))
+}
+
+/// How an app reaches the engine it runs in its own process
+/// ([`Engine::run_in_process`]): one end of a socket pair per connection,
+/// sent on `connections` (the app keeps the sender, and makes the pair as
+/// it dials), each handshake presenting `tokens` as a dialled one does. The
+/// tokens stay in memory: no file holds them.
+#[cfg(unix)]
+pub struct InProcessIpc {
+    connections: tokio::sync::mpsc::UnboundedReceiver<std::os::unix::net::UnixStream>,
+    tokens: zend_rpc::ipc_auth::IpcTokens,
+}
+
+#[cfg(unix)]
+impl InProcessIpc {
+    /// What the engine serves, and the app's side of it.
+    pub fn new() -> std::io::Result<(Self, InProcessDialer)> {
+        let tokens = zend_rpc::ipc_auth::IpcTokens::generate()?;
+        let (sender, connections) = tokio::sync::mpsc::unbounded_channel();
+        let dialer = InProcessDialer { sender, token: tokens.full.clone() };
+        Ok((Self { connections, tokens }, dialer))
+    }
+}
+
+/// The app's side of an [`InProcessIpc`]: cheap to clone, any thread.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct InProcessDialer {
+    sender: tokio::sync::mpsc::UnboundedSender<std::os::unix::net::UnixStream>,
+    token: String,
+}
+
+#[cfg(unix)]
+impl InProcessDialer {
+    /// A new connection: the app's end of a socket pair whose other end the
+    /// engine now serves (a WebSocket handshake comes first, as on a port).
+    /// `ConnectionRefused` once the engine has stopped.
+    pub fn dial(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        self.sender
+            .send(theirs)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::ConnectionRefused))?;
+        Ok(ours)
+    }
+
+    /// The bearer its handshakes present.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Whether the engine still takes connections.
+    pub fn is_open(&self) -> bool {
+        !self.sender.is_closed()
+    }
+}
+
+#[cfg(unix)]
+fn serve_in_process(ipc: InProcessIpc, service: std::sync::Arc<dyn zend_rpc::RpcService>) -> tokio::task::JoinHandle<()> {
+    let InProcessIpc { mut connections, tokens } = ipc;
+    let (streams, handed) = tokio::sync::mpsc::unbounded_channel();
+    tracing::info!("IPC: serving the app in-process (no port)");
+    tokio::spawn(async move {
+        let serving = tokio::spawn(zend_rpc::serve_ws_streams(handed, service, tokens));
+        while let Some(stream) = connections.recv().await {
+            let stream = stream
+                .set_nonblocking(true)
+                .and_then(|()| tokio::net::UnixStream::from_std(stream));
+            match stream {
+                Ok(stream) => {
+                    let _ = streams.send(stream);
+                }
+                Err(error) => tracing::warn!(%error, "IPC: an in-process connection couldn't be served"),
+            }
+        }
+        drop(streams);
+        let _ = serving.await;
+    })
 }
 
 /// Block until the WorkOS session is signed in AND org-scoped. On a TTY, print the
@@ -2052,6 +2163,16 @@ impl DeviceIdentityLock {
 /// `syscall`, since bionic has the wrapper only from API 30).
 pub(crate) fn publish_new(temp: &Path, path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "android")]
+    return rename_no_replace(temp, path);
+    #[cfg(not(target_os = "android"))]
+    std::fs::hard_link(temp, path)
+}
+
+/// `temp` renamed to `path` unless `path` exists (`AlreadyExists`), in
+/// one step: Android's [`publish_new`]. (Built on Linux too, where its test
+/// runs: the same syscall, the same kernel behaviour.)
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn rename_no_replace(temp: &Path, path: &Path) -> std::io::Result<()> {
     {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
@@ -2077,8 +2198,6 @@ pub(crate) fn publish_new(temp: &Path, path: &Path) -> std::io::Result<()> {
             Err(std::io::Error::last_os_error())
         }
     }
-    #[cfg(not(target_os = "android"))]
-    std::fs::hard_link(temp, path)
 }
 
 fn replace_empty_device_id(temp_path: &Path, path: &Path) -> std::io::Result<()> {
@@ -2114,6 +2233,82 @@ mod publish_new_tests {
         let err = super::publish_new(&second, &path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
+    }
+
+    /// Android's way (renameat2, RENAME_NOREPLACE): the first lands and its
+    /// temp file is gone; a collision leaves both files as they were.
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn renaming_without_replacing_creates_once_and_keeps_a_collision_s_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second, path) = (
+            dir.path().join("a.tmp"),
+            dir.path().join("b.tmp"),
+            dir.path().join("id"),
+        );
+        std::fs::write(&first, "one").unwrap();
+        std::fs::write(&second, "two").unwrap();
+        super::rename_no_replace(&first, &path).unwrap();
+        assert!(!first.exists());
+        let err = super::rename_no_replace(&second, &path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "two");
+        // Two racing to create it: exactly one wins.
+        let racers: Vec<_> = (0..8)
+            .map(|n| {
+                let temp = dir.path().join(format!("r{n}.tmp"));
+                std::fs::write(&temp, n.to_string()).unwrap();
+                let target = dir.path().join("raced");
+                std::thread::spawn(move || super::rename_no_replace(&temp, &target).is_ok())
+            })
+            .collect();
+        let won = racers.into_iter().map(|r| r.join().unwrap()).filter(|won| *won).count();
+        assert_eq!(won, 1);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod in_process_ipc_tests {
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http};
+
+    struct Echo;
+    #[async_trait::async_trait]
+    impl zend_rpc::RpcService for Echo {
+        async fn handle(&self, method: &str, _: serde_json::Value) -> Result<zend_rpc::RpcReply, zend_rpc::RpcError> {
+            Ok(zend_rpc::RpcReply::Value(serde_json::json!({ "method": method })))
+        }
+    }
+
+    /// The app's dialer reaches the engine over a socket pair with its
+    /// in-memory bearer, no port and no token file; once the engine is gone
+    /// a dial is refused.
+    #[tokio::test]
+    async fn the_app_dials_its_engine_in_process_and_is_refused_once_it_stops() {
+        let (ipc, dialer) = super::InProcessIpc::new().unwrap();
+        let server = super::serve_in_process(ipc, std::sync::Arc::new(Echo));
+        let stream = tokio::net::UnixStream::from_std({
+            let s = dialer.dial().unwrap();
+            s.set_nonblocking(true).unwrap();
+            s
+        })
+        .unwrap();
+        let mut request = "ws://localhost/".into_client_request().unwrap();
+        request.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_str(&format!("Bearer {}", dialer.token())).unwrap(),
+        );
+        let (mut ws, _) = tokio_tungstenite::client_async(request, stream).await.unwrap();
+        ws.send(Message::text(r#"{"id":1,"method":"EngineInfo","params":{}}"#)).await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await.unwrap().unwrap().unwrap();
+        let reply: serde_json::Value = serde_json::from_str(reply.to_text().unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(reply["id"], 1, "{reply}");
+        assert!(dialer.is_open());
+        server.abort();
+        let _ = server.await;
+        assert!(!dialer.is_open());
+        assert_eq!(dialer.dial().unwrap_err().kind(), std::io::ErrorKind::ConnectionRefused);
     }
 }
 

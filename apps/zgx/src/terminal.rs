@@ -147,6 +147,16 @@ async fn open_params(target: &Value) -> Result<Map<String, Json>, String> {
 }
 
 /// Where new terminals' bridges leave their ids.
+/// The program a terminal runs: this app as its bridge. Not on Android,
+/// where the app is a library in its APK and its engine has no port to
+/// dial from another process (it is reached in-process alone).
+fn bridge_exe() -> Result<PathBuf, String> {
+    if cfg!(target_os = "android") {
+        return Err("Terminals aren't available on Android yet".into());
+    }
+    std::env::current_exe().map_err(|e| e.to_string())
+}
+
 fn claims_dir() -> PathBuf {
     std::env::temp_dir().join("zend-zgx-terminals")
 }
@@ -157,7 +167,7 @@ async fn start(arg: Value) -> Result<Value, String> {
     let target = arg.field("target").ok_or("no target")?;
     let params = open_params(target).await?;
     let (port, data) = engine::get().ipc_endpoint().ok_or("Zend isn't available here")?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = bridge_exe()?;
     let dir = claims_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let claim = dir.join(format!("{}-{}", std::process::id(), operation_nonce()));
@@ -283,7 +293,7 @@ fn quote_windows(word: &str) -> String {
 /// device's, routed there).
 fn command(arg: Value, device: Option<String>) -> Result<Value, String> {
     let (port, data) = engine::get().ipc_endpoint().ok_or("Zend isn't available here")?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = bridge_exe()?;
     let id = text(arg.field("id"));
     if id.is_empty() {
         return Err("no terminal".into());

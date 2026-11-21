@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Build Zend's Android debug APK (sh.zend.zgx): this crate (the whole app,
+# Build Zend's Android APK (sh.zend.zgx): this crate (the whole app,
 # zend-zgx, with the engine in it) for each ABI with cargo-ndk, packed with
-# aapt2, aligned and signed with a debug key. No Gradle, no Java code
-# (NativeActivity).
+# aapt2, aligned and signed (a local debug key unless KEYSTORE is given). No
+# Gradle, no Java code (NativeActivity). Without --release the APK is
+# debuggable (run-as reads its files): give a debug build fake tokens only.
 #
-#   apps/zgx/android/build-apk.sh [--release] [--abi x86_64|arm64-v8a]...
+#   apps/zgx/android/build-apk.sh [--release [--debuggable]] [--abi x86_64|arm64-v8a]...
 #
 # Needs: ANDROID_HOME (SDK with build-tools 36.1.0 and platforms;android-36),
 # ANDROID_NDK_HOME, JAVA_HOME, cargo-ndk, the rustup targets.
@@ -12,10 +13,13 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 profile=debug
+debuggable=0
 abis=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --release) profile=release ;;
+    # A release build you can still run-as into (tests on an emulator).
+    --debuggable) debuggable=1 ;;
     --abi) abis+=("$2"); shift ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
@@ -35,7 +39,10 @@ for abi in "${abis[@]}"; do targs+=(-t "$abi"); done
 flag=(); [ $profile = release ] && flag=(--release)
 CARGO_TARGET_DIR=$TARGET cargo ndk "${targs[@]}" -P 29 --link-libcxx-shared -o "$OUT/stage/lib" \
   build -j "$JOBS" -p zend-android "${flag[@]}"
-"$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest AndroidManifest.xml -I "$JAR"
+# The backup rules (res/xml): compiled, then linked in.
+"$BT/aapt2" compile --dir res -o "$OUT/res.zip"
+debug=(); { [ $profile = debug ] || [ $debuggable = 1 ]; } && debug=(--debug-mode)
+"$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest AndroidManifest.xml -I "$JAR" "${debug[@]}" "$OUT/res.zip"
 # Native libraries stored uncompressed (extractNativeLibs=false): loaded
 # straight from the APK.
 (cd "$OUT/stage" && zip -q -0 -r "$OUT/unsigned.apk" lib)

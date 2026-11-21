@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
@@ -219,6 +220,9 @@ pub async fn serve_ws_listener_scoped(listener: TcpListener, service: Arc<dyn Rp
         match listener.accept().await {
             Ok((stream, peer)) => {
                 tracing::debug!(%peer, "rpc: connection accepted");
+                // Keystrokes and their echoes are tiny frames: Nagle would
+                // hold each one behind the peer's delayed ACK of the previous.
+                let _ = stream.set_nodelay(true);
                 tokio::spawn(serve_ws_socket(stream, service.clone(), tokens.clone()));
             }
             Err(err) => {
@@ -250,7 +254,26 @@ impl RpcService for AgentGuard {
     }
 }
 
-async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>, tokens: Arc<IpcTokens>) {
+/// [`serve_ws_listener_scoped`] without a listener: each stream handed in
+/// is one connection, its handshake checked as a dialled one is. An app
+/// embedding the engine (Android) hands in one end of a socket pair per dial,
+/// so no port is open and nothing outside the process can reach it. Serves
+/// until every sender is gone.
+pub async fn serve_ws_streams<S>(mut streams: mpsc::UnboundedReceiver<S>, service: Arc<dyn RpcService>, tokens: IpcTokens)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let tokens = Arc::new(tokens);
+    while let Some(stream) = streams.recv().await {
+        tracing::debug!("rpc: in-process connection");
+        tokio::spawn(serve_ws_socket(stream, service.clone(), tokens.clone()));
+    }
+}
+
+async fn serve_ws_socket<S>(stream: S, service: Arc<dyn RpcService>, tokens: Arc<IpcTokens>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     // Two independent gates, both required:
     //
     // 1. Origin. Native viewports dial this socket without an `Origin`
@@ -304,9 +327,6 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>, tokens
         }
         Ok(resp)
     };
-    // Keystrokes and their echoes are tiny frames: Nagle would hold each one
-    // behind the peer's delayed ACK of the previous.
-    let _ = stream.set_nodelay(true);
     let ws = match tokio_tungstenite::accept_hdr_async_with_config(
         stream,
         authorize,
@@ -384,6 +404,44 @@ mod tests {
     fn seen(recorder: &Recorder, terminal: &str) -> Vec<u64> {
         let calls = recorder.0.lock().unwrap();
         calls.iter().filter(|(t, _)| t == terminal).map(|(_, n)| *n).collect()
+    }
+
+    /// A stream handed to `serve_ws_streams` (an app's socket pair) is
+    /// served as a dialled connection: with the bearer it answers, without
+    /// it the handshake is refused.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn handed_in_streams_are_served_and_their_handshake_checked() {
+        use futures::SinkExt as _;
+        use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http};
+        let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
+        let tokens = IpcTokens::generate().unwrap();
+        let full = tokens.full.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(serve_ws_streams(rx, recorder.clone(), tokens));
+        let dial = |bearer: Option<String>| {
+            let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
+            tx.send(theirs).unwrap();
+            let mut request = "ws://localhost/".into_client_request().unwrap();
+            if let Some(bearer) = bearer {
+                request.headers_mut().insert(
+                    http::header::AUTHORIZATION,
+                    http::HeaderValue::from_str(&format!("Bearer {bearer}")).unwrap(),
+                );
+            }
+            tokio_tungstenite::client_async(request, ours)
+        };
+        let refused = dial(None).await;
+        assert!(
+            matches!(&refused, Err(tokio_tungstenite::tungstenite::Error::Http(r)) if r.status() == 401),
+            "{refused:?}"
+        );
+        let (mut ws, _) = dial(Some(full)).await.unwrap();
+        ws.send(Message::text(call(1, "Anything", "t", 5))).await.unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap().unwrap().unwrap();
+        let reply: serde_json::Value = serde_json::from_str(reply.to_text().unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(reply["id"], 1, "{reply}");
+        assert_eq!(seen(&recorder, "t"), [5]);
     }
 
     /// A terminal's input and size reach the service in the order sent,

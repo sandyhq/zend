@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Zend's app on Android (apps/zgx, the desktop's interface), a debug APK
+<!-- Zend's app on Android (apps/zgx, the desktop's interface), an APK
      beside sh.zend.android (apps/android, the Kotlin app), which it does not
-     replace. No Java: NativeActivity loads libzend_android.so (lib.rs). -->
+     replace. No Java: NativeActivity loads libzend_android.so (lib.rs).
+     Debuggable only as a debug build (build-apk.sh passes aapt2
+     -debug-mode without -release). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="sh.zend.zgx"
     android:versionCode="1"
     android:versionName="0.0.1">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
-    <!-- The edge (sign-in, sync) and the engine's localhost WebSocket. -->
+    <!-- The edge (sync). The engine is reached in-process, not on a port. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- TranslucentDecor: the window under the status and navigation bars
          on every version, as Android 15 and later lay it out anyway; the
@@ -15,8 +17,14 @@
     <application
         android:label="Zend"
         android:hasCode="false"
-        android:debuggable="true"
-        android:extractNativeLibs="false">
+        android:extractNativeLibs="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:enableOnBackInvokedCallback="false">
+        <!-- (enableOnBackInvokedCallback false: Back reaches the app as a
+             key, KEYCODE_BACK, which zgx reads as Escape to close what's
+             on top; with predictive back, the default from targetSdk 36,
+             the system would finish the activity instead.) -->
         <activity
             android:name="android.app.NativeActivity"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.TranslucentDecor"

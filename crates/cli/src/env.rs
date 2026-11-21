@@ -31,6 +31,39 @@ fn config_file(name: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
+/// Keep the edge config in `dir` (a [`config_dir`]): `edge-url` and
+/// `edge-token` (the bearer), each written whole or not at all (a new file
+/// beside it, flushed, renamed over) and readable by this user alone (mode
+/// 600 from its creation, so the bearer is never readable by others even
+/// for a moment). What the phone keeps after scanning the desktop's code.
+pub fn store_edge_config(dir: &std::path::Path, url: &str, token: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write_private(&dir.join("edge-url"), url.trim())?;
+    write_private(&dir.join("edge-token"), token.trim())
+}
+
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("edge");
+    let temp = path.with_file_name(format!(".{name}.{}.new", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let written = (|| {
+        let mut file = options.open(&temp)?;
+        file.write_all(text.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 /// The edge's dev bearer: `ZEND_EDGE_TOKEN`, else the file at
 /// `ZEND_EDGE_TOKEN_FILE`, else [`config_dir`]'s `edge-token`.
 pub fn edge_token_from_env() -> Option<String> {
@@ -89,3 +122,25 @@ pub fn ipc_port_from(value: Option<&str>) -> u16 {
 /// zend's own: not 27654/27655, the ports of the app it was forked from,
 /// which may run beside it.
 pub const DEFAULT_IPC_PORT: u16 = 27871;
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_edge_config_is_written_whole_and_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("zend");
+        super::store_edge_config(&config, " http://100.64.0.1:27640 ", "u-phone@org\n").unwrap();
+        super::store_edge_config(&config, "http://100.64.0.1:27640", "u-phone2@org").unwrap();
+        for (name, text) in [("edge-url", "http://100.64.0.1:27640\n"), ("edge-token", "u-phone2@org\n")] {
+            let path = config.join(name);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+        }
+        // No new file left beside them.
+        let mut names: Vec<_> = std::fs::read_dir(&config).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["edge-token", "edge-url"]);
+    }
+}

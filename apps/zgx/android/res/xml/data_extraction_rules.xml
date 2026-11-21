@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 and later: what goes into a cloud backup or a transfer to a
+     new device. Never the engine's folder (.zend: this device's identity
+     device-id, its plugin-signing key, the IPC tokens of older builds, its
+     store, which belongs with that identity) nor the edge config (.config:
+     the edge bearer in zend/edge-token). The unpacked app (app/) comes with
+     the APK. What's left is the window's own state (zend-zgx/). -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path=".zend/" />
+        <exclude domain="file" path=".config/" />
+        <exclude domain="file" path="app/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path=".zend/" />
+        <exclude domain="file" path=".config/" />
+        <exclude domain="file" path="app/" />
+    </device-transfer>
+</data-extraction-rules>

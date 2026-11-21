@@ -362,9 +362,7 @@ pub(crate) fn start_in_process(config: &Config) -> bool {
     #[cfg(target_os = "android")]
     return crate::android::start_engine(crate::android::EngineStart {
         data_dir: config.data_dir.clone(),
-        port: config.port,
         edge: config.edge.clone(),
-        client: config.client.clone(),
     });
     #[cfg(not(target_os = "android"))]
     {

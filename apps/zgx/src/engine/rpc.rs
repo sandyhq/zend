@@ -20,7 +20,6 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     future::Future,
-    net::{SocketAddr, TcpStream},
     path::Path,
     pin::Pin,
     rc::Rc,
@@ -30,6 +29,8 @@ use std::{
 };
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(not(target_os = "android"))]
+use std::net::{SocketAddr, TcpStream};
 
 /// How long a dial may take: a real engine answers on localhost in
 /// milliseconds; something else holding the port must not hang us.
@@ -46,8 +47,14 @@ pub enum DialError {
     Other(String),
 }
 
-/// The engine's current IPC token, if it has written one.
+/// The engine's current IPC token, if it has written one. Android's
+/// engine, in this process, keeps its token in memory (src/android.rs).
 pub fn read_token(data_dir: &Path) -> Option<String> {
+    #[cfg(target_os = "android")]
+    if crate::android::IN_PROCESS_IPC {
+        let _ = data_dir;
+        return crate::android::engine_token();
+    }
     let raw = std::fs::read_to_string(data_dir.join("ipc-token")).ok()?;
     let token = raw.trim();
     (!token.is_empty()).then(|| token.to_string())
@@ -95,22 +102,44 @@ impl Frames {
     }
 }
 
-type Socket = tungstenite::WebSocket<TcpStream>;
+/// What the engine is reached over: its port on loopback, or on Android
+/// a socket pair with the engine in this process (no port: nothing outside
+/// the app reaches it).
+#[cfg(not(target_os = "android"))]
+type Stream = TcpStream;
+#[cfg(target_os = "android")]
+type Stream = std::os::unix::net::UnixStream;
+type Socket = tungstenite::WebSocket<Stream>;
+
+fn refused_or(error: std::io::Error) -> DialError {
+    if error.kind() == std::io::ErrorKind::ConnectionRefused {
+        DialError::Refused
+    } else {
+        DialError::Other(error.to_string())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn open(port: u16) -> Result<(Stream, String), DialError> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let stream = TcpStream::connect_timeout(&address, DIAL_TIMEOUT).map_err(refused_or)?;
+    let _ = stream.set_nodelay(true);
+    Ok((stream, format!("ws://127.0.0.1:{port}")))
+}
+
+#[cfg(target_os = "android")]
+fn open(port: u16) -> Result<(Stream, String), DialError> {
+    let _ = port;
+    let stream = crate::android::dial_engine().map_err(refused_or)?;
+    Ok((stream, "ws://localhost/".into()))
+}
 
 /// The handshake, blocking (on the network thread).
 fn dial(port: u16, token: Option<&str>) -> Result<Socket, DialError> {
     use tungstenite::client::IntoClientRequest;
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let stream = TcpStream::connect_timeout(&address, DIAL_TIMEOUT).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::ConnectionRefused {
-            DialError::Refused
-        } else {
-            DialError::Other(error.to_string())
-        }
-    })?;
+    let (stream, uri) = open(port)?;
     let _ = stream.set_read_timeout(Some(DIAL_TIMEOUT));
-    let _ = stream.set_nodelay(true);
-    let mut request = format!("ws://127.0.0.1:{port}")
+    let mut request = uri
         .into_client_request()
         .map_err(|error| DialError::Other(error.to_string()))?;
     if let Some(token) = token {
