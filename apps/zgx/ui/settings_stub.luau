@@ -17,7 +17,13 @@
 --   settings_stub.signed_in_again  the browser sign-in a delete waits on lands
 --   settings_stub.phone_no_edge    this computer has no relay to share
 --   settings_stub.phone_quick      a phone code shows for 1 s, not 60
---   settings_stub.on_android       the page as the phone shows it
+--   settings_stub.on_android       the page as the phone shows it (no session
+--                                  runs on it: here is a phone of its own)
+--   settings_stub.phone_busy       a session runs on this phone
+--   settings_stub.phone_scan_waits the next scan looks until scan_lands
+--   settings_stub.phone_scan_lands that scan finds the code (late, if stopped)
+--   settings_stub.phone_denied     the camera isn't allowed
+--   settings_stub.relay_up         the engine's registry room is joined
 
 local host = require("@app/screens/settings/host")
 local api = require("@account/api")
@@ -141,6 +147,9 @@ end
 
 -- A phone's connect code (src/phone_link.rs), with a fake relay and key.
 local phone_edge = ui.state("settings_stub_phone_edge", true)
+-- What the next scan answers: "found", "wait" (until phone_scan_lands), "denied".
+local scan_word = ui.state("settings_stub_scan_word", "found")
+local scan_waiting: ((any) -> ())? = nil
 local FAKE_CODE = "zend://connect?v=1&edge=http%3A%2F%2F100.64.0.1%3A27640&token=u-fake%40invalid"
 local FAKE_QR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/><path d="M4 4h7v7h-7z" fill="#000"/></svg>'
 
@@ -149,10 +158,18 @@ local answers: { [string]: (arg: any) -> any } = {
 		return if phone_edge:peek() then settled({ svg = FAKE_QR, modules = 29 }) else settled(nil, "no_edge")
 	end,
 	["phone.scan"] = function(): any
-		return settled(FAKE_CODE)
+		local word = scan_word:peek()
+		if word == "wait" then
+			local p = {}
+			function p.after(_self: any, ok: ((any) -> ())?)
+				scan_waiting = ok
+			end
+			return p
+		end
+		return if word == "found" then settled(FAKE_CODE) else settled(nil, word)
 	end,
 	["phone.connect"] = function(arg: any): any
-		local code = string.match(arg.code or "", "^%s*(.-)%s*$")
+		local code = string.match(arg.code or "", "^%s*(.-)%s*$") or ""
 		return if string.sub(code, 1, 15) == "zend://connect?" then settled({ edge = "http://…:27640" }) else settled(nil, "bad_code")
 	end,
 	["account.me"] = function()
@@ -542,11 +559,60 @@ ui.command {
 		require("@app/screens/settings/devices").SHOWN_FOR = 1
 	end,
 }
+local function here_is(id: string)
+	local sessions = require("@account/sessions")
+	local now = table.clone(sessions.now:peek()) :: any
+	now.here = id
+	sessions.now:set(now)
+end
 ui.command {
 	id = "settings_stub.on_android",
 	title = "The page as the phone shows it",
 	run = function()
 		ui.shared("platform", ""):set("android")
+		here_is("pixel")
+	end,
+}
+ui.command {
+	id = "settings_stub.phone_busy",
+	title = "A session runs on this phone",
+	run = function()
+		here_is("mac")
+	end,
+}
+ui.command {
+	id = "settings_stub.phone_scan_waits",
+	title = "The next scan looks until it lands",
+	run = function()
+		scan_word:set("wait")
+	end,
+}
+ui.command {
+	id = "settings_stub.phone_scan_lands",
+	title = "The waiting scan finds the code",
+	run = function()
+		local ok = scan_waiting
+		scan_waiting = nil
+		if ok then
+			ok(FAKE_CODE)
+		end
+	end,
+}
+ui.command {
+	id = "settings_stub.phone_denied",
+	title = "The camera isn't allowed",
+	run = function()
+		scan_word:set("denied")
+	end,
+}
+ui.command {
+	id = "settings_stub.relay_up",
+	title = "The engine's registry room is joined",
+	run = function()
+		local sessions = require("@account/sessions")
+		local now = table.clone(sessions.now:peek()) :: any
+		now.relay = "connected"
+		sessions.now:set(now)
 	end,
 }
 ui.command {

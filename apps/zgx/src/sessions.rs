@@ -1398,6 +1398,10 @@ impl Sessions {
             ),
             ("places_ready", Value::Bool(self.places_ready.get())),
             ("connection", connection(&self.connectivity.borrow()).map_or(Value::Nil, Value::from)),
+            // (The engine's word as it is: "connected" once its registry
+            // room is joined. Settings → Devices waits on it after a
+            // phone joins a relay.)
+            ("relay", self.connectivity.borrow()["state"].as_str().map_or(Value::Nil, Value::from)),
         ]);
         self.show_live(now);
         value

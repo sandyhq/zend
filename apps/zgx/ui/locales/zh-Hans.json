@@ -1721,7 +1721,6 @@
         "hides_in": "{n} 秒后隐藏",
         "code_name": "手机连接代码",
         "scan_steps": "在手机上打开 Zend，进入 设置 > 设备，然后轻点 扫描代码。",
-        "joined_toast": "{name} 已加入",
         "no_edge_title": "没有可共享的中继",
         "no_edge_body": "此电脑没有自己的中继（~/.config/zend 中的 edge-url 和 edge-token），所以手机无处可加入。",
         "couldnt": "无法显示代码",
@@ -1737,13 +1736,19 @@
         "paste_name": "连接代码",
         "connect": "连接",
         "joining": "正在连接…",
-        "joined": "已加入 {edge} 的中继。它应答后会显示你的会话。",
         "bad_code": "这不是 Zend 连接代码。",
-        "denied": "Zend 不能使用相机。请在安卓设置中允许，或粘贴代码。",
+        "denied": "未允许使用相机。请在 Android 设置中允许，或粘贴代码。",
         "no_camera": "这部手机没有 Zend 可用的相机。请改为粘贴代码。",
         "camera_failed": "相机没有启动。请重试，或粘贴代码。",
         "store_failed": "无法在这部手机上保存代码。",
-        "engine_failed": "代码已保存，但 Zend 的引擎没有重新启动。请关闭并重新打开 Zend。"
+        "engine_failed": "代码已保存，但 Zend 的引擎没有重新启动。请关闭并重新打开 Zend。",
+        "saved_connecting": "已保存。正在连接 {edge} 的中继…",
+        "connected": "已连接到 {edge} 的中继。",
+        "unreachable": "已保存，但 {edge} 的中继还没有响应。请确认这部手机在它的网络上，然后再扫一次。",
+        "busy_title": "这部手机上有会话正在运行",
+        "busy_body": "这里有 {n, plural, other {# 个会话}}正在运行。连接到另一个中继会停止它们。",
+        "busy_go": "仍然连接",
+        "retry": "重试"
       }
     },
     "projects": {
@@ -2898,7 +2903,11 @@
       "found": "{n, plural, other {在此电脑上找到 # 个智能体。请登录你想使用的智能体。}}",
       "this_mac": "此电脑"
     },
-    "try_again": "重试"
+    "try_again": "重试",
+    "connect": {
+      "title": "连接到电脑",
+      "body": "这部手机上的 Zend 会显示你电脑中继上的会话。在电脑上打开 设置 > 设备 并点按 显示代码，然后在这里扫描。"
+    }
   },
   "intro": {
     "headline": {

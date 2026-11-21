@@ -23,6 +23,7 @@ local invite = require("@self/invite")
 local github = require("@self/github")
 local providers = require("@self/providers")
 local done = require("@self/done")
+local connect = require("@self/connect")
 
 -- The ways back and on. (The dots are the frame's, drawn once over every
 -- step, so a step draws none of its own.)
@@ -73,6 +74,9 @@ local STEPS: { [state.Step]: () -> Node } = {
 			end,
 			on_skip = actions.skip_sign_in,
 		})
+	end,
+	connect = function()
+		return connect { on_back = actions.back, on_continue = actions.connected }
 	end,
 	appearance = function()
 		return appearance(nav("appearance") :: any)

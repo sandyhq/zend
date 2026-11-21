@@ -27,6 +27,33 @@
 
 use zgx_script::{ScriptHost, Value};
 
+/// Which scan is the live one: each scan an attempt of its own, and any
+/// newer one (or a stop: the page left, the app sent away) ends the ones
+/// before it. A scan still running looks whether it's live between frames,
+/// and its answer is dropped once it isn't. Nothing to clear when a scan
+/// ends, however it ends (a panic included).
+pub struct Attempts(std::sync::atomic::AtomicU64);
+
+impl Attempts {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(0))
+    }
+
+    /// A new attempt: the live one from now on.
+    pub fn begin(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// No attempt live any more.
+    pub fn stop(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn live(&self, attempt: u64) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) == attempt
+    }
+}
+
 /// What a code starts with.
 const PREFIX: &str = "zend://connect?";
 
@@ -320,6 +347,24 @@ mod tests {
         ] {
             assert!(decode(&bad).is_err(), "accepted {:.80}", bad);
         }
+    }
+
+    /// A stop, or a scan started after it, ends a scan; a scan's panic
+    /// leaves nothing to clear (the next begins anyway).
+    #[test]
+    fn a_stop_or_a_newer_scan_ends_the_one_running() {
+        let scans = Attempts::new();
+        let first = scans.begin();
+        assert!(scans.live(first));
+        scans.stop();
+        assert!(!scans.live(first));
+        let second = scans.begin();
+        let third = scans.begin();
+        assert!(!scans.live(second) && scans.live(third));
+        let panicked = std::thread::spawn(move || -> () { panic!("scan {third} panics") }).join();
+        assert!(panicked.is_err());
+        let fourth = scans.begin();
+        assert!(scans.live(fourth));
     }
 
     /// The log's words for an edge are fixed, whatever the code held.

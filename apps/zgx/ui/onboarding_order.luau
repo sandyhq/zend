@@ -244,6 +244,35 @@ test("someone who already had Zend is welcomed with only their username and card
 	state.welcome = false
 end)
 
+test("on the phone, every run joins a computer's relay right after sign-in", function()
+	local platform = ui.shared("platform", "")
+	platform:set("android")
+	expect(run { path = "signed_in" }).to_be("connect")
+	expect(forward("connect")).to_equal({ "connect", "appearance", "username", "card", "org", "invite", "github", "providers", "done" })
+	-- (Signed in, Back from it goes nowhere: leaving is Sign out.)
+	expect(backward("connect")).to_equal({ "connect" })
+	local n, count = state.position("connect")
+	expect(n).to_be(1)
+	expect(count).to_be(9)
+	-- Not signed in: first too, and the look's Back returns to it.
+	expect(run { path = "skipped" }).to_be("connect")
+	expect(backward("appearance")).to_equal({ "appearance", "connect", "signin" })
+	state.step:set("connect")
+	actions.connected()
+	expect(state.step:peek()).to_be("appearance")
+	expect(state.device_done:peek().connect).to_be(true)
+	-- Joined in an earlier run: passed over, as a page finished.
+	expect(run { path = "signed_in", passed = { "connect" } }).to_be("appearance")
+	-- Welcomed: the relay first, then the username and card.
+	state.welcome = true
+	expect(run { path = "signed_in" }).to_be("connect")
+	expect(forward("connect")).to_equal({ "connect", "username", "card", "done" })
+	state.welcome = false
+	platform:set("")
+	-- (On a computer, no such step.)
+	expect(run { path = "signed_in" }).to_be("appearance")
+end)
+
 return ui.text {
 	id = "result",
 	if #failures == 0 then "ok" else table.concat(failures, "\n"),

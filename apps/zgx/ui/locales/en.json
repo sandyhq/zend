@@ -1721,7 +1721,6 @@
         "hides_in": "Hides in {n} s",
         "code_name": "Connect code for your phone",
         "scan_steps": "On your phone, open Zend, go to Settings > Devices and tap Scan code.",
-        "joined_toast": "{name} joined",
         "no_edge_title": "No relay to share",
         "no_edge_body": "This computer isn't on a relay of its own (edge-url and edge-token in ~/.config/zend), so there's nothing for a phone to join.",
         "couldnt": "Couldn't show the code",
@@ -1737,13 +1736,19 @@
         "paste_name": "Connect code",
         "connect": "Connect",
         "joining": "Connecting…",
-        "joined": "Joined the relay at {edge}. Your sessions show once it answers.",
         "bad_code": "That's not a Zend connect code.",
-        "denied": "Zend may not use the camera. Allow it in Android's settings, or paste the code.",
+        "denied": "Camera not allowed. Allow it in Android's settings, or paste the code.",
         "no_camera": "This phone has no camera Zend can use. Paste the code instead.",
         "camera_failed": "The camera didn't start. Try again, or paste the code.",
         "store_failed": "Couldn't keep the code on this phone.",
-        "engine_failed": "Kept the code, but Zend's engine didn't start again. Close and open Zend."
+        "engine_failed": "Kept the code, but Zend's engine didn't start again. Close and open Zend.",
+        "saved_connecting": "Saved. Connecting to the relay at {edge}…",
+        "connected": "Connected to the relay at {edge}.",
+        "unreachable": "Saved, but the relay at {edge} doesn't answer yet. Check that this phone is on its network, then scan again.",
+        "busy_title": "Sessions are running on this phone",
+        "busy_body": "{n, plural, one {# session is} other {# sessions are}} running here. Connecting to another relay stops {n, plural, one {it} other {them}}.",
+        "busy_go": "Connect anyway",
+        "retry": "Try again"
       }
     },
     "projects": {
@@ -2898,7 +2903,11 @@
       "found": "{n, plural, one {Found # agent on this computer. Sign in to any you'd like to use.} other {Found # agents on this computer. Sign in to any you'd like to use.}}",
       "this_mac": "this computer"
     },
-    "try_again": "Try again"
+    "try_again": "Try again",
+    "connect": {
+      "title": "Connect to a computer",
+      "body": "Zend on this phone shows the sessions of your computer's relay. On the computer, open Settings > Devices and tap Show code, then scan it here."
+    }
   },
   "intro": {
     "headline": {

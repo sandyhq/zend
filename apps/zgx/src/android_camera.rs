@@ -10,15 +10,19 @@
 //! how many frames it looked at, and, for the code it found, that it is one.
 
 use std::ffi::{c_int, c_void, CStr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use zgx_desktop::android::AndroidApp;
 use zgx_script::{ScriptHost, Value};
 
-/// A scan running (one at a time), and asked to stop.
-static SCANNING: AtomicBool = AtomicBool::new(false);
-static STOP: AtomicBool = AtomicBool::new(false);
+/// The live scan: a newer one or `phone.scan_stop` ends the one before.
+static SCANS: crate::phone_link::Attempts = crate::phone_link::Attempts::new();
+/// The camera, held by one scan's thread at a time: one that was ended
+/// lets go of it (as its thread ends, a panic included) before the next
+/// opens it.
+static CAMERA: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The camera went (disconnected, or an error) under the scan holding it.
+static LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How long a scan looks before giving up, and how long it waits for the
 /// person to answer the camera permission.
@@ -48,28 +52,27 @@ pub fn install(host: &ScriptHost) {
         let status = status.clone();
         async move {
             crate::plugins::preview::refuse("phone.scan")?;
-            if SCANNING.swap(true, Ordering::SeqCst) {
-                return Err("busy".to_owned());
-            }
-            STOP.store(false, Ordering::SeqCst);
+            let attempt = SCANS.begin();
             let Some(app) = zgx_desktop::android::app() else {
-                SCANNING.store(false, Ordering::SeqCst);
                 return Err("camera".to_owned());
             };
             let (tx, mut rx) = zgx::task::latest::<Progress>();
             let spawned = std::thread::Builder::new().name("zend-camera".into()).spawn(move || {
-                let found = scan(&app, &|state, frames| {
+                let found = scan(&app, attempt, &|state, frames| {
                     tx.send(Progress::State(state, frames));
                 });
-                SCANNING.store(false, Ordering::SeqCst);
                 tx.send(Progress::Done(found));
             });
             if spawned.is_err() {
-                SCANNING.store(false, Ordering::SeqCst);
                 return Err("camera".to_owned());
             }
             loop {
-                match rx.recv().await {
+                let progress = rx.recv().await;
+                // An ended scan says nothing more: a newer one has the page.
+                if !SCANS.live(attempt) {
+                    return Err("stopped".to_owned());
+                }
+                match progress {
                     Some(Progress::State(state, frames)) => {
                         status.set(status_value(state, frames));
                     }
@@ -85,9 +88,7 @@ pub fn install(host: &ScriptHost) {
             }
         }
     });
-    host.action("phone.scan_stop", |_| {
-        STOP.store(true, Ordering::SeqCst);
-    });
+    host.action("phone.scan_stop", |_| SCANS.stop());
     host.async_action("phone.connect", |arg| async move {
         crate::plugins::preview::refuse("phone.connect")?;
         let code = arg.field("code").map(crate::auth::text).unwrap_or_default();
@@ -95,25 +96,36 @@ pub fn install(host: &ScriptHost) {
     });
 }
 
-/// Ask for the camera, then look until a connect code shows, the person
-/// stops, or [`SCAN_FOR`] passes.
-fn scan(app: &AndroidApp, tell: &dyn Fn(&'static str, u32)) -> Result<String, &'static str> {
+/// How long after asking for the permission the system's dialog must have
+/// taken the window's focus: a permission refused for good shows none.
+const DIALOG_WITHIN: Duration = Duration::from_millis(1500);
+
+/// Ask for the camera, then look until a connect code shows, the scan is
+/// ended (`attempt` no longer live), or [`SCAN_FOR`] passes.
+fn scan(app: &AndroidApp, attempt: u64, tell: &dyn Fn(&'static str, u32)) -> Result<String, &'static str> {
+    let live = || SCANS.live(attempt);
     match camera_allowed(app, false) {
         Ok(true) => {}
         Ok(false) => {
             tell("asking", 0);
             log::info!("zend: camera: asking for the permission");
             camera_allowed(app, true).map_err(|_| "camera")?;
+            // The answer comes as the system's dialog closes (the window has
+            // its focus back): refused then, it's "denied" at once.
             let asked = Instant::now();
+            let mut dialog = false;
             loop {
-                if STOP.load(Ordering::SeqCst) {
+                if !live() {
                     return Err("stopped");
                 }
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(100));
                 if camera_allowed(app, false).unwrap_or(false) {
                     break;
                 }
-                if asked.elapsed() > ASK_FOR {
+                let focused = window_focused(app).unwrap_or(true);
+                dialog |= !focused;
+                let closed = if dialog { focused } else { asked.elapsed() > DIALOG_WITHIN };
+                if closed || asked.elapsed() > ASK_FOR {
                     log::info!("zend: camera: the permission wasn't given");
                     return Err("denied");
                 }
@@ -124,6 +136,12 @@ fn scan(app: &AndroidApp, tell: &dyn Fn(&'static str, u32)) -> Result<String, &'
             return Err("camera");
         }
     }
+    // The camera once an ended scan has let go of it.
+    let _held = CAMERA.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !live() {
+        return Err("stopped");
+    }
+    LOST.store(false, std::sync::atomic::Ordering::SeqCst);
     tell("scanning", 0);
     // SAFETY: Camera owns what it opens and frees it as it drops, on this
     // thread; nothing of it leaves.
@@ -133,9 +151,12 @@ fn scan(app: &AndroidApp, tell: &dyn Fn(&'static str, u32)) -> Result<String, &'
     let mut frames = 0u32;
     let mut grey = Vec::new();
     loop {
-        if STOP.load(Ordering::SeqCst) {
+        if !live() {
             log::info!("zend: camera: stopped after {frames} frames");
             return Err("stopped");
+        }
+        if LOST.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("camera");
         }
         if started.elapsed() > SCAN_FOR {
             log::info!("zend: camera: no code in {frames} frames");
@@ -175,7 +196,7 @@ fn camera_allowed(app: &AndroidApp, ask: bool) -> jni::errors::Result<bool> {
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
     let mut env = vm.attach_current_thread()?;
     let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
-    let mut asked = |env: &mut jni::JNIEnv| -> jni::errors::Result<bool> {
+    let asked = |env: &mut jni::JNIEnv| -> jni::errors::Result<bool> {
         let name = env.new_string("android.permission.CAMERA")?;
         let granted = env.call_method(&activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&name)])?.i()? == 0;
         if !granted && ask {
@@ -189,6 +210,21 @@ fn camera_allowed(app: &AndroidApp, ask: bool) -> jni::errors::Result<bool> {
         let _ = env.exception_clear();
     }
     answer
+}
+
+/// Whether the activity's window has the focus (`hasWindowFocus`): not
+/// while the system's permission dialog is over it.
+fn window_focused(app: &AndroidApp) -> jni::errors::Result<bool> {
+    use jni::objects::JObject;
+    // SAFETY: as in camera_allowed.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    let focused = env.call_method(&activity, "hasWindowFocus", "()Z", &[]).and_then(|v| v.z());
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    focused
 }
 
 /// The back camera (else the first), repeating frames into an image reader.
@@ -208,11 +244,11 @@ struct Camera {
 
 extern "C" fn on_device_disconnected(_: *mut c_void, _: *mut ffi::ACameraDevice) {
     log::warn!("zend: camera: disconnected");
-    STOP.store(true, Ordering::SeqCst);
+    LOST.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 extern "C" fn on_device_error(_: *mut c_void, _: *mut ffi::ACameraDevice, error: c_int) {
     log::warn!("zend: camera: error {error}");
-    STOP.store(true, Ordering::SeqCst);
+    LOST.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 extern "C" fn on_session(_: *mut c_void, _: *mut ffi::ACameraCaptureSession) {}
 

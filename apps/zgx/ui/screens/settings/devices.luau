@@ -17,9 +17,10 @@
 --
 -- Under it, connecting a phone to the owner's relay (src/phone_link.rs):
 -- on a computer, "Show code" draws a QR code with its relay's address and
--- its own key, for a minute or until a new device joins, whichever comes
--- first; on the phone (Android), "Scan code" reads it with the camera, or
--- its text is pasted, and the phone's engine starts again on it.
+-- its own key, for a minute or until Hide (no guess at which device used
+-- it: a join can't be tied to the code); on the phone (Android), the view
+-- of phone_join.luau: "Scan code" reads it with the camera, or its text is
+-- pasted, and the phone's engine starts again on it.
 
 local ds = require("@ds")
 local Menu = require("@ds/menu")
@@ -30,6 +31,7 @@ local sessions = require("@account/sessions")
 local search = require("@app/screens/settings/search")
 local rename = require("@app/screens/settings/rename_row")
 local host = require("@app/screens/settings/host")
+local phone_join = require("@app/screens/settings/phone_join")
 
 local M = {}
 
@@ -358,20 +360,17 @@ end
 M.SHOWN_FOR = 60
 
 -- The code shown (its QR's SVG; nil: none), why it can't be ("" none), the
--- seconds it has left, the devices there as it was shown (one more:
--- it was used), and which showing this is (a hide meant for an earlier one
--- does nothing).
+-- seconds it has left, and which showing this is (a hide meant for an
+-- earlier one does nothing).
 local code_svg = ui.state("settings_phone_code", nil :: string?)
 local code_error = ui.state("settings_phone_code_error", "")
 local code_left = ui.state("settings_phone_code_left", 0)
-local code_known = ui.state("settings_phone_code_known", {} :: { [string]: boolean })
 local code_turn = ui.state("settings_phone_code_turn", 0)
 
 local function hide_code()
 	ui.batch(function()
 		code_svg:set(nil)
 		code_left:set(0)
-		code_known:set({})
 		code_turn:set(code_turn:peek() + 1)
 	end)
 end
@@ -384,12 +383,7 @@ local function show_code()
 		if code_turn:peek() ~= turn then
 			return
 		end
-		local known = {}
-		for _, d in sessions.devices:peek() or {} do
-			known[d.id] = true
-		end
 		ui.batch(function()
-			code_known:set(known)
 			code_left:set(M.SHOWN_FOR)
 			code_svg:set(answer.svg)
 		end)
@@ -404,24 +398,6 @@ local function show_code()
 		end
 	end)
 end
-
--- A device that wasn't there as the code was shown: the code was used.
-ui.effect(function()
-	if code_svg:get() == nil then
-		return
-	end
-	local known = code_known:get()
-	for _, d in sessions.devices:get() or {} do
-		if not known[d.id] and not d.here then
-			local name = d.name
-			ui.after(0, function()
-				hide_code()
-				toast.show { title = ui.t("settings.devices.phone.joined_toast", { name = name }):get(), tone = "success" }
-			end)
-			return
-		end
-	end
-end)
 
 local function code_view(): Node
 	ui.every(1000, function()
@@ -494,6 +470,8 @@ local function computer_section(): Node
 						tone = if no_edge then "neutral" else "danger",
 						title = (if no_edge then ui.t("settings.devices.phone.no_edge_title") else ui.t("settings.devices.phone.couldnt")) :: any,
 						body = (if no_edge then ui.t("settings.devices.phone.no_edge_body") else ui.t("settings.devices.try_later")) :: any,
+						-- (Set up the relay, or the moment passes: ask again.)
+						action = { label = ui.t("settings.devices.phone.retry"), on_click = show_code },
 					}
 				end
 				return ds.Settings.Group {
@@ -513,163 +491,15 @@ local function computer_section(): Node
 	)
 end
 
--- On the phone: scanning or pasting the computer's code.
-local scan = ui.shared("phone.scan", { state = "idle", frames = 0 } :: any)
-local scanning = ui.state("settings_phone_scanning", false)
-local joining = ui.state("settings_phone_joining", false)
--- What came of the last try: "" nothing yet, "joined" (with the relay's
--- address, redacted, in `joined_edge`), or a failure's word.
-local join_outcome = ui.state("settings_phone_join_outcome", "")
-local joined_edge = ui.state("settings_phone_joined_edge", "")
-local pasted = ui.state("settings_phone_pasted", "")
-
-local function word_of(err: any): string
-	return if type(err) == "string" then err elseif type(err) == "table" or type(err) == "userdata" then err.message or "failed" else "failed"
-end
-
-local function join(code: string)
-	if joining:peek() or string.match(code, "^%s*$") then
-		return
-	end
-	ui.batch(function()
-		joining:set(true)
-		join_outcome:set("")
-	end)
-	host.call("phone.connect", { code = code }):after(function(answer: any)
-		ui.batch(function()
-			joining:set(false)
-			pasted:set("")
-			joined_edge:set(answer.edge or "")
-			join_outcome:set("joined")
-		end)
-	end, function(err: any)
-		ui.batch(function()
-			joining:set(false)
-			join_outcome:set(word_of(err))
-		end)
-	end)
-end
-
-local function start_scan()
-	if scanning:peek() then
-		return
-	end
-	ui.batch(function()
-		scanning:set(true)
-		join_outcome:set("")
-	end)
-	host.call("phone.scan", {}):after(function(code: any)
-		scanning:set(false)
-		join(code)
-	end, function(err: any)
-		ui.batch(function()
-			scanning:set(false)
-			local word = word_of(err)
-			join_outcome:set(if word == "stopped" then "" else word)
-		end)
-	end)
-end
-
-local OUTCOMES: { [string]: string } = {
-	bad_code = "settings.devices.phone.bad_code",
-	denied = "settings.devices.phone.denied",
-	no_camera = "settings.devices.phone.no_camera",
-	camera = "settings.devices.phone.camera_failed",
-	store = "settings.devices.phone.store_failed",
-	engine = "settings.devices.phone.engine_failed",
-}
-
+-- On the phone: scanning or pasting the computer's code (phone_join.luau,
+-- as onboarding's Connect to a computer has it).
 local function phone_section(): Node
 	return search.anchor(
 		"phone",
 		ds.Settings.Section {
 			title = ui.t("settings.devices.phone.join_title"),
 			description = ui.t("settings.devices.phone.join_description"),
-			ds.Settings.Group {
-				ds.Settings.Row {
-					label = ui.t("settings.devices.phone.scan_label"),
-					description = function(): string
-						if not scanning:get() then
-							return ui.t("settings.devices.phone.scan_hint"):get()
-						end
-						local s = (scan:get() or {}) :: any
-						return if s.state == "asking"
-							then ui.t("settings.devices.phone.asking"):get()
-							else ui.t("settings.devices.phone.scanning"):get()
-					end,
-					control = ui.presence(function(): boolean
-						return scanning:get()
-					end, function(on: boolean): Node
-						return if on
-							then ds.Button {
-								ui.t("settings.devices.phone.cancel"),
-								tone = "secondary",
-								size = "sm",
-								on_click = function()
-									host.invoke("phone.scan_stop", {})
-								end,
-							}
-							else ds.Button {
-								ui.t("settings.devices.phone.scan"),
-								tone = "accent",
-								size = "sm",
-								disabled = function(): boolean
-									return joining:get()
-								end,
-								on_click = start_scan,
-							}
-					end),
-				},
-				ds.Settings.Rule(),
-				ds.Settings.Row {
-					label = ui.t("settings.devices.phone.paste_label"),
-					stacked = true,
-					control = ui.row {
-						w_full = true,
-						gap = "$space.2",
-						items = "center",
-						ds.TextField {
-							value = pasted,
-							name = ui.t("settings.devices.phone.paste_name"),
-							placeholder = "zend://connect?…",
-							grow = 1,
-							on_commit = join,
-						},
-						ds.Button {
-							ui.t("settings.devices.phone.connect"),
-							tone = "secondary",
-							size = "sm",
-							disabled = function(): boolean
-								return joining:get() or string.match(pasted:get(), "^%s*$") ~= nil
-							end,
-							on_click = function()
-								join(pasted:peek())
-							end,
-						},
-					},
-				},
-			},
-			ui.text {
-				function(): string
-					local outcome = join_outcome:get()
-					if joining:get() then
-						return ui.t("settings.devices.phone.joining"):get()
-					elseif outcome == "joined" then
-						return ui.t("settings.devices.phone.joined", { edge = joined_edge:get() }):get()
-					elseif outcome ~= "" then
-						return ui.t(OUTCOMES[outcome] or "settings.devices.try_later"):get()
-					end
-					return ""
-				end,
-				id = "phone-join-outcome",
-				live = "polite",
-				text_size = "$font.size.md",
-				color = function(): string
-					local outcome = join_outcome:get()
-					return if outcome == "" or outcome == "joined" then "$text.secondary" else "$text.danger"
-				end,
-				wrap = true,
-			},
+			ui.component(phone_join.view)({}),
 		}
 	)
 end
