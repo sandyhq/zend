@@ -536,8 +536,15 @@ end
 -- page must be open).
 function M.open_url(session: any, url: string?, project: any?, page: any?): boolean
 	local k = state.key(session, project, page)
-	-- (Android has no browser tab: the link opens in its app.)
-	if not k or not require("@ds/platform").has("browser") then
+	-- (Android has no browser tab: the link opens in the device's browser,
+	-- taken here, so a port's Open does what it says.)
+	if not require("@ds/platform").has("browser") then
+		if url then
+			require("@app/screens/panel/browser_api").open_externally(url)
+		end
+		return url ~= nil
+	end
+	if not k then
 		return false
 	end
 	local found: string? = nil

@@ -106,6 +106,8 @@ local function finish()
 	end
 end
 local function start(combo: string?, target: string?)
+	-- (A device without dictation has no Voice page to send to.)
+	if keys.hidden("shell.dictate") then return end
 	-- (Not on yet: Settings → Voice says how.)
 	if not prefs.dictation:peek() then route.settings("voice") return end
 	if starting or M.active:peek() then return end
@@ -136,11 +138,14 @@ ui.effect(function()
 		or (string.find(combo, "alt+", 1, true) and not alt)
 		or (string.find(combo, "shift+", 1, true) and not shift) then finish() end
 end)
+-- (None where the device has no dictation: keys leaves it out.)
 local command = keys.get("shell.dictate") :: any
-ui.command {
-	id = command.id, title = keys.title(command), menu = command.menu, key = keys.key(command.id),
-	run = function() start(keys.combo(command.id)) end,
-}
+if command then
+	ui.command {
+		id = command.id, title = keys.title(command), menu = command.menu, key = keys.key(command.id),
+		run = function() start(keys.combo(command.id)) end,
+	}
+end
 local function Mic(target: string): Node
 	local released = -1000
 	return Button {

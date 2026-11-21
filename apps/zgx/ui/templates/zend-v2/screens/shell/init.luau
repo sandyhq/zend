@@ -204,11 +204,19 @@ return function(): Node
 	Links.panel_ready = function(): boolean
 		return route.session:peek() ~= nil or route.page:peek() ~= nil
 	end
+	-- (Android: no browser tab, so no "Open in browser panel"; links open
+	-- in their app.)
+	if not require("@ds/platform").has("browser") then
+		Links.panel = nil
+		Links.in_app = function(): boolean
+			return false
+		end
+	end
 	Links.opener = function(url: string): boolean
 		if plugin_links.take(route.session:peek(), url) then
 			return true
 		end
-		if prefs.open_links:peek() ~= "zend" then
+		if prefs.open_links:peek() ~= "zend" or Links.panel == nil then
 			return false
 		end
 		return (Links.panel :: (string) -> boolean)(url)

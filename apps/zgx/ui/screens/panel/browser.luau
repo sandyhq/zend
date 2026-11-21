@@ -135,7 +135,14 @@ end)()
 local function key_of(id: string, key: string): string | () -> string
 	return if shell_keys then shell_keys.key(id) else key
 end
+-- (Each left out where shell/keys does: a device with no browser tab.)
+local function hidden(id: string): boolean
+	return shell_keys ~= nil and shell_keys.hidden ~= nil and shell_keys.hidden(id)
+end
 local function command(id: string, title: string, menu: string, key: string, act: (Showing) -> ())
+	if hidden(id) then
+		return
+	end
 	ui.command {
 		id = id,
 		title = title,
@@ -160,21 +167,23 @@ end)
 -- (A palette open over the page takes ⌘L, as its own: New project's folder
 -- path to edit.)
 local CommandPalette = require("@ds/command_palette")
-ui.command {
-	id = "panel.focus_address",
-	title = ui.t("panel.browser.command.open_location"):get(),
-	menu = "View",
-	key = key_of("panel.focus_address", "cmd+l") :: any,
-	run = function(): boolean
-		if CommandPalette.type_path() then
-			return true
-		elseif showing then
-			showing.focus_address()
-			return true
-		end
-		return false
-	end,
-}
+if not hidden("panel.focus_address") then
+	ui.command {
+		id = "panel.focus_address",
+		title = ui.t("panel.browser.command.open_location"):get(),
+		menu = "View",
+		key = key_of("panel.focus_address", "cmd+l") :: any,
+		run = function(): boolean
+			if CommandPalette.type_path() then
+				return true
+			elseif showing then
+				showing.focus_address()
+				return true
+			end
+			return false
+		end,
+	}
+end
 command("panel.reload_page", ui.t("panel.browser.command.reload"):get(), "View", "cmd+shift+r", function(s)
 	s.reload()
 end)

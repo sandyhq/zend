@@ -7,6 +7,7 @@
 --
 --   state.of(key)                 a session's { tabs, active?, visited }
 --   state.open(key, kind, extra?) a new tab at the end, active: its id
+--                                 ("" for a kind this device can't show)
 --   state.close(key, id)          gone; the last visited open one becomes
 --                                 active (else the first, else the empty page)
 --   state.activate(key, id?)      that tab (nil: the empty page)
@@ -165,6 +166,17 @@ function M.focuser(key: string, id: string, focus: () -> ()): () -> ()
 end
 
 function M.open(key: string, kind: Kind, extra: { [string]: any }?): string
+	-- A kind this device can't show (Android's terminal and browser tab,
+	-- @ds/platform) makes no tab, whichever screen, template or plugin
+	-- asks: the one gate under every way a tab is opened. A browser tab's
+	-- address opens in the device's browser instead.
+	if (kind == "terminal" or kind == "browser") and not require("@ds/platform").has(kind :: any) then
+		local url = if extra then extra.url else nil
+		if kind == "browser" and type(url) == "string" and url ~= "" then
+			require("@app/screens/panel/browser_api").open_externally(url)
+		end
+		return ""
+	end
 	local s = copy(peek(key))
 	local n = next_id:peek()
 	next_id:set(n + 1)

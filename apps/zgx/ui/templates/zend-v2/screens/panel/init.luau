@@ -251,6 +251,9 @@ end
 -- of `kind` in front closes; else it opens on one (the first of that kind,
 -- or a new one). Whether it acted.
 local function toggle_kind(kind: state.Kind): boolean
+	if (kind == "terminal" or kind == "browser") and not require("@ds/platform").has(kind :: any) then
+		return false
+	end
 	-- (The route's session; the panel showing, where there's no route: a
 	-- fixture's.)
 	local k = route_key() or (if shown_key then shown_key() else nil)
@@ -304,7 +307,7 @@ end
 -- terminal opened).
 function M.show_terminal(): boolean
 	local k = route_key() or (if shown_key then shown_key() else nil)
-	if not k then
+	if not k or not require("@ds/platform").has("terminal") then
 		return false
 	end
 	state.open(k, "terminal")
@@ -469,6 +472,13 @@ end
 -- page must be open).
 function M.open_url(session: any, url: string?, project: any?, page: any?): boolean
 	local k = state.key(session, project, page)
+	-- (Android has no browser tab: the link opens in the device's browser.)
+	if not require("@ds/platform").has("browser") then
+		if url then
+			require("@app/screens/panel/browser_api").open_externally(url)
+		end
+		return url ~= nil
+	end
 	if not k then
 		return false
 	end

@@ -53,6 +53,9 @@ function M.missing(): boolean
 end
 
 function M.choose()
+	if not require("@ds/platform").check("file_picker") then
+		return
+	end
 	host.open_files({
 		title = ui.t("settings.appearance.wallpaper.choose_title"):get(),
 		filters = { { ui.t("settings.appearance.wallpaper.images"):get(), { "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff" } } },

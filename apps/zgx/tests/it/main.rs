@@ -4,6 +4,7 @@
 //! a mod line here. Only a suite that needs a process of its own (process-wide
 //! state that plain `cargo test` would share) stays a top-level tests/<name>.rs.
 
+mod android_gates;
 mod archived_list;
 mod chat_drop;
 mod chat_paste;

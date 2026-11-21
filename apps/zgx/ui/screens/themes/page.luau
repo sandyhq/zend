@@ -26,6 +26,8 @@ local ThemeSwatch = require("@ds/theme_swatch")
 local state = require("@app/screens/themes/state")
 local templates = require("@app/screens/templates/state")
 local route = require("@app/screens/shell/route")
+-- (Android has no file picker: no Import, its themes are the built-in ones.)
+local can_pick = require("@ds/platform").has("file_picker")
 
 local M = {}
 
@@ -127,6 +129,9 @@ end
 
 -- Pick a file, then import it.
 local function pick()
+	if not can_pick then
+		return
+	end
 	ui.task(function()
 		local files = ui.open_files({
 			title = ui.t("themes.page.choose_source"):get(),
@@ -346,7 +351,7 @@ local function none(which: string): Node
 		title = ui.t("themes.page.none_yours"),
 		body = ui.t("themes.page.none_yours_body"),
 		size = "sm",
-		action = { label = ui.t("themes.page.import"), on_click = pick },
+		action = if can_pick then { label = ui.t("themes.page.import"), on_click = pick } else nil,
 	}
 end
 
@@ -430,10 +435,12 @@ function M.View(): Node
 					{ value = "yours", label = ui.t("themes.page.yours"), count = count("yours") },
 				},
 			},
-			import = {
-				label = ui.t("themes.page.import"),
-				on_click = pick,
-			},
+			import = if can_pick
+				then {
+					label = ui.t("themes.page.import"),
+					on_click = pick,
+				}
+				else nil,
 			notice = notice,
 			notice_when = function(): boolean
 				return state.error:get() ~= nil

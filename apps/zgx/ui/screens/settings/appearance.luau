@@ -17,6 +17,7 @@ local motion = require("@ds/motion")
 local prefers = require("@ds/prefers")
 local themes = require("@app/screens/themes/state")
 local route = require("@app/screens/shell/route")
+local platform = require("@ds/platform")
 
 local M = {}
 
@@ -567,10 +568,15 @@ function M.view(): Node
 									w = 180,
 									on_change = appearance.choose,
 									options = function(): { any }
-										return {
+										local out = {
 											{ value = "none", label = ui.t("settings.appearance.wallpaper.none"):get() },
-											{ value = "image", label = ui.t("settings.appearance.wallpaper.image.label"):get() },
 										}
+										-- (Android has no picker to choose one with: your
+										-- picture only once there is one.)
+										if platform.has("file_picker") or appearance.image:get() ~= nil then
+											table.insert(out, { value = "image", label = ui.t("settings.appearance.wallpaper.image.label"):get() })
+										end
+										return out
 									end,
 								},
 							},
@@ -603,7 +609,10 @@ function M.view(): Node
 									end,
 									ds.Button { ui.t("settings.appearance.wallpaper.image.adjust"), tone = "secondary", size = "sm", on_click = wallpaper.adjust },
 								},
-								ds.Button {
+								-- (Android: no file picker, so no Choose.)
+								ui.show(function(): boolean
+									return platform.has("file_picker")
+								end, ds.Button {
 									function(): string
 										local key = if appearance.image:get() then "replace" else "choose"
 										return ui.t(`settings.appearance.wallpaper.image.{key}`):get()
@@ -611,7 +620,7 @@ function M.view(): Node
 									tone = "secondary",
 									size = "sm",
 									on_click = wallpaper.choose,
-								},
+								}),
 								ui.div {
 									hidden = function(): boolean
 										return appearance.image:get() == nil

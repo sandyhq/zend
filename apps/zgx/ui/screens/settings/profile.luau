@@ -224,6 +224,9 @@ function M.crop(): { x: number, y: number, side: number }
 end
 
 local function choose_photo()
+	if not require("@ds/platform").check("file_picker") then
+		return
+	end
 	host.open_files({
 		title = ui.t("settings.profile.photo.choose"):get(),
 		filters = { { ui.t("settings.profile.photo.images"):get(), { "png", "jpg", "jpeg" } } },
@@ -755,7 +758,10 @@ function M.view(): Node
 										store.set_photo(nil, nil)
 									end,
 								}),
-								ds.Button { ui.t("settings.profile.photo.change"), tone = "secondary", size = "sm", on_click = choose_photo },
+								-- (Android: no file picker to choose a photo with.)
+								ui.show(function(): boolean
+									return require("@ds/platform").has("file_picker")
+								end, ds.Button { ui.t("settings.profile.photo.change"), tone = "secondary", size = "sm", on_click = choose_photo }),
 							}),
 						}),
 						row("name", {

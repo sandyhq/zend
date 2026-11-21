@@ -6,7 +6,10 @@
 --   keys.LIST            { { id, title, key, group, menu, reserved?, rule? }, … }
 --                        (`rule`: a line after it in its menu)
 --                        in the order they're shown (and made)
---   keys.get(id)         one, by its command's id
+--   keys.get(id)         one, by its command's id (nil for one this device
+--                        hasn't: keys.hidden)
+--   keys.hidden(id)      whether its command is left out here: it needs what
+--                        this device lacks (`needs`, @ds/platform)
 --   keys.combo(id)       its combination now, a rebind's or its default
 --                        (keys.key(id): the same, for `ui.command`'s key)
 --   keys.bind / reset / reset_all / owner   Settings → Shortcuts' rebinding
@@ -14,7 +17,12 @@
 -- `group`: where Settings lists it ("Sessions", "Panels", "Go", "App");
 -- `menu`: the menu bar's menu it's in; `reserved`: a focused terminal
 -- never has it first (Zend's keep their shortcuts from a page);
--- `elsewhere`: another screen makes its command (the shell makes the rest).
+-- `elsewhere`: another screen makes its command (the shell makes the rest);
+-- `needs`: what the device must have for it (@ds/platform's features).
+-- Every command the window makes is one of these, so this list is the one
+-- gate: a command whose `needs` this device lacks (Android's terminal,
+-- browser tab, dictation, updater) is in no menu, palette, key or Settings
+-- → Shortcuts, whichever screen or template would make it.
 
 export type Key = {
 	id: string,
@@ -28,6 +36,8 @@ export type Key = {
 	-- Made by its own screen, not the shell (its title and key kept the
 	-- same there).
 	elsewhere: boolean?,
+	-- What the device must have (@ds/platform's `Feature`).
+	needs: string?,
 }
 
 local M = {}
@@ -41,14 +51,14 @@ M.LIST = {
 	{ id = "shell.toggle_sidebar", title = "Toggle sidebar", key = "cmd+b", group = "Panels", menu = "View", reserved = true },
 	{ id = "shell.toggle_files", title = "Toggle panel", key = "cmd+r", group = "Panels", menu = "View", reserved = true },
 	{ id = "shell.toggle_files_tab", title = "Toggle files", key = "cmd+e", group = "Panels", menu = "View", reserved = true },
-	{ id = "shell.toggle_terminal", title = "Toggle terminal", key = "cmd+j", group = "Panels", menu = "View", reserved = true },
+	{ id = "shell.toggle_terminal", title = "Toggle terminal", key = "cmd+j", group = "Panels", menu = "View", reserved = true, needs = "terminal" },
 	-- (The browser tab's own command, screens/panel/browser: listed here so
 	-- Settings shows it and no other takes its key; it acts while a browser
 	-- tab shows.)
-	{ id = "panel.annotate", title = "Annotate Element", key = "cmd+shift+i", group = "Panels", menu = "View", elsewhere = true },
-	{ id = "panel.new_browser_tab", title = "New Browser Tab", key = "cmd+t", group = "Panels", menu = "File", elsewhere = true },
-	{ id = "panel.focus_address", title = "Open Location", key = "cmd+l", group = "Panels", menu = "View", elsewhere = true },
-	{ id = "panel.reload_page", title = "Reload Page", key = "cmd+shift+r", group = "Panels", menu = "View", elsewhere = true },
+	{ id = "panel.annotate", title = "Annotate Element", key = "cmd+shift+i", group = "Panels", menu = "View", elsewhere = true, needs = "browser" },
+	{ id = "panel.new_browser_tab", title = "New Browser Tab", key = "cmd+t", group = "Panels", menu = "File", elsewhere = true, needs = "browser" },
+	{ id = "panel.focus_address", title = "Open Location", key = "cmd+l", group = "Panels", menu = "View", elsewhere = true, needs = "browser" },
+	{ id = "panel.reload_page", title = "Reload Page", key = "cmd+shift+r", group = "Panels", menu = "View", elsewhere = true, needs = "browser" },
 	{ id = "shell.next_session", title = "Next session", key = "ctrl+tab", group = "Go", menu = "Go", reserved = true },
 	{ id = "shell.previous_session", title = "Previous session", key = "ctrl+shift+tab", group = "Go", menu = "Go", reserved = true },
 } :: { Key }
@@ -61,11 +71,11 @@ for _, k in
 		{ id = "shell.palette", title = "Search", key = "cmd+k", group = "App", menu = "File", reserved = true },
 		-- (The application menu's, over Services, as Zend's was: macOS's
 		-- first menu. `Application` is zgx-desktop's APPLICATION_MENU.)
-		{ id = "shell.check_updates", title = "Check for Updates…", key = "", group = "App", menu = "Application", rule = true },
+		{ id = "shell.check_updates", title = "Check for Updates…", key = "", group = "App", menu = "Application", rule = true, needs = "updates" },
 		{ id = "shell.settings", title = "Settings", key = "cmd+,", group = "App", menu = "Application", reserved = true },
 		{ id = "shell.find", title = "Find", key = "cmd+f", group = "App", menu = "Edit" },
 		-- (Held: screens/chat/dictation makes its command.)
-		{ id = "shell.dictate", title = "Hold to dictate", key = "cmd+d", group = "App", menu = "Edit", elsewhere = true },
+		{ id = "shell.dictate", title = "Hold to dictate", key = "cmd+d", group = "App", menu = "Edit", elsewhere = true, needs = "dictation" },
 		{ id = "shell.close", title = "Close", key = "cmd+w", group = "App", menu = "File", reserved = true },
 		-- (No key of their own: Settings → Shortcuts can give them one.)
 		{ id = "shell.reload", title = "Reload Zend", key = "", group = "App", menu = "View" },
@@ -73,6 +83,25 @@ for _, k in
 	} :: { Key }
 do
 	table.insert(M.LIST, k)
+end
+
+-- The commands this device hasn't (their `needs`), out of the list. (A
+-- test reading the table alone, with no interface, keeps them all.)
+local hidden: { [string]: boolean } = {}
+if ui ~= nil then
+	local platform = require("@ds/platform")
+	local kept: { Key } = {}
+	for _, k in M.LIST do
+		if k.needs and not platform.has(k.needs :: any) then
+			hidden[k.id] = true
+		else
+			table.insert(kept, k)
+		end
+	end
+	M.LIST = kept
+end
+function M.hidden(id: string): boolean
+	return hidden[id] == true
 end
 
 local by_id: { [string]: Key } = {}

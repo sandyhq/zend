@@ -87,5 +87,10 @@ M.seam_reset = ui.state("shell_seam_reset", 0)
 M.palette = ui.state("shell_palette_open", false)
 -- New project's palette, open (screens/shell/add_project).
 M.add_project = ui.state("shell_add_project_open", false)
+-- Whether the window is compact, and the sidebar's drawer open there: Zend
+-- v3's (screens/shell/fit sets it, the shared screens read it). v2 lays out
+-- as on a desktop whatever the width; these keep the shared screens running.
+M.compact = route.compact
+M.drawer = ui.state("shell_drawer_open", false)
 
 return M

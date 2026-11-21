@@ -1995,8 +1995,9 @@ return ui.component(function(props: Props): Node
 			left = presented(function(g) return g.controls.leading.left end),
 			bottom = presented(function(g) return g.controls.leading.bottom end),
 			ui.show(function()
-				-- (Android, no file picker: + only where the caller gives it.)
-				return not asking() and (props.on_attach ~= nil or Platform.has("file_picker"))
+				-- (Android, no file picker: no +, whichever screen or template
+				-- gives it a picker.)
+				return not asking() and Platform.has("file_picker")
 			end, attach),
 		},
 		voice_track(),
