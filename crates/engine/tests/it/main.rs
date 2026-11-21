@@ -30,6 +30,7 @@ mod local_first;
 mod local_import;
 mod m5_repos_diffs_terminals;
 mod m5c_accounts_uploads_titles;
+mod mcp_endpoint;
 mod message_queue;
 mod plugin_services;
 mod previews;
