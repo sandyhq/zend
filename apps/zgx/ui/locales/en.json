@@ -3826,6 +3826,7 @@
       "too_big": "It's too big for a plugin.",
       "bad_file": "It has a file Zend won't write.",
       "git_missing": "Installing from a repository needs git, and it isn't installed here. Install git, then try again, or install from a .zend-plugin file or a GitHub release.",
+      "git_unavailable": "Android can't install from a repository: there's no git on a phone. Install from a link to a .zend-plugin file or a GitHub release.",
       "git_timeout": "The repository took too long to answer. Try again in a moment.",
       "repo_unreadable": "Couldn't read that repository. Check that it's public and that the branch is right.",
       "ref_not_found": "That branch or tag can't be found.",

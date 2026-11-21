@@ -603,6 +603,7 @@ local FAILURES: { [string]: boolean } = {
 	too_big = true,
 	bad_file = true,
 	git_missing = true,
+	git_unavailable = true,
 	git_timeout = true,
 	repo_unreadable = true,
 	ref_not_found = true,

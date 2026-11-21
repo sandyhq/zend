@@ -61,6 +61,9 @@ pub mod reason {
     pub const BAD_FILE: &str = "bad_file";
     /// `git` isn't installed (or can't be run) on the device.
     pub const GIT_MISSING: &str = "git_missing";
+    /// On Android, where no git can be installed: a link to a release or a
+    /// `.zend-plugin` file instead.
+    pub const GIT_UNAVAILABLE: &str = "git_unavailable";
     pub const GIT_TIMEOUT: &str = "git_timeout";
     /// Private, missing, or the branch is wrong: git doesn't say which.
     pub const REPO_UNREADABLE: &str = "repo_unreadable";
@@ -620,13 +623,19 @@ async fn github_token() -> Option<String> {
     token
 }
 
-/// Why a git repository can't be read here (`android`: on Android, where
-/// no git can be installed).
-fn git_missing(android: bool) -> &'static str {
+/// Why a git repository can't be read here, as reason and words
+/// (`android`: on Android, where no git can be installed).
+fn git_missing(android: bool) -> (&'static str, &'static str) {
     if android {
-        "Android can't read git repositories: install the plugin from a link to its .zend-plugin file or a GitHub release instead"
+        (
+            reason::GIT_UNAVAILABLE,
+            "Android can't read git repositories: install the plugin from a link to its .zend-plugin file or a GitHub release instead",
+        )
     } else {
-        "git isn't available on this device: install git, or install the plugin from a .zend-plugin file or a GitHub release instead"
+        (
+            reason::GIT_MISSING,
+            "git isn't available on this device: install git, or install the plugin from a .zend-plugin file or a GitHub release instead",
+        )
     }
 }
 
@@ -652,7 +661,10 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let output = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
         .await
         .map_err(|_| failure(reason::GIT_TIMEOUT, "The repository took too long to answer"))?
-        .map_err(|_| failure(reason::GIT_MISSING, git_missing(super::device::ANDROID)))?;
+        .map_err(|_| {
+            let (why, words) = git_missing(super::device::ANDROID);
+            failure(why, words)
+        })?;
     if !output.status.success() {
         return Err(failure(reason::REPO_UNREADABLE, "Couldn't read that repository (is it public, and is the branch right?)"));
     }
@@ -970,9 +982,12 @@ pub(crate) mod tests {
 
     #[test]
     fn without_git_android_points_at_links_and_a_desktop_at_installing_git() {
-        assert!(git_missing(true).starts_with("Android can't read git repositories"));
-        assert!(!git_missing(true).contains("install git"));
-        assert!(git_missing(false).contains("install git"));
+        let (why, words) = git_missing(true);
+        assert_eq!(why, reason::GIT_UNAVAILABLE);
+        assert!(words.starts_with("Android can't read git repositories") && !words.contains("install git"));
+        let (why, words) = git_missing(false);
+        assert_eq!(why, reason::GIT_MISSING);
+        assert!(words.contains("install git"));
     }
 
     #[test]

@@ -172,7 +172,7 @@ ui.command {
 		open_install = nil
 		if p then
 			local err: any = newproxy(true)
-			getmetatable(err).__index = { message = "git isn't on this phone: Android installs plugins from links" }
+			getmetatable(err).__index = { message = "git_unavailable: Android can't read git repositories: install the plugin from a link to its .zend-plugin file or a GitHub release instead" }
 			p.err(err)
 		end
 	end,

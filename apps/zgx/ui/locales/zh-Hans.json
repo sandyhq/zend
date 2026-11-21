@@ -3826,6 +3826,7 @@
       "too_big": "它太大了，不能作为插件。",
       "bad_file": "它包含 Zend 不会写入的文件。",
       "git_missing": "从代码仓库安装需要 git，但这里没有安装。请先安装 git 再试，或改用 .zend-plugin 文件或 GitHub 发布版本安装。",
+      "git_unavailable": "Android 无法从代码仓库安装：手机上没有 git。请改用 .zend-plugin 文件或 GitHub 发布版本的链接安装。",
       "git_timeout": "代码仓库响应超时。请稍后再试。",
       "repo_unreadable": "无法读取该代码仓库。请确认它是公开的，并且分支正确。",
       "ref_not_found": "找不到该分支或标签。",

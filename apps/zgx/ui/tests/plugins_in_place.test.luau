@@ -358,7 +358,8 @@ test("with the account's setup unfinished it says so, and the plugins load once 
 end)
 
 -- G6: the host's failure is an error value (userdata), not a table: its
--- message still reaches the toast (it showed the title alone).
+-- message still reaches the toast (it showed the title alone), and an
+-- Android engine's no-git reason is said as the phone's, not "install git".
 test("an install the host fails says the engine's reason", function()
 	local app = open()
 	app:click('role:button "Install"')
@@ -368,5 +369,6 @@ test("an install the host fails says the engine's reason", function()
 	app:frames(10)
 	app:command("install_failed_as_the_host_does")
 	app:frames(20)
-	expect(app:state("calls")).to_contain("toast:git isn't on this phone: Android installs plugins from links")
+	expect(app:state("calls")).to_contain("toast:Android can't install from a repository: there's no git on a phone.")
+	expect(app:state("calls")).never.to_contain("Install git")
 end)
