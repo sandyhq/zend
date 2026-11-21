@@ -92,6 +92,9 @@ pub(super) fn name_models(models: &mut [Model]) {
 /// Catalog key → name, for the models asked about, by catalog provider.
 type Names = HashMap<String, HashMap<String, String>>;
 
+/// The most of Hermes's catalog read (it's a few MB).
+const MAX_CATALOG_BYTES: u64 = 64 << 20;
+
 fn name_models_from(models: &mut [Model], catalog: &Path) {
     // The keys each model may be listed under: its id, and the id with
     // dots as dashes (Hermes writes `claude-fable-5.1`; the catalog keys
@@ -110,11 +113,26 @@ fn name_models_from(models: &mut [Model], catalog: &Path) {
     // Streamed through a small buffer and kept only where asked for: the
     // file is several MB of every provider's models, and holding it (or a
     // map of it) would cost far more than the few names wanted.
-    let Ok(file) = std::fs::File::open(catalog) else {
-        return;
+    // Only a regular file of a sane size: a FIFO (or a device) there would
+    // block the read forever, a runaway file would be parsed for minutes.
+    // (Checked on the open handle: one swapped for a FIFO after a check of
+    // its path would still block.)
+    let file = match crate::bounded_file::open(catalog, MAX_CATALOG_BYTES) {
+        Ok((file, _)) => file,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    error = %err,
+                    "Hermes's model catalog isn't a file of a usable size; models keep their ids"
+                );
+            }
+            return;
+        }
     };
-    let mut reader =
-        serde_json::Deserializer::from_reader(std::io::BufReader::with_capacity(64 * 1024, file));
+    let mut reader = serde_json::Deserializer::from_reader(std::io::BufReader::with_capacity(
+        64 * 1024,
+        std::io::Read::take(file, MAX_CATALOG_BYTES),
+    ));
     let names = match (Catalog { wanted: &wanted }).deserialize(&mut reader) {
         Ok(names) => names,
         Err(error) => {
@@ -361,6 +379,42 @@ mod tests {
                 .as_deref(),
             Some("openai-codex:gpt-6-luna-900k")
         );
+    }
+
+    /// A catalog that isn't a regular file of a usable size is passed over
+    /// at once: a FIFO would block a read forever.
+    #[cfg(unix)]
+    #[test]
+    fn a_catalog_that_isnt_a_plain_file_of_a_usable_size_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("models_dev_cache.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let mut models = vec![model(
+            "anthropic:claude-opus-5-5",
+            "claude-opus-5-5",
+            "anthropic",
+        )];
+        let started = std::time::Instant::now();
+        name_models_from(&mut models, &fifo);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(models[0].label, "claude-opus-5-5");
+        // Past the size cap (sparse: no disk spent): skipped unread.
+        let big = dir.path().join("big.json");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_CATALOG_BYTES + 1).unwrap();
+        name_models_from(&mut models, &big);
+        assert_eq!(models[0].label, "claude-opus-5-5");
+        // A symlink to an endless device: refused once opened, not read.
+        let zero = dir.path().join("zero.json");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        let started = std::time::Instant::now();
+        name_models_from(&mut models, &zero);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(models[0].label, "claude-opus-5-5");
     }
 
     /// Hermes's own catalog names its models; one it doesn't list keeps

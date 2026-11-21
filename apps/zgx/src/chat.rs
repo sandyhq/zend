@@ -149,16 +149,53 @@ struct Entry {
     /// by a part patch): the rest are as they were built. None: not known
     /// (it came whole, or grew a text).
     patched: Option<std::collections::HashSet<String>>,
+    /// Its json's sum and its size as JSON, each worked out once and kept
+    /// until it changes (`json_mut`): a chat opened again says what it holds
+    /// by its sums, and one let go of is weighed (`let_go_weight`), on every
+    /// switch, and a long reply's json is hundreds of kilobytes.
+    kept_sum: std::cell::Cell<Option<u64>>,
+    kept_bytes: std::cell::Cell<Option<usize>>,
 }
 
 impl Entry {
     fn new(json: Json) -> Self {
-        Self { id: json["id"].as_str().unwrap_or_default().into(), json: Some(json), sum: 0, patched: None }
+        Self {
+            id: json["id"].as_str().unwrap_or_default().into(),
+            json: Some(json),
+            sum: 0,
+            patched: None,
+            kept_sum: std::cell::Cell::new(None),
+            kept_bytes: std::cell::Cell::new(None),
+        }
     }
 
     /// What it is now, to tell it from another copy of it.
     fn sum(&self) -> u64 {
-        self.json.as_ref().map_or(self.sum, sum_of)
+        let Some(json) = &self.json else { return self.sum };
+        if let Some(sum) = self.kept_sum.get() {
+            return sum;
+        }
+        let sum = sum_of(json);
+        self.kept_sum.set(Some(sum));
+        sum
+    }
+
+    /// How many bytes its json takes as JSON (none, settled).
+    fn json_bytes(&self) -> usize {
+        let Some(json) = &self.json else { return 0 };
+        if let Some(bytes) = self.kept_bytes.get() {
+            return bytes;
+        }
+        let bytes = serde_json::to_vec(json).map_or(0, |b| b.len());
+        self.kept_bytes.set(Some(bytes));
+        bytes
+    }
+
+    /// Its json, to change: what was worked out from it goes.
+    fn json_mut(&mut self) -> Option<&mut Json> {
+        self.kept_sum.set(None);
+        self.kept_bytes.set(None);
+        self.json.as_mut()
     }
 }
 
@@ -250,7 +287,12 @@ impl zgx_script::Unfold for FoldedEntry {
         let json = lz4_flex::block::decompress_size_prepended(&self.bytes).ok();
         let entry = json.and_then(|bytes| serde_json::from_slice::<Json>(&bytes).ok()).unwrap_or(Json::Null);
         let RowContext { doc, device, model } = &*self.context;
-        built_entry(&entry, doc, device.as_deref(), model.as_deref()).unwrap_or(Value::Nil)
+        // (Opened as it comes into view, after Settings' compact transcript
+        // may have been turned on: laid out compact as well, whichever shows.)
+        COMPACT_ANYWAY.set(true);
+        let row = built_entry(&entry, doc, device.as_deref(), model.as_deref()).unwrap_or(Value::Nil);
+        COMPACT_ANYWAY.set(false);
+        row
     }
 }
 
@@ -484,11 +526,7 @@ const LET_GO_PER_ENTRY: usize = 512;
 /// from it.
 fn let_go_weight(entries: &[Entry], built: &HashMap<Rc<str>, Built>) -> usize {
     let folded: usize = built.values().map(|b| b.folded).sum();
-    let whole: usize = entries
-        .iter()
-        .filter_map(|e| e.json.as_ref())
-        .map(|json| serde_json::to_vec(json).map_or(0, |b| b.len()))
-        .sum();
+    let whole: usize = entries.iter().map(Entry::json_bytes).sum();
     folded + entries.len() * LET_GO_PER_ENTRY + 2 * whole
 }
 
@@ -1433,10 +1471,18 @@ impl Chats {
     }
 
     /// Settings' compact transcript turned on or off (`chat.compact`): the
-    /// replies being written are built again, with or without its layout.
+    /// rows built whole are built again, with or without its layout (one
+    /// folded lays itself out both ways as it opens: `FoldedEntry`). A
+    /// row has it only while it shows: a long reply's compact layout is the
+    /// whole reply again, built and handed to the scripts each time it opens.
     fn compact_shown(&self, on: bool) {
         if COMPACT_SHOWN.replace(on) == on {
             return;
+        }
+        for held in self.let_go.borrow_mut().iter_mut() {
+            for e in held.entries.iter().filter(|e| e.json.is_some()) {
+                held.built.remove(&e.id);
+            }
         }
         for view in self.views() {
             let rebuilt = {
@@ -1444,7 +1490,7 @@ impl Chats {
                 let Some(open) = slot.as_mut() else { continue };
                 let Open { entries, built, .. } = open;
                 let mut any = false;
-                for e in entries.iter().filter(|e| e["status"].as_str() == Some("streaming")) {
+                for e in entries.iter().filter(|e| e.json.is_some()) {
                     any |= built.remove(&e.id).is_some();
                 }
                 any
@@ -4417,8 +4463,11 @@ fn settle_off(open: &mut Open, folded: FoldedOff, context: &Rc<RowContext>) {
 
 /// `entry`, built, down to its id and sum; a plan in it is kept (`todos`).
 fn settle(entry: &mut Entry, at: usize, older_todo: &mut Option<(usize, Json)>) {
+    if entry.json.is_none() {
+        return;
+    }
+    entry.sum = entry.sum();
     let Some(json) = entry.json.take() else { return };
-    entry.sum = sum_of(&json);
     if older_todo.as_ref().is_none_or(|(place, _)| *place < at)
         && let Some(part) = latest_todo(std::iter::once(&json))
     {
@@ -4458,6 +4507,9 @@ thread_local! {
     static PATCHED: RefCell<Option<rustc_hash::FxHashSet<String>>> = const { RefCell::new(None) };
     /// Settings' compact transcript is on (`chat.compact`).
     static COMPACT_SHOWN: Cell<bool> = const { Cell::new(false) };
+    /// A folded row opening (`FoldedEntry`): laid out compact too, whether
+    /// or not that shows, as it can't be built again when it turns on.
+    static COMPACT_ANYWAY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// `build`, with `patched` (the parts changed since the entry's row was last
@@ -4642,7 +4694,7 @@ fn apply_counted(entries: &mut Vec<Entry>, frame: &mut Json, counted: bool) -> R
             .ok_or(())?;
         // (A settled entry growing again: its whole copy is the engine's.)
         entry.patched = None;
-        let entry = entry.json.as_mut().ok_or(())?;
+        let entry = entry.json_mut().ok_or(())?;
         let streaming = entry["status"].as_str() == Some("streaming");
         let part = entry["parts"]
             .as_array_mut()
@@ -4689,7 +4741,7 @@ fn apply_counted(entries: &mut Vec<Entry>, frame: &mut Json, counted: bool) -> R
         let at = patch["at"].as_u64().ok_or(())? as usize;
         let part = &patch["part"];
         let id = part["id"].as_str().ok_or(())?.to_owned();
-        let json = entry.json.as_mut().ok_or(())?;
+        let json = entry.json_mut().ok_or(())?;
         let parts = json["parts"].as_array_mut().ok_or(())?;
         if at < parts.len() && parts[at]["id"].as_str() == Some(&id) {
             parts[at] = part.clone();
@@ -4903,10 +4955,13 @@ pub(crate) fn message(entry: &Json, model: Option<&str>) -> Option<Value> {
             if let Some(ms) = entry["durationMs"].as_f64() {
                 fields.push(("worked", Value::Num((ms / 1000.).round().max(1.))));
             }
-            // The same reply laid out for Settings' compact transcript (one
-            // being written, only while that shows: built with each of its
-            // changes, it'd cost each the whole reply again).
-            if (!streaming || COMPACT_SHOWN.get())
+            // The same reply laid out for Settings' compact transcript, only
+            // while that shows (`Chats::compact_shown` builds rows again as it
+            // turns on): it's the whole reply again, which a long reply built
+            // and handed to the scripts as it opened (a 1,000-step reply, a
+            // second copy of its 2,000 blocks and 1,000 tools). A folded row
+            // opening has it either way (`COMPACT_ANYWAY`).
+            if (COMPACT_SHOWN.get() || (COMPACT_ANYWAY.get() && !streaming))
                 && let Some(compact) = compact_blocks(entry)
             {
                 fields.push(("compact", compact));
@@ -6578,6 +6633,45 @@ mod tests {
         assert!(super::apply(&mut entries, &mut words).is_err());
     }
 
+    /// An entry's sum and size are kept between switches (a long reply's
+    /// json is hashed and weighed once, not on every open and let-go), and
+    /// what changes it (words appended, a part patched) changes them too:
+    /// a reopen that said the old sum would be sent nothing new.
+    #[test]
+    fn an_entrys_kept_sum_and_size_follow_its_changes() {
+        let entry = serde_json::json!({ "id": "a", "role": "assistant", "status": "streaming", "parts": [
+            { "id": "t", "kind": "text", "text": "Hel" },
+            { "id": "k", "kind": "tool", "call": { "kind": "read", "path": "x" } },
+        ] });
+        let mut entries = vec![super::Entry::new(entry)];
+        let fresh = |e: &super::Entry| {
+            let json = e.json.as_ref().unwrap();
+            (super::sum_of(json), serde_json::to_vec(json).unwrap().len())
+        };
+        let first = (entries[0].sum(), entries[0].json_bytes());
+        assert_eq!(first, fresh(&entries[0]));
+        assert_eq!(entries[0].kept_sum.get(), Some(first.0), "kept once worked out");
+        assert_eq!(entries[0].kept_bytes.get(), Some(first.1), "kept once worked out");
+        // Words appended.
+        let mut words = serde_json::json!({ "append": [{ "entry": "a", "part": "t", "text": "lo", "len": 5 }] });
+        super::apply(&mut entries, &mut words).unwrap();
+        let grown = (entries[0].sum(), entries[0].json_bytes());
+        assert_eq!(grown, fresh(&entries[0]));
+        assert_ne!(grown, first);
+        // A part patched.
+        let mut patch = serde_json::json!({ "parts": [{ "entry": "a", "at": 1, "part":
+            { "id": "k", "kind": "tool", "call": { "kind": "read", "path": "y" } }, "len": 2 }] });
+        super::apply(&mut entries, &mut patch).unwrap();
+        let patched = (entries[0].sum(), entries[0].json_bytes());
+        assert_eq!(patched, fresh(&entries[0]));
+        assert_ne!(patched.0, grown.0);
+        // Settled: its sum as it was, its json gone and weighing nothing.
+        let mut older = None;
+        let mut settled = entries.pop().unwrap();
+        super::settle(&mut settled, 0, &mut older);
+        assert_eq!((settled.sum(), settled.json_bytes()), (patched.0, 0));
+    }
+
     /// The worker's fold, kept, is what folding here keeps.
     #[test]
     fn the_worker_folds_as_the_window_would() {
@@ -6642,7 +6736,11 @@ mod tests {
             ],
         });
         let context = Rc::new(super::RowContext { doc: "chat".into(), device: None, model: Some("Opus".into()) });
+        // (Built whole while compact shows: a folded row opens laid out
+        // compact either way, `COMPACT_ANYWAY`.)
+        super::COMPACT_SHOWN.set(true);
         let whole = super::built_for(&entry, &context, false);
+        super::COMPACT_SHOWN.set(false);
         let folded = super::built_for(&entry, &context, true);
         let Some(Value::Folded(_)) = folded.row else { panic!("folded") };
         let (whole_row, folded_row) = (whole.row.unwrap(), folded.row.unwrap());
@@ -7621,6 +7719,33 @@ mod tests {
         assert!(compact_blocks(&plain).is_none());
     }
 
+    /// A reply's compact layout is its whole work again (a 1,000-step reply:
+    /// a second copy of its blocks and tools), built and handed to the
+    /// scripts each time it opened: it's there only while Settings' compact
+    /// transcript shows, and in a folded row opening, which can't be built
+    /// again as it turns on.
+    #[test]
+    fn a_reply_is_laid_out_compact_only_while_that_shows() {
+        let reply = json!({ "id": "a", "role": "assistant", "status": "complete", "durationMs": 5_000,
+            "parts": [{ "id": "p1", "kind": "text", "text": "Looking." },
+                { "id": "k1", "kind": "tool", "isError": false, "resolved": true, "call": { "kind": "exec", "command": "ls" } },
+                { "id": "p2", "kind": "text", "text": "Done." }] });
+        let compact = |row: &Value| row.field("compact").is_some_and(|v| !matches!(v, Value::Nil));
+        assert!(!COMPACT_SHOWN.get());
+        let row = built_entry(&reply, "doc", None, None).expect("a row");
+        assert!(!compact(&row), "no compact layout while it doesn't show");
+        assert!(row.field("blocks").is_some());
+        COMPACT_SHOWN.set(true);
+        let shown = built_entry(&reply, "doc", None, None).expect("a row");
+        COMPACT_SHOWN.set(false);
+        assert!(compact(&shown), "laid out compact while that shows");
+        // Folded, it has it as it opens, either way.
+        let context = Rc::new(RowContext { doc: "doc".into(), device: None, model: None });
+        let Built { row: Some(folded), .. } = built_for(&reply, &context, true) else { panic!("a folded row") };
+        assert!(matches!(folded, Value::Folded(_)));
+        assert!(folded.field("compact").is_some_and(|v| !matches!(v, Value::Nil)), "a folded row opens laid out compact too");
+    }
+
     #[test]
     fn a_settled_reply_with_nothing_to_show_has_no_row() {
         let reply = |status: &str| {
@@ -8223,6 +8348,63 @@ mod tests {
         view.heard_frame(json!({ "reset": [prompt("u0"), reply("a0"), prompt("u1"), reply("a1")] }));
         assert!(!view.open.borrow().as_ref().unwrap().has_whole);
         assert!(!rows().contains("tail engine.log"), "the whole copy replaces it: {}", rows());
+    }
+
+    /// Rows held, the chat's doc cold in the engine: what changed among its
+    /// newest entries comes first (an opening tail of just those), then what
+    /// changed since, measured from the rows as they hold it after that
+    /// tail (crates/engine/src/rpc.rs `since_doc_messages_stream`). The rows
+    /// end as the engine's, nothing asked for whole.
+    #[test]
+    fn rows_held_take_a_cold_chats_tail_then_what_changed_since() {
+        use super::{Entry, Open, View, draft_value};
+        use serde_json::json;
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+        use zgx_script::{ScriptHost, Value, testing::TestApp};
+        let app = TestApp::new(|runtime| ScriptHost::inline(runtime, "app", "return ui.text { \"x\" }"));
+        let reply = |id: &str, words: &str| {
+            json!({ "id": id, "role": "assistant", "status": "complete", "parts": [{ "id": format!("{id}p"), "kind": "text", "text": words }], "createdAt": 1_762_000_000_000_i64 })
+        };
+        let held: Vec<Entry> = (0..10).map(|i| Entry::new(reply(&format!("a{i}"), "done"))).collect();
+        let view = Rc::new(View {
+            session: app.host.shared("t.session", Value::Nil),
+            messages: app.host.shared("t.messages", Value::List(Rc::from([]))),
+            subagents: app.host.shared("t.subagents", Value::List(Rc::from([]))),
+            draft: app.host.shared("t.draft", draft_value("", "")),
+            rpc: RefCell::default(),
+            open: RefCell::new(Some(Open { id: "c".into(), entries: held, heard: true, has_whole: true, ..Open::default() })),
+            pending: RefCell::default(),
+            generation: Cell::new(0),
+            snapshot: Cell::new(false),
+        });
+        let ids = || view.open.borrow().as_ref().unwrap().entries.iter().map(|e| e.id.to_string()).collect::<Vec<_>>();
+        let rows = || format!("{:?}", view.messages.signal().with_untracked(Clone::clone));
+        // While away: a8 changed, a10 and a11 came, a3 went (older than the tail).
+        let engine: Vec<serde_json::Value> = (0..12)
+            .filter(|&i| i != 3)
+            .map(|i| reply(&format!("a{i}"), if i == 8 { "changed" } else if i >= 10 { "new" } else { "done" }))
+            .collect();
+        // First: of the newest entries, only what changed.
+        view.heard_frame(json!({ "reset": [engine[7].clone(), engine[9].clone(), engine[10].clone()], "historyPending": true }));
+        assert!(view.open.borrow().as_ref().unwrap().has_whole, "still waiting for what changed since");
+        assert_eq!(ids(), ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11"]);
+        assert!(rows().contains("changed") && rows().contains("new"), "{}", rows());
+        // Then what changed since, from the rows as they now are: a3 gone,
+        // a4 after a2.
+        let order: Vec<&str> = engine.iter().map(|e| e["id"].as_str().unwrap()).collect();
+        view.heard_frame(json!({
+            "since": true,
+            "remove": ["a3"],
+            "upsert": [{ "after": "a2", "entry": engine[3].clone() }],
+            "count": engine.len(),
+            "orderSum": super::order_sum(order.iter().copied()),
+        }));
+        assert_eq!(view.generation.get(), 0, "nothing asked for whole");
+        assert!(!view.open.borrow().as_ref().unwrap().has_whole);
+        assert_eq!(ids(), order);
+        let sums: Vec<u64> = view.open.borrow().as_ref().unwrap().entries.iter().map(|e| e.sum()).collect();
+        assert_eq!(sums, engine.iter().map(super::sum_of).collect::<Vec<_>>(), "the engine's entries, as they are");
     }
 
     /// A prompt sent from here that a reopened chat's opening tail brings

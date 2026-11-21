@@ -95,7 +95,7 @@ subagent, delegate through Zend chats instead, with `create_chats` (or `create_c
 /// What `initialize` tells the agent: with when to say it waits where it's
 /// offered `wait_on_background`, and the side-chat rule when its host turned
 /// the agent's own subagents off.
-fn instructions(waits: bool, side_chats_only: bool) -> std::borrow::Cow<'static, str> {
+pub(crate) fn instructions(waits: bool, side_chats_only: bool) -> std::borrow::Cow<'static, str> {
     if !waits && !side_chats_only {
         return INSTRUCTIONS.into();
     }
@@ -373,7 +373,7 @@ fn spawn_progress(token: Value, out: mpsc::Sender<String>) -> tokio::task::JoinH
 
 /// `response`, cut down to [`MAX_REPLY_BYTES`] when it is bigger: the
 /// structured copy goes, and the text is truncated with a pointer to paging.
-fn cap_reply(response: Value) -> Value {
+pub(crate) fn cap_reply(response: Value) -> Value {
     if response.to_string().len() <= MAX_REPLY_BYTES {
         return response;
     }
@@ -419,7 +419,7 @@ fn ok_response(id: Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
-fn error_response(id: Value, code: i64, message: &str) -> Value {
+pub(crate) fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,

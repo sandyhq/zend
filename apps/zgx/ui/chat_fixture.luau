@@ -1836,6 +1836,49 @@ ui.command {
 		}
 	end,
 }
+-- `long_thread`: ademark's A11 thread, one reply of a thousand steps, each a
+-- short text (one in five with a code block) and a call reading a file, its
+-- last text holding `LONGTHREAD-END` (the engine's mock `/longthread`), as
+-- Tall replies (s7).
+local function long_thread(steps: number): { any }
+	local blocks: { any } = {}
+	for n = 1, steps do
+		local text = `Step {n} of {steps}. I read src/invoices.ts and noted what step {n} needs from it.`
+		if n % 5 == 0 then
+			text ..= "\n\n```ts\nfunction summarize(invoice: Invoice): InvoiceSummary {\n  const total = invoiceTotal(invoice);\n  return { id: invoice.id, totalCents: total };\n}\n```"
+		end
+		table.insert(blocks, { id = `t{n}`, kind = "text", text = text })
+		table.insert(blocks, {
+			id = `g:toolu_{n}`,
+			kind = "tools",
+			summary = "Read 1 file",
+			live = false,
+			tools = { { id = `toolu_{n}`, kind = "read", verb = "Read", target = "invoices.ts", call = "src/invoices.ts" } },
+		})
+	end
+	table.insert(blocks, { id = "tend", kind = "text", text = "All steps done. LONGTHREAD-END" })
+	local texts = {}
+	for _, b in blocks do
+		if b.kind == "text" then
+			table.insert(texts, b.text)
+		end
+	end
+	local whole = table.concat(texts, "\n\n")
+	return {
+		{ id = "lt1", role = "user", text = `/longthread {steps}` },
+		{ id = "lt2", role = "assistant", text = whole, model = "Opus", at = "Nov 13, 9:00 PM", copy = whole, blocks = blocks },
+	}
+end
+ui.command {
+	id = "long_thread",
+	title = "A thread of a thousand steps",
+	run = function()
+		TRANSCRIPTS.s7 = long_thread(1000)
+		if store.session:peek() and (store.session:peek() :: any).id == "s7" then
+			store.messages:set(TRANSCRIPTS.s7)
+		end
+	end,
+}
 -- A long chat: many long messages, landing at once (a chat of a day's
 -- work), for what the transcript asks of each as it's listed and scrolled.
 ui.command {
@@ -1983,6 +2026,28 @@ ui.command {
 			.. "PR: **https://github.com/sandyhq/example/pull/1**."
 		store.messages:push {
 			id = "la1",
+			role = "assistant",
+			text = reply,
+			model = "Opus",
+			at = "Sep 8, 1:50 PM",
+			copy = reply,
+			blocks = { { id = "t", kind = "text", text = reply } },
+		}
+	end,
+}
+-- A reply linking files as agents write them: `./` from the chat's folder,
+-- with a `..` inside, and a line (the owner's `./plans/…/reports/G1-3.md`).
+ui.command {
+	id = "dot_link_turn",
+	title = "A turn with ./ file links",
+	run = function()
+		local s = table.clone(store.session:peek() or {})
+		s.cwd = "/work/atlas"
+		store.session:set(s)
+		local reply = "The report is [G1-3](./plans/p/reports/G1-3.md), its setup [here](./plans/p/reports/../setup.md) "
+			.. "and the code [at a line](./src/parse.rs#L12). Not [out of the folder](../secret.rs)."
+		store.messages:push {
+			id = "dl1",
 			role = "assistant",
 			text = reply,
 			model = "Opus",

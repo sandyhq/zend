@@ -63,12 +63,14 @@ mod tests {
             command: "/opt/zend/zend".into(),
             args: vec!["mcp".into()],
             env: Default::default(),
+            http: None,
         };
         let extra = zend_proto::McpServer {
             name: "plugin-focus".into(),
             command: "/data/plugins/.loaded/focus/0123/bin/server".into(),
             args: vec![],
             env: Default::default(),
+            http: None,
         };
         let mut cmd = Command::new("pi");
         let scratch = configure_all(&mut cmd, Some(&zend), std::slice::from_ref(&extra))

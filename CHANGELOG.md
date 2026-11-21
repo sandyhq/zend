@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-21
 
+### Fixed
+- Chat: a reply's relative file link written `./plans/x.md` (or with a `..` that stays inside the folder, `plans/a/../x.md`) is read from the session's folder, shown as a file chip and opens in the file viewer; before, anything with a `.` or `..` part was not a link. A path that climbs out of the folder stays no link.
+
 ### Added
 - Android plugins (branch android-app): Zend's own and installed plugins load from `<files>/.zend/plugins`; the consent sheet opens on the phone (one surface: the newest window holds it) and says under each ask what Android lacks (`commands`, `native`, `files`, `windows`, `web`), which are never granted there and refused with why; Install takes a link only; Appearance and setup have no Frosted glass on Android.
 - Android plugins, engine side: what Android lacks is dropped from every plugin's allowed permissions as the engine scans them (`crates/engine/src/plugins/device.rs`), consents made before included, so a service's `zend.run` and the native MCP servers handed to agents hold the same line as the window; the consent sheet words follow the device the plugin is for (its platform, from the window that asks), and a git link on Android fails as `git_unavailable`, said in the phone's words (use a `.zend-plugin` link or a release).
@@ -13,6 +16,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 - Connect a phone by QR code (Settings > Devices, branch android-app): on a computer, Show code draws a QR code holding this computer's edge URL and its own edge bearer (`zend://connect?v=1&edge=…&token=…`, `src/phone_link.rs`), shown for 60 s or until Hide; with no relay set it says so. On Android, Scan code reads it with the NDK camera (camera2ndk + AImageReader, decoded with rqrr, the permission asked over JNI, no Kotlin; `src/android_camera.rs`) or its text is pasted; the code is checked strictly first (an http(s) URL with a host and no userinfo, path or query; nothing from it reaches the log), the app keeps edge and bearer as one record `<files>/.config/zend/edge` (0600, written atomically) and starts its engine again on the new edge with no app restart, rolling back if that fails, and says Connected only once the relay answers. A fresh install starts onboarding with Connect to a computer. `phone.*` actions are refused in plugin previews and not exposed to plugins.
 - Compact window (under 600 pt wide, a phone's): the sidebar opens as a drawer over the page (title bar toggle, a swipe in from the left edge; a tap beside it, a swipe back, Escape or going anywhere closes it), the panel opens as a sheet over the page, Settings shows its list or one page with a Settings back button (Escape goes back to the list first), the title bar's controls are 44 pt touch targets without Forward, and the palette's scope row drops its Tab hint. Wider windows are unchanged.
 - Ideas & Intents: a page of its own under Search in the desktop sidebar for typed ideas (no title, project or chat) and voice memos, newest first, kept on this device in `<data>/ideas`. A memo is recorded between Record and Stop (at most a minute), written to disk as a WAV before it is transcribed with the local speech model, plays after a restart, and keeps its audio when there is no model or transcription fails. Leaving the page stops and saves a recording (one still starting is dropped); a failed Save keeps the draft. While a memo records, dictation's live waveform shows what the microphone hears. The composer's dictation still keeps no audio.
+
+### Changed
+- Idle stop (from upstream): a parked agent whose chat shows a visual still waiting on the person's answers (inputs, not sent, not dismissed) is not stopped; it stops once they are sent or the visual is dismissed, as after a question.
 
 ## 2026-11-20
 

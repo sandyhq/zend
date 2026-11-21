@@ -27,6 +27,7 @@ zend-update.workspace = true
 zend-cli.workspace = true
 zend-mcp.workspace = true
 zend-notify.workspace = true
+zend-sync.workspace = true
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true

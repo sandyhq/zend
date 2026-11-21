@@ -10049,6 +10049,7 @@ dependencies = [
  "zend-doc",
  "zend-harness",
  "zend-launch",
+ "zend-mcp",
  "zend-notify",
  "zend-plugin-guard",
  "zend-preview",
@@ -10100,6 +10101,29 @@ version = "0.3.4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "zend-mcp"
+version = "0.3.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zend-doc",
+ "zend-proto",
+ "zend-rpc",
 ]
 
 [[package]]

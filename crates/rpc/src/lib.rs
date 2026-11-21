@@ -33,7 +33,9 @@ pub use device_room::{
     NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenError, TokenSource,
     decode_device_frame, device_room_ws_url, encode_device_frame, is_liveness_probe,
 };
-pub use server::{serve_connection, serve_ws_listener, serve_ws_listener_scoped, serve_ws_streams};
+pub use server::{
+    agent_service, serve_connection, serve_ws_listener, serve_ws_listener_scoped, serve_ws_streams,
+};
 
 /// RPC method names — single source of truth for both ends.
 /// Full surface: docs/research/feature-inventory.md §2.
@@ -90,6 +92,12 @@ pub mod methods {
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
+    /// `WarmStart {chatId, request, typed}` → `{outcome}`: start (or renew) a
+    /// new chat's agent before its first message, for the id the chat will
+    /// be created with (engine `warm_start`).
+    pub const WARM_START: &str = "WarmStart";
+    /// `WarmStop {chatId}`: stop that warm start.
+    pub const WARM_STOP: &str = "WarmStop";
     pub const TAKE_PROJECT_ACTION_SETUP: &str = "TakeProjectActionSetup";
     /// Peer-to-peer delivery fallback: the SENDER's engine forwards a queued
     /// command entry (client-minted id and all) straight over the device-room

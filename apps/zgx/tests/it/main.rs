@@ -21,4 +21,5 @@ mod pointer_cursor;
 mod reload;
 mod sidebar_row_ink;
 mod streaming_cost;
+mod streaming_veil_replay;
 mod thought_streaming;

@@ -45,6 +45,8 @@ pub(crate) struct Child {
     inner: ProcessChild,
     #[cfg(unix)]
     group: Option<i32>,
+    /// For the engine's agent ledger (`registry`), once it has exited.
+    pid: Option<u32>,
 }
 
 impl Child {
@@ -52,6 +54,7 @@ impl Child {
         Self {
             #[cfg(unix)]
             group: Some(-(inner.id().expect("newly spawned child") as i32)),
+            pid: inner.id(),
             inner,
         }
     }
@@ -141,6 +144,9 @@ impl Drop for Child {
         // Tokio's kill_on_drop covers the direct child. Keep the group id
         // even after wait() has reaped it, so descendants cannot escape cleanup.
         self.terminate_group();
+        if let Some(pid) = self.pid {
+            crate::process::registry::forget(pid);
+        }
     }
 }
 
