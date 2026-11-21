@@ -29,20 +29,20 @@ log = "0.4"
 # While the POC is worked on: the zengx worktree beside this one (branch
 # android-poc), which has the Android entry (zgx-desktop src/android.rs).
 [patch."https://github.com/sandyhq/zengx"]
-zgx = { path = "../../../zengx-android-poc/crates/zgx" }
-zgx-desktop = { path = "../../../zengx-android-poc/crates/zgx-desktop" }
-zgx-run = { path = "../../../zengx-android-poc/crates/zgx-run" }
-zgx-script = { path = "../../../zengx-android-poc/crates/zgx-script" }
-zgx-gpu = { path = "../../../zengx-android-poc/crates/zgx-gpu" }
-zgx-text = { path = "../../../zengx-android-poc/crates/zgx-text" }
+zgx = { path = "../../../zengx-android-app/crates/zgx" }
+zgx-desktop = { path = "../../../zengx-android-app/crates/zgx-desktop" }
+zgx-run = { path = "../../../zengx-android-app/crates/zgx-run" }
+zgx-script = { path = "../../../zengx-android-app/crates/zgx-script" }
+zgx-gpu = { path = "../../../zengx-android-app/crates/zgx-gpu" }
+zgx-text = { path = "../../../zengx-android-app/crates/zgx-text" }
 
 # zgx's own patches (its root Cargo.toml).
 [patch.crates-io]
-wgpu-hal = { path = "../../../zengx-android-poc/vendor/wgpu-hal" }
-winit = { path = "../../../zengx-android-poc/vendor/winit" }
-accesskit_consumer = { path = "../../../zengx-android-poc/vendor/accesskit_consumer" }
-accesskit_atspi_common = { path = "../../../zengx-android-poc/vendor/accesskit_atspi_common" }
-accesskit_unix = { path = "../../../zengx-android-poc/vendor/accesskit_unix" }
+wgpu-hal = { path = "../../../zengx-android-app/vendor/wgpu-hal" }
+winit = { path = "../../../zengx-android-app/vendor/winit" }
+accesskit_consumer = { path = "../../../zengx-android-app/vendor/accesskit_consumer" }
+accesskit_atspi_common = { path = "../../../zengx-android-app/vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "../../../zengx-android-app/vendor/accesskit_unix" }
 
 [profile.dev.package."*"]
 opt-level = 3
