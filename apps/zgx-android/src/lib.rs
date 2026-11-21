@@ -133,6 +133,9 @@ fn android_main(app: zgx_desktop::android::AndroidApp) {
     unsafe {
         std::env::set_var("WGPU_DEBUG", "0");
         std::env::set_var("WGPU_DISCARD_HAL_LABELS", "1");
+        // No dev-lint strip over the app: a debug build lints the scripts
+        // it loads from files, which the POC's unpacked ones are.
+        std::env::set_var("ZGX_LINT", "0");
     }
     log::info!("running {}", base.join(SCRIPT).display());
     zgx_desktop::android::set_app(app);

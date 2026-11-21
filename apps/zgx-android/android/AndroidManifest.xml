@@ -5,7 +5,10 @@
     package="app.zend.zgxpoc"
     android:versionCode="1"
     android:versionName="0.0.1">
-    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+    <!-- targetSdk 34, not 36: below 35 Android lays the window out between
+         the status and navigation bars, so the zgx surface (which reads no
+         window insets yet) isn't drawn under them. -->
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
     <application
         android:label="Zend zgx POC"
         android:hasCode="false"
@@ -13,6 +16,7 @@
         android:extractNativeLibs="false">
         <activity
             android:name="android.app.NativeActivity"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|density"
             android:launchMode="singleTask">
