@@ -4,6 +4,8 @@
 -- `horizontal_panel_fit`, shell.rs `content_split`, `right_pane_max_width`,
 -- `right_pane_takeover_width`.)
 
+local compact_cutoff = require("@ds/compact")
+
 local M = {}
 
 -- Zend's widths (crates/ui settings.rs), in points. (The sidebar's default
@@ -12,6 +14,16 @@ M.SIDEBAR_MIN, M.SIDEBAR_MAX, M.SIDEBAR_DEFAULT = 242, 400, 272
 M.FILES_PANEL_MIN, M.FILES_PANEL_DEFAULT, M.FILES_PANEL_MAX = 220, 286, 440
 M.RIGHT_PANE_MIN, M.RIGHT_PANE_DEFAULT = 360, 520
 M.CHAT_PANEL_MIN = 300
+-- Below this the window is a phone's (compact): no columns beside the page,
+-- the sidebar a drawer over it, the panel a sheet over it, settings' list a
+-- page of its own. (Under the sidebar's least and the chat's together, 542,
+-- with room for a large phone's 412 to 480 and a small tablet's split half.)
+-- (ds/compact holds it: the palette's scope row follows the same cutoff.)
+M.COMPACT_BELOW = compact_cutoff.BELOW
+-- Whether a window `viewport` wide is compact (none known yet: not).
+function M.compact(viewport: number): boolean
+	return compact_cutoff.is(viewport)
+end
 -- A chat's card at the page's least: the window's three gaps round it (each
 -- side, and before the panel) come out of CHAT_PANEL_MIN. What a split's panes
 -- each want beside the two sides: it leaves a draft 93 points of the

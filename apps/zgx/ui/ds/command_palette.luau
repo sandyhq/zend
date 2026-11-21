@@ -49,6 +49,7 @@ local status = require("@self/status")
 local ascii = require("@self/ascii")
 local material = require("@self/material")
 local locale = require("@self/locale")
+local compact = require("@self/compact")
 local EditorMenu = require("@self/editor_menu")
 
 -- A session, as its row in the sidebar's regular density shows it: its
@@ -184,6 +185,19 @@ local function view_max(): number
 	end
 	local room = h - TOP - BOTTOM_CLEAR - SEARCH_H - SCOPES_H - FOOT_H
 	return math.max(VIEW_MIN, math.min(VIEW_MAX, room))
+end
+-- Whether the window is compact (a phone's, ds/compact: the shell's own
+-- cutoff): the scope row then scrolls sideways and drops its Tab hint.
+-- Tracked, so an open palette follows the window; none known (a headless
+-- test), not narrow.
+local function narrow(): boolean
+	local window = (ui :: any).window
+	local state = if type(window) == "table" or type(window) == "userdata" then window.size else nil
+	local ok, v = pcall(function(): any
+		return if state == nil then nil else state:get()
+	end)
+	local w = if ok and type(v) == "table" and type(v.width) == "number" then v.width else 0
+	return compact.is(w)
 end
 -- With nothing typed, how many sessions All shows before "Show all"; and
 -- how many recent things.
@@ -1558,14 +1572,13 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 
 	-- The scopes (at the root): each its count, the one chosen in the
 	-- menus' selected wash, its text on the glyphs' edge.
-	local scopes: { Node } = {}
+	local scopes: { () -> Node } = {}
 	for i, s in SCOPES do
 		local function chosen(): boolean
 			return scope:get() == s.id
 		end
-		table.insert(
-			scopes,
-			ui.button {
+		table.insert(scopes, function(): Node
+			return ui.button {
 				label = locale.t(s.label),
 				tooltip = ui.shortcut_text(`cmd+{i}`),
 				tooltip_delay = 500,
@@ -1590,34 +1603,53 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 					tabular = true,
 				},
 			}
-		)
+		end)
 	end
-	local scope_items: { [any]: any } = {
-		h = SCOPES_H,
-		w_full = true,
-		px = "$space.1",
-		gap = "$zend.space.hair",
-		items = "center",
-	}
-	for _, node in scopes do
-		table.insert(scope_items, node)
-	end
-	table.insert(scope_items, ui.div { grow = 1 })
-	table.insert(
-		scope_items,
-		ui.row {
-			pr = "$space.2",
-			gap = "$zend.space.tight",
+	-- The row of scopes: wide, the chips then the Tab hint at its end;
+	-- compact, the chips alone, scrolling sideways where they don't fit (as
+	-- a phone's row of chips does). Built for the width the window has now,
+	-- and again as it crosses the cutoff while open: what's typed and chosen
+	-- are the palette's states, kept.
+	local function scope_items(wide: boolean): any
+		local items: { [any]: any } = {
+			h = SCOPES_H,
+			w_full = true,
+			px = "$space.1",
+			gap = "$zend.space.hair",
 			items = "center",
-			Kbd { keys = "tab", tone = "quiet" },
-			ui.text { locale.t("ds.command_palette.next_scope"), text_size = "$font.size.xs", color = "$text.tertiary" },
 		}
-	)
+		for _, build in scopes do
+			table.insert(items, build())
+		end
+		if wide then
+			table.insert(items, ui.div { grow = 1 })
+			table.insert(
+				items,
+				ui.row {
+					pr = "$space.2",
+					gap = "$zend.space.tight",
+					items = "center",
+					Kbd { keys = "tab", tone = "quiet" },
+					ui.text { locale.t("ds.command_palette.next_scope"), text_size = "$font.size.xs", color = "$text.tertiary" },
+				}
+			)
+		end
+		return items
+	end
 	local scope_row = ui.show(
 		function(): boolean
 			return depth:get() == 1 and scoped
 		end,
-		ui.column { w_full = true, shrink = 0, ui.row(scope_items), rule() }
+		ui.column {
+			w_full = true,
+			shrink = 0,
+			ui.show(narrow, function(): Node
+				return ui.scroll_x(scope_items(false))
+			end, function(): Node
+				return ui.row(scope_items(true))
+			end),
+			rule(),
+		}
 	)
 
 	-- A row's glyph, in its slot: a session's agent, a project's tile, a

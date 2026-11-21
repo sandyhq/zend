@@ -105,13 +105,20 @@ function M.toggle_files()
 end
 -- (Open by its split's panel counts: expanding a chat whose own was
 -- never opened, its split's being, works as its own would.)
+-- Whether the window is compact (a phone's width: screens/shell/fit sets it
+-- as the window lays out), and whether the sidebar's drawer is open over the
+-- page there. The drawer isn't kept: a window opens on its page.
+-- (Held by route, which its settings' steps read: view requires route.)
+M.compact = route.compact
+M.drawer = ui.state("shell_drawer_open", false)
+-- (Compact, an open panel is always expanded: a sheet over the page.)
 M.expanded = ui.computed(function(): boolean
 	local id = session()
-	return id ~= nil and M.files:get() and M.expanded_panels:get()[id] == true
+	return id ~= nil and M.files:get() and (M.expanded_panels:get()[id] == true or M.compact:get())
 end)
 function M.toggle_expanded()
 	local id = owner(route.chat:peek())
-	if not id or not M.files:peek() then
+	if not id or not M.files:peek() or M.compact:peek() then
 		return
 	end
 	M.expanded_panels:set_key(id, if M.expanded:peek() then nil else true)

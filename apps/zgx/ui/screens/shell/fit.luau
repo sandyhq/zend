@@ -105,7 +105,20 @@ function M.set_viewport(w: number)
 	if math.abs(M.viewport:peek() - w) > 0.5 then
 		M.viewport:set(w)
 	end
+	local compact = policy.compact(w)
+	if view.compact:peek() ~= compact then
+		-- (The title bar's touch first: it's built again as `compact` moves, and
+		-- reads it as it's built.)
+		require("@ds/title_bar").set_touch(compact)
+		view.compact:set(compact)
+		if not compact and view.drawer:peek() then
+			view.drawer:set(false)
+		end
+	end
 end
+-- Whether the window is compact now (tracked): a phone's width, its sidebar
+-- a drawer, its panel a sheet.
+M.compact = view.compact
 -- (Registering moves `registered`, which the fit reads: a sidebar that
 -- says its width after the fit was first worked out (a reload of either,
 -- or the shell asking first) is heard at once. A plain local wasn't: the
@@ -150,6 +163,11 @@ M.current = ui.computed(function(): Fit
 	local open_tree = on_session and view.files:get()
 	if vw <= 0 then
 		return { sidebar = open_sidebar, right = open_panel, files = false, sidebar_limit = width }
+	end
+	-- Compact: nothing beside the page. The sidebar opens as a drawer over it
+	-- (`view.drawer`), the panel as a sheet (expanded, `view.expanded`).
+	if policy.compact(vw) then
+		return { sidebar = false, right = open_panel, files = false, sidebar_limit = 0 }
 	end
 	local floor = M.page_floor:get()
 	local panel_at = if id then M.panel_at:get()[id] or 0 else 0
@@ -280,6 +298,17 @@ end
 -- The sidebar's toggle (the title bar's, ⌘B): hidden for room, brought
 -- back; else folded or opened, opening it ranked newest.
 function M.toggle_sidebar()
+	-- (Compact: the drawer over the page, whatever the sidebar's fold; in
+	-- settings, their list of pages, in the page's place.)
+	if view.compact:peek() then
+		local route: any = require("@app/screens/shell/route")
+		if route.current:peek().name == "settings" then
+			route.settings_list:set(not route.settings_list:peek())
+		else
+			view.drawer:set(not view.drawer:peek())
+		end
+		return
+	end
 	if not view.collapsed:peek() then
 		-- Hidden for a split's panes: asked for, it shows, the panel giving
 		-- way if it must (hidden, back once the sidebar folds), and the panes

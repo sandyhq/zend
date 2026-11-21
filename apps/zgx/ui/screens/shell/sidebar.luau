@@ -43,6 +43,9 @@ export type Props = {
 	island: boolean?,
 	-- Room left at its top for the title bar laid over it.
 	top: number?,
+	-- After anything in it is chosen (a session, the one open too; a new
+	-- chat, a page, Search): the compact drawer closes on it.
+	on_chosen: (() -> ())?,
 }
 
 -- What the sidebar and its rail share: the view options (Zend's Organize,
@@ -1634,7 +1637,13 @@ M.Sidebar = ui.component(function(props: Props): Node
 	if not props.island then
 		M.card:set(nil)
 	end
+	local function chosen()
+		if props.on_chosen then
+			props.on_chosen()
+		end
+	end
 	local bar = ds.Sidebar {
+		on_chosen = props.on_chosen,
 		compact = shared.compact,
 		organize = shared.organize :: any,
 		organize_order = shared.organize_order,
@@ -1669,12 +1678,14 @@ M.Sidebar = ui.component(function(props: Props): Node
 		-- (A device's "+", inside a project's group: on that device too.)
 		on_new = function(project: string?, device: string?)
 			route.new_chat(if device then project else checkout_here(project), if device then device_named(device, project) else nil)
+			chosen()
 		end,
 		on_archive = M.archive,
 		archived = shelf,
 		activity = activity.on,
 		on_activity_settings = function()
 			route.settings("activity")
+			chosen()
 		end,
 		on_unarchive = function(id: string)
 			sessions.unarchive(id)
@@ -1688,6 +1699,7 @@ M.Sidebar = ui.component(function(props: Props): Node
 				icon = Ideas.ICON,
 				on_click = function()
 					route.plugin_page(Ideas.PLUGIN, Ideas.PAGE)
+					chosen()
 				end,
 				selected = function(): boolean
 					local c = route.current:get()
@@ -1698,9 +1710,11 @@ M.Sidebar = ui.component(function(props: Props): Node
 		pages = ui.shared("plugins.pages", {} :: { any }),
 		on_page = function(page: any)
 			route.plugin_page(page.plugin, page.id)
+			chosen()
 		end,
 		on_search = function()
 			view.palette:set(true)
+			chosen()
 		end,
 		on_user = M.account.on_user,
 		user_open = M.account.user_open,

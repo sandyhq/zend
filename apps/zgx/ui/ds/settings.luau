@@ -627,6 +627,9 @@ export type NavProps = {
 	-- Takes the choice instead of setting `value` (a router's).
 	on_choose: ((value: any) -> ())?,
 	w: number?,
+	-- As wide as where it stands (a phone's settings, the list a page of its
+	-- own), no edge to drag.
+	fill: boolean?,
 	-- Its width, shared and kept (the main sidebar's): dragged at its right
 	-- edge, between `min_w` and `max_w`, as the sidebar's is. Over `w`.
 	width: State<number>?,
@@ -761,18 +764,20 @@ function M.Nav(props: NavProps): Node
 		}
 	end
 	-- Its width: the shared one, dragged at its edge, or a fixed one.
-	local width = props.width
+	local width = if props.fill then nil else props.width
 	local lo, hi = props.min_w or 0, props.max_w or math.huge
 	local edge_over = ui.state("settings_nav_edge_over", false)
 	local dragging = ui.state("settings_nav_dragging", false)
 	local resizing, from_x, from_w = false, 0, 0
 	-- (The list's name is the tab list's: nothing round it says it again.)
 	return ui.column {
-		w = if width
-			then function(): number
+		w = if props.fill
+			then nil
+			elseif width then function(): number
 				return math.clamp(width:get(), lo, hi)
 			end
 			else props.w or 200,
+		w_full = if props.fill then true else nil,
 		h_full = true,
 		min_h = 0,
 		shrink = 0,

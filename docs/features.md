@@ -32,6 +32,10 @@ How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your age
 
 ## For people in a chat
 
+### A phone-sized window (compact)
+Below 600 pt wide (a phone, a narrow split) the window rearranges instead of squeezing: the sidebar is a drawer over the page (the title bar's toggle or a swipe in from the left edge opens it; a tap beside it, a swipe back, Escape or choosing anything closes it), the panel opens as a sheet over the whole page, Settings shows its list of pages or one page with a Settings button back to the list, and the title bar's controls are 44 pt touch targets (no Forward). Wider windows look exactly as before.
+Code: `apps/zgx/ui/screens/shell/fit_policy.luau` (`COMPACT_BELOW`), `fit.luau`, `init.luau` (the drawer), `settings.luau`, `ds/title_bar.luau` (touch). Plan: `plans/android-zgx-app` (G4).
+
 ### Ideas & Intents
 A page under Search in the desktop sidebar for what comes to mind before it belongs anywhere. Type an idea and save it (⌘Enter): no title, project or chat. Or record a voice memo between Record and Stop, up to a minute, with the composer's dictation waveform under the buttons following what the microphone hears (from the recording's own samples): the recording is written to `<data>/ideas` as a WAV first, then transcribed on this device with the speech model Settings → Voice downloads. Without the model, or when transcription fails, the memo keeps its audio and says why, with Transcribe or Try again. Memos play from the page, also after a restart; newest first. Leaving the page (Settings, a chat, anywhere else) stops a recording and saves what was said until then; none records out of sight. A Save that fails keeps the typed words in the box. Nothing leaves the device and nothing goes to an agent. The composer's dictation is separate and still keeps no audio.
 Code: `apps/zgx/src/ideas.rs`, `apps/zgx/ui/screens/ideas`. Plan: `plans/ideas-intents`.
