@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-21
+
+### Changed
+- Idle stop (from upstream): a parked agent whose chat shows a visual still waiting on the person's answers (inputs, not sent, not dismissed) is not stopped; it stops once they are sent or the visual is dismissed, as after a question.
+
 ## 2026-11-20
 
 ### Fixed

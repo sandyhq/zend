@@ -2962,6 +2962,20 @@ impl Inner {
             .is_some_and(|session| session.status == SessionStatus::AwaitingInput)
     }
 
+    /// Whether a visual this chat showed still asks the person something
+    /// (open: inputs, not sent, not dismissed; live_visuals). Its answers
+    /// come back as the chat's next message, so its agent waits on them as
+    /// on a question. (Read from the uploads folder: a few small files.)
+    fn has_open_visual(&self, chat_id: &str) -> bool {
+        self.visuals.get().is_some_and(|uploads| {
+            uploads
+                .visual_metas()
+                .iter()
+                .filter_map(|json| crate::live_visuals::VisualMeta::from_json(json))
+                .any(|meta| meta.chat_id == chat_id && meta.is_open())
+        })
+    }
+
     /// Whether the chat is open anywhere, and when its last viewer left.
     fn view_state(&self, chat_id: &str) -> (bool, Option<tokio::time::Instant>) {
         let state = self.viewers.state(chat_id);
@@ -5684,6 +5698,8 @@ async fn drive_run(
                         scheduled
                     } else if inner.awaiting_input(&chat_id) {
                         Some("a question waits on the person")
+                    } else if inner.has_open_visual(&chat_id) {
+                        Some("a visual waits on the person's answers")
                     } else {
                         None
                     };

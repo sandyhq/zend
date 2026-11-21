@@ -479,6 +479,38 @@ async fn an_agent_with_background_work_is_never_stopped() {
     rig.core.sessions.shutdown().await;
 }
 
+/// A visual that asks the person something, kept as the window keeps it.
+fn store_visual(rig: &Rig, sent: bool) {
+    let meta = serde_json::json!({
+        "id": "v-idle",
+        "chatId": CHAT,
+        "title": "Pick one",
+        "sent": sent,
+        "inputs": [{ "name": "choice", "kind": "choice", "label": "Which?" }],
+    });
+    rig.core
+        .uploads
+        .store_visual_meta("v-idle", &meta.to_string())
+        .unwrap();
+}
+
+/// Fork: a visual still asking the person something holds the agent as a
+/// question does (its answers come as the next message); once they're sent,
+/// a full idle window from the next look, then stopped.
+#[tokio::test(start_paused = true)]
+async fn an_agent_whose_visual_waits_on_answers_is_never_stopped() {
+    let rig = rig(true);
+    rig.send("show a form").await;
+    store_visual(&rig, false);
+    tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+    assert!(rig.live(), "stopped while its visual waited on answers");
+    assert_eq!(rig.kills(), 0);
+    store_visual(&rig, true);
+    tokio::time::sleep(AGENT_IDLE_STOP * 2).await;
+    rig.stopped().await;
+    rig.core.sessions.shutdown().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_agent_with_a_scheduled_wake_up_is_never_stopped() {
     let rig = rig(true);
