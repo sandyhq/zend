@@ -13550,6 +13550,7 @@ dependencies = [
  "zend-mcp",
  "zend-notify",
  "zend-rpc",
+ "zend-sync",
  "zend-ui",
  "zend-update",
 ]
