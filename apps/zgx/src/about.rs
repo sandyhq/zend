@@ -623,13 +623,25 @@ fn feed_outcome(error: &str) -> String {
     }
 }
 
+/// The build id a packaged build was given (Android links the engine, which
+/// embeds it); none on the desktop, whose executable's time says it.
+#[cfg(target_os = "android")]
+fn packaged_build() -> Option<String> {
+    zend_engine::embedded_build_time().map(|_| zend_engine::build_id().to_owned())
+}
+
+#[cfg(not(target_os = "android"))]
+fn packaged_build() -> Option<String> {
+    None
+}
+
 /// This app's build: when its executable was built (seconds since the
 /// epoch), as the engine says its own. A packaged build (Android's, whose
 /// executable is the system's `app_process`) says its commit and the time
 /// it was packaged with, as the engine's build id does.
 fn app_build() -> String {
-    if zend_engine::embedded_build_time().is_some() {
-        return zend_engine::build_id().to_owned();
+    if let Some(id) = packaged_build() {
+        return id;
     }
     std::env::current_exe()
         .and_then(std::fs::metadata)
