@@ -69,3 +69,4 @@ mod workspace_sync;
 mod worktree_on_run;
 mod agent_lifecycle;
 mod launch_agents;
+mod warm_start;

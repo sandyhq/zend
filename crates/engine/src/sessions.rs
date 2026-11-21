@@ -364,6 +364,11 @@ struct Inner {
     /// without answers is told to its agent as a line on the next prompt
     /// into its chat (live_visuals `with_dismissals`). Absent in bare tests.
     visuals: OnceLock<crate::uploads::Uploads>,
+    /// New chats' warm starts, by the id the chat will be created with
+    /// ([`warm_start`]).
+    warm: Mutex<HashMap<String, warm_start::WarmStart>>,
+    /// Their leases (open, typed) when a test sets them.
+    warm_leases: Mutex<Option<(std::time::Duration, std::time::Duration)>>,
 }
 
 /// How long a runtime parked between turns with nothing pending keeps its
@@ -475,6 +480,10 @@ pub const MCP_PROXY_SUBCOMMAND: &str = "mcp-proxy";
 /// Turn-start hook: called with `(chat_id, cwd)`.
 pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+#[path = "warm_start.rs"]
+mod warm_start;
+pub use warm_start::WarmOutcome;
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -528,6 +537,8 @@ impl SessionsEngine {
                 turn_listener: OnceLock::new(),
                 plugins: OnceLock::new(),
                 visuals: OnceLock::new(),
+                warm: Mutex::new(HashMap::new()),
+                warm_leases: Mutex::new(None),
             }),
         }
     }
@@ -2739,6 +2750,7 @@ impl SessionsEngine {
         self.inner
             .shutting_down
             .store(true, std::sync::atomic::Ordering::Release);
+        self.warm_stop_all().await;
         self.inner.voice.retire();
         if self
             .inner
@@ -4782,6 +4794,38 @@ async fn drive_run(
     // agent can spawn and talk to side chats through the engine it runs in.
     // Held for the run's life: its MCP token stops working when it drops.
     let mut _mcp_grant = None;
+    // A new chat's warm start (`warm_start`): its runtime was launched with
+    // this chat's MCP token, which the run keeps. (One still launching is
+    // waited for; a Stop meanwhile ends it.)
+    let mut warm = if resume_state.idle {
+        None
+    } else {
+        tokio::select! {
+            biased;
+            _ = controls.interrupt.cancelled() => {
+                inner.stop_warm(&chat_id).await;
+                None
+            }
+            taken = inner.take_warm(&chat_id, harness_id) => taken,
+        }
+    };
+    // Launched with native subagents switched otherwise than now: its Zend
+    // server and the CLI's flags are another runtime's.
+    if warm
+        .as_ref()
+        .is_some_and(|taken| taken.parked.side_chats_only != side_chats_only)
+        && let Some(taken) = warm.take()
+    {
+        inner
+            .discard_taken(harness.as_ref(), &chat_id, taken, "native subagents switched")
+            .await;
+    }
+    if let Some(taken) = warm.as_mut()
+        && request.mcp.is_none()
+    {
+        request.mcp = taken.parked.mcp.take();
+        _mcp_grant = taken.parked.grant.take();
+    }
     if request.mcp.is_none()
         && let Some((server, grant)) =
             inner.zend_mcp(&chat_id, side_chats_only, harness.wakes_on_background())
@@ -4970,12 +5014,25 @@ async fn drive_run(
     // The pending-update marker still orders new subprocesses after installation.
     // Share the lease with the adapter so child cleanup outlives this event loop.
     let mut _execution_lease = None;
+    // A warm start holds its CLI's lease from before its launch, so no update
+    // came between; one accepted since ends it here (the run waits behind
+    // the update as any other).
+    if warm.is_some() && inner.registry.update_pending(harness_id)
+        && let Some(taken) = warm.take()
+    {
+        inner
+            .discard_taken(harness.as_ref(), &chat_id, taken, "its CLI is being updated")
+            .await;
+    }
     let started = match prepared {
         Ok(()) => {
-            let lease = tokio::select! {
-                biased;
-                _ = controls.interrupt.cancelled() => None,
-                lease = inner.registry.execution_lease(harness_id) => Some(Arc::new(lease)),
+            let lease = match warm.as_ref() {
+                Some(taken) => Some(taken.parked.execution_lease.clone()),
+                None => tokio::select! {
+                    biased;
+                    _ = controls.interrupt.cancelled() => None,
+                    lease = inner.registry.execution_lease(harness_id) => Some(Arc::new(lease)),
+                },
             };
             if let Some(lease) = lease {
                 _execution_lease = Some(lease.clone());
@@ -5012,12 +5069,45 @@ async fn drive_run(
                             // `run.preparing` pin): the session parks on what it
                             // really started with, not on what dispatch read before.
                             let now = inner.registry.run_credential(harness_id, Some(&chat_id)).await;
-                            if let Some(h) = lock(&inner.runs).get_mut(&chat_id).filter(|h| h.run_id == run_id) {
-                                h.credential = now;
-                            }
+                            let binary = {
+                                let mut runs = lock(&inner.runs);
+                                let handle = runs.get_mut(&chat_id).filter(|h| h.run_id == run_id);
+                                handle.map(|h| {
+                                    h.credential = now.clone();
+                                    h.binary.clone()
+                                })
+                            };
+                            (prepared, Some((now, binary)))
+                        } else {
+                            (prepared, None)
                         }
-                        prepared
                     } => Some(prepared),
+                };
+                // A warm start launched with another account, or from a
+                // CLI binary since replaced, is another runtime (as a
+                // parked session's would be: `credential_changed`).
+                let prepared = match prepared {
+                    Some((prepared, Some((now, binary)))) => {
+                        let stale = warm.as_ref().and_then(|taken| {
+                            if taken.parked.credential != now {
+                                Some("its credential changed")
+                            } else if let (Some(was), Some(Some(is))) = (&taken.parked.binary, &binary)
+                                && was != is
+                            {
+                                Some("its CLI changed")
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(why) = stale
+                            && let Some(taken) = warm.take()
+                        {
+                            inner.discard_taken(harness.as_ref(), &chat_id, taken, why).await;
+                        }
+                        Some(prepared)
+                    }
+                    Some((prepared, None)) => Some(prepared),
+                    None => None,
                 };
                 // The last step before the agent gets the message: a Stop
                 // that claimed it since its registration (killing this run,
@@ -5039,7 +5129,12 @@ async fn drive_run(
                     }
                     Some(Ok(())) => {
                         crate::wake_trace::mark(crate::wake_trace::Stage::AgentSpawn);
-                        harness.run(wire_request, controls).await
+                        match warm.take() {
+                            Some(taken) => {
+                                harness.run_warm(&taken.key, wire_request, controls).await
+                            }
+                            None => harness.run(wire_request, controls).await,
+                        }
                     }
                     Some(Err(message)) => Err(zend_harness::HarnessError::NotSignedIn(message)),
                     None => unreachable!("a dropped preparation is stopped"),
@@ -5050,6 +5145,13 @@ async fn drive_run(
         }
         Err(error) => Err(error),
     };
+    // A warm start no runtime took (a Stop before the launch, a run that
+    // couldn't be prepared) ends here.
+    if let Some(taken) = warm.take() {
+        inner
+            .discard_taken(harness.as_ref(), &chat_id, taken, "the run never launched")
+            .await;
+    }
     // Only a refused permission needs to know (a filesystem read, kept off
     // the async threads like `binary_identity`).
     let cli_just_replaced = match &started {
