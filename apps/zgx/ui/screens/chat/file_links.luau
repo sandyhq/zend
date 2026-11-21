@@ -49,8 +49,10 @@ end
 -- mention; a relative path (its file name with a `.`); an absolute one
 -- (`file://` too), inside `root` or not (`outside`, its whole path); each
 -- with a line from `#L12`, `#L12C5`, `#L12-L20`, `:12`, `:12:5` or
--- `:12-20`. nil for anything else: a web link, `mailto:`, a path that
--- climbs out (`..`), a line 0 or a range backwards.
+-- `:12-20`. A relative path is read from `root` with its `.` and `..`
+-- parts resolved (`./plans/a.md`, `a/../b.md`). nil for anything else: a
+-- web link, `mailto:`, a path that climbs out of `root` (`..`), a line 0 or
+-- a range backwards.
 -- (`end_line`: a range's last line, `path:10-12`, `#L10-L12`.)
 export type Resolved = { path: string, line: number?, column: number?, end_line: number?, outside: boolean? }
 
@@ -90,6 +92,30 @@ local function clean(path: string): boolean
 		end
 	end
 	return true
+end
+
+-- A relative path read from the folder it's relative to: `.` parts drop out
+-- and `..` steps up, so `./plans/a.md` and `plans/x/../a.md` are `plans/a.md`.
+-- nil for one that climbs out of the folder, has an empty part (`a//b`,
+-- a trailing `/`) or is nothing at all.
+local function normalize(path: string): string?
+	local out: { string } = {}
+	for _, part in string.split(path, "/") do
+		if part == "" then
+			return nil
+		elseif part == ".." then
+			if #out == 0 then
+				return nil
+			end
+			table.remove(out)
+		elseif part ~= "." then
+			table.insert(out, part)
+		end
+	end
+	if #out == 0 then
+		return nil
+	end
+	return table.concat(out, "/")
 end
 
 local function file_name(path: string): string
@@ -246,7 +272,19 @@ function M.resolve(target: string, root: string?): Resolved?
 		return nil
 	end
 	local path = if string.find(p2, "%", 1, true) then (decode(p2) or p2) else p2
-	if path == "" or not clean(path) then
+	if path == "" then
+		return nil
+	end
+	-- (A relative path as agents write it, `./x.md` or `a/../x.md`, is read
+	-- from the folder; clean() below still refuses anything else odd.)
+	if string.sub(path, 1, 1) ~= "/" and not file_url then
+		local normal = normalize(path)
+		if not normal then
+			return nil
+		end
+		path = normal
+	end
+	if not clean(path) then
 		return nil
 	end
 	local line, column = line1 or line2, column1 or column2

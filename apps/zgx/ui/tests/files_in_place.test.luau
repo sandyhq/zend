@@ -448,6 +448,37 @@ test("a Markdown preview shows its pictures, read from the device, and follows l
 	expect(app:wait('"Notes"', { timeout_ms = 15000 })).to_be(true)
 end)
 
+-- A report two folders deep links ../setup.md: the link resolves against
+-- the open file's folder, not the project's top, and opens that file.
+test("a Markdown preview's ../ link opens the file one folder up from the open file", function()
+	local app = open_pane()
+	app:set_state("test_files_away", true)
+	app:command("disk_md_deep")
+	for _, dir in { "plans", "android-zgx-poc", "reports" } do
+		expect(app:wait(`role:treeitem "{dir}"`, { timeout_ms = 15000 })).to_be(true)
+		app:click(`role:treeitem "{dir}"`)
+		app:frames(30)
+	end
+	expect(app:wait('role:treeitem "G1-3.md"', { timeout_ms = 15000 })).to_be(true)
+	app:click('role:treeitem "G1-3.md"')
+	expect(app:wait('"Result"', { timeout_ms = 15000 })).to_be(true)
+	app:wait('"never shown, only waited past"', { timeout_ms = 400 })
+	-- (The link is far down: scrolled until it sits inside the viewer.)
+	for _ = 1, 30 do
+		local y = tonumber(string.match(app:tree('role:link "../setup.md"'), "link \"%.%./setup%.md\" %d+,(%-?%d+)"))
+		if y and y > 80 and y < 500 then
+			break
+		end
+		app:scroll('"Result"', 300)
+		app:frames(10)
+	end
+	app:click('role:link "../setup.md"')
+	expect(eventually(app, function(): boolean
+		return string.find(calls(app), "read:plans/android-zgx-poc/setup.md", 1, true) ~= nil
+	end)).to_be(true)
+	expect(app:wait('"Setup"', { timeout_ms = 15000 })).to_be(true)
+end)
+
 test("a Markdown preview's task boxes tick the file's own tasks", function()
 	local app = open_pane()
 	-- (Its picture read through the stub: the made-up disk isn't there.)

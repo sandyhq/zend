@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-21
 
+### Fixed
+- Chat: a reply's relative file link written `./plans/x.md` (or with a `..` that stays inside the folder, `plans/a/../x.md`) is read from the session's folder, shown as a file chip and opens in the file viewer; before, anything with a `.` or `..` part was not a link. A path that climbs out of the folder stays no link.
+
 ### Added
 - Ideas & Intents: a page of its own under Search in the desktop sidebar for typed ideas (no title, project or chat) and voice memos, newest first, kept on this device in `<data>/ideas`. A memo is recorded between Record and Stop (at most a minute), written to disk as a WAV before it is transcribed with the local speech model, plays after a restart, and keeps its audio when there is no model or transcription fails. Leaving the page stops and saves a recording (one still starting is dropped); a failed Save keeps the draft. While a memo records, dictation's live waveform shows what the microphone hears. The composer's dictation still keeps no audio.
 
