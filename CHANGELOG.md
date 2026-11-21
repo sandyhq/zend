@@ -7,6 +7,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ### Added
 - Ideas & Intents: a page of its own under Search in the desktop sidebar for typed ideas (no title, project or chat) and voice memos, newest first, kept on this device in `<data>/ideas`. A memo is recorded between Record and Stop (at most a minute), written to disk as a WAV before it is transcribed with the local speech model, plays after a restart, and keeps its audio when there is no model or transcription fails. Leaving the page stops and saves a recording (one still starting is dropped); a failed Save keeps the draft. While a memo records, dictation's live waveform shows what the microphone hears. The composer's dictation still keeps no audio.
 
+### Changed
+- Idle stop (from upstream): a parked agent whose chat shows a visual still waiting on the person's answers (inputs, not sent, not dismissed) is not stopped; it stops once they are sent or the visual is dismissed, as after a question.
+
 ## 2026-11-20
 
 ### Fixed

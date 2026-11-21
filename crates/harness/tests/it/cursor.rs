@@ -701,6 +701,7 @@ async fn mcp_injection_reaches_shim_on_new_and_resumed_runs() {
             command: "/path with spaces/zend".into(),
             args: vec!["mcp".into()],
             env: [("ZEND_CHAT_ID".into(), "origin-chat".into())].into(),
+            http: None,
         });
         let (controls, _steer, _token) = controls();
         let events = run_to_first_done(&harness(), req, controls).await;

@@ -1909,7 +1909,7 @@ impl AgentAccounts {
             .stdin(zend_harness::process::Stdio::null())
             .stdout(zend_harness::process::Stdio::piped())
             .stderr(zend_harness::process::Stdio::piped());
-        let child = match command.spawn() {
+        let child = match zend_harness::process::spawn_agent(&mut command) {
             Ok(child) => child,
             Err(err) => {
                 let _ = std::fs::remove_dir_all(&home);
@@ -2084,7 +2084,7 @@ impl AgentAccounts {
         if let Some(noop_browser) = ensure_noop_browser(&self.inner.config.root_dir()) {
             command.env("BROWSER", noop_browser);
         }
-        let child = command.spawn().map_err(|err| {
+        let child = zend_harness::process::spawn_agent(&mut command).map_err(|err| {
             EngineError::Other(if err.kind() == std::io::ErrorKind::NotFound {
                 "The `codex` CLI was not found on this device — install it first.".into()
             } else {

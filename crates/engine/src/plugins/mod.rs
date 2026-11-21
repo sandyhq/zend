@@ -240,6 +240,12 @@ struct Inner {
     device_name: Mutex<String>,
     workspace: Mutex<Option<crate::WorkspaceHost>>,
     directory: Mutex<Option<Arc<dyn KeyDirectory>>>,
+    /// Told when a directory is set or who is signed in may have changed:
+    /// key checks wait for both.
+    can_look_up: Arc<tokio::sync::Notify>,
+    /// Scans of every plugin folder (tests).
+    #[cfg(test)]
+    scans: std::sync::atomic::AtomicUsize,
     account: Mutex<Option<AccountFn>>,
     links: Mutex<Option<Arc<zend_rpc::LinkCache>>>,
     state: Mutex<State>,
@@ -532,6 +538,9 @@ impl Plugins {
                 device_name: Mutex::new(crate::local_device_name(device_id)),
                 workspace: Mutex::new(None),
                 directory: Mutex::new(None),
+                can_look_up: Arc::new(tokio::sync::Notify::new()),
+                #[cfg(test)]
+                scans: Default::default(),
                 account: Mutex::new(None),
                 links: Mutex::new(None),
                 state: Mutex::new(state),
@@ -620,11 +629,13 @@ impl Plugins {
     /// Where key lookups and registration go (the edge, or a stand-in).
     pub fn set_directory(&self, directory: Arc<dyn KeyDirectory>) {
         *lock(&self.inner.directory) = Some(directory);
+        self.inner.can_look_up.notify_one();
     }
 
     /// Who is signed in (`None` = signed out). Key lookups are cached per account.
     pub fn set_account(&self, account: impl Fn() -> Option<String> + Send + Sync + 'static) {
         *lock(&self.inner.account) = Some(Arc::new(account));
+        self.inner.can_look_up.notify_one();
     }
 
     pub fn set_workspace(&self, workspace: crate::WorkspaceHost) {
@@ -678,6 +689,7 @@ impl Plugins {
                 }
                 let Some(inner) = weak.upgrade() else { return };
                 let plugins = Plugins { inner };
+                plugins.inner.can_look_up.notify_one();
                 lock(&plugins.inner.lookup_failed).clear();
                 plugins.settle_revokes().await;
                 plugins.register_key().await;
@@ -765,11 +777,21 @@ impl Plugins {
         });
         let weak = Arc::downgrade(&self.inner);
         // At start (as soon as auth and the edge answer: retried every
-        // half minute until they do), then every 15 minutes.
+        // half minute until they do), then every 15 minutes. Signed out (no
+        // account, or no directory to ask), nothing until that changes:
+        // there are no keys to look for and no lookups to renew, and a
+        // rescan each half minute only hashed every plugin folder again.
+        let can_look_up = self.inner.can_look_up.clone();
         let new_keys = runtime.spawn(async move {
             loop {
                 let Some(inner) = weak.upgrade() else { return };
                 let plugins = Plugins { inner };
+                if plugins.directory().is_none() || plugins.account().is_none() {
+                    drop(plugins);
+                    // (A change since the look left a permit: on at once.)
+                    can_look_up.notified().await;
+                    continue;
+                }
                 let checked = plugins.check_keys().await;
                 plugins.kick(Kick::Rescan);
                 drop(plugins);
@@ -1219,6 +1241,8 @@ impl Plugins {
     // ── Scanning ────────────────────────────────────────────────────────────
 
     fn scan_blocking(&self) -> (Vec<Entry>, Vec<String>, bool) {
+        #[cfg(test)]
+        self.inner.scans.fetch_add(1, Ordering::SeqCst);
         self.prune_state();
         let state = lock(&self.inner.state).clone();
         let cache = lock(&self.inner.cache).clone();
@@ -1686,6 +1710,7 @@ impl Plugins {
                     command,
                     args: mcp.args.clone(),
                     env: mcp.env.clone(),
+                    http: None,
                 })
             })
             .collect()

@@ -12,6 +12,11 @@ use zend_app::{edge_token_from_env, edge_url_from_env, paths, workos_client_id_f
 use zend_cli::{Engines, Launch};
 
 fn main() -> anyhow::Result<()> {
+    // The engine runs its own executable as an agent's stdio MCP forwarder
+    // (`zend headless`'s agents): first, before any setup, to stay tiny.
+    if std::env::args().nth(1).as_deref() == Some("mcp-proxy") {
+        return zend_mcp::proxy::run();
+    }
     match zend_cli::run(zend_update::current_version(), Engines::InProcess) {
         Launch::Done(result) => result,
         Launch::Engine(command) => zend_app::run_engine_command(command),

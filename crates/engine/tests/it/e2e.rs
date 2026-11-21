@@ -1382,6 +1382,9 @@ async fn recover_stale_journal_settles_chips_in_completed_local_entries() {
     store
         .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
         .unwrap();
+    // The journal writes in batches: dropping it writes what waits, as
+    // the engine that left it would have before the next one boots.
+    drop(journal);
     let core = assemble(
         dir.path(),
         Arc::new(MockHarness {

@@ -28,6 +28,8 @@ tokio.workspace = true
 futures.workspace = true
 zend-term-link.workspace = true
 async-trait.workspace = true
+# Agents' Zend MCP tools, served by the engine itself (`zend_mcp::http`).
+zend-mcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
@@ -76,7 +78,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
-zend-mcp.workspace = true
 zend-harness = { workspace = true, features = ["installer-fixture"] }
 # Paused-clock tests (the 30-minute idle reaper).
 tokio = { workspace = true, features = ["test-util"] }
