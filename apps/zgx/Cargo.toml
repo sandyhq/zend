@@ -121,9 +121,9 @@ zend-preview-label = { path = "../../crates/preview-label" }
 # the engine helper's start-up (src/engine/manager.rs) and the app's own
 # updates and release channel (src/about.rs): the shipping app's crates,
 # with no engine and no GPUI in them.
-zend-voice = { path = "../../crates/voice" }
 zend-cli = { path = "../../crates/cli" }
 zend-launch = { path = "../../crates/launch" }
+zend-voice = { path = "../../crates/voice" }
 # `zend://` links: a chat's (src/sessions.rs, src/links.rs) and a clicked
 # banner's, the shipping app's formats.
 zend-notify = { path = "../../crates/notify" }

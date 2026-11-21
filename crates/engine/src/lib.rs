@@ -1957,12 +1957,12 @@ fn load_or_create_device_id(data_dir: &Path) -> Result<String, EngineError> {
             }
             Ok(_) => replace_empty_device_id(&temp_path, &path),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::hard_link(&temp_path, &path)
+                crate::publish_new(&temp_path, &path)
             }
             Err(err) => Err(err),
         }
     } else {
-        std::fs::hard_link(&temp_path, &path)
+        crate::publish_new(&temp_path, &path)
     };
     let _ = std::fs::remove_file(&temp_path);
     match publish_result {
@@ -2041,6 +2041,22 @@ impl DeviceIdentityLock {
         #[cfg(not(windows))]
         Ok(Self { _file: file })
     }
+}
+
+/// Create-if-absent publish of a written temp file: a hard link, which
+/// fails with AlreadyExists. android-app spike S1: SELinux refuses link(2)
+/// on Android (EACCES, observed in /data/local/tmp on the emulator), so
+/// there it checks and renames (not atomic: throwaway).
+pub(crate) fn publish_new(temp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        if path.exists() {
+            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        }
+        std::fs::rename(temp, path)
+    }
+    #[cfg(not(target_os = "android"))]
+    std::fs::hard_link(temp, path)
 }
 
 fn replace_empty_device_id(temp_path: &Path, path: &Path) -> std::io::Result<()> {

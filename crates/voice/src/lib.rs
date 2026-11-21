@@ -2,7 +2,11 @@
 //! a caller that keeps a recording (Ideas & Intents' memos) writes it itself.
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(not(target_os = "android"))]
 use parakeet_rs::{ParakeetTDT, Transcriber};
+/// android-app spike S1: no ONNX runtime on Android.
+#[cfg(target_os = "android")]
+struct ParakeetTDT;
 use sha2::{Digest, Sha256};
 use std::{
     io::Write,
@@ -95,6 +99,9 @@ impl Recognizer {
                 bail!("Model is damaged. Remove it in Settings and download again.")
             }
         }
+        #[cfg(target_os = "android")]
+        bail!("Dictation isn't available on Android yet");
+        #[cfg(not(target_os = "android"))]
         Ok(Self(ParakeetTDT::from_pretrained(dir, None).map_err(
             |_| anyhow::anyhow!("Could not load Parakeet v3"),
         )?))
@@ -110,6 +117,12 @@ impl Recognizer {
             return Ok(String::new());
         }
         let samples = resample::for_model(samples, rate)?;
+        #[cfg(target_os = "android")]
+        {
+            let _ = (&self.0, samples);
+            bail!("Dictation isn't available on Android yet")
+        }
+        #[cfg(not(target_os = "android"))]
         self.0
             .transcribe_samples(samples, resample::MODEL_RATE, 1, None)
             .map(|r| r.text)

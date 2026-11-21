@@ -184,7 +184,7 @@ fn load_or_create_local_profile_id(data_dir: &Path) -> Result<String, EngineErro
         return Err(err);
     }
 
-    let publish_result = std::fs::hard_link(&temp_path, &path);
+    let publish_result = crate::publish_new(&temp_path, &path);
     let _ = std::fs::remove_file(&temp_path);
     match publish_result {
         Ok(()) => Ok(id.to_string()),
@@ -278,7 +278,7 @@ fn publish_legacy_uploads_owner(
         return Err(err);
     }
 
-    let publish_result = std::fs::hard_link(&temp_path, path);
+    let publish_result = crate::publish_new(&temp_path, path);
     let _ = std::fs::remove_file(&temp_path);
     match publish_result {
         Ok(()) => Ok(()),
