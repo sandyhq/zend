@@ -162,6 +162,21 @@ ui.command {
 		end
 	end,
 }
+-- As the host fails it: a call's error is userdata (zgx-script's UiError),
+-- not a table, its `message` read through its metatable: as here.
+ui.command {
+	id = "install_failed_as_the_host_does",
+	title = "The install fails, as the host fails it",
+	run = function()
+		local p = open_install
+		open_install = nil
+		if p then
+			local err: any = newproxy(true)
+			getmetatable(err).__index = { message = "git isn't on this phone: Android installs plugins from links" }
+			p.err(err)
+		end
+	end,
+}
 ui.command {
 	id = "install_failed",
 	title = "The install fails",

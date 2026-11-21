@@ -356,3 +356,17 @@ test("with the account's setup unfinished it says so, and the plugins load once 
 	expect(tree).never.to_contain("Finish setting up your account")
 	expect(tree).to_contain("Compact sidebar")
 end)
+
+-- G6: the host's failure is an error value (userdata), not a table: its
+-- message still reaches the toast (it showed the title alone).
+test("an install the host fails says the engine's reason", function()
+	local app = open()
+	app:click('role:button "Install"')
+	app:frames(20)
+	app:type('role:textbox "Link"', "ada/nothing")
+	app:click('role:dialog >> role:button "Install"')
+	app:frames(10)
+	app:command("install_failed_as_the_host_does")
+	app:frames(20)
+	expect(app:state("calls")).to_contain("toast:git isn't on this phone: Android installs plugins from links")
+end)

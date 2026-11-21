@@ -405,7 +405,7 @@ local Control = ui.component(function(props: { plugin: string, setting: Setting,
 						p:after(function(_: any) end, function(err: any)
 							ds.toast.show {
 								title = ui.t("plugins.settings.couldnt_choose_folder"),
-								body = if type(err) == "table" and err.message then tostring(err.message) else nil,
+								body = if (type(err) == "table" or type(err) == "userdata") and err.message then tostring(err.message) else nil,
 								tone = "warning",
 							}
 						end)

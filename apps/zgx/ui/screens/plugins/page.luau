@@ -125,7 +125,9 @@ end
 local function failed(title: string | Message): (err: any) -> ()
 	local where = device_name()
 	return function(err: any)
-		local message = if type(err) == "table" and err.message then tostring(err.message) else nil
+		-- (A host call's error is userdata, a stand-in's a table: each has
+		-- its message.)
+		local message = if (type(err) == "table" or type(err) == "userdata") and err.message then tostring(err.message) else nil
 		ds.toast.show {
 			title = title,
 			body = if message == "offline" then ui.t("plugins.page.cant_reach", { device = where }) elseif message then words.failure(message) else nil,
