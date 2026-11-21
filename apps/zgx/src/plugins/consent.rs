@@ -77,7 +77,18 @@ impl Consent {
 /// The plugin a sheet may show: one waiting for you (or changed since).
 fn showable(bridge: &Bridge, id: &str, on: &On) -> Option<super::Item> {
     let device = on.as_ref().map(|(d, _)| d.as_str());
-    bridge.item_on(device, id).filter(|i| matches!(i.status(), "pending" | "tampered"))
+    bridge.item_on(device, id).filter(|i| reviewable(&i.json))
+}
+
+/// Whether a plugin has a sheet to show: one waiting for you, one changed
+/// since you allowed it, or one you declined ("Not now": off, with what it
+/// asks still asked), which Settings → Plugins offers to review again.
+fn reviewable(item: &Json) -> bool {
+    match item["status"].as_str().unwrap_or("") {
+        "pending" | "tampered" => true,
+        "off" => item["ask"].as_array().is_some_and(|ask| !ask.is_empty()),
+        _ => false,
+    }
 }
 
 /// Notes when the sheet started showing what it shows now (a new plugin,
@@ -449,6 +460,20 @@ fn said(error: &str, on: &On) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin declined with Not now is reviewed again from Settings:
+    /// its sheet shows it (it showed "Nothing to allow"); one allowed and
+    /// turned off, or on, has none.
+    #[test]
+    fn a_declined_plugin_has_a_sheet_and_one_switched_off_none() {
+        assert!(reviewable(&json!({ "status": "pending", "ask": [] })));
+        assert!(reviewable(&json!({ "status": "tampered" })));
+        assert!(reviewable(&json!({ "status": "off", "ask": ["clipboard"] })));
+        assert!(!reviewable(&json!({ "status": "off", "ask": [] })));
+        assert!(!reviewable(&json!({ "status": "off" })));
+        assert!(!reviewable(&json!({ "status": "on", "ask": ["clipboard"] })));
+        assert!(!reviewable(&json!({ "status": "broken", "ask": ["clipboard"] })));
+    }
 
     /// R27: a plugin's name, version and tools' words can't pass for
     /// Zend's own on the sheet (a version reading "✓ Zend", a name

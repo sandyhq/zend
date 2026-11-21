@@ -27,6 +27,7 @@
 
 local ds = require("@ds")
 local words = require("@screens/plugins/words")
+local platform = require("@ds/platform")
 
 local M = {}
 
@@ -472,6 +473,18 @@ local function body(key: string): Node
 	end
 	local os = consent:peek().device_platform
 	return Sheet { it = item(), elsewhere = elsewhere, os = if type(os) == "string" and os ~= "" then os else nil }
+end
+
+-- Android's Back (it reaches the window as Escape) closes the sheet,
+-- deciding nothing: a phone's window has no title bar buttons to close
+-- it with. A desktop keeps its window's own. (The window's root's
+-- `on_key`: a key nothing focused takes goes there.)
+function M.back(e: any): boolean
+	if e.key == "Escape" and platform.android() then
+		ui.invoke("close")
+		return true
+	end
+	return false
 end
 
 function M.View(): Node

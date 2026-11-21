@@ -197,6 +197,10 @@ local function show(id: string?, on: string?, os: string?)
 end
 
 ui.actions {
+	-- (The window closed: Android's Back.)
+	close = function(_: any)
+		note("close")
+	end,
 	["plugins.decide"] = function(arg: any)
 		note(`decide:{arg.id}:{tostring(arg.allow)}:{arg.hash}`)
 		show(nil)
@@ -278,5 +282,6 @@ return ui.column {
 	w = 460,
 	h = 540,
 	bg = "$background",
+	on_key = consent.back,
 	consent.View(),
 }

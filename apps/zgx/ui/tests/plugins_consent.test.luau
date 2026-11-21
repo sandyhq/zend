@@ -373,3 +373,25 @@ test("a long sheet scrolls, with Allow and Not now held below it", function()
 	app:frames(10)
 	expect(app:state("calls")).to_contain("decide:long:true:long-1")
 end)
+
+-- G6: a phone's window has no title bar to close it with: Android's Back
+-- (Escape to the window) closes the sheet, deciding nothing. A desktop's
+-- Escape does nothing here, as before.
+test("on Android, Back closes the sheet without deciding", function()
+	for _, here in { "on_android", "" } do
+		local app = open()
+		if here ~= "" then
+			app:command(here)
+		end
+		app:command("sync")
+		app:frames(20)
+		app:key("Escape")
+		app:frames(5)
+		local calls = app:state("calls") or ""
+		if here ~= "" then
+			expect(calls).to_be("close")
+		else
+			expect(calls).to_be("")
+		end
+	end
+end)

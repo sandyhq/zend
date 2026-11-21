@@ -24,6 +24,7 @@ return ui.column {
 	bg = function(): string
 		return if material.frosted:get() then "$zend.window" else "$background"
 	end,
+	on_key = consent.back,
 	consent.View(),
 	-- Its title bar's room, above the sheet (its top padding), moves the
 	-- window: the sheet's content would take the drag otherwise.
