@@ -67,3 +67,4 @@ mod voice_runtime;
 mod workspace_files;
 mod workspace_sync;
 mod worktree_on_run;
+mod agent_lifecycle;
