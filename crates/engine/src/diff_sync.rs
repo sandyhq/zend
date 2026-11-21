@@ -1082,9 +1082,8 @@ async fn diff_sync_task(
     interest_changed: Arc<Notify>,
     cancel: CancellationToken,
 ) {
-    let mut repair = tokio::time::interval(REPAIR_INTERVAL);
-    repair.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    repair.tick().await; // consume the immediate first tick
+    // On the beat grid (`zend_sync::wake`): it wakes with the sockets' pings.
+    let mut repair = zend_sync::wake::beat_interval(REPAIR_INTERVAL);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
