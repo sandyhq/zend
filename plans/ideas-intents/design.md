@@ -1,0 +1,1 @@
+Keep the original before starting transcription; missing models and failed inference must not lose the memo. Reuse desktop voice and storage primitives where possible, but do not change the ordinary composer’s no-audio-retention guarantee. Rejected: dictation only, which loses the original; audio only, which loses readable text.

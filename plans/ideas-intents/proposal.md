@@ -1,0 +1,1 @@
+Goal: A local, project-independent desktop sidebar destination named Ideas & Intents for quick untitled ideas, typed or recorded. Owner chose playable audio plus a transcript when a local model is available. No cloud, agent, sync, mobile or project workflow.
