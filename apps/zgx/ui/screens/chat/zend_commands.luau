@@ -36,6 +36,10 @@ function M.rows(taken: { [string]: boolean }, in_chat: boolean): { any }
 		if c.chat and not in_chat then
 			continue
 		end
+		-- (Android has no terminals.)
+		if c.name == "terminal" and not require("@ds/platform").has("terminal") then
+			continue
+		end
 		local name = c.name
 		while taken[name] do
 			name = `zend:{name}`

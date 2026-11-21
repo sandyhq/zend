@@ -1023,7 +1023,7 @@ pub fn open_sign_in(url: &str) -> std::io::Result<()> {
             .spawn()
             .map(|_| ());
     }
-    open::that_detached(url)
+    crate::external::open(url)
 }
 
 /// `ZEND_ZGX_NO_BROWSER=1` (development: trying a flow without a browser

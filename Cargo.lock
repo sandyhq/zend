@@ -13738,6 +13738,8 @@ dependencies = [
 name = "zend-notify"
 version = "0.3.4"
 dependencies = [
+ "jni 0.21.1",
+ "ndk-context",
  "objc",
  "sha2",
  "tracing",

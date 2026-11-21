@@ -33,6 +33,7 @@
 -- `Composer { value = draft, model = model, models = { … }, on_send = … }`.
 
 local Button = require("@self/button")
+local Platform = require("@self/platform")
 local Icon = require("@self/icon")
 local control = require("@self/control")
 local FadeText = require("@self/fade_text")
@@ -1994,7 +1995,8 @@ return ui.component(function(props: Props): Node
 			left = presented(function(g) return g.controls.leading.left end),
 			bottom = presented(function(g) return g.controls.leading.bottom end),
 			ui.show(function()
-				return not asking()
+				-- (Android, no file picker: + only where the caller gives it.)
+				return not asking() and (props.on_attach ~= nil or Platform.has("file_picker"))
 			end, attach),
 		},
 		voice_track(),
@@ -2013,7 +2015,13 @@ return ui.component(function(props: Props): Node
 			end, ui.row {
 				items = "center",
 				gap = "$space.2",
-				if spoken then spoken.mic() else mic,
+				-- (Android: no dictation, no microphone.)
+				if not Platform.has("dictation")
+					then ui.show(function()
+						return false
+					end, mic)
+					elseif spoken then spoken.mic()
+					else mic,
 				ui.show(stopping, stop_button),
 				ui.show(function()
 					return not stopping()

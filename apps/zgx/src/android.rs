@@ -65,8 +65,19 @@ pub fn main(app: AndroidApp, pack: &'static [u8]) {
         // (Returning ends the activity: nothing runs without its files.)
         Err(error) => return log::error!("zend: {error}"),
     };
+    if let Err(error) = ask_notifications(&app) {
+        log::warn!("zend: notifications: {error}");
+    }
     zgx_desktop::android::set_app(app);
     log::info!("zend: activity starting ({})", files.display());
+    // A check of the banners without a session to finish (G5's emulator
+    // run: `adb shell run-as sh.zend.zgx touch files/notify-check`): one
+    // banner, the file gone after.
+    let check = files.join("notify-check");
+    if std::fs::remove_file(&check).is_ok() {
+        log::info!("zend: notifications: posting a check banner");
+        zend_notify::post("Zend", "Notifications reach this device.", None);
+    }
     // The engine now, beside the window: the supervisor (src/engine) would
     // start it only after its first dial is refused, which waits for the
     // window's first frames (5 s on the emulator). It finds it running; an
@@ -380,6 +391,38 @@ fn value(insets: Insets) -> Value {
         ("left", Value::from(insets.left as f64)),
         ("keyboard", Value::from(insets.keyboard as f64)),
     ])
+}
+
+/// Android 13 and later: ask once whether the app may post notifications
+/// (a session done or waiting, crates/notify's banners), unless it may
+/// already; the system shows its own dialog and remembers the answer (a
+/// "Don't allow" isn't asked again: Android stops showing the dialog).
+fn ask_notifications(app: &AndroidApp) -> jni::errors::Result<()> {
+    use jni::objects::{JObject, JValue};
+    const PERMISSION: &str = "android.permission.POST_NOTIFICATIONS";
+    // SAFETY: the activity's VM and its `Activity` object, live while it is.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut env = vm.attach_current_thread_permanently()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    let result = env.with_local_frame(8, |env| -> jni::errors::Result<()> {
+        if env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()? < 33 {
+            return Ok(());
+        }
+        let name = env.new_string(PERMISSION)?;
+        // PackageManager.PERMISSION_GRANTED is 0.
+        if env.call_method(&activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&name)])?.i()? == 0 {
+            return Ok(());
+        }
+        let names = env.new_object_array(1, "java/lang/String", &name)?;
+        env.call_method(&activity, "requestPermissions", "([Ljava/lang/String;I)V", &[JValue::Object(&names), JValue::Int(1)])?;
+        log::info!("zend: notifications: asked the person");
+        Ok(())
+    });
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+    result
 }
 
 /// The decor view's root insets (system bars and display cutout; the

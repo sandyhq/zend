@@ -183,6 +183,9 @@ function M.review(name: string)
 end
 
 function M.open_folder(id: string)
+	if not require("@ds/platform").check("reveal") then
+		return
+	end
 	ui.invoke("templates.open_folder", id)
 end
 

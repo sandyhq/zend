@@ -502,7 +502,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 			-- (A folder on this device: shown where it is.)
 			ui.show(
 				function(): boolean
-					return p:get().device == sessions.here:get()
+					return p:get().device == sessions.here:get() and require("@ds/platform").has("reveal")
 				end,
 				Menu.Row {
 					icon = "folder",

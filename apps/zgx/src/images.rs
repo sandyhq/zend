@@ -85,7 +85,7 @@ fn reveal_with(program: &str, path: &Path) -> std::io::Result<u32> {
 
 #[cfg(not(target_os = "macos"))]
 fn reveal(path: &Path) -> std::io::Result<()> {
-    open::that_detached(path.parent().unwrap_or(path))
+    crate::external::open(path.parent().unwrap_or(path))
 }
 
 #[cfg(test)]

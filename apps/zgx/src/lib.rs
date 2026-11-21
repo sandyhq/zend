@@ -50,6 +50,7 @@ mod completion;
 mod desktop_blur;
 mod engine;
 mod engine_update;
+mod external;
 mod editor_menu;
 mod favicons;
 mod files;
@@ -824,7 +825,7 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         if let Value::Str(url) = url
             && (url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:"))
             && !url.chars().any(char::is_control)
-            && let Err(error) = open::that_detached(&*url)
+            && let Err(error) = crate::external::open(&*url)
         {
             eprintln!("zend-zgx: the browser didn't open: {error}");
         }

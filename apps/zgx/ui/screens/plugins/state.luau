@@ -146,6 +146,9 @@ function M.check_updates(device: string?): any
 end
 
 function M.open_folder(id: string?)
+	if not require("@ds/platform").check("reveal") then
+		return
+	end
 	ui.invoke("plugins.open_folder", id or ui.null)
 end
 

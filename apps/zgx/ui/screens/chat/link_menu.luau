@@ -52,6 +52,7 @@ return function(open: (target: string) -> (), session: () -> any?): (target: str
 			return Links.file { path = path }
 		end
 		local here = s ~= nil and (s.device == nil or s.device == sessions.now:peek().here)
+			and require("@ds/platform").has("reveal")
 		return Links.file {
 			open = function()
 				open(target)

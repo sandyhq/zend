@@ -167,7 +167,7 @@ end
 -- Install's file: a .zend-plugin on this computer, installed with the
 -- dialog open as a link is, here or on the device shown (sent there).
 local function choose_file()
-	if install_busy:peek() then
+	if install_busy:peek() or not require("@ds/platform").check("file_picker") then
 		return
 	end
 	ui.task(function()

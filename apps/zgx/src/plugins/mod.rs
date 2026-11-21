@@ -3809,7 +3809,7 @@ fn answer_tool(id: String, ok: bool, value: Json, error: String) {
 }
 
 fn reveal(dir: &Path) {
-    if let Err(error) = open::that_detached(dir) {
+    if let Err(error) = crate::external::open(dir) {
         eprintln!("zend-zgx: the folder didn't open: {error}");
     }
 }

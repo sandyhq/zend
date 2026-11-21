@@ -152,6 +152,9 @@ local function take(path: string)
 end
 
 local function choose()
+	if not require("@ds/platform").check("file_picker") then
+		return
+	end
 	ui.open_files({
 		title = ui.t("shell.sidebar.project.edit.choose"):get(),
 		filters = { { ui.t("shell.sidebar.project.edit.kind.image"):get(), { "png", "jpg", "jpeg" } } },

@@ -436,7 +436,8 @@ function M.view(): Node
 						},
 						ds.Text { ui.t("ideas.save_hint", { keys = ui.shortcut_text("cmd+enter") }), style = "caption", tone = "tertiary" },
 					},
-					recorder(),
+					-- (Android: no microphone service, no voice memos.)
+					if require("@ds/platform").has("dictation") then recorder() else nil,
 					ui.show(listening, voice_track()),
 					ui.column {
 						id = "ideas-list",

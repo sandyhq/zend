@@ -294,8 +294,10 @@ local function folder(w: Workspace, v: View, props: Props, here: () -> Where?): 
 	end)
 
 	local radius = props.radius
+	-- (This device's, so Reveal and Open outside work: not on Android,
+	-- where other apps can't read the app's files.)
 	local function here(): boolean
-		return w.here:get()
+		return w.here:get() and require("@ds/platform").has("reveal")
 	end
 	local function session_id(): string?
 		return w.target.chat

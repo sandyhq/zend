@@ -18,6 +18,7 @@
 
 local ds = require("@ds")
 local Dictation = require("@app/screens/chat/dictation")
+local platform = require("@ds/platform")
 local motion = require("@ds/motion")
 local Placement = require("@app/screens/chat/composer_place")
 local T = require("@ds/transcript")
@@ -1274,7 +1275,8 @@ local function Composer(): Node
 	end
 	local function composer(): Node
 		return ds.Composer {
-			dictation = dictation,
+			-- (Android: no dictation, no file picker.)
+			dictation = if platform.has("dictation") then dictation else nil,
 			on_sizes = function(sizes: ds.ComposerSizes)
 				composer_sizes:set(sizes)
 				if sizes.context == snap:peek() and sizes.ready and not sizes.settling then
@@ -1378,7 +1380,7 @@ local function Composer(): Node
 			branch_fixed = branch_fixed,
 			cargo = shared.cargo,
 			on_remove_cargo = shared.remove_cargo,
-			on_attach = function()
+			on_attach = if not platform.has("file_picker") then nil else function()
 				ui.open_files({ title = ui.t("chat.composer.attach_files"):get(), multiple = true }):after(function(files: any)
 					if files and #files > 0 then
 						shared.attach_files(files)

@@ -1081,7 +1081,7 @@ impl Files {
         }
         let root = opt_text(target.field("root")).ok_or("This session's folder isn't known")?;
         let path = inside(Path::new(&root), &text(arg.field("path")))?;
-        let opened = if reveal { reveal_in_finder(&path) } else { open::that_detached(&path) };
+        let opened = if reveal { reveal_in_finder(&path) } else { crate::external::open(&path) };
         opened.map_err(|error| error.to_string())?;
         Ok(Value::Nil)
     }
@@ -1280,7 +1280,7 @@ pub(crate) fn spawn_reaped(command: &mut std::process::Command) -> std::io::Resu
 /// Elsewhere: its folder, opened.
 #[cfg(not(target_os = "macos"))]
 fn reveal_in_finder(path: &Path) -> std::io::Result<()> {
-    open::that_detached(path.parent().unwrap_or(path))
+    crate::external::open(path.parent().unwrap_or(path))
 }
 
 /// Makes an empty file (or a folder) at `relative` under `root`: a plain

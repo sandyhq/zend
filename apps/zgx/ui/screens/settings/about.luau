@@ -30,7 +30,7 @@ M.TITLE = "About & updates"
 M.RELEASES = "https://github.com/sandyhq/comet/releases"
 M.WEBSITE = "https://zend.invalid"
 
-search.index(M.ID, ui.t("settings.about.title"), ui.t("settings.about.terms"), {
+local rows: { search.Row } = {
 	{ key = "version", title = ui.t("settings.about.version.label"), terms = ui.t("settings.about.version.terms") },
 	{
 		key = "updates",
@@ -52,7 +52,18 @@ search.index(M.ID, ui.t("settings.about.title"), ui.t("settings.about.terms"), {
 	},
 	{ key = "website", title = ui.t("settings.about.website.label"), section = ui.t("settings.about.links_section"), terms = ui.t("settings.about.website.terms") },
 	{ key = "copy_version", title = ui.t("settings.about.copy_version.label"), terms = ui.t("settings.about.copy_version.terms") },
-})
+}
+-- (Android: no updater, so not its rows: the store updates the app.)
+if not require("@ds/platform").has("updates") then
+	local kept: { search.Row } = {}
+	for _, row in rows do
+		if row.key ~= "updates" and row.key ~= "beta" then
+			table.insert(kept, row)
+		end
+	end
+	rows = kept
+end
+search.index(M.ID, ui.t("settings.about.title"), ui.t("settings.about.terms"), rows)
 
 export type About = {
 	app_version: string,
@@ -320,7 +331,10 @@ function M.view(): Node
 				}),
 			},
 		},
-		ds.Settings.Section {
+		-- (Android: the store updates the app; no updater here.)
+		ui.show(function(): boolean
+			return require("@ds/platform").has("updates")
+		end, ds.Settings.Section {
 			title = ui.t("settings.about.updates_section"),
 			-- (Whether the app updates itself is fixed for the process.)
 			description = if M.now:peek().self_updating
@@ -389,7 +403,7 @@ function M.view(): Node
 					}),
 				},
 			},
-		},
+		}),
 		ds.Settings.Section {
 			title = ui.t("settings.about.links_section"),
 			ds.Settings.Group {

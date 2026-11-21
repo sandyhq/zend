@@ -1233,6 +1233,14 @@ M.Page = ui.component(function(props: Props): Node
 	if props.key == "no-project" then
 		table.remove(choices, 2)
 	end
+	-- (Android: no browser, no terminals.)
+	local platform = require("@ds/platform")
+	for i = #choices, 1, -1 do
+		local kind = string.match(choices[i].id, "^panel%-open%-(%a+)$")
+		if (kind == "browser" or kind == "terminal") and not platform.has(kind :: any) then
+			table.remove(choices, i)
+		end
+	end
 	if sid and props.new_side_chat and props.fork then
 		local new_side, fork = props.new_side_chat, props.fork
 		table.insert(choices, { id = "panel-open-side-chat", icon = "side-chat", label = "panel.empty.side_chat", key = "S", run = function()
@@ -1266,7 +1274,10 @@ M.Page = ui.component(function(props: Props): Node
 	local parts: { Node } = {}
 	if sid then
 		table.insert(parts, info(sid))
-		table.insert(parts, actions(props, sid))
+		-- (A run action runs in a terminal: none on Android.)
+		if require("@ds/platform").has("terminal") then
+			table.insert(parts, actions(props, sid))
+		end
 	end
 	table.insert(
 		parts,

@@ -191,7 +191,7 @@ pub(crate) fn open_page(url: &str) {
     if url.starts_with("https://")
         && !url.chars().any(char::is_control)
         && !crate::auth::no_browser(url)
-        && let Err(error) = open::that_detached(url)
+        && let Err(error) = crate::external::open(url)
     {
         eprintln!("zend-zgx: github: the browser didn't open: {error}");
     }

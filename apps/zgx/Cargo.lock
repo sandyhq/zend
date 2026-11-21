@@ -10049,6 +10049,8 @@ dependencies = [
 name = "zend-notify"
 version = "0.3.4"
 dependencies = [
+ "jni 0.21.1",
+ "ndk-context",
  "objc",
  "sha2",
  "tracing",
@@ -10565,10 +10567,12 @@ dependencies = [
  "dispatch2",
  "fontdue",
  "image",
+ "jni 0.21.1",
  "libc",
  "libloading",
  "mimalloc",
  "muda",
+ "ndk-context",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",

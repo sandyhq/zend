@@ -10,6 +10,7 @@
 
 local ds = require("@ds")
 local Dictation = require("@app/screens/chat/dictation")
+local platform = require("@ds/platform")
 local T = require("@ds/transcript")
 local lanes = require("@app/screens/chat/lanes")
 local MessageActions = require("@app/screens/chat/message_actions")
@@ -652,7 +653,8 @@ local function composer(chat: string, view: any, name: string, focus: State<numb
 			or (focused ~= nil and not focused())
 	end, name)
 	return ds.Composer {
-		dictation = dictation,
+		-- (Android: no dictation, no file picker.)
+		dictation = if platform.has("dictation") then dictation else nil,
 		on_sizes = function(sizes: ds.ComposerSizes)
 			if published_height then published_height:set(sizes.presented) end
 		end,
@@ -674,7 +676,7 @@ local function composer(chat: string, view: any, name: string, focus: State<numb
 		-- Its + and a picture pasted: chips on its own draft, as the chat page's.
 		-- (A split's pane: a press focuses it, the window's composer taking
 		-- over.)
-		on_attach = if split
+		on_attach = if split or not platform.has("file_picker")
 			then nil
 			else function()
 				ui.open_files({ title = ui.t("chat.composer.attach_files"):get(), multiple = true }):after(function(files: any)

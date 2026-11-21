@@ -459,7 +459,16 @@ fn post_impl(title: &str, body: &str, _target: Option<&str>) {
     });
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+fn post_impl(title: &str, body: &str, target: Option<&str>) {
+    if let Err(error) = android::post(title, body, target) {
+        tracing::warn!(%error, "the notification wasn't posted");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
 fn post_impl(_title: &str, _body: &str, _target: Option<&str>) {}
 
 #[cfg(test)]

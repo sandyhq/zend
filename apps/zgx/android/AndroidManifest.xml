@@ -11,6 +11,9 @@
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
     <!-- The edge (sync). The engine is reached in-process, not on a port. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Banners when a session finishes or waits (crates/notify, asked as
+         the app starts on Android 13 and later: src/android.rs). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- TranslucentDecor: the window under the status and navigation bars
          on every version, as Android 15 and later lay it out anyway; the
          interface keeps clear of them by system.insets (src/android.rs). -->

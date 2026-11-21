@@ -158,6 +158,9 @@ end
 
 -- Export…: where to save it, then it, signed as yours.
 local function export_file(id: string, name: string)
+	if not require("@ds/platform").check("file_picker") then
+		return
+	end
 	ui.task(function()
 		local file = ui.save_file({ title = ui.t("templates.page.export_title"):get(), name = `{id}.zend-template`, filters = package_filter() }):await()
 		if not file then
@@ -198,7 +201,7 @@ local function install(from: { path: string?, url: string? })
 end
 
 local function choose_file()
-	if install_busy:peek() then
+	if install_busy:peek() or not require("@ds/platform").check("file_picker") then
 		return
 	end
 	ui.task(function()

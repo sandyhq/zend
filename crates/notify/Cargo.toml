@@ -9,5 +9,11 @@ publish.workspace = true
 sha2.workspace = true
 tracing.workspace = true
 
+# Android: the system's NotificationManager, through the Java VM
+# android-activity hands ndk-context (src/android.rs).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"

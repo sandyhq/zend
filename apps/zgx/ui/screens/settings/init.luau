@@ -67,15 +67,31 @@ add(general, "settings-minimalistic", "Personal")
 add(appearance, "tuning", "Personal")
 add(activity_page, "inbox", "Personal")
 add(notifications, "bell", "Personal")
-add(voice, "microphone", "Personal")
+-- (Android: no dictation, appshots or browser, so not their pages.)
+local platform = require("@ds/platform")
+-- (Their modules index their rows as they load: out of the search too.)
+if platform.has("dictation") then
+	add(voice, "microphone", "Personal")
+else
+	search.unindex(voice.ID)
+end
 add(files, "folder", "Personal")
 add(shortcuts, "keyboard", "Personal")
-add(appshots, "gallery", "Personal")
+if platform.has("appshots") then
+	add(appshots, "gallery", "Personal")
+else
+	search.unindex(appshots.ID)
+end
 add(profile, "user-rounded", "Personal")
 -- The panel's browser, under a heading of its own (room for what it grows:
 -- site data, permissions, downloads).
-add(browser, "global", "Browser")
-add(browser_history, "clock-circle", "Browser")
+if platform.has("browser") then
+	add(browser, "global", "Browser")
+	add(browser_history, "clock-circle", "Browser")
+else
+	search.unindex(browser.ID)
+	search.unindex(browser_history.ID)
+end
 add(providers, "widget", "Devices")
 add(devices, "laptop", "Devices")
 add(projects_page, "folder-with-files", "Devices")
