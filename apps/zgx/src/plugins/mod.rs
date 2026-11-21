@@ -482,6 +482,7 @@ pub(crate) fn comment(asked: &Value, shown: &str) -> Option<Value> {
 /// Plugins for the main window `cx` shows `host` in.
 pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
     expose_surface(host);
+    grants::declare_lacks();
     let plugin_network = network::Network::default();
     host.fetch_policy(plugin_network.clone());
     // What the app's VM (a template in preview, while it is one) may reach.
@@ -2410,6 +2411,9 @@ impl Bridge {
                 let (me, plugin) = (me.clone(), plugin.clone());
                 async move {
                     let item = me.upgrade().and_then(|b| b.item(&plugin)).ok_or("This plugin isn't on")?;
+                    if let Some(why) = grants::lacks("commands") {
+                        return Err(format!("Not on this device: {why}"));
+                    }
                     if !item.may("commands") {
                         return Err("This plugin wasn't allowed to run programs".to_string());
                     }

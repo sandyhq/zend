@@ -3707,6 +3707,7 @@
       "name_placeholder": "My plugin",
       "install_dialog_title": "Install a plugin",
       "install_dialog_body": "Paste a link to a .zend-plugin file, a GitHub release or a repository, or choose a file. Zend checks who signed it, and you allow what it asks before it runs.",
+      "install_dialog_body_link": "Paste a link to a .zend-plugin file, a GitHub release or a repository. Zend checks who signed it, and you allow what it asks before it runs.",
       "install": "Install",
       "link": "Link",
       "choose_file": "Choose File",

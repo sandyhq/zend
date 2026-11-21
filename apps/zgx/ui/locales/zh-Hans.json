@@ -3707,6 +3707,7 @@
       "name_placeholder": "我的插件",
       "install_dialog_title": "安装插件",
       "install_dialog_body": "粘贴 .zend-plugin 文件、GitHub 发布版本或仓库的链接，或选择文件。Zend 会检查签名者，你需要在插件运行前允许其请求的权限。",
+      "install_dialog_body_link": "粘贴 .zend-plugin 文件、GitHub 发布版本或仓库的链接。Zend 会检查签名者，你需要在插件运行前允许其请求的权限。",
       "install": "安装",
       "link": "链接",
       "choose_file": "选择文件",

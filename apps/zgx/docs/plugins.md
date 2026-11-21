@@ -70,6 +70,8 @@ Your own plugins are signed as yours, and re-signed and reloaded each time you s
 | `messages.send` | send a chat a message, start a chat, answer a chat's question, as you would from the composer. Always asked, even for your own plugins. See [Sending messages](#sending-messages) |
 | `session.instructions` | tell your chats' agents instructions, whole, in their system prompt: every chat, child session and subagent (Pi chats for now). Always asked, even for your own plugins. See [Telling your agents](#telling-your-agents) |
 
+On Android some of these reach nothing: `commands` and `native` (the app runs no programs), `files` (no file picker), `windows` (the app is one window) and `web` (no web view). The consent sheet says so under each, and they are never granted there, allowed or not: `zend.run` answers `Not on this device: …`, and `ui.window`, `ui.open_files` and the like raise `…: not on this device: <why>`. A plugin that wants to run on a phone checks for that error and carries on without.
+
 ## Reaching the network
 
 With `network`, `ui.fetch`, remote pictures and the service's `zend.fetch` all keep to one rule. It's checked for the address you ask, each redirect, and every address a name resolves to, before anything connects.

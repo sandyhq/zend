@@ -18,6 +18,18 @@ local control = require("@self/control")
 local look = require("@self/look")
 local locale = require("@self/locale")
 local palettes = require("@self/palettes")
+local platform = require("@self/platform")
+
+-- A card's rows, those this device lacks (`false`) left out.
+local function present(list: { any }): any
+	local out = {}
+	for _, item in list do
+		if item then
+			table.insert(out, item)
+		end
+	end
+	return out
+end
 
 export type Props = {
 	-- "system", "light" or "dark".
@@ -288,8 +300,9 @@ local function picker(props: Props): Node
 			scheme_card(scheme, chosen_ink, "light", locale.t("ds.appearance_picker.scheme.light")),
 			scheme_card(scheme, chosen_ink, "dark", locale.t("ds.appearance_picker.scheme.dark")),
 		},
-		Settings.Group {
-			Settings.Row {
+		Settings.Group(present {
+			-- (Android's window has no glass to see through: no choice.)
+			platform.has("glass") and Settings.Row {
 				label = locale.t("ds.appearance_picker.window"),
 				description = function()
 					return if frosted:get() then locale.s("ds.appearance_picker.frosted_hint") else locale.s("ds.appearance_picker.opaque_hint")
@@ -311,7 +324,7 @@ local function picker(props: Props): Node
 				end,
 				control = accents(accent),
 			},
-		},
+		}),
 	}
 end
 

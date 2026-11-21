@@ -237,6 +237,14 @@ ui.command { id = "wide", title = "Show Composer kit", run = function() show("wi
 ui.command { id = "grown", title = "Show Gh helper, grown", run = function() show("grown") end }
 ui.command { id = "long", title = "Show Everything", run = function() show("long") end }
 ui.command { id = "sync_devbox", title = "Show Checkout sync, on Devbox", run = function() show("sync", "Devbox") end }
+-- The sheet as the phone shows it (the host's `platform`).
+ui.command {
+	id = "on_android",
+	title = "On Android",
+	run = function()
+		ui.shared("platform", ""):set("android")
+	end,
+}
 ui.command {
 	id = "tamper",
 	title = "Ping, edited after it was allowed",

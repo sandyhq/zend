@@ -744,9 +744,6 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
             })
         });
     }
-    // The platform the window is on ("macos", "linux", "windows"): what the
-    // window's own buttons are (ds/title_bar: macOS's traffic lights).
-    host.shared("platform", std::env::consts::OS);
     if let Ok(step) = std::env::var("ZEND_ZGX_STEP") {
         host.shared("onboarding.start", step.as_str());
     }
@@ -1065,6 +1062,11 @@ fn serve_with(
     chrome: Option<zgx::compose::View>,
     role: menu_bar::Role,
 ) -> zgx::compose::ViewHandle {
+    // The platform the window is on ("macos", "linux", "windows",
+    // "android"): what the window's own buttons are (ds/title_bar: macOS's
+    // traffic lights) and what this device lacks (ds/platform). Every
+    // window's, a sheet's too: the consent sheet says what Android lacks.
+    host.shared("platform", std::env::consts::OS);
     let _ = host.reload();
     // (The scripts' garbage is collected as the window goes idle, by zgx
     // itself: `zgx::idle`. The app once looked for quiet twice a second.)

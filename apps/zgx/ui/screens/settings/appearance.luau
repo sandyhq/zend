@@ -45,6 +45,17 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "effect", title = ui.t("settings.appearance.effect.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.effect.terms") },
 })
 
+-- A card's rows, those this device lacks (`false`) left out.
+local function present(list: { any }): any
+	local out = {}
+	for _, item in list do
+		if item then
+			table.insert(out, item)
+		end
+	end
+	return out
+end
+
 local function row(key: string, props: any): Node
 	return search.anchor(key, ds.Settings.Row(props))
 end
@@ -340,7 +351,7 @@ function M.view(): Node
 		title = ui.t("settings.appearance.title"),
 		description = ui.t("settings.appearance.description"),
 		ds.Settings.Section {
-			ds.Settings.Group {
+			ds.Settings.Group(present {
 				row("scheme", {
 					label = ui.t("settings.appearance.scheme.label"),
 					description = ui.t("settings.appearance.scheme.description"),
@@ -364,7 +375,8 @@ function M.view(): Node
 					end,
 					control = ds.AppearancePicker.Accents { value = ds.look.accent },
 				}),
-				row("glass", {
+				-- (Android's window has no glass to see through: no switch.)
+				platform.has("glass") and row("glass", {
 					label = ui.t("settings.appearance.glass.label"),
 					description = ui.t("settings.appearance.glass.description"),
 					control = ds.Switch { value = material.frosted, label = ui.t("settings.appearance.glass.label") },
@@ -375,7 +387,7 @@ function M.view(): Node
 					description = ui.t("settings.appearance.accented.description"),
 					control = ds.Switch { value = ds.look.accented, label = ui.t("settings.appearance.accented.label") },
 				}),
-			},
+			}),
 		},
 		-- Every move the app makes asks ds/motion: on, they land at once.
 		ds.Settings.Section {

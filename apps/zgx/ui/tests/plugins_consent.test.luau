@@ -246,6 +246,20 @@ test("git is said as what it does, not as anything you can do", function()
 	expect(tree).never.to_contain("full control")
 end)
 
+-- G6: what the phone lacks it never grants, allowed or not: the sheet says
+-- so under the ask, calm, and the desktop's sheet is as it was.
+test("on Android an ask the phone lacks says why, and reads calm", function()
+	local app = open()
+	app:command("on_android")
+	app:command("sync")
+	app:frames(20)
+	local tree = app:tree("#consent")
+	expect(tree).to_contain("Run git on this computer as you")
+	expect(tree).to_contain("Not on Android: Android runs no programs for plugins")
+	expect(tree).never.to_contain("It can do whatever git can do with your sign-ins.")
+	expect(tree).to_contain("Run in the background")
+end)
+
 test("a shell or an interpreter says it's full control, by name, each program its own", function()
 	local app = open()
 	app:command("mixed")

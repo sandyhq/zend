@@ -13,7 +13,7 @@
 
 local M = {}
 
-export type Feature = "terminal" | "browser" | "dictation" | "updates" | "reveal" | "file_picker" | "appshots"
+export type Feature = "terminal" | "browser" | "dictation" | "updates" | "reveal" | "file_picker" | "appshots" | "glass"
 
 -- Each feature Android doesn't have, and why (the report and tests read it).
 M.ANDROID_LACKS = {
@@ -24,7 +24,24 @@ M.ANDROID_LACKS = {
 	reveal = "other apps can't read the app's files",
 	file_picker = "the system picker answers through Java",
 	appshots = "no capture of other apps' windows",
+	glass = "the window has no glass to see through",
 } :: { [string]: string }
+
+-- Each plugin permission Android lacks, and why: never granted there,
+-- allowed or not (src/plugins/grants.rs `ANDROID_LACKS` refuses them; a
+-- test keeps the two in step). The consent sheet and a plugin's page say so.
+M.ANDROID_LACKS_PERMISSIONS = {
+	commands = "Android runs no programs for plugins",
+	native = "Android runs no programs for plugins",
+	files = "no file picker in the app",
+	windows = "the app shows one window",
+	web = "no web view in the app",
+} :: { [string]: string }
+
+-- Why this device lacks a plugin permission, if it does.
+function M.lacks_permission(permission: string): string?
+	return if M.android() then M.ANDROID_LACKS_PERMISSIONS[permission] else nil
+end
 
 -- Whether the window runs on Android (the host's `platform`, its OS).
 function M.android(): boolean

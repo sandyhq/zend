@@ -34,6 +34,7 @@ local words = require("@app/screens/plugins/words")
 local plugin_settings = require("@app/screens/plugins/settings")
 local devices_page = require("@app/screens/settings/devices")
 local visits = require("@app/screens/settings/visits")
+local platform = require("@ds/platform")
 
 local M = {}
 
@@ -58,6 +59,13 @@ local updating = ui.state("plugins_updating", nil :: string?)
 local checked_at = ui.state("plugins_checked_at", {} :: { [string]: number })
 
 -- The device shown: another's id, or nil (this one).
+-- Whether a file can be chosen here (no picker on Android), followed live
+-- (the host says its platform as the window starts).
+local function picker_here(): boolean
+	ui.shared("platform", ""):get()
+	return platform.has("file_picker")
+end
+
 local function device(): string?
 	return state.device()
 end
@@ -587,6 +595,9 @@ local function dialogs(): { Node }
 					else ui.t("plugins.page.install_dialog_title"):get()
 			end,
 			body = function(): string
+				if not picker_here() then
+					return ui.t("plugins.page.install_dialog_body_link"):get()
+				end
 				return if device() then ui.t("plugins.page.install_dialog_body_device"):get() else ui.t("plugins.page.install_dialog_body"):get()
 			end,
 			size = "sm",
@@ -610,7 +621,8 @@ local function dialogs(): { Node }
 				select_on_focus = true,
 				w_full = true,
 			},
-			ds.Button {
+			-- (Android has no file picker: a link only.)
+			ui.show(picker_here, ds.Button {
 				id = "plugins-choose-file",
 				tone = "secondary",
 				size = "sm",
@@ -619,7 +631,7 @@ local function dialogs(): { Node }
 				end,
 				on_click = choose_file,
 				ui.t("plugins.page.choose_file"),
-			},
+			}),
 		},
 	}
 end

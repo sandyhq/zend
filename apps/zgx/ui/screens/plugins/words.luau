@@ -9,6 +9,8 @@
 
 local M = {}
 
+local platform = require("@ds/platform")
+
 -- (Every word here is read in the locale as it's asked for: a Line's
 -- `title` and `detail` are read through their messages each time, and
 -- every function gives a string now, so where it's drawn in a function it
@@ -18,7 +20,8 @@ local M = {}
 -- hide what it reaches. `items`: named things with words of their own (an
 -- agent tool and its description, as agents will read it).
 export type Item = { name: string, description: string? }
-export type Line = { title: string, detail: string?, risky: boolean, icon: string, literal: { string }?, items: { Item }? }
+-- `lacking`: why this device never grants it (Android), said in `detail`.
+export type Line = { title: string, detail: string?, risky: boolean, icon: string, literal: { string }?, items: { Item }?, lacking: string? }
 
 local function s(key: string, args: { [string]: any }?): string
 	return ui.t(key, args):get()
@@ -241,7 +244,7 @@ local function line(risky: boolean, icon: string, title: string, detail: (string
 	}) :: any
 end
 
-function M.permission(item: any, permission: string): Line
+local function asked(item: any, permission: string): Line
 	local ui_lists = item.ui or {}
 	if permission == "ui.add" then
 		return line(false, "widget", "plugins.words.permission.ui_add.title")
@@ -385,6 +388,25 @@ function M.permission(item: any, permission: string): Line
 		)
 	end
 	return { title = permission, risky = true, icon = "danger-triangle" }
+end
+
+function M.permission(item: any, permission: string): Line
+	local line = asked(item, permission)
+	-- What this device lacks (Android: programs, windows, a file picker, a
+	-- web view) it never grants, allowed or not: said under the ask, which
+	-- reads calm, since allowing it reaches nothing.
+	local why = platform.lacks_permission(permission)
+	if why == nil then
+		return line
+	end
+	return setmetatable({ risky = false, lacking = why }, {
+		__index = function(_, field: string): any
+			if field == "detail" then
+				return `Not on Android: {why}`
+			end
+			return (line :: any)[field]
+		end,
+	}) :: any
 end
 
 -- What grew since you allowed it (the engine's `digest_diff`, of what it

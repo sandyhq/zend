@@ -79,6 +79,13 @@ ui.command {
 	end,
 }
 ui.command { id = "set_up", title = "Fixture: setup finished", run = publish }
+ui.command {
+	id = "on_android",
+	title = "Fixture: the page as the phone shows it",
+	run = function()
+		ui.shared("platform", ""):set("android")
+	end,
+}
 
 -- What the page asks, answered here.
 local said: { string } = {}

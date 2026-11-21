@@ -195,12 +195,57 @@ fn classes(target: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// What a plugin may ask for that Android doesn't have, and why, as a
+/// plugin's log and Zend's words say it (`ui/ds/platform.luau`'s
+/// `ANDROID_LACKS_PERMISSIONS` says the same to people; a test keeps them
+/// in step). Allowed or not, these are never granted there: a plugin
+/// refused one is told why.
+pub const ANDROID_LACKS: &[(&str, &str)] = &[
+    ("commands", "Android runs no programs for plugins (no git or shell in the app)"),
+    ("native", "Android runs no programs for plugins (no native server beside agents)"),
+    ("files", "no file picker in the app (the system's answers through Java)"),
+    ("windows", "Android shows the app in one window"),
+    ("web", "no web view in the app"),
+];
+
+/// Why the device the window runs on lacks `permission`, if it does.
+pub fn lacks(permission: &str) -> Option<&'static str> {
+    lacks_on(cfg!(target_os = "android"), permission)
+}
+
+/// Why a device lacks `permission` (`android`: whether it's Android).
+pub fn lacks_on(android: bool, permission: &str) -> Option<&'static str> {
+    if !android {
+        return None;
+    }
+    ANDROID_LACKS.iter().find(|(p, _)| *p == permission).map(|(_, why)| *why)
+}
+
+/// Tell zgx what this device lacks, so a plugin refused it reads why (not
+/// that the host must grant it). Android only; elsewhere nothing.
+pub fn declare_lacks() {
+    for (permission, capability) in [("files", Capability::Files), ("files", Capability::Folders), ("windows", Capability::Windows), ("web", Capability::Web)] {
+        if let Some(why) = lacks(permission) {
+            zgx_script::platform_lacks(&capability, why);
+        }
+    }
+}
+
 /// What a plugin asking `permissions` (all allowed), with these `change`
 /// targets and `replace` modules, may do.
 pub fn capabilities(id: &str, permissions: &[String], change: &[String], replace: &[String]) -> Vec<Capability> {
+    capabilities_on(cfg!(target_os = "android"), id, permissions, change, replace)
+}
+
+/// `capabilities` on a device that is Android or not: what it lacks is
+/// left out.
+pub fn capabilities_on(android: bool, id: &str, permissions: &[String], change: &[String], replace: &[String]) -> Vec<Capability> {
     let mut out = vec![own(id)];
     let named = |name: &str| Capability::Named(name.into());
     for permission in permissions {
+        if lacks_on(android, permission).is_some() {
+            continue;
+        }
         match permission.as_str() {
             "ui.add" => {
                 out.push(named(UI_ADD));
@@ -274,6 +319,40 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn android_grants_nothing_it_lacks_and_says_why() {
+        let asked = s(&["ui.add", "clipboard", "network", "files", "windows", "web", "commands", "native"]);
+        let desktop = capabilities_on(false, "x", &asked, &[], &[]);
+        for c in [Capability::Files, Capability::Windows, Capability::Web, Capability::Clipboard, Capability::Fetch] {
+            assert!(desktop.contains(&c), "desktop grants {c:?}");
+        }
+        let android = capabilities_on(true, "x", &asked, &[], &[]);
+        for c in [Capability::Files, Capability::Windows, Capability::Web] {
+            assert!(!android.contains(&c), "Android grants no {c:?}");
+        }
+        // What it has, it grants.
+        assert!(android.contains(&Capability::Clipboard) && android.contains(&Capability::Fetch));
+        for p in ["commands", "native", "files", "windows", "web"] {
+            assert!(lacks_on(true, p).is_some_and(|why| !why.is_empty()), "{p}: a reason on Android");
+            assert_eq!(lacks_on(false, p), None, "{p}: the desktop has it");
+        }
+        assert_eq!(lacks_on(true, "clipboard"), None);
+        assert_eq!(lacks_on(true, "network"), None);
+    }
+
+    /// What people read (ui/ds/platform.luau) names the same permissions.
+    #[test]
+    fn the_window_says_what_android_lacks_as_the_host_refuses_it() {
+        let luau = include_str!("../../ui/ds/platform.luau");
+        let table = luau.split("M.ANDROID_LACKS_PERMISSIONS = {").nth(1).expect("the table").split("}").next().unwrap();
+        let named: Vec<&str> = table.lines().filter_map(|l| l.trim().split_once(" = ").map(|(k, _)| k.trim_matches(|c| c == '[' || c == ']' || c == '"'))).collect();
+        let mut ours: Vec<&str> = ANDROID_LACKS.iter().map(|(p, _)| *p).collect();
+        let mut theirs = named.clone();
+        ours.sort();
+        theirs.sort();
+        assert_eq!(ours, theirs);
     }
 
     #[test]
