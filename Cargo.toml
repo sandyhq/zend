@@ -237,3 +237,7 @@ inherits = "release"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# android-app spike (throwaway): termios 0.2 (portable-pty -> serial) knows no android.
+[patch.crates-io]
+termios = { path = "vendor-android/termios" }
