@@ -33,7 +33,7 @@ How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your age
 ## For people in a chat
 
 ### Ideas & Intents
-A page under Search in the desktop sidebar for what comes to mind before it belongs anywhere. Type an idea and save it (⌘Enter): no title, project or chat. Or record a voice memo between Record and Stop, up to a minute: the recording is written to `<data>/ideas` as a WAV first, then transcribed on this device with the speech model Settings → Voice downloads. Without the model, or when transcription fails, the memo keeps its audio and says why, with Transcribe or Try again. Memos play from the page, also after a restart; newest first. Nothing leaves the device and nothing goes to an agent. The composer's dictation is separate and still keeps no audio.
+A page under Search in the desktop sidebar for what comes to mind before it belongs anywhere. Type an idea and save it (⌘Enter): no title, project or chat. Or record a voice memo between Record and Stop, up to a minute: the recording is written to `<data>/ideas` as a WAV first, then transcribed on this device with the speech model Settings → Voice downloads. Without the model, or when transcription fails, the memo keeps its audio and says why, with Transcribe or Try again. Memos play from the page, also after a restart; newest first. Leaving the page (Settings, a chat, anywhere else) stops a recording and saves what was said until then; none records out of sight. A Save that fails keeps the typed words in the box. Nothing leaves the device and nothing goes to an agent. The composer's dictation is separate and still keeps no audio.
 Code: `apps/zgx/src/ideas.rs`, `apps/zgx/ui/screens/ideas`. Plan: `plans/ideas-intents`.
 
 ### Edit a prompt, fork from a message

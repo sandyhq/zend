@@ -253,3 +253,168 @@ fn the_page_from_the_sidebar_keeps_typed_ideas_and_memos() {
     assert!(memo.y < typed.y, "{memo:?} {typed:?}");
     assert_eq!(app.error(), None);
 }
+
+/// A microphone that hears 160 samples (10 ms at 16 kHz) a beat for as long
+/// as it's on, counting them in `heard`; it opens only once `open` lets
+/// it, and not at all when it was stopped by then, as the real one does.
+fn streaming(heard: Arc<std::sync::atomic::AtomicUsize>, open: Option<mpsc::Receiver<()>>) -> Source {
+    let open = Mutex::new(open);
+    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool| {
+        if let Some(gate) = open.lock().unwrap().take() {
+            let _ = gate.recv();
+        }
+        if stop.load(Ordering::Acquire) {
+            return Ok((Vec::new(), 16_000));
+        }
+        opened.store(true, Ordering::Release);
+        let mut n = 0;
+        while !stop.load(Ordering::Acquire) {
+            n += 160;
+            heard.store(n, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok((vec![0.2; n], 16_000))
+    })
+}
+
+fn memo_len(service: &Service, id: &str) -> usize {
+    service.store().unwrap().audio(id).unwrap().0.len()
+}
+
+fn files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).unwrap().count()
+}
+
+#[test]
+fn leaving_the_page_stops_and_saves_a_recording_and_none_starts_until_it_shows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (mut p, _fake) = parts(tmp.path(), Ok((Vec::new(), 16_000)), true);
+    p.source = streaming(heard.clone(), None);
+    let mut service = Service::new(p);
+    service.record_start(None).unwrap();
+    until(&mut service, "recording", |s| phase(s) == "recording");
+    until(&mut service, "some audio", |_| heard.load(Ordering::Acquire) >= 3_200);
+    service.leave();
+    until(&mut service, "saved", |s| phase(s) == "saved");
+    let id = service.state()["recording"]["id"].as_str().unwrap().to_owned();
+    let at_stop = heard.load(Ordering::Acquire);
+    // The microphone is off: nothing it would hear later is taken.
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(heard.load(Ordering::Acquire), at_stop, "the microphone stopped");
+    assert_eq!(memo_len(&service, &id), at_stop, "what was said until it left, no more");
+    // Away, Record is refused; shown again, it records.
+    let refused = service.record_start(None).unwrap_err();
+    assert!(refused.contains("Open Ideas"), "{refused}");
+    assert_eq!(phase(&service), "saved", "a refused start changes nothing");
+    service.here();
+    service.record_start(None).unwrap();
+    until(&mut service, "recording again", |s| phase(s) == "recording");
+    service.record_cancel();
+}
+
+#[test]
+fn leaving_while_the_microphone_starts_lets_it_go_and_keeps_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (open, gate) = mpsc::channel();
+    let (mut p, _fake) = parts(tmp.path(), Ok((Vec::new(), 16_000)), true);
+    p.source = streaming(heard.clone(), Some(gate));
+    let mut service = Service::new(p);
+    service.record_start(None).unwrap();
+    service.poll();
+    assert_eq!(phase(&service), "starting");
+    service.leave();
+    assert_eq!(phase(&service), "idle");
+    // The microphone would have been ready only now: it doesn't go on.
+    open.send(()).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    service.poll();
+    assert_eq!(heard.load(Ordering::Acquire), 0, "it never listened");
+    assert_eq!(phase(&service), "idle");
+    assert_eq!(files(tmp.path()), 0, "nothing kept");
+    assert!(service.record_start(None).is_err(), "nor does a start asked after it");
+}
+
+/// The page's recording, as the host has it.
+fn host_phase(ideas: &Ideas) -> String {
+    phase(&ideas.service.borrow())
+}
+
+#[test]
+fn a_save_that_fails_keeps_the_draft_and_what_was_typed_since() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (p, _fake) = parts(tmp.path(), Ok((vec![0.2; 16_000], 16_000)), true);
+    let (mut app, ideas) = mount(Service::new(p));
+    app.click("#sidebar-ideas");
+    wait(&mut app, &ideas, "the page", |a| a.find("#ideas-page").is_some());
+    let box_ = "#ideas-page >> role:textbox";
+    // The folder can't be written: the idea can't be kept.
+    let mut ro = std::fs::metadata(tmp.path()).unwrap().permissions();
+    ro.set_readonly(true);
+    std::fs::set_permissions(tmp.path(), ro.clone()).unwrap();
+    app.fill(box_, "call the plumber");
+    app.click("#ideas-save");
+    wait(&mut app, &ideas, "the failure", |a| a.texts().iter().any(|t| t == "Couldn't do that"));
+    assert_eq!(app.text(box_), "call the plumber", "the draft stays");
+    app.type_text(box_, " about the sink");
+    app.click("#ideas-save");
+    app.frames(10);
+    assert_eq!(app.text(box_), "call the plumber about the sink", "and what was typed since");
+    assert!(app.find("#ideas-empty").is_some(), "nothing was saved");
+    // Writable again: saved, and only then is the box cleared.
+    ro.set_readonly(false);
+    std::fs::set_permissions(tmp.path(), ro).unwrap();
+    app.click("#ideas-save");
+    wait(&mut app, &ideas, "the idea", |a| a.texts().iter().any(|t| t == "call the plumber about the sink") && a.find(".idea-typed").is_some());
+    assert_ne!(app.text(box_), "call the plumber about the sink", "the box is cleared once it's kept");
+    assert_eq!(app.error(), None);
+}
+
+#[test]
+fn going_to_settings_a_chat_or_back_stops_and_saves_the_recording() {
+    let tmp = tempfile::tempdir().unwrap();
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (mut p, _fake) = parts(tmp.path(), Ok((Vec::new(), 16_000)), true);
+    p.source = streaming(heard.clone(), None);
+    let (mut app, ideas) = mount(Service::new(p));
+    let memos = |ideas: &Ideas| ideas.service.borrow().state()["items"].as_array().unwrap().len();
+    let record = |app: &mut TestApp, what: &str| {
+        app.click("#ideas-record");
+        wait(app, &ideas, what, |a| a.find("#ideas-stop").is_some() && a.text("#ideas-recording-status").starts_with("Recording"));
+        let before = heard.load(Ordering::Acquire);
+        wait(app, &ideas, "some audio", |_| heard.load(Ordering::Acquire) >= before + 1_600);
+    };
+    let left = |app: &mut TestApp, ideas: &Ideas, n: usize, what: &str| {
+        wait(app, ideas, what, |_| host_phase(ideas) == "saved" && memos(ideas) == n);
+        let at_stop = heard.load(Ordering::Acquire);
+        std::thread::sleep(Duration::from_millis(60));
+        ideas.tick();
+        assert_eq!(heard.load(Ordering::Acquire), at_stop, "{what}: the microphone is off");
+    };
+
+    // Settings, and back from it.
+    app.click("#sidebar-ideas");
+    wait(&mut app, &ideas, "the page", |a| a.find("#ideas-page").is_some());
+    record(&mut app, "recording");
+    app.click("role:checkbox \"Settings\"");
+    left(&mut app, &ideas, 1, "into Settings");
+    app.click("role:checkbox \"Settings\"");
+    wait(&mut app, &ideas, "the page again", |a| a.shown("#ideas-page"));
+
+    // Another destination: a chat.
+    record(&mut app, "recording again");
+    let chat = "\"Write the docs\"";
+    assert!(app.find(chat).is_some(), "{:?}", app.texts());
+    app.click(chat);
+    left(&mut app, &ideas, 2, "into a chat");
+    assert!(ideas.service.borrow_mut().record_start(None).is_err(), "no start while it isn't shown");
+
+    // Back to the page (the title bar's Back): it records again.
+    app.click("#titlebar >> role:button \"Back\"");
+    wait(&mut app, &ideas, "back", |a| a.shown("#ideas-page"));
+    record(&mut app, "recording after back");
+    app.click("#ideas-stop");
+    left(&mut app, &ideas, 3, "stopped by hand");
+    assert_eq!(app.error(), None);
+}

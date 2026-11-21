@@ -5,7 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-21
 
 ### Added
-- Ideas & Intents: a page of its own under Search in the desktop sidebar for typed ideas (no title, project or chat) and voice memos, newest first, kept on this device in `<data>/ideas`. A memo is recorded between Record and Stop (at most a minute), written to disk as a WAV before it is transcribed with the local speech model, plays after a restart, and keeps its audio when there is no model or transcription fails. The composer's dictation still keeps no audio.
+- Ideas & Intents: a page of its own under Search in the desktop sidebar for typed ideas (no title, project or chat) and voice memos, newest first, kept on this device in `<data>/ideas`. A memo is recorded between Record and Stop (at most a minute), written to disk as a WAV before it is transcribed with the local speech model, plays after a restart, and keeps its audio when there is no model or transcription fails. Leaving the page stops and saves a recording (one still starting is dropped); a failed Save keeps the draft. The composer's dictation still keeps no audio.
 
 ## 2026-11-20
 

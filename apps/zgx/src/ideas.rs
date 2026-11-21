@@ -111,6 +111,10 @@ impl Playing for Played {
 
 /// The microphone, until stopped, at most `MAX_SECONDS` (the model's limit).
 fn microphone(device: Option<String>, stop: &AtomicBool, opened: &AtomicBool) -> Result<Samples, String> {
+    // (Left or discarded before it began: the microphone isn't opened at all.)
+    if stop.load(Ordering::Acquire) {
+        return Ok((Vec::new(), 16_000));
+    }
     let level = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let capture = zend_voice::Capture::start(device.as_deref(), level).map_err(|e| e.to_string())?;
     opened.store(true, Ordering::Release);
@@ -227,6 +231,8 @@ pub(crate) struct Service {
     play_error: Option<(String, String)>,
     model: bool,
     items: Vec<Idea>,
+    /// The page isn't shown (`leave`): nothing starts recording until it is again.
+    away: bool,
 }
 
 impl Service {
@@ -253,6 +259,7 @@ impl Service {
             play_error: None,
             model,
             items,
+            away: false,
         }
     }
 
@@ -322,6 +329,10 @@ impl Service {
 
     pub(crate) fn record_start(&mut self, device: Option<String>) -> Result<(), String> {
         self.store()?;
+        // (A start that comes after the page was left never records unseen.)
+        if self.away {
+            return Err("Open Ideas & Intents to record a memo".into());
+        }
         if self.recorder.is_some() {
             return Err("Already recording".into());
         }
@@ -369,6 +380,24 @@ impl Service {
             r.stop.store(true, Ordering::Release);
         }
         self.recording = json!({"phase":"idle"});
+    }
+
+    /// The page shows again: Record may start.
+    pub(crate) fn here(&mut self) {
+        self.away = false;
+    }
+
+    /// The page was left (Settings, a chat, another page): no recording goes
+    /// on unseen. One that records is stopped and saved, with what was said
+    /// until now; one whose microphone is still starting is let go, nothing
+    /// kept, and a start asked after this one is refused.
+    pub(crate) fn leave(&mut self) {
+        self.away = true;
+        match self.recording["phase"].as_str() {
+            Some("starting") => self.record_cancel(),
+            Some("recording") => self.record_stop(),
+            _ => {}
+        }
     }
 
     fn queue(&mut self, id: String, audio: Samples) {
@@ -550,6 +579,14 @@ pub(crate) fn attach(host: &ScriptHost, service: Service, wake: impl Fn() + 'sta
                     }
                     Some("record_cancel") => {
                         s.record_cancel();
+                        Ok(Json::Null)
+                    }
+                    Some("here") => {
+                        s.here();
+                        Ok(Json::Null)
+                    }
+                    Some("leave") => {
+                        s.leave();
                         Ok(Json::Null)
                     }
                     Some("transcribe") => s.transcribe(&id).map(|_| Json::Null),

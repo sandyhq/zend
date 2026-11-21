@@ -12,6 +12,7 @@ local ds = require("@ds")
 local locale = require("@ds/locale")
 local toast = require("@ds/toast")
 local prefs = require("@app/screens/settings/prefs")
+local route = require("@app/screens/shell/route")
 
 local M = {}
 
@@ -29,10 +30,13 @@ function M.title(): string
 	return locale.s("ideas.title")
 end
 
-local function call(op: string, args: { [string]: any }?, quiet: boolean?)
+local function call(op: string, args: { [string]: any }?, quiet: boolean?, done: ((ok: boolean) -> ())?)
 	local a: { [string]: any } = args or {}
 	a.op = op
-	ui.call("ideas.call", a):after(function() end, function(err: any)
+	local function failed(err: any)
+		if done then
+			done(false)
+		end
 		-- (What the page shows says it already: a recording's, a memo's.)
 		if quiet then
 			return
@@ -42,17 +46,54 @@ local function call(op: string, args: { [string]: any }?, quiet: boolean?)
 			body = if type(err) == "table" and err.message then tostring(err.message) else tostring(err),
 			tone = "warning",
 		}
+	end
+	-- (A window without the host's side, such as a test's, has no
+	-- `ideas.call`: a failure like any other, not the shell's error.)
+	local ok, pending = pcall(ui.call, "ideas.call", a)
+	if not ok then
+		failed(pending)
+		return
+	end
+	pending:after(function()
+		if done then
+			done(true)
+		end
+	end, failed)
+end
+
+-- The draft stays until the idea is on disk: a save that fails leaves it
+-- (and what was typed meanwhile) where it was. Only a draft still as it
+-- was sent is cleared; one edited while it saved stays for the person.
+local saving = ui.state("ideas_saving", false)
+local function save()
+	local text = draft:peek()
+	if saving:peek() or string.match(text, "^%s*$") then
+		return
+	end
+	saving:set(true)
+	call("add", { text = text }, false, function(ok: boolean)
+		saving:set(false)
+		if ok and draft:peek() == text then
+			draft:set("")
+		end
 	end)
 end
 
-local function save()
-	local text = draft:peek()
-	if string.match(text, "^%s*$") then
-		return
-	end
-	draft:set("")
-	call("add", { text = text })
+-- Leaving the page (Settings, a chat, another page, a template's switch)
+-- tells the host: a recording is stopped and saved there, one still
+-- starting is let go, and none starts until the page shows again. (The page
+-- can stay built under Settings, so it's the route that says, not the view.)
+local function shown(): boolean
+	local c = route.current:get()
+	return c.name == "plugin" and c.plugin == M.PLUGIN and c.page == M.PAGE
 end
+ui.effect(function()
+	if shown() then
+		call("here", nil, true)
+	else
+		call("leave", nil, true)
+	end
+end)
 
 local function clock(seconds: number): string
 	local s = math.max(0, math.floor(seconds + 0.5))
@@ -172,7 +213,7 @@ local function transcript(item: any, model: boolean): Node
 				size = "sm",
 				ui.t("ideas.memo.get_model"),
 				on_click = function()
-					require("@app/screens/shell/route").settings("voice")
+					route.settings("voice")
 				end,
 			})
 		else
@@ -287,6 +328,10 @@ end)
 function M.view(): Node
 	-- Fresh from disk (another window's, the model downloaded since).
 	call("list", nil, true)
+	-- (Gone without the route changing, e.g. the window's interface swapped.)
+	ui.on_cleanup(function()
+		call("leave", nil, true)
+	end)
 	local function model(): boolean
 		local s = M.state:peek()
 		return s ~= nil and s.model == true
@@ -350,7 +395,7 @@ function M.view(): Node
 							id = "ideas-save",
 							ui.t("ideas.save"),
 							disabled = function(): boolean
-								return string.match(draft:get(), "^%s*$") ~= nil
+								return saving:get() or string.match(draft:get(), "^%s*$") ~= nil
 							end,
 							on_click = save,
 						},
