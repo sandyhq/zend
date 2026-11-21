@@ -1372,6 +1372,7 @@ impl SessionsEngine {
             self.terminate(chat_id).await?;
         }
 
+        tracing::debug!(target: "first_word", chat = %chat_id, "dispatch: fresh run");
         let harness = self.inner.registry.resolve(harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
@@ -4955,6 +4956,7 @@ async fn drive_run(
                         && !inner
                             .stop_gate(&chat_id, &resume_state.user_message_id)
                             .lets_through(&inner));
+                tracing::debug!(target: "first_word", chat = %chat_id, "drive_run: prepared");
                 match prepared {
                     _ if stopped => {
                         tracing::info!(chat = %chat_id, "message claimed by a Stop: not handed to the harness");
@@ -5580,6 +5582,7 @@ async fn drive_run(
                     // (parent + any dirty subagent docs).
                     last_flush = Some(tokio::time::Instant::now());
                     if dirty {
+                        tracing::debug!(target: "first_word", chat = %chat_id, "segment commit");
                         if let Err(err) = sync_segment(
                             doc_ref, &mut writer, &entry_id, &device_id, segment_started, &folded,
                         ) {
