@@ -950,7 +950,9 @@ impl HarnessUpdateCoordinator {
     /// synchronous test assemblies simply omit the worker and can still use
     /// the explicit RPC methods once running under Tokio.
     pub fn start(&self) {
-        if tokio::runtime::Handle::try_current().is_err() {
+        // Android runs no agent CLI (zend_harness::install offers none
+        // there): nothing to check or update.
+        if cfg!(target_os = "android") || tokio::runtime::Handle::try_current().is_err() {
             return;
         }
         let mut worker = lock(&self.inner.worker);

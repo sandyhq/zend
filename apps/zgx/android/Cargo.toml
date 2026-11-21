@@ -1,0 +1,19 @@
+# Zend on Android: the APK's native library (libzend_android.so), which
+# NativeActivity loads (android/AndroidManifest.xml). It is the app itself,
+# zend-zgx (../src/android.rs), with the scripts and Zend's own plugins
+# packed in (build.rs). A member of apps/zgx's workspace, built by
+# build-apk.sh; the desktop builds none of it.
+[package]
+name = "zend-android"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "lib.rs"
+
+[target.'cfg(target_os = "android")'.dependencies]
+zend-zgx = { path = ".." }
+zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }

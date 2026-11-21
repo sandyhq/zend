@@ -225,7 +225,7 @@ impl Engine {
 
     /// Whether this app can start an engine, should none answer.
     pub fn can_start(&self) -> bool {
-        self.config.as_ref().is_ok_and(|config| config.startable().is_some())
+        self.config.as_ref().is_ok_and(|config| config.can_start())
     }
 
     /// The connection, waiting up to `wait` for one.

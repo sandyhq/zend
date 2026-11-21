@@ -2043,17 +2043,39 @@ impl DeviceIdentityLock {
     }
 }
 
-/// Create-if-absent publish of a written temp file: a hard link, which
-/// fails with AlreadyExists. android-app spike S1: SELinux refuses link(2)
-/// on Android (EACCES, observed in /data/local/tmp on the emulator), so
-/// there it checks and renames (not atomic: throwaway).
+/// Create-if-absent publish of a written temp file, atomically: `path`
+/// either stays as it was or holds the whole of `temp`, and an existing
+/// `path` fails with AlreadyExists. A hard link (`temp` is removed by the
+/// caller) everywhere but Android, where SELinux refuses link(2) to apps
+/// (EACCES, observed on the emulator): there a rename that refuses to
+/// replace (`renameat2` with `RENAME_NOREPLACE`, Linux 3.15; through
+/// `syscall`, since bionic has the wrapper only from API 30).
 pub(crate) fn publish_new(temp: &Path, path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "android")]
     {
-        if path.exists() {
-            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        };
+        let (from, to) = (c(temp)?, c(path)?);
+        // SAFETY: two NUL-terminated paths that outlive the call.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
         }
-        std::fs::rename(temp, path)
     }
     #[cfg(not(target_os = "android"))]
     std::fs::hard_link(temp, path)
@@ -2072,6 +2094,26 @@ fn replace_empty_device_id(temp_path: &Path, path: &Path) -> std::io::Result<()>
             Err(err) => return Err(err),
         }
         std::fs::hard_link(temp_path, path)
+    }
+}
+
+#[cfg(test)]
+mod publish_new_tests {
+    /// The first publish lands whole; a second never replaces it.
+    #[test]
+    fn publishing_creates_once_and_never_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second, path) = (
+            dir.path().join("a.tmp"),
+            dir.path().join("b.tmp"),
+            dir.path().join("id"),
+        );
+        std::fs::write(&first, "one").unwrap();
+        std::fs::write(&second, "two").unwrap();
+        super::publish_new(&first, &path).unwrap();
+        let err = super::publish_new(&second, &path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
     }
 }
 

@@ -9,12 +9,14 @@ local ds = require("@ds")
 ds.setup()
 -- The language chosen (Settings → General), before any screen builds.
 require("@app/screens/language")
+-- The system's bars over the window (Android's): every screen kept clear of them.
+local insets = require("@ds/insets")
 
 if ui.shared("window", "onboarding"):peek() == "main" then
 	-- Plugins: their page in Settings, and what they're shown of Zend.
 	require("@app/screens/plugins")
 	local shell = require("@app/screens/shell")
-	return shell()
+	return insets.pad(shell())
 end
 
 local onboarding = require("@app/screens/onboarding")
@@ -24,4 +26,4 @@ local actions = require("@app/screens/onboarding/actions")
 -- The look chosen in an earlier run.
 actions.appearance(state.appearance:peek())
 
-return onboarding()
+return insets.pad(onboarding())

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Zend's app on Android (apps/zgx, the desktop's interface), a debug APK
+     beside sh.zend.android (apps/android, the Kotlin app), which it does not
+     replace. No Java: NativeActivity loads libzend_android.so (lib.rs). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="sh.zend.zgx"
+    android:versionCode="1"
+    android:versionName="0.0.1">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+    <!-- The edge (sign-in, sync) and the engine's localhost WebSocket. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- TranslucentDecor: the window under the status and navigation bars
+         on every version, as Android 15 and later lay it out anyway; the
+         interface keeps clear of them by system.insets (src/android.rs). -->
+    <application
+        android:label="Zend"
+        android:hasCode="false"
+        android:debuggable="true"
+        android:extractNativeLibs="false">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar.TranslucentDecor"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density"
+            android:windowSoftInputMode="adjustNothing"
+            android:launchMode="singleTask">
+            <meta-data android:name="android.app.lib_name" android:value="zend_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

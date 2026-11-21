@@ -6,6 +6,12 @@
 # `main` branch, pinned by commit when Zend needs one ahead of main.
 
 [workspace]
+# The Android app's library (the APK's `android_main`), built by
+# android/build-apk.sh; nothing on the desktop builds it.
+members = ["android"]
+# What a bare `cargo build`, `check` or `nextest` here builds: the app
+# alone, as before the Android library joined.
+default-members = ["."]
 
 [package]
 name = "zend-zgx"
@@ -177,6 +183,21 @@ zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6f
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", features = ["webview2"] }
+
+# Android (src/android.rs): the engine in this process, the log (logcat),
+# and the activity's window insets through JNI.
+[target.'cfg(target_os = "android")'.dependencies]
+zend-engine = { path = "../../crates/engine" }
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+android_logger = "0.15"
+log = "0.4"
+jni = "0.21"
+# mimalloc (zgx-desktop's `mimalloc`) in a library NativeActivity dlopens:
+# its thread-locals in the dynamic model, not initial-exec, which Android's
+# loader refuses in a dlopened library ("TLS symbol … using IE access
+# model"). The same libmimalloc-sys mimalloc links.
+libmimalloc-sys = { version = "0.1.49", features = ["local_dynamic_tls"] }
 
 # zgx's D-Bus (menus, portals) linked in rather than loaded: `zend` is also
 # what a headless Linux server and every Cloud machine runs (`zend

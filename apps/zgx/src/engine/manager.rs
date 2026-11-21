@@ -44,6 +44,11 @@
 //!                                 chats: for comparing against the shipping
 //!                                 app; never sign out from it)
 //!
+//! **Android** runs the engine inside the app, on a thread of its own
+//! (src/android.rs `start_engine`), not as a process: the staging engine's
+//! port and data (~/.zend, HOME being the app's files folder), started when
+//! nothing answers, as a development build starts its `zend-engine`.
+//!
 //! A signed-out engine opens a local workspace and keeps it; signing in
 //! takes a new one (the shipping app's sync switch). So once the engine's
 //! session is signed in while its workspace is still local, it is stopped
@@ -82,6 +87,9 @@ const STAGING_DATA: &str = ".zend";
 
 const BETA: bool = cfg!(feature = "beta");
 
+/// The engine runs in this process (Android's), not as one of its own.
+const IN_PROCESS: bool = cfg!(target_os = "android");
+
 /// The soonest a second engine is started after the first.
 const SPAWN_SPACING: Duration = Duration::from_secs(10);
 
@@ -113,6 +121,12 @@ impl Config {
     /// The engine this app would start now, if it may start one.
     pub fn startable(&self) -> Option<&Path> {
         if self.spawn { self.bin.as_deref() } else { None }
+    }
+
+    /// Whether this app can start an engine, should none answer: one it has
+    /// (`startable`), or Android's own, in this process.
+    pub fn can_start(&self) -> bool {
+        self.startable().is_some() || (IN_PROCESS && self.spawn)
     }
 
     /// Whether this is Zend.app's engine, which follows its bundle by
@@ -295,6 +309,15 @@ impl Spawner {
         if !config.spawn || self.last.is_some_and(|at| at.elapsed() < SPAWN_SPACING) {
             return false;
         }
+        if IN_PROCESS {
+            // (One still running, or on its way out, is left alone; one that
+            // fails at once is tried again no sooner than a spawned one.)
+            let started = start_in_process(config);
+            if started {
+                self.last = Some(Instant::now());
+            }
+            return started;
+        }
         let Some(bin) = &config.bin else {
             if !self.said_missing {
                 self.said_missing = true;
@@ -331,6 +354,22 @@ impl Spawner {
                 false
             }
         }
+    }
+}
+
+/// Android's engine, on a thread of this process (src/android.rs).
+pub(crate) fn start_in_process(config: &Config) -> bool {
+    #[cfg(target_os = "android")]
+    return crate::android::start_engine(crate::android::EngineStart {
+        data_dir: config.data_dir.clone(),
+        port: config.port,
+        edge: config.edge.clone(),
+        client: config.client.clone(),
+    });
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = config;
+        false
     }
 }
 

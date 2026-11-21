@@ -170,7 +170,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 notify = "7"
-portable-pty = "0.8"
+portable-pty = "0.9"
 alacritty_terminal = "0.26"
 pulldown-cmark = "0.12"
 unicode-segmentation = "1"
@@ -237,7 +237,3 @@ inherits = "release"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
-
-# android-app spike (throwaway): termios 0.2 (portable-pty -> serial) knows no android.
-[patch.crates-io]
-termios = { path = "vendor-android/termios" }

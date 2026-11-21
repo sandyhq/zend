@@ -137,6 +137,11 @@ fn available(
 }
 
 fn selected(id: HarnessId) -> Option<Method> {
+    // Android: no agent CLI runs in an app's sandbox (no shell, Node or
+    // installers), so none is offered or installed there.
+    if cfg!(target_os = "android") {
+        return None;
+    }
     let platform = Platform::current();
     methods(id, platform).into_iter().find(|method| {
         available(
