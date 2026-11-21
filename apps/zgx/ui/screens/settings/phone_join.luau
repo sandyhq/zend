@@ -5,12 +5,14 @@
 --
 -- After the code is kept the engine starts again on it: "Saved,
 -- connecting…" until the engine says its registry room is joined
--- (`sessions.now.relay` "connected", after the restart took the old
--- connection down, or M.SETTLE seconds on), then "Connected"; no answer
+-- (`sessions.now.relay` "connected" M.SETTLE seconds after it: the
+-- engine reports a failing room only after 4 s of grace, so an earlier
+-- "connected" proves nothing), then "Connected"; no answer
 -- in M.WAIT_FOR seconds says so (and turns to Connected if it comes).
 --
 -- A scan is ended (`phone.scan_stop`, and its answer dropped) when the
--- view goes (another page, another step) or the app is sent away. The
+-- view goes (another page, another step) or the app is sent away (not
+-- while Android's camera dialog has the focus). The
 -- pasted text is the view's own, masked, and emptied once submitted: the
 -- code is the computer's key. With sessions running on this phone,
 -- connecting asks first (the engine's restart stops them).
@@ -21,7 +23,7 @@ local host = require("@app/screens/settings/host")
 
 local M = {}
 
-M.SETTLE = 4
+M.SETTLE = 8
 M.WAIT_FOR = 30
 
 local scan = ui.shared("phone.scan", { state = "idle", frames = 0 } :: any)
@@ -36,7 +38,6 @@ M.edge = ui.state("phone_join_edge", "")
 M.busy = ui.state("phone_join_busy", 0)
 -- (The waiting code itself is no window state.)
 local held: string? = nil
-local saw_down = ui.state("phone_join_saw_down", false)
 local settled = ui.state("phone_join_settled", false)
 local scan_turn = 0
 local watch_turn = 0
@@ -60,10 +61,7 @@ end
 local function watch()
 	watch_turn += 1
 	local turn = watch_turn
-	ui.batch(function()
-		saw_down:set(false)
-		settled:set(false)
-	end)
+	settled:set(false)
 	ui.after(M.SETTLE * 1000, function()
 		if turn == watch_turn then
 			settled:set(true)
@@ -83,15 +81,7 @@ ui.effect(function()
 		return
 	end
 	local relay = sessions.now:get().relay
-	if relay ~= "connected" then
-		if not saw_down:peek() then
-			ui.after(0, function()
-				saw_down:set(true)
-			end)
-		end
-		return
-	end
-	if saw_down:get() or settled:get() then
+	if relay == "connected" and settled:get() then
 		ui.after(0, function()
 			if M.outcome:peek() == outcome then
 				M.outcome:set("connected")
@@ -225,8 +215,12 @@ function M.view(): Node
 		M.stop_scan()
 		M.cancel_confirm()
 	end)
+	-- (Not while the camera is asked for: the system's dialog takes the
+	-- window's focus too.)
 	ui.effect(function()
-		if ui.window.active:get() == false then
+		local away = ui.window.active:get() == false
+		local asking = ((scan:get() or {}) :: any).state == "asking"
+		if away and not asking then
 			ui.after(0, M.stop_scan)
 		end
 	end)

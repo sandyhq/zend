@@ -83,7 +83,21 @@ test("on the phone, a scanned code connects: saved, then connected once the rela
 	expect(asked(app, "phone.connect")).to_be(true)
 	expect(app:has(JOINED)).to_be(false)
 	app:command("settings_stub.relay_up")
-	expect(app:wait(JOINED, { timeout_ms = 5000 })).to_be(true)
+	expect(app:wait(JOINED, { timeout_ms = 12000 })).to_be(true)
+end)
+
+-- The engine started again reads "connected" until 4 s of failing have
+-- passed: that early word is no proof the relay answered.
+test("on the phone, a relay that reads connected at once is not taken at its word", function()
+	local app = open({ "settings_stub.on_android" })
+	app:click(`{PAGE} >> role:button "Scan code"`)
+	expect(app:wait(SAVED, { timeout_ms = 5000 })).to_be(true)
+	-- (Down before, as the engine before had no relay; up at once after.)
+	app:command("settings_stub.relay_up")
+	app:frames(10)
+	expect(app:has(JOINED)).to_be(false)
+	expect(app:has(SAVED)).to_be(true)
+	expect(app:wait(JOINED, { timeout_ms = 12000 })).to_be(true)
 end)
 
 test("on the phone, Stop ends the scan, and its late answer is dropped", function()
