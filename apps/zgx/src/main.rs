@@ -1346,6 +1346,9 @@ fn placed(mut options: WindowOptions) -> WindowOptions {
         options.width = w / scale.max(1.);
         options.height = h / scale.max(1.);
         options.frame_autosave = None;
+        // android-app spike S1: a phone-sized frame (412x915) below the
+        // desktop's minimum.
+        options.min_size = None;
         options.bounds = Some(WindowBounds {
             position: Some((x as i32, y as i32)),
             size: (w as u32, h as u32),

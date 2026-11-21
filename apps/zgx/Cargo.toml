@@ -188,13 +188,22 @@ libdbus-sys = { version = "0.2.7", features = ["vendored"] }
 # zgx's own patches (its root Cargo.toml): a git dependency does not bring
 # them, so every consumer repeats them.
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
-winit = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
-accesskit_macos = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
-accesskit_consumer = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
-accesskit_atspi_common = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
-accesskit_unix = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
-accesskit_windows = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
+wgpu-hal = { path = "../../../zengx-android-app/vendor/wgpu-hal" }
+winit = { path = "../../../zengx-android-app/vendor/winit" }
+accesskit_macos = { path = "../../../zengx-android-app/vendor/accesskit_macos" }
+accesskit_consumer = { path = "../../../zengx-android-app/vendor/accesskit_consumer" }
+accesskit_atspi_common = { path = "../../../zengx-android-app/vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "../../../zengx-android-app/vendor/accesskit_unix" }
+accesskit_windows = { path = "../../../zengx-android-app/vendor/accesskit_windows" }
+
+# android-app spike S1: every zgx crate from the zengx-android-app worktree
+# (branch android-app, the POC's Android support), not the pinned git rev.
+[patch."https://github.com/sandyhq/zengx"]
+zgx = { path = "../../../zengx-android-app/crates/zgx" }
+zgx-desktop = { path = "../../../zengx-android-app/crates/zgx-desktop" }
+zgx-run = { path = "../../../zengx-android-app/crates/zgx-run" }
+zgx-script = { path = "../../../zengx-android-app/crates/zgx-script" }
+zgx-gpu = { path = "../../../zengx-android-app/crates/zgx-gpu" }
 
 # zgx is slow unoptimized (its own setting): optimize dependencies, keep
 # this crate quick to build.
