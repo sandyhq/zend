@@ -49,6 +49,9 @@ struct Ledger {
     /// key, and those ended.
     warm: Mutex<Vec<String>>,
     warm_ended: Mutex<Vec<String>>,
+    /// Holds the run's MCP-config lookup (the reaper's first scan waits on
+    /// it) until cleared, as a slow disk would.
+    hold_mcp_read: std::sync::atomic::AtomicBool,
 }
 
 /// `bg` in a prompt starts background work (the test ends it); `wake`
@@ -105,6 +108,12 @@ impl Harness for Agent {
         &self,
         request: &RunRequest,
     ) -> Vec<zend_harness::process::KnownServer> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while self.ledger.hold_mcp_read.load(Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         if !request.env.contains_key("CLAUDE_CONFIG_DIR") {
             return Vec::new();
         }
@@ -509,6 +518,60 @@ async fn an_agent_whose_visual_waits_on_answers_is_never_stopped() {
     tokio::time::sleep(AGENT_IDLE_STOP * 2).await;
     rig.stopped().await;
     rig.core.sessions.shutdown().await;
+}
+
+/// Fork (B4 review): the idle stop's scan (the MCP-config lookup, then the
+/// process table) takes time; a visual reopened while it ran must still
+/// hold the agent. The stop looks at its holds again once the scan is in.
+#[tokio::test]
+async fn a_visual_reopened_during_the_idle_scan_still_holds_the_agent() {
+    let rig = rig(true);
+    // The agent's process: a real one with no children of its own.
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    *rig.ledger.process.lock().unwrap() = Some(child.id());
+    rig.ledger.hold_mcp_read.store(true, Ordering::SeqCst);
+    rig.send("show a form").await;
+    store_visual(&rig, true);
+    // Past the idle window: the stop starts its scan, held on the lookup.
+    tokio::time::pause();
+    tokio::time::advance(UNWATCHED_IDLE_STOP + Duration::from_secs(1)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert!(rig.live());
+    // The person reopens the form while the scan runs; then it finishes.
+    store_visual(&rig, false);
+    rig.ledger.hold_mcp_read.store(false, Ordering::SeqCst);
+    for _ in 0..40 {
+        tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(5)))
+            .await
+            .unwrap();
+        if rig.kills() > 0 {
+            break;
+        }
+    }
+    let (kills, live) = (rig.kills(), rig.live());
+    // Sent again: a full window later it stops as any other.
+    let stops_after = if kills == 0 {
+        store_visual(&rig, true);
+        tokio::time::sleep(AGENT_IDLE_STOP * 2).await;
+        rig.stopped().await;
+        true
+    } else {
+        false
+    };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    rig.core.sessions.shutdown().await;
+    assert_eq!(
+        (kills, live),
+        (0, true),
+        "the idle stop ended an agent whose visual reopened during its scan"
+    );
+    assert!(stops_after);
 }
 
 #[tokio::test(start_paused = true)]

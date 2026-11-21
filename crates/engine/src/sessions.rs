@@ -5515,6 +5515,79 @@ async fn drive_run(
     // spawned it, and its traffic never un-parks the chat, so the idle reaper
     // measures from here as well as from the park.
     let mut last_subagent_activity: Option<tokio::time::Instant> = None;
+    // When the idle stop is due, measured as the window stands now: who
+    // has the chat open, the subagents' last word, a deferral.
+    macro_rules! reap_deadline {
+        () => {{
+            let (watched, left_at) = inner.view_state(&chat_id);
+            let window = if !subagents.is_empty() {
+                subagent_silence
+            } else if watched {
+                session_idle
+            } else {
+                unwatched_idle
+            };
+            let base = idle_since.map(|at| {
+                let mut from = at.max(last_subagent_activity.unwrap_or(at));
+                // Left alone: from when the last viewer left.
+                if !watched
+                    && subagents.is_empty()
+                    && let Some(left) = left_at
+                {
+                    from = from.max(left);
+                }
+                from + window
+            });
+            match (base, reap_deferred_until) {
+                (Some(base), Some(deferred)) => base.max(deferred),
+                (base, deferred) => base.or(deferred).unwrap_or_else(tokio::time::Instant::now),
+            }
+        }};
+    }
+    // Anything still pending in this runtime that holds it: the agent said
+    // it waits on work, it scheduled a wake-up or a cron, or a question or
+    // a visual waits on the person.
+    macro_rules! reap_hold {
+        () => {{
+            let scheduled = self_scheduled.pending(tokio::time::Instant::now());
+            if wait.is_some() {
+                Some("the agent waits on background work")
+            } else if scheduled.is_some() {
+                scheduled
+            } else if inner.awaiting_input(&chat_id) {
+                Some("a question waits on the person")
+            } else if inner.has_open_visual(&chat_id) {
+                Some("a visual waits on the person's answers")
+            } else {
+                None
+            }
+        }};
+    }
+    macro_rules! reap_idle {
+        () => {{
+            tracing::info!(
+                chat = %chat_id,
+                live_subagents = subagents.len(),
+                "reaping idle persistent session"
+            );
+            if let Some(token) = lock(&inner.runs)
+                .get(&chat_id)
+                .filter(|h| h.run_id == run_id)
+                .map(|h| h.interrupt_token.clone())
+            {
+                token.cancel();
+            }
+            break SessionStatus::Idle;
+        }};
+    }
+    // The idle stop's scan of the agent's process (its MCP-config lookup,
+    // then the process table), in flight beside the run's other events,
+    // with the idle interval it was started for. Fork (B4 review): awaited
+    // inline, it held off steers and wakes, and its verdict was acted on
+    // without looking again at what changed while it ran.
+    type ReapScan =
+        futures::future::BoxFuture<'static, (Vec<zend_harness::process::KnownServer>, Vec<String>)>;
+    let mut reap_scan: Option<(Option<tokio::time::Instant>, ReapScan)> = None;
 
     let mut final_completed_turn = None;
     let mut final_outcome = None;
@@ -5641,33 +5714,43 @@ async fn drive_run(
                 Ok(()) = viewers_changed.changed(), if idle_since.is_some() => {
                     continue;
                 }
-                _ = tokio::time::sleep_until(
-                    {
-                        let (watched, left_at) = inner.view_state(&chat_id);
-                        let window = if !subagents.is_empty() {
-                            subagent_silence
-                        } else if watched {
-                            session_idle
-                        } else {
-                            unwatched_idle
-                        };
-                        let base = idle_since.map(|at| {
-                            let mut from = at.max(last_subagent_activity.unwrap_or(at));
-                            // Left alone: from when the last viewer left.
-                            if !watched
-                                && subagents.is_empty()
-                                && let Some(left) = left_at
-                            {
-                                from = from.max(left);
-                            }
-                            from + window
-                        });
-                        match (base, reap_deferred_until) {
-                            (Some(base), Some(deferred)) => base.max(deferred),
-                            (base, deferred) => base.or(deferred).unwrap_or_else(tokio::time::Instant::now),
-                        }
+                // The idle stop's scan came in. The run went on meanwhile:
+                // stop only if the same idle interval still qualifies (no
+                // turn since, no call, the window as it stands now has run
+                // out, and nothing holds it).
+                (known, lingering) = async {
+                    reap_scan.as_mut().expect("guarded by is_some").1.as_mut().await
+                }, if reap_scan.is_some() => {
+                    let (scanned_for, _) = reap_scan.take().expect("guarded by is_some");
+                    known_servers = known;
+                    if idle_since.is_none() || idle_since != scanned_for {
+                        continue;
                     }
-                ), if idle_since.is_some() && !resume_state.voice_active.live() => {
+                    if !lingering.is_empty() {
+                        tracing::info!(
+                            chat = %chat_id,
+                            ?lingering,
+                            "idle reaper deferred: the agent's process runs children it didn't report"
+                        );
+                        reap_deferred_until = Some(tokio::time::Instant::now() + window_now(&inner, &chat_id, session_idle, unwatched_idle));
+                        continue;
+                    }
+                    if resume_state.voice_active.live()
+                        || turn.background_live()
+                        || held_for_background
+                        || tokio::time::Instant::now() < reap_deadline!()
+                    {
+                        continue;
+                    }
+                    if let Some(why) = reap_hold!() {
+                        tracing::info!(chat = %chat_id, why, "idle reaper deferred");
+                        reap_deferred_until = Some(tokio::time::Instant::now() + window_now(&inner, &chat_id, session_idle, unwatched_idle));
+                        continue;
+                    }
+                    reap_idle!();
+                }
+                _ = tokio::time::sleep_until(reap_deadline!()),
+                    if idle_since.is_some() && reap_scan.is_none() && !resume_state.voice_active.live() => {
                     // A call that began after this wait was armed holds it off.
                     if resume_state.voice_active.live() {
                         continue;
@@ -5688,22 +5771,8 @@ async fn drive_run(
                         continue;
                     }
                     // Anything else still pending in this runtime holds it
-                    // too: the agent said it waits on work, it scheduled a
-                    // wake-up or a cron, or a question waits on the person.
-                    // Checked again a full window later.
-                    let scheduled = self_scheduled.pending(tokio::time::Instant::now());
-                    let held = if wait.is_some() {
-                        Some("the agent waits on background work")
-                    } else if scheduled.is_some() {
-                        scheduled
-                    } else if inner.awaiting_input(&chat_id) {
-                        Some("a question waits on the person")
-                    } else if inner.has_open_visual(&chat_id) {
-                        Some("a visual waits on the person's answers")
-                    } else {
-                        None
-                    };
-                    if let Some(why) = held {
+                    // too. Checked again a full window later.
+                    if let Some(why) = reap_hold!() {
                         tracing::info!(chat = %chat_id, why, "idle reaper deferred");
                         reap_deferred_until = Some(tokio::time::Instant::now() + window_now(&inner, &chat_id, session_idle, unwatched_idle));
                         continue;
@@ -5711,40 +5780,30 @@ async fn drive_run(
                     // Belt and braces, trusting no report of the agent's:
                     // a child of its process that isn't one of its MCP
                     // servers (a background shell, a dev server) holds it.
+                    // The scan runs beside the run's other events; its arm
+                    // above decides once it's in.
                     if let Some(pid) = turn.agent_pid() {
-                        // (Unreadable: nothing added, and its servers hold.)
-                        if let Some(reading) = configured_servers.take() {
-                            known_servers.extend(reading.await.unwrap_or_default());
-                        }
-                        let known = known_servers.clone();
-                        let lingering = tokio::task::spawn_blocking(move || {
-                            zend_harness::process::unexpected_descendants(pid, &known)
-                        })
-                        .await
-                        .unwrap_or_else(|_| vec!["(the check failed)".to_owned()]);
-                        if !lingering.is_empty() {
-                            tracing::info!(
-                                chat = %chat_id,
-                                ?lingering,
-                                "idle reaper deferred: the agent's process runs children it didn't report"
-                            );
-                            reap_deferred_until = Some(tokio::time::Instant::now() + window_now(&inner, &chat_id, session_idle, unwatched_idle));
-                            continue;
-                        }
+                        let reading = configured_servers.take();
+                        let mut known = known_servers.clone();
+                        reap_scan = Some((
+                            idle_since,
+                            Box::pin(async move {
+                                // (Unreadable: nothing added, and its servers hold.)
+                                if let Some(reading) = reading {
+                                    known.extend(reading.await.unwrap_or_default());
+                                }
+                                let check = known.clone();
+                                let lingering = tokio::task::spawn_blocking(move || {
+                                    zend_harness::process::unexpected_descendants(pid, &check)
+                                })
+                                .await
+                                .unwrap_or_else(|_| vec!["(the check failed)".to_owned()]);
+                                (known, lingering)
+                            }),
+                        ));
+                        continue;
                     }
-                    tracing::info!(
-                        chat = %chat_id,
-                        live_subagents = subagents.len(),
-                        "reaping idle persistent session"
-                    );
-                    if let Some(token) = lock(&inner.runs)
-                        .get(&chat_id)
-                        .filter(|h| h.run_id == run_id)
-                        .map(|h| h.interrupt_token.clone())
-                    {
-                        token.cancel();
-                    }
-                    break SessionStatus::Idle;
+                    reap_idle!();
                 }
                 // Engine-made events are final: a `show_image` image is
                 // already in uploads, outside the generated-image intake root.
