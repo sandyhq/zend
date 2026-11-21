@@ -1686,6 +1686,7 @@ impl Plugins {
                     command,
                     args: mcp.args.clone(),
                     env: mcp.env.clone(),
+                    http: None,
                 })
             })
             .collect()

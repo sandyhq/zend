@@ -2317,6 +2317,7 @@ async fn idle_voice_runtime_has_no_initial_turn_and_preserves_mcp() {
         command: "zend".into(),
         args: vec!["mcp".into()],
         env: Default::default(),
+        http: None,
     });
     let (mut controls, steer, token) = controls("Yes");
     let (voice, bridge, _events) = zend_harness::codex::realtime::channel();
@@ -2384,6 +2385,7 @@ async fn a_side_chats_only_thread_starts_without_agent_tools() {
             command: "zend".into(),
             args: vec!["mcp".into()],
             env: Default::default(),
+            http: None,
         };
         if side_chats_only {
             server.env.insert(
@@ -2450,6 +2452,7 @@ async fn external_voice_keeps_canonical_events_without_any_local_helper() {
         command: "zend".into(),
         args: vec!["mcp".into()],
         env: Default::default(),
+        http: None,
     });
     let (mut controls, _steer, token) = controls("Yes");
     let (voice, bridge, mut events) = channel();
