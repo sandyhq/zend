@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The POC's own debug app, beside sh.zend.android (apps/android). No Java:
+     NativeActivity loads libzend_zgx_android.so (src/lib.rs, android_main). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="app.zend.zgxpoc"
+    android:versionCode="1"
+    android:versionName="0.0.1">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+    <application
+        android:label="Zend zgx POC"
+        android:hasCode="false"
+        android:debuggable="true"
+        android:extractNativeLibs="false">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|density"
+            android:launchMode="singleTask">
+            <meta-data android:name="android.app.lib_name" android:value="zend_zgx_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

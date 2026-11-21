@@ -1,0 +1,47 @@
+# The Android POC (plans/android-zgx-poc): a zgx Luau app in a
+# NativeActivity, as a debug APK of its own (app.zend.zgxpoc), beside the
+# Android app (apps/android), which it does not replace. A workspace of its
+# own, like apps/zgx. Built by build-apk.sh.
+[package]
+name = "zend-zgx-android"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zgx-run = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", default-features = false }
+zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8", default-features = false, features = ["png", "svg"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+log = "0.4"
+
+[workspace]
+
+# While the POC is worked on: the zengx worktree beside this one (branch
+# android-poc), which has the Android entry (zgx-desktop src/android.rs).
+[patch."https://github.com/sandyhq/zengx"]
+zgx = { path = "../../../zengx-android-poc/crates/zgx" }
+zgx-desktop = { path = "../../../zengx-android-poc/crates/zgx-desktop" }
+zgx-run = { path = "../../../zengx-android-poc/crates/zgx-run" }
+zgx-script = { path = "../../../zengx-android-poc/crates/zgx-script" }
+zgx-gpu = { path = "../../../zengx-android-poc/crates/zgx-gpu" }
+zgx-text = { path = "../../../zengx-android-poc/crates/zgx-text" }
+
+# zgx's own patches (its root Cargo.toml).
+[patch.crates-io]
+wgpu-hal = { path = "../../../zengx-android-poc/vendor/wgpu-hal" }
+winit = { path = "../../../zengx-android-poc/vendor/winit" }
+accesskit_consumer = { path = "../../../zengx-android-poc/vendor/accesskit_consumer" }
+accesskit_atspi_common = { path = "../../../zengx-android-poc/vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "../../../zengx-android-poc/vendor/accesskit_unix" }
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = "line-tables-only"
+
+[profile.dev.package.naga]
+opt-level = 1
