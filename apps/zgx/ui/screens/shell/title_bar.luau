@@ -180,9 +180,11 @@ local function Bar(props: Props): Node
 			island = function(): boolean
 				return props.collapsed:get() and props.art()
 			end,
-			can_back = route.can_back,
+			-- (Compact, in settings, Back steps its page to its list, then out:
+			-- as Escape and the page's own Back do.)
+			can_back = route.title_can_back,
 			can_forward = route.can_forward,
-			on_back = route.back,
+			on_back = route.title_back,
 			on_forward = route.forward,
 			actions = actions,
 			-- (Over a new chat's wallpaper, what's in it (a plugin's) stands on

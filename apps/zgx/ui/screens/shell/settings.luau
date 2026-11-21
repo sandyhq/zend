@@ -472,7 +472,7 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 						px = "$space.3",
 						gap = "$space.2",
 						on_click = function()
-							route.settings_list:set(true)
+							route.settings_back()
 						end,
 						ds.Icon { name = "arrow-left", size = 16 },
 						ui.t("settings.shell.heading"),

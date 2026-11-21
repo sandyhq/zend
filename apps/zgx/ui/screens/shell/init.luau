@@ -433,11 +433,7 @@ return function(): Node
 					on_key = function(e): boolean
 						if e.key == "Escape" then
 							-- (Compact, a page goes back to the list first.)
-							if view.compact:peek() and not route.settings_list:peek() then
-								route.settings_list:set(true)
-							else
-								route.leave_settings()
-							end
+							route.settings_back()
 							return true
 						end
 						return false
@@ -574,6 +570,9 @@ return function(): Node
 						-- (Under a strip as tall as the touch title bar, its view
 						-- options where the bar's controls end, as beside the page.)
 						top = ds.TitleBar.TOUCH,
+						-- (Choosing closes it: the chat open already too, where
+						-- the route doesn't move.)
+						on_chosen = close_drawer,
 					}
 				end),
 			},

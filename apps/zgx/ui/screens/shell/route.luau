@@ -671,6 +671,9 @@ end
 -- not both: whether it's the list. Going to settings names a page (a link,
 -- Check for Updates…) or not (Settings, ⌘,): not, the list shows first.
 M.settings_list = ui.state("shell_settings_list", true)
+-- Whether the window is compact (a phone's width): screens/shell/fit sets
+-- it as the window lays out; view hands it on as view.compact.
+M.compact = ui.state("shell_compact", false)
 function M.settings(page: string?)
 	local r = at()
 	local list = page == nil and r.name ~= "settings"
@@ -735,6 +738,42 @@ function M.leave_settings()
 	else
 		go("home")
 	end
+end
+
+-- Back out of settings one step: compact (a phone's width, settings
+-- showing one page), from the page to the list; else out of settings, as
+-- leave_settings. Escape, the page's own Back and the title bar's Back all
+-- take it, so each goes the same way. Whether it was settings to step in.
+function M.settings_back(): boolean
+	if at().name ~= "settings" then
+		return false
+	end
+	if M.compact:peek() and not M.settings_list:peek() then
+		M.settings_list:set(true)
+	else
+		M.leave_settings()
+	end
+	return true
+end
+
+-- The title bar's Back: in settings compact, a step of settings_back (its
+-- page to its list, then out); anywhere else, the history's step back.
+function M.title_back()
+	if M.compact:peek() and M.settings_back() then
+		return
+	end
+	if router then
+		router.back()
+	end
+end
+
+-- Whether the title bar's Back has a step: in settings compact always (to
+-- the list, or out); else the history's.
+function M.title_can_back(): boolean
+	if M.compact:get() and M.current:get().name == "settings" then
+		return true
+	end
+	return M.can_back()
 end
 
 function M.back()

@@ -689,6 +689,12 @@ return function(props: Props): Node
 	local shown = ui.computed(function(): boolean
 		return props.files:get() and (in_session() or on_plugin() or home()) and fit.current:get().right
 	end)
+	-- Whether the title bar has Expand (Collapse) beside the panel toggle:
+	-- with the panel showing, but not compact, where the panel is a sheet
+	-- over the page already and the Panel toggle the way out.
+	local function expand_shown(): boolean
+		return shown:get() and not shell_view.compact:get()
+	end
 	-- Where the sidebar settles in the window's fit (its width, or none).
 	local function sidebar_settled(): number
 		local f = fit.current:get()
@@ -2049,7 +2055,7 @@ return function(props: Props): Node
 			-- (Clear of the panel toggle, and of Expand while the panel's open.)
 			right = function(): number
 				local toggle = 34 + 8 - 10 + ds.TitleBar.actions_right()
-				local right = if shown:get() then toggle + EXPAND + 8 else toggle
+				local right = if expand_shown() then toggle + EXPAND + 8 else toggle
 				-- (And of what there is to update.)
 				local button = updates.width()
 				return if button > 0 then right + button + 8 else right
@@ -2061,7 +2067,7 @@ return function(props: Props): Node
 			absolute = true,
 			right = function(): number
 				local toggle = 24 + 8 + ds.TitleBar.actions_right()
-				return ui.raw(if shown:get() then toggle + EXPAND + 8 else toggle, "off the panel toggle")
+				return ui.raw(if expand_shown() then toggle + EXPAND + 8 else toggle, "off the panel toggle")
 			end,
 			top = function(): number
 				return ds.TitleBar.middle() - 14
@@ -2071,9 +2077,9 @@ return function(props: Props): Node
 		}),
 		-- Expand: the panel over the session's chat, and back, on the top bar beside
 		-- the panel toggle, as far off it as Back is off the sidebar's toggle.
-		ui.show(function(): boolean
-			return shown:get()
-		end, ui.div {
+		-- (Not compact: the panel is a sheet over the page there already, and
+		-- the touch-sized Panel toggle the way out.)
+		ui.show(expand_shown, ui.div {
 			absolute = true,
 			right = function(): number
 				return ui.raw(24 + 8 + ds.TitleBar.actions_right(), "off the panel toggle")

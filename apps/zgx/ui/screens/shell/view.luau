@@ -108,7 +108,8 @@ end
 -- Whether the window is compact (a phone's width: screens/shell/fit sets it
 -- as the window lays out), and whether the sidebar's drawer is open over the
 -- page there. The drawer isn't kept: a window opens on its page.
-M.compact = ui.state("shell_compact", false)
+-- (Held by route, which its settings' steps read: view requires route.)
+M.compact = route.compact
 M.drawer = ui.state("shell_drawer_open", false)
 -- (Compact, an open panel is always expanded: a sheet over the page.)
 M.expanded = ui.computed(function(): boolean

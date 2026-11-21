@@ -226,6 +226,9 @@ export type Props = {
 	-- device's), on that device too (its name, as the sessions have it).
 	on_new: ((project: string?, device: string?) -> ())?,
 	on_search: (() -> ())?,
+	-- After a session's row is chosen, the one open already too (a drawer
+	-- over the page closes on it, a choice that moves nothing included).
+	on_chosen: (() -> ())?,
 	-- Plugins' pages ("pages.add"), each a row under Search: `{ plugin, id,
 	-- title, icon? }` as a state of a list, and what choosing one does.
 	pages: State<{ any }>?,
@@ -1514,6 +1517,9 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				selected:set(s.id)
 				if on_pick then
 					on_pick()
+				end
+				if props.on_chosen then
+					props.on_chosen()
 				end
 			end,
 		}
