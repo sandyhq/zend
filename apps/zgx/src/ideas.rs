@@ -12,7 +12,10 @@
 //! (src/dictation.rs). Only this page writes recordings, and only here.
 //!
 //! The window's scripts call `ideas.call { op, … }` and read the shared
-//! `ideas` (`{ ready, error?, model, items, recording, playing, play_error }`).
+//! `ideas` (`{ ready, error?, model, items, recording, playing, play_error }`),
+//! and, while recording, the shared `ideas_levels`: the microphone's loudness
+//! as dictation's waveform draws it (src/dictation/meter.rs, ds/voice_wave),
+//! from the samples the recording takes, never a stream of its own.
 use serde_json::{Value as Json, json};
 use std::{
     cell::RefCell,
@@ -21,7 +24,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc,
     },
     time::Duration,
@@ -39,10 +42,11 @@ pub use store::{Idea, Store, Transcript};
 pub type Samples = (Vec<f32>, u32);
 
 /// Where a memo's sound comes from. Runs on a thread of its own: sets
-/// `opened` once it hears, and returns what it heard once `stop` is set
-/// (or it can take no more). The microphone, or for an offscreen test
+/// `opened` once it hears, keeps the loudest RMS of what it hears in `level`
+/// (f32 bits, as `zend_voice::Capture` does; the page's waveform takes it),
+/// and returns what it heard once `stop` is set (or it can take no more). The microphone, or for an offscreen test
 /// instance a WAV file played into it in real time (`ZEND_IDEAS_TEST_MIC`).
-pub type Source = Arc<dyn Fn(Option<String>, &AtomicBool, &AtomicBool) -> Result<Samples, String> + Send + Sync>;
+pub type Source = Arc<dyn Fn(Option<String>, &AtomicBool, &AtomicBool, &Arc<AtomicU32>) -> Result<Samples, String> + Send + Sync>;
 
 /// Why a memo has no transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,13 +114,13 @@ impl Playing for Played {
 }
 
 /// The microphone, until stopped, at most `MAX_SECONDS` (the model's limit).
-fn microphone(device: Option<String>, stop: &AtomicBool, opened: &AtomicBool) -> Result<Samples, String> {
+fn microphone(device: Option<String>, stop: &AtomicBool, opened: &AtomicBool, level: &Arc<AtomicU32>) -> Result<Samples, String> {
     // (Left or discarded before it began: the microphone isn't opened at all.)
     if stop.load(Ordering::Acquire) {
         return Ok((Vec::new(), 16_000));
     }
-    let level = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let capture = zend_voice::Capture::start(device.as_deref(), level).map_err(|e| e.to_string())?;
+    // (The level is the capture's own, from the samples it records.)
+    let capture = zend_voice::Capture::start(device.as_deref(), level.clone()).map_err(|e| e.to_string())?;
     opened.store(true, Ordering::Release);
     let started = std::time::Instant::now();
     while !stop.load(Ordering::Acquire) && !capture.ended() && started.elapsed().as_secs() < zend_voice::MAX_SECONDS as u64 {
@@ -130,21 +134,35 @@ fn microphone(device: Option<String>, stop: &AtomicBool, opened: &AtomicBool) ->
 /// "been said" by the time Stop comes (all of it at its end). Only for an
 /// offscreen test instance with no microphone (`ZEND_IDEAS_TEST_MIC`).
 fn file_source(path: PathBuf) -> Source {
-    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool| {
+    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool, level: &Arc<AtomicU32>| {
         let bytes = std::fs::read(&path).map_err(|e| format!("No microphone available ({}: {e})", path.display()))?;
         let (samples, rate) = wav::decode(&bytes)?;
         let max = rate as usize * zend_voice::MAX_SECONDS;
         opened.store(true, Ordering::Release);
         let started = std::time::Instant::now();
+        let mut metered = 0;
         loop {
             let said = (started.elapsed().as_secs_f64() * rate as f64) as usize;
+            let n = said.min(samples.len()).min(max);
+            if n > metered {
+                level.fetch_max(rms(&samples[metered..n]).to_bits(), Ordering::Relaxed);
+                metered = n;
+            }
             if stop.load(Ordering::Acquire) || said >= samples.len().min(max) {
-                let n = said.min(samples.len()).min(max);
                 return Ok((samples[..n].to_vec(), rate));
             }
             std::thread::sleep(Duration::from_millis(10));
         }
     })
+}
+
+/// The loudness of a stretch of samples, as the voice crate's capture measures it.
+pub(crate) fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let r = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    if r.is_finite() { r } else { 0.0 }
 }
 
 impl Parts {
@@ -174,6 +192,8 @@ impl Parts {
 struct Recorder {
     stop: Arc<AtomicBool>,
     opened: Arc<AtomicBool>,
+    /// The loudest RMS heard since the last poll (f32 bits).
+    level: Arc<AtomicU32>,
     result: mpsc::Receiver<Result<Samples, String>>,
 }
 
@@ -233,6 +253,10 @@ pub(crate) struct Service {
     items: Vec<Idea>,
     /// The page isn't shown (`leave`): nothing starts recording until it is again.
     away: bool,
+    /// The waveform while recording (dictation's), and whether its bars
+    /// changed since they were last published (`ideas_levels`).
+    meter: crate::dictation::meter::Meter,
+    levels_changed: bool,
 }
 
 impl Service {
@@ -260,7 +284,29 @@ impl Service {
             model,
             items,
             away: false,
+            meter: Default::default(),
+            levels_changed: false,
         }
+    }
+
+    /// The waveform's bars, newest first, once each time they change.
+    pub(crate) fn take_levels(&mut self) -> Option<Vec<f32>> {
+        std::mem::take(&mut self.levels_changed).then(|| self.meter.newest())
+    }
+
+    /// No waveform: not recording any more (stopped, discarded, left, ended).
+    fn clear_levels(&mut self) {
+        self.meter.reset();
+        self.levels_changed = true;
+    }
+
+    /// How long the loop waits: to the next slot while recording (the bars
+    /// move once a slot, as dictation's do), else its usual beat.
+    pub(crate) fn poll_wait(&self) -> Duration {
+        const BEAT: Duration = Duration::from_millis(100);
+        self.meter
+            .until_next(std::time::Instant::now())
+            .map_or(BEAT, |d| (d + Duration::from_millis(1)).min(Duration::from_millis(40)))
     }
 
     fn store(&self) -> Result<&Store, String> {
@@ -350,18 +396,20 @@ impl Service {
         self.playing = None;
         let stop = Arc::new(AtomicBool::new(false));
         let opened = Arc::new(AtomicBool::new(false));
+        let level = Arc::new(AtomicU32::new(0));
         let (tell, result) = mpsc::sync_channel(1);
-        let (source, s, o) = (self.source.clone(), stop.clone(), opened.clone());
+        let (source, s, o, l) = (self.source.clone(), stop.clone(), opened.clone(), level.clone());
         std::thread::Builder::new()
             .name("ideas-record".into())
             .spawn(move || {
-                let heard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source(device, &s, &o)))
+                let heard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source(device, &s, &o, &l)))
                     .unwrap_or_else(|_| Err("The microphone stopped unexpectedly".into()));
                 let _ = tell.send(heard);
             })
             .map_err(|e| e.to_string())?;
-        self.recorder = Some(Recorder { stop, opened, result });
+        self.recorder = Some(Recorder { stop, opened, level, result });
         self.started = None;
+        self.clear_levels();
         self.recording = json!({"phase":"starting"});
         Ok(())
     }
@@ -371,6 +419,7 @@ impl Service {
         if let Some(r) = &self.recorder {
             r.stop.store(true, Ordering::Release);
             self.recording = json!({"phase":"saving"});
+            self.clear_levels();
         }
     }
 
@@ -380,6 +429,7 @@ impl Service {
             r.stop.store(true, Ordering::Release);
         }
         self.recording = json!({"phase":"idle"});
+        self.clear_levels();
     }
 
     /// The page shows again: Record may start.
@@ -452,8 +502,17 @@ impl Service {
         let mut heard = None;
         if let Some(r) = &self.recorder {
             if self.recording["phase"] == "starting" && r.opened.load(Ordering::Acquire) {
-                self.started = Some(std::time::Instant::now());
+                let now = std::time::Instant::now();
+                self.started = Some(now);
                 self.recording = json!({"phase":"recording", "seconds": 0});
+                // (Heard while opening counts toward the first slot.)
+                self.meter.start(now);
+            }
+            if self.recording["phase"] == "recording" {
+                let rms = f32::from_bits(r.level.swap(0, Ordering::Relaxed));
+                if self.meter.record(std::time::Instant::now(), rms) {
+                    self.levels_changed = true;
+                }
             }
             if let Some(started) = self.started.filter(|_| self.recording["phase"] == "recording") {
                 self.recording["seconds"] = json!(started.elapsed().as_secs());
@@ -467,6 +526,7 @@ impl Service {
         if let Some(result) = heard {
             self.recorder = None;
             self.started = None;
+            self.clear_levels();
             match result {
                 Err(error) => self.recording = json!({"phase":"failed", "kind":"microphone", "error": error}),
                 Ok((samples, rate)) if samples.len() < rate as usize / 10 => {
@@ -524,6 +584,9 @@ impl Service {
 
 pub(crate) struct Ideas {
     shared: zgx_script::Shared,
+    /// The waveform's bars (`ideas_levels`), on their own so readers of
+    /// `ideas` don't run again at each slot.
+    levels: zgx_script::Shared,
     pub(crate) service: RefCell<Service>,
     published: RefCell<Json>,
 }
@@ -533,6 +596,10 @@ impl Ideas {
         if *self.published.borrow() != now {
             self.shared.set(json_value(&now));
             *self.published.borrow_mut() = now;
+        }
+        let levels = self.service.borrow_mut().take_levels();
+        if let Some(levels) = levels {
+            self.levels.set(crate::dictation::levels_value(&levels));
         }
     }
     /// One beat of the loop: what finished, then what shows.
@@ -547,6 +614,7 @@ impl Ideas {
 pub(crate) fn attach(host: &ScriptHost, service: Service, wake: impl Fn() + 'static) -> Rc<Ideas> {
     let me = Rc::new(Ideas {
         shared: host.shared("ideas", Value::Nil),
+        levels: host.shared("ideas_levels", json_value(&json!([]))),
         service: RefCell::new(service),
         published: RefCell::new(Json::Null),
     });
@@ -618,7 +686,8 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         while work.recv().await.is_some() {
             while me.service.borrow().needs_poll() {
                 me.tick();
-                zgx::timer::sleep(Duration::from_millis(100)).await;
+                let wait = me.service.borrow().poll_wait();
+                zgx::timer::sleep(wait).await;
             }
             me.tick();
         }

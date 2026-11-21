@@ -14,7 +14,7 @@ use zgx_script::testing::TestApp;
 /// A microphone that hears `samples` (or fails with `error`).
 fn mic(heard: Result<Samples, String>) -> Source {
     let heard = Mutex::new(Some(heard));
-    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool| {
+    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool, _level: &Arc<AtomicU32>| {
         let heard = heard.lock().unwrap().take().unwrap_or_else(|| Ok((vec![0.2; 16_000], 16_000)));
         let samples = heard?;
         opened.store(true, Ordering::Release);
@@ -259,7 +259,7 @@ fn the_page_from_the_sidebar_keeps_typed_ideas_and_memos() {
 /// it, and not at all when it was stopped by then, as the real one does.
 fn streaming(heard: Arc<std::sync::atomic::AtomicUsize>, open: Option<mpsc::Receiver<()>>) -> Source {
     let open = Mutex::new(open);
-    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool| {
+    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool, _level: &Arc<AtomicU32>| {
         if let Some(gate) = open.lock().unwrap().take() {
             let _ = gate.recv();
         }
@@ -416,5 +416,116 @@ fn going_to_settings_a_chat_or_back_stops_and_saves_the_recording() {
     record(&mut app, "recording after back");
     app.click("#ideas-stop");
     left(&mut app, &ideas, 3, "stopped by hand");
+    assert_eq!(app.error(), None);
+}
+
+/// A microphone that hears silence until `loud` is set, then a 440 Hz sine
+/// of amplitude `TONE`, 160 samples (10 ms) a beat, and meters each beat
+/// as the real capture does (its RMS into `level`).
+const TONE: f32 = 0.1;
+fn signal(loud: Arc<AtomicBool>) -> Source {
+    Arc::new(move |_device, stop: &AtomicBool, opened: &AtomicBool, level: &Arc<AtomicU32>| {
+        opened.store(true, Ordering::Release);
+        let mut all = Vec::new();
+        while !stop.load(Ordering::Acquire) {
+            let on = loud.load(Ordering::Acquire);
+            let beat: Vec<f32> = (0..160)
+                .map(|i| if on { TONE * (std::f32::consts::TAU * 440.0 * (all.len() + i) as f32 / 16_000.0).sin() } else { 0.0 })
+                .collect();
+            level.fetch_max(rms(&beat).to_bits(), Ordering::Relaxed);
+            all.extend(beat);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok((all, 16_000))
+    })
+}
+
+/// Polls for `ms` as the window's loop does, and the bars published last.
+fn poll_for(service: &mut Service, ms: u64, bars: &mut Vec<f32>) {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(ms) {
+        service.poll();
+        if let Some(b) = service.take_levels() {
+            *bars = b;
+        }
+        std::thread::sleep(service.poll_wait());
+    }
+}
+
+#[test]
+fn the_waveform_follows_what_the_memo_hears_and_goes_when_it_ends() {
+    use crate::dictation::meter::{BARS, normalize};
+    let tmp = tempfile::tempdir().unwrap();
+    let loud = Arc::new(AtomicBool::new(false));
+    let (mut p, _fake) = parts(tmp.path(), Ok((Vec::new(), 16_000)), true);
+    p.source = signal(loud.clone());
+    let mut service = Service::new(p);
+    let tone = normalize(TONE / std::f32::consts::SQRT_2);
+    for end in ["stop", "discard", "leave"] {
+        service.here();
+        service.record_start(None).unwrap();
+        let mut bars = vec![1.0];
+        until(&mut service, "recording", |s| phase(s) == "recording");
+        // Silence: bars at a slot each, every one quiet.
+        poll_for(&mut service, 400, &mut bars);
+        assert!(bars.len() >= 4 && bars.len() <= BARS, "{end}: {bars:?}");
+        assert!(bars.iter().all(|b| *b == 0.0), "{end}: silence is quiet: {bars:?}");
+        // The signal: the newest bars are its loudness, the older ones still quiet.
+        loud.store(true, Ordering::Release);
+        poll_for(&mut service, 300, &mut bars);
+        assert!((bars[0] - tone).abs() < 0.02, "{end}: {} against {tone}", bars[0]);
+        assert_eq!(*bars.last().unwrap(), 0.0, "{end}: the silence scrolled on");
+        loud.store(false, Ordering::Release);
+        match end {
+            "stop" => service.record_stop(),
+            "discard" => service.record_cancel(),
+            _ => service.leave(),
+        }
+        assert_eq!(service.take_levels(), Some(vec![]), "{end}: the waveform is gone");
+        bars.clear();
+        poll_for(&mut service, 100, &mut bars);
+        assert!(bars.is_empty(), "{end}: nothing comes back after: {bars:?}");
+        until(&mut service, "ended", |s| s.recorder.is_none());
+        assert!(service.take_levels().unwrap_or_default().is_empty(), "{end}: nothing after the end");
+    }
+}
+
+/// Bar `i`'s height in the page's waveform (1: the newest), in points.
+fn bar_h(app: &mut TestApp, i: usize) -> f32 {
+    app.bounds(&format!("#ideas-voice >> #voice-bar-{i}")).height as f32
+}
+
+#[test]
+fn the_page_shows_dictation_s_waveform_while_it_records_and_not_after() {
+    let tmp = tempfile::tempdir().unwrap();
+    let loud = Arc::new(AtomicBool::new(false));
+    let (mut p, _fake) = parts(tmp.path(), Ok((Vec::new(), 16_000)), true);
+    p.source = signal(loud.clone());
+    let (mut app, ideas) = mount(Service::new(p));
+    app.click("#sidebar-ideas");
+    wait(&mut app, &ideas, "the page", |a| a.find("#ideas-page").is_some());
+    assert!(app.find("#ideas-voice").is_none(), "no waveform before Record");
+    for (end, target) in [("stop", "#ideas-stop"), ("discard", "#ideas-discard"), ("leave", "role:checkbox \"Settings\"")] {
+        app.click("#ideas-record");
+        wait(&mut app, &ideas, "recording", |a| a.text("#ideas-recording-status").starts_with("Recording") && a.shown("#voice-wave"));
+        let start = Instant::now();
+        wait(&mut app, &ideas, "silent slots", |_| start.elapsed() > Duration::from_millis(300));
+        assert_eq!(bar_h(&mut app, 1), 3.0, "{end}: silence draws the baseline's dot");
+        loud.store(true, Ordering::Release);
+        let start = Instant::now();
+        wait(&mut app, &ideas, "loud slots", |a| start.elapsed() > Duration::from_millis(250) && bar_h(a, 1) > 3.0);
+        // 0.08 + 0.92 × the tone's level, of 16 points.
+        let expect = (0.08 + 0.92 * crate::dictation::meter::normalize(TONE / std::f32::consts::SQRT_2)) * 16.0;
+        let h = bar_h(&mut app, 1);
+        assert!((h - expect).abs() < 0.6, "{end}: {h} against {expect}");
+        loud.store(false, Ordering::Release);
+        app.click(target);
+        wait(&mut app, &ideas, "gone", |a| a.find("#ideas-voice").is_none() && ideas.service.borrow().recorder.is_none());
+        if end == "leave" {
+            app.click("role:checkbox \"Settings\"");
+            wait(&mut app, &ideas, "the page again", |a| a.shown("#ideas-page"));
+        }
+        assert!(app.find("#ideas-voice").is_none(), "{end}: no waveform after");
+    }
     assert_eq!(app.error(), None);
 }

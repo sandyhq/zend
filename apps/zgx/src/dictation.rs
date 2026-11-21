@@ -19,7 +19,7 @@ use zgx_script::{ScriptHost, Value};
 
 use crate::plugins::{json_value, off_thread, value_json};
 
-mod meter;
+pub(crate) mod meter;
 use meter::Meter;
 
 /// The model's folder under `<data>/models` (Ideas & Intents' memos use it too).
@@ -343,7 +343,7 @@ impl Dictation {
 }
 
 /// The bars as Luau reads them, to the thousandth (finer is never drawn).
-fn levels_value(levels: &[f32]) -> Value {
+pub(crate) fn levels_value(levels: &[f32]) -> Value {
     let rounded: Vec<f64> = levels
         .iter()
         .map(|a| (f64::from(*a) * 1000.0).round() / 1000.0)

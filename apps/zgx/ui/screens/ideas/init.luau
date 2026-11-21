@@ -13,6 +13,7 @@ local locale = require("@ds/locale")
 local toast = require("@ds/toast")
 local prefs = require("@app/screens/settings/prefs")
 local route = require("@app/screens/shell/route")
+local VoiceWave = require("@ds/voice_wave").VoiceWave
 
 local M = {}
 
@@ -24,6 +25,9 @@ M.KEY = `{M.PLUGIN}/{M.PAGE}`
 M.ICON = "lightbulb-minimalistic"
 
 M.state = ui.shared("ideas", nil :: any)
+-- While recording, the microphone's loudness, one bar a 60 ms slot, newest
+-- first (0 to 1): dictation's waveform, from the samples the memo takes.
+M.levels = ui.shared("ideas_levels", {} :: { number })
 local draft = ui.state("ideas_draft", "")
 
 function M.title(): string
@@ -110,6 +114,37 @@ end
 local function listening(): boolean
 	local p = phase()
 	return p == "starting" or p == "recording"
+end
+
+-- The waveform's mode (ds/voice_wave): the microphone opening, then the bars.
+local wave_phase = ui.computed(function(): string
+	return if phase() == "recording" then "listening" else "starting"
+end)
+
+-- What it hears, as the composer's voice bar shows dictation's: a pulsing
+-- dot and the waveform, only while it records (stopped, discarded or left,
+-- it's gone).
+local function voice_track(): Node
+	return ui.row {
+		id = "ideas-voice",
+		w_full = true,
+		h = "$zend.composer.voice.h",
+		pl = "$space.3",
+		pr = "$space.3",
+		gap = "$space.2",
+		items = "center",
+		rounded = "$radius.full",
+		bg = "$zend.composer.voice.bg",
+		ui.div {
+			w = 8,
+			h = 8,
+			shrink = 0,
+			rounded = "$radius.full",
+			bg = "$zend.composer.voice.ink",
+			opacity = ui.loop { from = 0.35, to = 1, duration = 900, fps = 30 },
+		},
+		VoiceWave { levels = M.levels, phase = wave_phase },
+	}
 end
 
 -- Record, or Stop and Discard while it records; the line beside them says
@@ -402,6 +437,7 @@ function M.view(): Node
 						ds.Text { ui.t("ideas.save_hint", { keys = ui.shortcut_text("cmd+enter") }), style = "caption", tone = "tertiary" },
 					},
 					recorder(),
+					ui.show(listening, voice_track()),
 					ui.column {
 						id = "ideas-list",
 						w_full = true,
