@@ -177,7 +177,7 @@ impl PiHarness {
         let instructions = instructions
             .map(|list| self::instructions::configure(&mut cmd, &mut scratch, list))
             .transpose()?;
-        let child = cmd.spawn().map_err(|e| {
+        let child = crate::process::spawn_agent(&mut cmd).map_err(|e| {
             crate::executable::spawn_error(e, Some(cwd), || crate::executable::binary_hint(&exe))
         })?;
         let mut child = Child::new(child);

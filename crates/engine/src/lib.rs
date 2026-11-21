@@ -218,6 +218,9 @@ pub struct EngineCore {
     /// Cloud runner only: credential broker + heartbeat (dropped on shutdown).
     cloud: std::sync::Mutex<Option<runner::CloudRunner>>,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
+    /// This process's agents, recorded in the data dir so that whatever
+    /// a killed engine leaves running is ended by the next one.
+    _agent_ledger: zend_harness::process::registry::Attachment,
     _instance_lock: InstanceLock,
 }
 
@@ -279,6 +282,11 @@ impl EngineCore {
         let data_dir = profile.device_root();
         std::fs::create_dir_all(data_dir)?;
         update_trial::refuse_mid_update(data_dir)?;
+        // Agents an engine on this data dir left running when it died (a
+        // SIGKILL, a crash) are ended; ours are recorded for the next one
+        // to do the same. Only with the data dir's lock held.
+        let agent_ledger = zend_harness::process::registry::attach(data_dir);
+        zend_harness::process::registry::sweep_in_background(data_dir);
         let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
         // This device's harness enablement (Settings → Providers) rides the
@@ -514,6 +522,7 @@ impl EngineCore {
             child_events: std::sync::Mutex::new(Some(child_events)),
             cloud: std::sync::Mutex::new(None),
             viewport_focus,
+            _agent_ledger: agent_ledger,
             _instance_lock: lock,
         })
     }
