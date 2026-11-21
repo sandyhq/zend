@@ -845,11 +845,12 @@ local function blocks_of(list: () -> { Block }, m: Message, now: () -> Message, 
 			end
 			return brow:get().text or ""
 		end
+		local streaming = now().streaming == true
 		return Markdown {
 			text = words,
 			-- Parsed incrementally only while it can grow.
-			key = if m.streaming then `reply:{m.id}:{b.id}` else nil,
-			veil = m.streaming == true,
+			key = if streaming then `reply:{m.id}:{b.id}` else nil,
+			veil = streaming,
 			veil_seed = ui.now() - opened_at < 300,
 			track = track(m.id),
 			window = if view
@@ -943,8 +944,8 @@ local function reply(
 		if m.blocks ~= nil then nil else Markdown {
 			text = text,
 			-- Parsed incrementally only while it can grow.
-			key = if m.streaming then `reply:{m.id}` else nil,
-			veil = m.streaming == true,
+			key = if row:peek().streaming == true then `reply:{m.id}` else nil,
+			veil = row:peek().streaming == true,
 			veil_seed = ui.now() - opened_at < 300,
 			pictures = if view then view.pictures else nil,
 			open = if view then view.open else nil,
