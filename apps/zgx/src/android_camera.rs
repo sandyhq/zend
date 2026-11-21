@@ -90,7 +90,7 @@ pub fn install(host: &ScriptHost) {
     });
     host.async_action("phone.connect", |arg| async move {
         crate::plugins::preview::refuse("phone.connect")?;
-        let code = arg.field("code").and_then(|c| c.as_str().map(str::to_owned)).unwrap_or_default();
+        let code = arg.field("code").map(crate::auth::text).unwrap_or_default();
         crate::phone_link::connect(&code).await
     });
 }
@@ -221,28 +221,29 @@ fn failed(what: &str, status: c_int) -> &'static str {
     "camera"
 }
 
+// (Each of these is all FFI calls, one after the other: unsafe throughout.)
+#[allow(unsafe_op_in_unsafe_fn)]
 impl Camera {
     /// # Safety
     /// On one thread, which drops it.
     unsafe fn open() -> Result<Camera, &'static str> {
         use ffi::*;
-        let null = std::ptr::null_mut;
         let mut camera = Camera {
             manager: ACameraManager_create(),
-            device: null(),
-            reader: null(),
-            container: null(),
-            output: null(),
-            target: null(),
-            request: null(),
-            session: null(),
+            device: std::ptr::null_mut(),
+            reader: std::ptr::null_mut(),
+            container: std::ptr::null_mut(),
+            output: std::ptr::null_mut(),
+            target: std::ptr::null_mut(),
+            request: std::ptr::null_mut(),
+            session: std::ptr::null_mut(),
             device_callbacks: Box::new(ACameraDevice_StateCallbacks {
-                context: null(),
+                context: std::ptr::null_mut(),
                 on_disconnected: on_device_disconnected,
                 on_error: on_device_error,
             }),
             session_callbacks: Box::new(ACameraCaptureSession_stateCallbacks {
-                context: null(),
+                context: std::ptr::null_mut(),
                 on_closed: on_session,
                 on_ready: on_session,
                 on_active: on_session,
@@ -261,7 +262,7 @@ impl Camera {
         if status != 0 {
             return Err(failed("image reader", status));
         }
-        let mut window = null();
+        let mut window = std::ptr::null_mut();
         let status = AImageReader_getWindow(camera.reader, &mut window);
         if status != 0 {
             return Err(failed("reader's window", status));
@@ -295,7 +296,7 @@ impl Camera {
             return Err(failed("session", status));
         }
         let mut requests = [camera.request];
-        let status = ACameraCaptureSession_setRepeatingRequest(camera.session, null(), 1, requests.as_mut_ptr(), null());
+        let status = ACameraCaptureSession_setRepeatingRequest(camera.session, std::ptr::null_mut(), 1, requests.as_mut_ptr(), std::ptr::null_mut());
         if status != 0 {
             return Err(failed("repeating", status));
         }
@@ -460,7 +461,7 @@ mod ffi {
     }
 
     #[link(name = "camera2ndk")]
-    extern "C" {
+    unsafe extern "C" {
         pub fn ACameraManager_create() -> *mut ACameraManager;
         pub fn ACameraManager_delete(manager: *mut ACameraManager);
         pub fn ACameraManager_getCameraIdList(manager: *mut ACameraManager, list: *mut *mut ACameraIdList) -> c_int;
@@ -503,7 +504,7 @@ mod ffi {
     }
 
     #[link(name = "mediandk")]
-    extern "C" {
+    unsafe extern "C" {
         pub fn AImageReader_new(width: i32, height: i32, format: i32, max_images: i32, reader: *mut *mut AImageReader) -> c_int;
         pub fn AImageReader_delete(reader: *mut AImageReader);
         pub fn AImageReader_getWindow(reader: *mut AImageReader, window: *mut *mut ANativeWindow) -> c_int;
