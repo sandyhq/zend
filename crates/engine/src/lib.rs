@@ -59,6 +59,7 @@ pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
 pub mod local_import;
+pub mod heap;
 pub mod managed;
 mod hosted_models;
 pub mod live_visuals;
