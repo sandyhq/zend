@@ -190,9 +190,10 @@ local function note(what: string)
 	calls:set(table.concat(said, ","))
 end
 
--- (`on`: another device it's on, by name, as the host says it.)
-local function show(id: string?, on: string?)
-	shown:set({ busy = false, item = if id then table.clone(PLUGINS[id]) else nil, device_name = on } :: any)
+-- (`on`: another device it's on, by name, as the host says it; `os`:
+-- that device's platform, when the host knows it.)
+local function show(id: string?, on: string?, os: string?)
+	shown:set({ busy = false, item = if id then table.clone(PLUGINS[id]) else nil, device_name = on, device_platform = os } :: any)
 end
 
 ui.actions {
@@ -237,6 +238,8 @@ ui.command { id = "wide", title = "Show Composer kit", run = function() show("wi
 ui.command { id = "grown", title = "Show Gh helper, grown", run = function() show("grown") end }
 ui.command { id = "long", title = "Show Everything", run = function() show("long") end }
 ui.command { id = "sync_devbox", title = "Show Checkout sync, on Devbox", run = function() show("sync", "Devbox") end }
+ui.command { id = "sync_linux_box", title = "Show Checkout sync, on a Linux box", run = function() show("sync", "Devbox", "linux") end }
+ui.command { id = "sync_pixel", title = "Show Checkout sync, on another phone", run = function() show("sync", "Pixel", "android") end }
 -- The sheet as the phone shows it (the host's `platform`).
 ui.command {
 	id = "on_android",

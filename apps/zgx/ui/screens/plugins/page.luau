@@ -351,7 +351,8 @@ local Control = ui.component(function(props: { now: State<any>, on: string? }): 
 				tone = "accent",
 				size = "sm",
 				on_click = function()
-					state.review(now:peek().id, on_device, if on_device then device_name() else nil)
+					local d = if on_device then shown_device() else nil
+					state.review(now:peek().id, on_device, if on_device then device_name() else nil, if d then d.platform else nil)
 				end,
 				ui.t("plugins.page.review"),
 			},

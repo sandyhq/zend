@@ -395,3 +395,58 @@ async fn the_window_writes_its_plugins_log_and_agents_only_read_it() {
     assert!(none["rpc_error"].as_str().unwrap_or_default().contains("no plugin nope"), "{none}");
 }
 
+
+
+// ── What the device lacks ─────────────────────────────────────────────────
+
+const RUNS: &str = r#"
+local zend = require("./zend")("svc")
+zend.serve("echo", function(args)
+	return zend.run("echo", { args.word }):await().stdout
+end)
+"#;
+
+fn runs_echo() -> serde_json::Value {
+    let mut manifest = with_service(&["commands"]);
+    manifest["commands"] = json!(["echo"]);
+    manifest
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn a_desktop_service_runs_the_programs_it_was_allowed() {
+    let f = fixture();
+    write(&f.plugins, "1.0.0", runs_echo(), Some(RUNS)).await;
+    allow(&f.plugins).await;
+    let answered = ask(&f.plugins, "echo", json!({ "word": "hi" })).await;
+    assert_eq!(answered, json!({ "ok": true, "value": "hi\n" }), "{answered}");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn on_android_a_service_runs_no_programs_even_allowed() {
+    let f = fixture();
+    f.plugins.as_if_on_android(true);
+    write(&f.plugins, "1.0.0", runs_echo(), Some(RUNS)).await;
+    allow(&f.plugins).await;
+    let item = call(&f.plugins, methods::LIST_PLUGINS, json!({})).await["plugins"][0].clone();
+    assert_eq!(item["status"], "on", "{item}");
+    assert!(!item["allowed"].as_array().unwrap().iter().any(|p| p == "commands"), "{item}");
+    let refused = ask(&f.plugins, "echo", json!({ "word": "hi" })).await;
+    assert_ne!(refused["ok"], true, "{refused}");
+    assert!(refused["message"].as_str().unwrap().contains("run programs") || refused["message"].as_str().unwrap().contains("Not on this device"), "{refused}");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn a_consent_made_before_grants_android_nothing_it_lacks() {
+    let f = fixture();
+    write(&f.plugins, "1.0.0", runs_echo(), Some(RUNS)).await;
+    allow(&f.plugins).await;
+    // Allowed as a desktop would (or on this phone before), then held to
+    // what Android lacks: the stored consent no longer grants "commands".
+    f.plugins.as_if_on_android(true);
+    f.plugins.rescan().await;
+    let refused = ask(&f.plugins, "echo", json!({ "word": "hi" })).await;
+    assert_ne!(refused["ok"], true, "{refused}");
+}

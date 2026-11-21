@@ -43,6 +43,13 @@ function M.lacks_permission(permission: string): string?
 	return if M.android() then M.ANDROID_LACKS_PERMISSIONS[permission] else nil
 end
 
+-- Why a device on `os` (its platform, as the devices list names it:
+-- "android", "macos", "linux", …) lacks a plugin permission, if it does.
+-- Unknown (nil): nothing is said lacking.
+function M.lacks_permission_on(os: string?, permission: string): string?
+	return if os == "android" then M.ANDROID_LACKS_PERMISSIONS[permission] else nil
+end
+
 -- Whether the window runs on Android (the host's `platform`, its OS).
 function M.android(): boolean
 	return ui.shared("platform", ""):peek() == "android"

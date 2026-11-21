@@ -963,6 +963,33 @@ async fn plugins_send_checks_and_targets() {
 }
 
 #[tokio::test]
+async fn on_android_no_native_mcp_server_reaches_agents_even_allowed() {
+    let f = fixture();
+    f.plugins.as_if_on_android(true);
+    let manifest = serde_json::json!({
+        "permissions": ["native"],
+        "mcp": { "command": "./bin/server", "args": ["--stdio"] },
+    });
+    write_plugin(f.plugins.plugins_dir(), "native", manifest, None);
+    std::fs::create_dir_all(f.plugins.plugins_dir().join("native/bin")).unwrap();
+    std::fs::write(f.plugins.plugins_dir().join("native/bin/server"), "#!/bin/sh\n").unwrap();
+    let pending = item(&f.plugins, "native").await;
+    let on = call(
+        &f.plugins,
+        methods::DECIDE_PLUGIN,
+        serde_json::json!({ "id": "native", "allow": true, "hash": pending["hash"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(on["status"], "on", "{on}");
+    assert!(f.plugins.native_mcp_servers().is_empty(), "Android hands agents no native server");
+    // The same consent on a desktop does.
+    f.plugins.as_if_on_android(false);
+    f.plugins.rescan().await;
+    assert_eq!(f.plugins.native_mcp_servers().len(), 1);
+}
+
+#[tokio::test]
 async fn plugins_native_mcp_servers_run_from_the_snapshot() {
     let f = fixture();
     let manifest = serde_json::json!({

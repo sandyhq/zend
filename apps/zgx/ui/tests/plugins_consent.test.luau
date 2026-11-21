@@ -260,6 +260,45 @@ test("on Android an ask the phone lacks says why, and reads calm", function()
 	expect(tree).to_contain("Run in the background")
 end)
 
+
+-- (What a device lacks is that device's: the phone's window allowing a
+-- plugin on a desktop warns as a desktop's sheet does.)
+test("on Android, a sheet for a desktop says what that desktop does, not what the phone lacks", function()
+	local app = open()
+	app:command("on_android")
+	app:command("sync_linux_box")
+	app:frames(20)
+	local tree = app:tree("#consent")
+	expect(tree).to_contain("Devbox")
+	expect(tree).never.to_contain("Not on Android")
+	expect(tree).to_contain("It can do whatever git can do with your sign-ins.")
+end)
+
+test("on Android, a sheet for a device whose platform isn't known warns as it always did", function()
+	local app = open()
+	app:command("on_android")
+	app:command("sync_devbox")
+	app:frames(20)
+	local tree = app:tree("#consent")
+	expect(tree).never.to_contain("Not on Android")
+	expect(tree).to_contain("It can do whatever git can do with your sign-ins.")
+end)
+
+test("a sheet for another Android device says what that phone lacks, from any window", function()
+	for _, here in { "on_android", "" } do
+		local app = open()
+		if here ~= "" then
+			app:command(here)
+		end
+		app:command("sync_pixel")
+		app:frames(20)
+		local tree = app:tree("#consent")
+		expect(tree).to_contain("Pixel")
+		expect(tree).to_contain("Not on Android: Android runs no programs for plugins")
+		expect(tree).never.to_contain("It can do whatever git can do with your sign-ins.")
+	end
+end)
+
 test("a shell or an interpreter says it's full control, by name, each program its own", function()
 	local app = open()
 	app:command("mixed")

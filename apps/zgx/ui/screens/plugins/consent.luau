@@ -8,9 +8,11 @@
 --
 -- The host publishes what to show as `consent`:
 --   { item = PluginItem?, busy = boolean, error = string?,
---     device_name = string? }   (another of your devices it's on, as that
+--     device_name = string?,   (another of your devices it's on, as that
 --                                device lists it: named here, and allowed
 --                                on that device alone)
+--     device_platform = string? } (that device's platform, when known: what
+--                                it lacks is said by it, not this window)
 -- (The item's name, version and tools' words come bounded and plain from
 -- the host, src/plugins/consent.rs `bounded`.) It answers
 -- `plugins.decide { id, allow, hash }` (the hash it was shown: a plugin
@@ -179,7 +181,7 @@ local function asked(it: any): { string }
 end
 
 -- One plugin's sheet: what it asks, scrolling, above your answer.
-local Sheet = ui.component(function(props: { it: any, elsewhere: string? }): Node
+local Sheet = ui.component(function(props: { it: any, elsewhere: string?, os: string? }): Node
 	local it, elsewhere = props.it, props.elsewhere
 	-- Allow takes a click once the sheet has shown a moment; "It's mine"
 	-- asks once more, in place of the answers.
@@ -192,7 +194,7 @@ local Sheet = ui.component(function(props: { it: any, elsewhere: string? }): Nod
 			armed:set(true)
 		end)
 	end)
-	local shown = if elsewhere then words.on_device(it, elsewhere) else it
+	local shown = if elsewhere then words.on_device(it, elsewhere, props.os) else it
 	local lines = words.lines(shown, asked(it))
 	local grew = words.diff(shown)
 	local again = it.allowed and #it.allowed > 0 and it.status == "pending"
@@ -468,7 +470,8 @@ local function body(key: string): Node
 	if type(elsewhere) ~= "string" or elsewhere == "" then
 		elsewhere = nil
 	end
-	return Sheet { it = item(), elsewhere = elsewhere }
+	local os = consent:peek().device_platform
+	return Sheet { it = item(), elsewhere = elsewhere, os = if type(os) == "string" and os ~= "" then os else nil }
 end
 
 function M.View(): Node

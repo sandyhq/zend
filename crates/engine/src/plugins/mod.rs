@@ -17,6 +17,7 @@
 pub mod agents;
 pub mod broker;
 pub mod capability;
+pub mod device;
 pub mod check;
 pub mod files;
 pub mod guides;
@@ -266,6 +267,9 @@ struct Inner {
     root: Mutex<Option<PathBuf>>,
     /// Zend's own plugins, the app's folder of them (`SetBuiltinPlugins`).
     builtin_dir: Mutex<Option<PathBuf>>,
+    /// Whether this device is Android, which lacks some permissions
+    /// (`device`): never granted here, whatever was allowed.
+    android: std::sync::atomic::AtomicBool,
     /// Zend's own plugins' folder, watched as yours are: an edit to one
     /// (developing Zend) loads as it's saved, not at the next rescan.
     builtin_watch: Mutex<Option<crate::fs_watch::FsWatch>>,
@@ -509,6 +513,13 @@ impl Plugins {
         Self::with_services(data_dir, device_id, service::Config::default())
     }
 
+    /// Hold this engine to what Android lacks (`device`), as it is on
+    /// Android anyway: for tests on a desktop. Read at the next scan.
+    #[doc(hidden)]
+    pub fn as_if_on_android(&self, android: bool) {
+        self.inner.android.store(android, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// [`Self::new`], its services run by `config` (tests: a short idle).
     pub fn with_services(data_dir: &Path, device_id: &str, config: service::Config) -> Self {
         let plugins_dir = data_dir.join(PLUGINS_DIR);
@@ -556,6 +567,7 @@ impl Plugins {
                 watch: Mutex::new(None),
                 root: Mutex::new(None),
                 builtin_dir: Mutex::new(None),
+                android: std::sync::atomic::AtomicBool::new(device::ANDROID),
                 builtin_watch: Mutex::new(None),
                 services: Services::new(&storage, config),
                 logs: logs::Logs::new(data_dir),
@@ -1271,8 +1283,13 @@ impl Plugins {
                 entries.push(scan::builtin_entry(inspected, off));
             }
         }
+        // What this device lacks is never granted, whatever was allowed:
+        // here, the one place every grant is read from (a service's plan,
+        // native MCP servers, the window's grants, what it says it may do).
+        let android = self.inner.android.load(std::sync::atomic::Ordering::Relaxed);
         for entry in entries.iter_mut() {
             lifecycle::annotate(&self.inner.plugins_dir, &mut entry.item);
+            device::keep_what_it_has(android, &mut entry.item.allowed);
         }
         // A changed version in your window instead (`window_preview`): one
         // of yours that's on, while it asks no more than you allowed.

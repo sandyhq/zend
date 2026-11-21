@@ -392,10 +392,14 @@ end
 
 function M.permission(item: any, permission: string): Line
 	local line = asked(item, permission)
-	-- What this device lacks (Android: programs, windows, a file picker, a
-	-- web view) it never grants, allowed or not: said under the ask, which
-	-- reads calm, since allowing it reaches nothing.
-	local why = platform.lacks_permission(permission)
+	-- What the device it runs on lacks (Android: programs, windows, a file
+	-- picker, a web view) it never grants, allowed or not: said under the
+	-- ask, which reads calm, since allowing it reaches nothing. Another
+	-- device's (`on_device`) by that device's platform, not this window's;
+	-- one unknown says nothing lacking.
+	local why = if (item :: any).on_device ~= nil
+		then platform.lacks_permission_on((item :: any).on_platform, permission)
+		else platform.lacks_permission(permission)
 	if why == nil then
 		return line
 	end
@@ -488,10 +492,11 @@ function M.diff(item: any): { Line }
 	return calm
 end
 
--- `item` as it stands on another device, `name`: lines that say where
--- it runs say there (the item itself unchanged).
-function M.on_device(item: any, name: string): any
-	return setmetatable({ on_device = name }, { __index = item })
+-- `item` as it stands on another device, `name` (its platform `os`, if
+-- known): lines that say where it runs say there, and what that device
+-- lacks (the item itself unchanged).
+function M.on_device(item: any, name: string, os: string?): any
+	return setmetatable({ on_device = name, on_platform = os }, { __index = item })
 end
 
 -- Each of `permissions`' lines, the risky ones last.

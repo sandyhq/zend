@@ -189,8 +189,12 @@ fn shown(bridge: &Bridge, id: &str, on: &On, busy: bool, error: Option<&str>) ->
     if let Some(item) = showable(bridge, id, on) {
         fields.push(("item", json_value(&bounded(&item.json))));
     }
-    if let Some((_, name)) = on {
+    if let Some((device, name)) = on {
         fields.push(("device_name", Value::from(name.as_str())));
+        // (Unknown: the sheet says what any device would.)
+        if let Some(platform) = bridge.device_platforms.borrow().get(device) {
+            fields.push(("device_platform", Value::from(platform.as_str())));
+        }
     }
     if let Some(error) = error {
         fields.push(("error", Value::from(error)));

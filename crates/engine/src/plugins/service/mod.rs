@@ -736,7 +736,11 @@ impl Ops for PluginOps {
         match kind {
             "run" => {
                 if !self.plan.allows("commands") {
-                    return done(Err(format!("{name} wasn't allowed to run programs on this device")));
+                    // (What the device lacks is never in the plan: say why.)
+                    return done(Err(match super::device::lacks("commands") {
+                        Some(why) => format!("Not on this device: {why}"),
+                        None => format!("{name} wasn't allowed to run programs on this device"),
+                    }));
                 }
                 // (Without a cwd: its snapshot, the folder it was loaded from.)
                 let (allowed, hooks, home) = (self.plan.commands.clone(), self.hooks.clone(), self.plan.dir.clone());

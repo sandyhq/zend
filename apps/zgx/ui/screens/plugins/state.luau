@@ -12,7 +12,7 @@
 --                       replaced = { module }  what plugins and the template
 --                         in use stand in for (where a failing screen is ours) }
 --
---   state.review(id, device?, device_name?)  the consent window for it
+--   state.review(id, device?, device_name?, device_platform?)  the consent window for it
 --   state.set_off(id, off, device?)  a promise; turns an allowed plugin off or on
 --   state.remove(id, device?)  a promise
 --   state.new_plugin(name)    a promise of its id: a new plugin of yours
@@ -113,9 +113,9 @@ M.shown = ui.computed(function(): { Item }
 	return M.list:get()
 end)
 
-function M.review(id: string, device: string?, device_name: string?)
+function M.review(id: string, device: string?, device_name: string?, device_platform: string?)
 	if device then
-		ui.invoke("plugins.review", { id = id, device = device, device_name = device_name or "" })
+		ui.invoke("plugins.review", { id = id, device = device, device_name = device_name or "", device_platform = device_platform or "" })
 	else
 		ui.invoke("plugins.review", id)
 	end

@@ -620,6 +620,16 @@ async fn github_token() -> Option<String> {
     token
 }
 
+/// Why a git repository can't be read here (`android`: on Android, where
+/// no git can be installed).
+fn git_missing(android: bool) -> &'static str {
+    if android {
+        "Android can't read git repositories: install the plugin from a link to its .zend-plugin file or a GitHub release instead"
+    } else {
+        "git isn't available on this device: install git, or install the plugin from a .zend-plugin file or a GitHub release instead"
+    }
+}
+
 async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     if !cfg!(test) {
@@ -642,12 +652,7 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let output = tokio::time::timeout(GIT_TIMEOUT, cmd.output())
         .await
         .map_err(|_| failure(reason::GIT_TIMEOUT, "The repository took too long to answer"))?
-        .map_err(|_| {
-            failure(
-                reason::GIT_MISSING,
-                "git isn't available on this device: install git, or install the plugin from a .zend-plugin file or a GitHub release instead",
-            )
-        })?;
+        .map_err(|_| failure(reason::GIT_MISSING, git_missing(super::device::ANDROID)))?;
     if !output.status.success() {
         return Err(failure(reason::REPO_UNREADABLE, "Couldn't read that repository (is it public, and is the branch right?)"));
     }
@@ -961,6 +966,13 @@ pub(crate) mod tests {
         });
         let manifest = key.sign_manifest(&manifest, &package::hashes(&files));
         package::pack(FORMAT, &manifest, &files).unwrap()
+    }
+
+    #[test]
+    fn without_git_android_points_at_links_and_a_desktop_at_installing_git() {
+        assert!(git_missing(true).starts_with("Android can't read git repositories"));
+        assert!(!git_missing(true).contains("install git"));
+        assert!(git_missing(false).contains("install git"));
     }
 
     #[test]

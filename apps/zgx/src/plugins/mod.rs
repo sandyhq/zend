@@ -308,6 +308,10 @@ pub struct Bridge {
     tasks: TaskSpawner,
     watches: RefCell<Vec<crate::engine::rpc::SetUpWatch>>,
     pub(crate) consent: RefCell<Option<consent::Consent>>,
+    /// Each other device's platform, as the window that asked for its
+    /// sheet named it (`plugins.review`'s `device_platform`): the sheet
+    /// says what that device lacks, not this one.
+    pub(crate) device_platforms: RefCell<HashMap<String, String>>,
     reviewed: Cell<bool>,
     /// Another device's plugins, shown by Settings → Plugins' switcher
     /// (`plugins.remote`; never loaded here).
@@ -542,6 +546,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         tasks: cx.tasks.clone(),
         watches: RefCell::default(),
         consent: RefCell::default(),
+        device_platforms: RefCell::default(),
         reviewed: Cell::new(false),
         remote: remote::Remote::new(host.shared("plugins.remote", remote::Remote::initial())),
         me: RefCell::default(),
@@ -3308,14 +3313,24 @@ impl Bridge {
                 }
             }
         });
-        // `id`, or `{ id, device?, device_name? }`: its sheet, for the device
-        // it's on (named on the sheet when it isn't this one).
+        // `id`, or `{ id, device?, device_name?, device_platform? }`: its
+        // sheet, for the device it's on (named on the sheet when it isn't
+        // this one, and said as that device's platform has it).
         host.action("plugins.review", {
             let me = me.clone();
             move |arg| {
                 if let Some(b) = me.upgrade() {
                     let (id, device) = remote::id_and_device(&arg);
                     let name = arg.field("device_name").map(text).unwrap_or_default();
+                    if let Some(d) = &device {
+                        let platform = arg.field("device_platform").map(text).unwrap_or_default();
+                        let mut platforms = b.device_platforms.borrow_mut();
+                        if platform.is_empty() {
+                            platforms.remove(d);
+                        } else {
+                            platforms.insert(d.clone(), platform);
+                        }
+                    }
                     consent::review(&b, &id, device.map(|d| (d, name)));
                 }
             }
