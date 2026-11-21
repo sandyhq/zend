@@ -26,6 +26,11 @@ pub mod agent_accounts;
 pub fn build_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| {
+        // (Packaged with its build's time, Android's: there the executable
+        // is the system's `app_process`, its time nothing of this build's.)
+        if let Some(built) = embedded_build_time() {
+            return format!("{}.{built}", env!("ZEND_GIT_COMMIT"));
+        }
         let built = std::env::current_exe()
             .and_then(std::fs::metadata)
             .and_then(|m| m.modified())
@@ -35,6 +40,12 @@ pub fn build_id() -> &'static str {
         format!("{}.{built}", env!("ZEND_GIT_COMMIT"))
     })
 }
+/// When this build was made, if its packaging said (`ZEND_BUILD_TIME`,
+/// seconds since the epoch: build.rs).
+pub fn embedded_build_time() -> Option<u64> {
+    env!("ZEND_BUILD_TIME").parse().ok().filter(|&secs| secs > 0)
+}
+
 pub mod auth;
 mod change_request_store;
 pub mod change_requests;

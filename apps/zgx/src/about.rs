@@ -624,8 +624,13 @@ fn feed_outcome(error: &str) -> String {
 }
 
 /// This app's build: when its executable was built (seconds since the
-/// epoch), as the engine says its own.
+/// epoch), as the engine says its own. A packaged build (Android's, whose
+/// executable is the system's `app_process`) says its commit and the time
+/// it was packaged with, as the engine's build id does.
 fn app_build() -> String {
+    if zend_engine::embedded_build_time().is_some() {
+        return zend_engine::build_id().to_owned();
+    }
     std::env::current_exe()
         .and_then(std::fs::metadata)
         .and_then(|m| m.modified())

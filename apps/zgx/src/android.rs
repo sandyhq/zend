@@ -65,9 +65,7 @@ pub fn main(app: AndroidApp, pack: &'static [u8]) {
         // (Returning ends the activity: nothing runs without its files.)
         Err(error) => return log::error!("zend: {error}"),
     };
-    if let Err(error) = ask_notifications(&app) {
-        log::warn!("zend: notifications: {error}");
-    }
+    ask_notifications(&app);
     zgx_desktop::android::set_app(app);
     log::info!("zend: activity starting ({})", files.display());
     // A check of the banners without a session to finish (G5's emulator
@@ -397,12 +395,27 @@ fn value(insets: Insets) -> Value {
 /// (a session done or waiting, crates/notify's banners), unless it may
 /// already; the system shows its own dialog and remembers the answer (a
 /// "Don't allow" isn't asked again: Android stops showing the dialog).
-fn ask_notifications(app: &AndroidApp) -> jni::errors::Result<()> {
+///
+/// Asked on Java's main thread, as `Activity.requestPermissions` must be
+/// (android_main is a thread of its own): queued there, it runs once the
+/// activity's looper takes it, after this returns.
+fn ask_notifications(app: &AndroidApp) {
+    let activity = app.clone();
+    app.run_on_java_main_thread(Box::new(move || {
+        if let Err(error) = request_notifications(&activity) {
+            log::warn!("zend: notifications: {error}");
+        }
+    }));
+}
+
+/// The asking itself, on the thread `ask_notifications` runs it on.
+fn request_notifications(app: &AndroidApp) -> jni::errors::Result<()> {
     use jni::objects::{JObject, JValue};
     const PERMISSION: &str = "android.permission.POST_NOTIFICATIONS";
     // SAFETY: the activity's VM and its `Activity` object, live while it is.
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
-    let mut env = vm.attach_current_thread_permanently()?;
+    // (The main thread is the VM's own: attached already, and stays so.)
+    let mut env = vm.attach_current_thread()?;
     let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
     let result = env.with_local_frame(8, |env| -> jni::errors::Result<()> {
         if env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()? < 33 {
@@ -411,11 +424,12 @@ fn ask_notifications(app: &AndroidApp) -> jni::errors::Result<()> {
         let name = env.new_string(PERMISSION)?;
         // PackageManager.PERMISSION_GRANTED is 0.
         if env.call_method(&activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&name)])?.i()? == 0 {
+            log::info!("zend: notifications: allowed already");
             return Ok(());
         }
         let names = env.new_object_array(1, "java/lang/String", &name)?;
         env.call_method(&activity, "requestPermissions", "([Ljava/lang/String;I)V", &[JValue::Object(&names), JValue::Int(1)])?;
-        log::info!("zend: notifications: asked the person");
+        log::info!("zend: notifications: asked the person (on {:?})", std::thread::current().name());
         Ok(())
     });
     if env.exception_check().unwrap_or(false) {
