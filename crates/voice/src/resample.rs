@@ -1,4 +1,5 @@
-//! Convert device-rate mono capture to the model's 16 kHz input on the worker.
+//! Convert device-rate mono capture to the model's 16 kHz input on the worker,
+//! and a recording to a speaker's rate for playback.
 use anyhow::{Result, ensure};
 use rubato::{FftFixedInOut, Resampler};
 
@@ -9,11 +10,21 @@ pub(crate) fn for_model(samples: Vec<f32>, rate: u32) -> Result<Vec<f32>> {
         (8_000..=192_000).contains(&rate),
         "Unsupported microphone sample rate"
     );
-    if rate == MODEL_RATE || samples.is_empty() {
+    convert(samples, rate, MODEL_RATE)
+}
+
+/// Mono `samples` at `from` Hz, at `to` Hz: the same duration, the delay
+/// of the filter taken off.
+pub(crate) fn convert(samples: Vec<f32>, from: u32, to: u32) -> Result<Vec<f32>> {
+    ensure!(
+        (8_000..=192_000).contains(&from) && (8_000..=192_000).contains(&to),
+        "Unsupported sample rate"
+    );
+    if from == to || samples.is_empty() {
         return Ok(samples);
     }
-    let length = (samples.len() as u64 * MODEL_RATE as u64 / rate as u64) as usize;
-    let mut resampler = FftFixedInOut::<f32>::new(rate as usize, MODEL_RATE as usize, 1024, 1)?;
+    let length = (samples.len() as u64 * to as u64 / from as u64) as usize;
+    let mut resampler = FftFixedInOut::<f32>::new(from as usize, to as usize, 1024, 1)?;
     let delay = resampler.output_delay();
     let chunk = resampler.input_frames_next();
     let mut input = vec![vec![0.0; chunk]];
@@ -71,6 +82,16 @@ mod tests {
     fn downsampling_filters_frequencies_above_model_nyquist() {
         let converted = for_model(tone(48_000, 12_000.0), 48_000).unwrap();
         assert!(rms(&converted[1000..15000]) < 0.01);
+    }
+    #[test]
+    fn playback_upsampling_keeps_duration_and_pitch() {
+        // A memo recorded at 16 kHz, played on a 48 kHz speaker.
+        let converted = convert(tone(16_000, 440.0), 16_000, 48_000).unwrap();
+        assert_eq!(converted.len(), 48_000);
+        let steady = &converted[3000..45000];
+        let cycles = steady.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        assert!((384..=386).contains(&cycles), "{cycles}");
+        assert!(convert(vec![1.0], 16_000, 0).is_err());
     }
     #[test]
     fn short_capture_and_invalid_rates_are_bounded() {

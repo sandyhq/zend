@@ -50,6 +50,7 @@ mod fonts;
 mod github;
 mod haptics;
 mod heap;
+mod ideas;
 mod images;
 mod intro_handoff;
 mod links;
@@ -876,6 +877,9 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         chat::install(cx, &host);
         // Holding to dictate, and Settings → Voice (src/dictation.rs).
         dictation::install(cx, &host);
+        // Ideas & Intents: typed ideas and voice memos kept on this device
+        // (src/ideas.rs, ui/screens/ideas).
+        ideas::install(cx, &host);
         // Agent visuals in a transcript (src/visuals.rs).
         visuals::install(cx, &host);
         // Settings' account, organization and engine calls (src/settings.rs).

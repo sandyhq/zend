@@ -23,6 +23,7 @@ local appearance = require("@app/screens/shell/appearance")
 local art = require("@app/screens/shell/art")
 local boundary = require("@app/screens/shell/boundary")
 local PluginStage = require("@app/screens/plugins/stage")
+local Ideas = require("@app/screens/ideas")
 
 export type Props = {
 	files: State<boolean>,
@@ -308,6 +309,16 @@ return function(props: Props): Node
 	-- off, a quiet word. What's around it gives the page.
 	local function plugin_page(key: string): Node
 		local plugin, page = string.match(key, "^([^/]*)/(.*)$")
+		-- Zend's own page there (Ideas & Intents, under the id no plugin
+		-- may take): built here, nothing for a plugin to fill.
+		if key == Ideas.KEY then
+			return ui.column {
+				w_full = true,
+				h_full = true,
+				provide = { page = { id = page, title = Ideas.title() }, panel = { page = { plugin = plugin, id = page } } },
+				Ideas.view(),
+			}
+		end
 		local listed: any = nil
 		for _, p in (ui.shared("plugins.pages", {} :: { any }):peek() or {}) :: { any } do
 			if p.plugin == plugin and p.id == page then

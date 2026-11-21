@@ -46,6 +46,7 @@ env -i $BASE HOME=$R/home ZEND_DATA_DIR=$R/engine ZEND_IPC_PORT=$PORT $T/zend st
 | `ZGX_POPUP_WINDOWS=0` | no extra windows (consent sheets, popups) |
 | `ZEND_ZGX_ENGINE_SPAWN=0`, `ZEND_ZGX_ENGINE_PORT`, `ZEND_ZGX_ENGINE_DATA` | the window uses your engine instead of starting one |
 | `ZEND_ZGX_PLUGIN_LOG=1` | plugin prints also go to the window's stderr (`app.log`) |
+| `ZEND_IDEAS_TEST_MIC=<file.wav>` | on the window: Ideas & Intents records from this WAV, played in as if spoken in real time, instead of the microphone (a stand-in has none). Only for testing; dictation in the composer is unaffected |
 | `ZEND_PLUGIN_PREVIEW_APP`, `ZEND_PLUGIN_PREVIEW_HOME` | on the engine: which window binary and home a plugin preview uses (only for testing previews) |
 
 Without `ZGX_OFFSCREEN=1` the window opens on the person's current workspace. That happened once (a consent window, about three seconds). Don't.

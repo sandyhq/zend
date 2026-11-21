@@ -147,6 +147,14 @@ export type Section = { id: string, name: string, sessions: { string } }
 export type Places = { pinned: { string }, sections: { Section } }
 -- What may change: a list as it is, or read through a state or a function.
 export type Live<T> = T | State<T> | () -> T
+-- One of the app's own pages, a row under Search (`destinations`).
+export type Destination = {
+	id: string,
+	title: () -> string,
+	icon: string,
+	on_click: () -> (),
+	selected: (() -> boolean)?,
+}
 export type Props = {
 	-- Compact (a line a session) or regular (two).
 	compact: State<boolean>,
@@ -196,6 +204,10 @@ export type Props = {
 	-- title, icon? }` as a state of a list, and what choosing one does.
 	pages: State<{ any }>?,
 	on_page: ((page: any) -> ())?,
+	-- The app's own pages, each a row under Search before the plugins':
+	-- `{ id, title, icon, on_click, selected? }` (its row's id is
+	-- `sidebar-<id>`).
+	destinations: { Destination }?,
 	on_archive: ((id: string) -> ())?,
 	-- The Activity view: on, one list of what needs you (each session by its
 	-- `rank`, those on a `shelf` left out), pinned above it, and at its foot
@@ -2114,6 +2126,30 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			end), hint(ui.shortcut_text("cmd+k"))),
 			on_click = props.on_search,
 		},
+		if props.destinations
+			then ui.column {
+				w_full = true,
+				gap = "$zend.list.gap",
+				table.unpack((function(): { Node }
+					local rows: { Node } = {}
+					for _, d in props.destinations :: { Destination } do
+						table.insert(rows, ui.div {
+							id = `sidebar-{d.id}`,
+							w_full = true,
+							row {
+								name = d.title,
+								class = "sidebar-destination",
+								lead = Icon { name = d.icon :: any, size = 16 },
+								words = line(label(d.title)),
+								selected = d.selected,
+								on_click = d.on_click,
+							},
+						})
+					end
+					return rows
+				end)()),
+			}
+			else nil,
 		if props.pages
 			-- (Each page's row follows it: a plugin renaming its page or
 			-- changing its icon shows here in place.)

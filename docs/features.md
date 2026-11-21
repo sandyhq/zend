@@ -32,6 +32,10 @@ How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your age
 
 ## For people in a chat
 
+### Ideas & Intents
+A page under Search in the desktop sidebar for what comes to mind before it belongs anywhere. Type an idea and save it (⌘Enter): no title, project or chat. Or record a voice memo between Record and Stop, up to a minute: the recording is written to `<data>/ideas` as a WAV first, then transcribed on this device with the speech model Settings → Voice downloads. Without the model, or when transcription fails, the memo keeps its audio and says why, with Transcribe or Try again. Memos play from the page, also after a restart; newest first. Nothing leaves the device and nothing goes to an agent. The composer's dictation is separate and still keeps no audio.
+Code: `apps/zgx/src/ideas.rs`, `apps/zgx/ui/screens/ideas`. Plan: `plans/ideas-intents`.
+
 ### Edit a prompt, fork from a message
 Hovering one of your prompts shows Edit: the prompt turns into an editor where it stands, its files and pictures kept as chips you can take off. Save & send asks once ("Removes N messages below. Files the agent changed are not reverted."), then the engine removes the prompt and everything below it for good and the edited words go as a new turn. The agent forgets the removed part: Zend drops the chat's provider session and the next turn starts a fresh one fed the kept history, on every harness. Not while a turn runs. Hovering any prompt or reply also shows Fork from here: a side chat with the conversation up to that reply, or up to just before that prompt with its words waiting in the side chat's message box.
 How to use: [working-with-agents.md](working-with-agents.md), "Editing a prompt, forking from a message". Engine: `RewindChat`, `ForkSideChat` with `messageId`.

@@ -22,14 +22,15 @@ use crate::plugins::{json_value, off_thread, value_json};
 mod meter;
 use meter::Meter;
 
-const MODEL: &str = "parakeet-tdt-0.6b-v3-int8";
+/// The model's folder under `<data>/models` (Ideas & Intents' memos use it too).
+pub(crate) const MODEL: &str = "parakeet-tdt-0.6b-v3-int8";
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn zend_microphone_permission() -> i32;
     fn zend_request_microphone();
 }
-fn authorize() -> Result<(), String> {
+pub(crate) fn authorize() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     match unsafe { zend_microphone_permission() } {
         1 => (),

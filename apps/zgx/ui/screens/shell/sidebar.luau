@@ -24,6 +24,7 @@ local auth = require("@account/auth")
 local PrivateText = require("@ds/private_text")
 local status = require("@ds/status")
 local route = require("@app/screens/shell/route")
+local Ideas = require("@app/screens/ideas")
 local view = require("@app/screens/shell/view")
 local fit = require("@app/screens/shell/fit")
 local motion = require("@ds/motion")
@@ -1678,6 +1679,22 @@ M.Sidebar = ui.component(function(props: Props): Node
 		on_unarchive = function(id: string)
 			sessions.unarchive(id)
 		end,
+		-- Zend's own pages: Ideas & Intents (screens/ideas), opened as a
+		-- plugin's page is, under Zend's reserved id.
+		destinations = {
+			{
+				id = "ideas",
+				title = Ideas.title,
+				icon = Ideas.ICON,
+				on_click = function()
+					route.plugin_page(Ideas.PLUGIN, Ideas.PAGE)
+				end,
+				selected = function(): boolean
+					local c = route.current:get()
+					return c.name == "plugin" and c.plugin == Ideas.PLUGIN and c.page == Ideas.PAGE
+				end,
+			},
+		},
 		pages = ui.shared("plugins.pages", {} :: { any }),
 		on_page = function(page: any)
 			route.plugin_page(page.plugin, page.id)

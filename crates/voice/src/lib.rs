@@ -1,4 +1,5 @@
-//! Desktop-local Parakeet v3. No engine, document, RPC or audio persistence.
+//! Desktop-local Parakeet v3. No engine, document, RPC or audio persistence:
+//! a caller that keeps a recording (Ideas & Intents' memos) writes it itself.
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parakeet_rs::{ParakeetTDT, Transcriber};
@@ -12,7 +13,9 @@ use std::{
     },
 };
 
+mod play;
 mod resample;
+pub use play::Playback;
 
 pub const MAX_SECONDS: usize = 60;
 #[derive(serde::Deserialize)]

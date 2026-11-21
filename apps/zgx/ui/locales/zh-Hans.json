@@ -3952,5 +3952,43 @@
       "imported_toast": "{count, plural, one {已导入主题} other {已导入 # 个主题}}",
       "imported_body": "它在“你的”中。"
     }
+  },
+  "ideas": {
+    "title": "Ideas & Intents",
+    "description": "What comes to mind before it belongs anywhere: a few words, or a voice memo. Kept on this device; no project or chat needed.",
+    "couldnt": "Couldn't do that",
+    "unavailable": "Ideas can't be kept right now: {error}",
+    "new": "New idea",
+    "placeholder": "Write an idea…",
+    "save": "Save idea",
+    "save_hint": "{keys} saves",
+    "record": "Record memo",
+    "stop": "Stop and save",
+    "discard": "Discard",
+    "delete": "Delete",
+    "empty": "Nothing here yet. Write an idea or record a memo; the newest stays on top.",
+    "recording": {
+      "hint": "Memos are kept as recorded, up to a minute each, and transcribed on this device.",
+      "starting": "Opening the microphone…",
+      "on": "Recording {time} of {max}",
+      "saving": "Saving the recording…",
+      "saved": "Memo saved.",
+      "microphone": "Zend couldn't use the microphone: {error}. Check that one is connected and that Zend may use it.",
+      "empty": "Nothing was recorded, so nothing was saved.",
+      "save_failed": "The recording couldn't be saved: {error}"
+    },
+    "memo": {
+      "play": "Play memo",
+      "stop_playing": "Stop playing",
+      "play_failed": "Couldn't play it: {error}",
+      "transcribing": "Transcribing on this device…",
+      "no_model": "No transcript: the speech model isn't on this device. The recording is kept; get the model in Settings → Voice, then transcribe it.",
+      "failed": "Transcription failed: {error}. The recording is kept.",
+      "not_yet": "Not transcribed yet. The recording is kept.",
+      "silent": "No speech heard.",
+      "get_model": "Get the speech model",
+      "transcribe": "Transcribe",
+      "retry": "Try again"
+    }
   }
 }
