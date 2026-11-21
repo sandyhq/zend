@@ -2172,6 +2172,7 @@ impl EngineRpc {
                 notify_parent,
                 cloud: _,
             } => {
+                tracing::debug!(target: "first_word", chat = %chat_id, "create chat");
                 // A voice orchestrator is hidden, so the chats it creates are
                 // the user's top-level sessions rather than its side chats.
                 let parent_chat_id = parent_chat_id
@@ -2322,6 +2323,7 @@ impl EngineRpc {
                 self.workspace.change_sidebar_pin(&change).map_err(failed)
             }
             MutateParams::SetChatConfig { chat_id, config } => {
+                tracing::debug!(target: "first_word", chat = %chat_id, "set chat config");
                 // A chat may change provider between turns, never during one:
                 // the live run belongs to the old harness and would keep
                 // writing into the transcript the new one is about to read.
