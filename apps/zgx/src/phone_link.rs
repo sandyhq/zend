@@ -144,7 +144,9 @@ pub fn ws_url(host: &str, port: u16) -> String {
 }
 
 /// The code for `edge` and `token`: `zend://connect?v=1&edge=…&token=…`,
-/// both percent-encoded.
+/// both percent-encoded. (A computer shows v=2 codes now; v=1 is still
+/// read, and written by the tests.)
+#[cfg(test)]
 pub fn encode(edge: &str, token: &str) -> String {
     format!("{PREFIX}v=1&edge={}&token={}", escape(edge.trim()), escape(token.trim()))
 }
