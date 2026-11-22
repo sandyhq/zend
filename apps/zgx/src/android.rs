@@ -330,8 +330,10 @@ pub fn start_engine(start: EngineStart) -> bool {
 fn tracing() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let filter = tracing_subscriber::EnvFilter::try_from_env("ZEND_LOG")
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let filter = zend_cli::logging::without_websocket_payloads(
+            tracing_subscriber::EnvFilter::try_from_env("ZEND_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        );
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_ansi(false)
