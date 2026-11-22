@@ -266,6 +266,10 @@ struct Inner {
     written: Mutex<HashMap<String, Vec<u8>>>,
     tools: Arc<ToolBroker>,
     channel: Arc<Slot>,
+    /// A linked phone's channel (`WatchPluginChannel` as a client asks):
+    /// its own, so it never takes this device's window's; it hears only
+    /// this device's services' events of plugins on and allowed here.
+    client_channel: Arc<Slot>,
     /// The window, told when the theme methods change the theme files.
     themes: Arc<Slot>,
     kick: Mutex<Option<mpsc::UnboundedSender<Kick>>>,
@@ -583,6 +587,7 @@ impl Plugins {
                 uploads: Mutex::new(uploads::Uploads::default()),
                 tools: Arc::new(ToolBroker::default()),
                 channel: Arc::new(Slot::default()),
+                client_channel: Arc::new(Slot::default()),
                 themes: Arc::new(Slot::default()),
                 kick: Mutex::new(None),
                 tasks: Mutex::new(Vec::new()),
@@ -2531,6 +2536,9 @@ impl Plugins {
                 RpcReply::value(&self.serve_agents(p).await)
             }
             methods::WATCH_PLUGIN_CHANNEL => {
+                if client::is_client(&zend_rpc::caller()) {
+                    return Ok(RpcReply::Stream(self.inner.client_channel.subscribe(|| {})));
+                }
                 Ok(RpcReply::Stream(self.inner.channel.subscribe(|| {})))
             }
             methods::WATCH_THEMES => Ok(RpcReply::Stream(self.inner.themes.subscribe(|| {}))),
@@ -3585,14 +3593,21 @@ impl Plugins {
 
     /// `zend.emit`: to this device's windows, and to the devices watching.
     fn emit_event(&self, plugin: &str, event: &str, data: serde_json::Value) {
-        self.inner.channel.push(serde_json::json!({
+        let message = serde_json::json!({
             "plugin": plugin,
             "from": self.here(),
             "event": event,
             "here": true,
             "data": data,
             "at": crate::now_ms(),
-        }));
+        });
+        // A linked phone's, as it is now: on and allowed here, or nothing.
+        if self.inner.client_channel.is_open()
+            && self.entry(plugin).is_some_and(|e| e.item.status == Status::On && e.allows("service"))
+        {
+            self.inner.client_channel.push(message.clone());
+        }
+        self.inner.channel.push(message);
         let now = Instant::now();
         let targets: Vec<String> = {
             let mut watchers = lock(&self.inner.watchers);

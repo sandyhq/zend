@@ -13,8 +13,9 @@
 //!    local IPC.
 //! 3. What. Its connections reach only [`remote_allowed`] methods, served as
 //!    [`crate::Caller::Remote`]: never [`crate::local_only`] (credentials)
-//!    but a plugin's call for its service here (`window_here`: the engine
-//!    answers a plugin that's on and allowed, never on another device),
+//!    but a plugin's call for its service here and its service's events
+//!    (`window_here`: the engine answers and tells only a plugin that's on
+//!    and allowed, never another device's, on a channel of the phone's own),
 //!    nothing a peer device may not ([`crate::peer_refused`]), and beyond
 //!    what an agent's token reaches only what a window needs to show and
 //!    run chats ([`WINDOW`]). No terminals, sign-in, vault, updates,
@@ -147,11 +148,13 @@ fn window(method: &str) -> bool {
 
 /// What a window asks of this device alone (`local_only`, never for the
 /// relay's peers) that a phone's window may ask too: it runs this device's
-/// plugins. A plugin's window part asking its service here: the engine
-/// answers only a plugin that's on and allowed here, with what it was
-/// allowed here, and never sends the call on to another device.
+/// plugins. A plugin's window part asking its service here, and hearing
+/// its events: the engine answers only a plugin that's on and allowed
+/// here, with what it was allowed here, never sends the call on to another
+/// device, and sends the phone only this device's services' events of
+/// plugins on and allowed here, on a channel of its own.
 fn window_here(method: &str) -> bool {
-    method == methods::CALL_PLUGIN_SERVICE
+    matches!(method, methods::CALL_PLUGIN_SERVICE | methods::WATCH_PLUGIN_CHANNEL)
 }
 
 /// The methods a phone-link connection may call (see the module's notes).
@@ -355,9 +358,11 @@ mod tests {
         let local: Vec<&str> = consts.values().copied().filter(|m| crate::local_only(m)).collect();
         assert!(local.len() > 30, "{}", local.len());
         for m in local {
-            assert_eq!(remote_allowed(m, &none), m == methods::CALL_PLUGIN_SERVICE, "{m}");
+            assert_eq!(remote_allowed(m, &none), window_here(m), "{m}");
         }
-        assert!(crate::local_only(methods::CALL_PLUGIN_SERVICE), "still never the relay's");
+        for m in [methods::CALL_PLUGIN_SERVICE, methods::WATCH_PLUGIN_CHANNEL] {
+            assert!(window_here(m) && crate::local_only(m), "{m}: still never the relay's");
+        }
         // A peer's rule: no path on this device to install from.
         assert!(!remote_allowed(methods::INSTALL_PLUGIN, &serde_json::json!({ "path": "/tmp/x" })));
     }

@@ -608,6 +608,8 @@ pub mod methods {
     /// allowed it decides. A peer may call it.
     pub const SERVE_PLUGIN_AGENTS: &str = "ServePluginAgents";
     /// `{}` → stream (the app) of `{plugin, from: {id, name}, data, at}`.
+    /// A linked phone gets a stream of its own: only this device's
+    /// services' events (`zend.emit`) of plugins on and allowed here.
     pub const WATCH_PLUGIN_CHANNEL: &str = "WatchPluginChannel";
     /// `{}` → `{key, registered}`.
     pub const PLUGIN_SIGNING_KEY: &str = "PluginSigningKey";
