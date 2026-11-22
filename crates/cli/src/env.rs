@@ -93,6 +93,50 @@ pub fn edge_from_env() -> (String, Option<String>) {
     (url, token)
 }
 
+/// The file that holds the desktop a phone is a window onto (its phone
+/// link: src/phone_link.rs in the window, crates/engine/src/phone_link.rs):
+/// a first line naming the format, the host, the port, the key. Written
+/// whole or not at all, mode 600, as the edge's record is.
+const DESKTOP_RECORD: &str = "desktop";
+const DESKTOP_RECORD_HEAD: &str = "zend-desktop 1";
+
+/// Keep the desktop a phone drives in `dir` (a [`config_dir`]): its
+/// tailnet host, its port and its phone-link key, one line each.
+pub fn store_desktop_record(dir: &std::path::Path, host: &str, port: u16, key: &str) -> std::io::Result<()> {
+    let (host, key) = (host.trim(), key.trim());
+    let one_word = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_graphic());
+    if !one_word(host) || !one_word(key) || port == 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a host, a port and a key, one word each"));
+    }
+    std::fs::create_dir_all(dir)?;
+    write_private(&dir.join(DESKTOP_RECORD), &format!("{DESKTOP_RECORD_HEAD}
+{host}
+{port}
+{key}"))
+}
+
+/// The record [`store_desktop_record`] keeps in `dir`: host, port, key.
+/// None when there's none, or it isn't one.
+pub fn desktop_record_in(dir: &std::path::Path) -> Option<(String, u16, String)> {
+    let text = std::fs::read_to_string(dir.join(DESKTOP_RECORD)).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != DESKTOP_RECORD_HEAD {
+        return None;
+    }
+    let host = lines.next()?.trim();
+    let port = lines.next()?.trim().parse::<u16>().ok().filter(|port| *port != 0)?;
+    let key = lines.next()?.trim();
+    (!host.is_empty() && !key.is_empty() && lines.all(|l| l.trim().is_empty())).then(|| (host.to_owned(), port, key.to_owned()))
+}
+
+/// Forget the desktop kept in `dir` (none kept: nothing to do).
+pub fn clear_desktop_record(dir: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(dir.join(DESKTOP_RECORD)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("edge");
@@ -234,5 +278,32 @@ mod tests {
         // A record that isn't one is nothing: not half of it, not the old files.
         std::fs::write(config.join("edge"), "zend-edge 1\nhttp://x\n").unwrap();
         assert_eq!(super::edge_config_in(config), None);
+    }
+
+    /// The desktop a phone drives is kept whole, owner-only, and read back;
+    /// one that isn't a record is none, and clearing it leaves none.
+    #[test]
+    fn the_desktop_record_is_kept_whole_and_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("zend");
+        assert_eq!(super::desktop_record_in(&config), None);
+        let key = "ab".repeat(32);
+        super::store_desktop_record(&config, "omarchy.tailf80f26.ts.net", 27871, &key).unwrap();
+        assert_eq!(super::desktop_record_in(&config), Some(("omarchy.tailf80f26.ts.net".into(), 27871, key.clone())));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(config.join("desktop")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        for bad in [("a b", 1, key.as_str()), ("host", 0, key.as_str()), ("host", 1, "k\ney"), ("", 1, "k")] {
+            assert!(super::store_desktop_record(&config, bad.0, bad.1, bad.2).is_err(), "{bad:?}");
+        }
+        assert_eq!(super::desktop_record_in(&config).map(|(host, _, _)| host), Some("omarchy.tailf80f26.ts.net".into()));
+        std::fs::write(config.join("desktop"), "zend-desktop 1\nhost\nnot-a-port\nkey\n").unwrap();
+        assert_eq!(super::desktop_record_in(&config), None);
+        super::clear_desktop_record(&config).unwrap();
+        super::clear_desktop_record(&config).unwrap();
+        assert!(!config.join("desktop").exists());
     }
 }
