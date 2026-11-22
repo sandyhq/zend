@@ -76,6 +76,7 @@ mod hosted_models;
 pub mod live_visuals;
 mod model_catalogs;
 mod plugin_agents;
+pub mod phone_link;
 pub mod plugins;
 pub mod profile;
 pub mod project_actions;
@@ -1614,7 +1615,10 @@ async fn shutdown_signal() -> std::io::Result<()> {
 /// Serving here means any viewport can just attach.
 ///
 /// Localhost only, exactly as before: this widens *which process* can serve the
-/// port, not who can reach it.
+/// port, not who can reach it. The one way past loopback is the phone link
+/// ([`phone_link`]): off until the person turns it on, then the same port on
+/// this device's tailnet addresses only, with a key of its own and the
+/// window's methods short of this device's own ([`zend_rpc::remote_allowed`]).
 ///
 /// Every call mints a fresh bearer at `{data_dir}/ipc-token` (0600) that each
 /// handshake must present ([`zend_rpc::ipc_auth`]); viewports and the CLI
@@ -1632,6 +1636,9 @@ pub async fn serve_ipc(
     let tokens = zend_rpc::ipc_auth::issue_tokens(data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     tracing::info!(port, "IPC server listening");
+    // The phone link (off until the person turns it on) serves the same
+    // port on the tailnet addresses, once this port is ours.
+    let service = phone_link::wrap(service, data_dir, port);
     Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(
         listener, service, tokens,
     )))
