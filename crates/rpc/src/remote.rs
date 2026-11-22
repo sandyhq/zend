@@ -14,10 +14,12 @@
 //!    key too. A browser's handshake (`Origin`) is refused as on local IPC.
 //! 3. What. Its connections reach only [`remote_allowed`] methods, served as
 //!    [`crate::Caller::Remote`]: never [`crate::local_only`] (credentials),
-//!    nothing a peer device may not ([`crate::peer_refused`]), and beyond
-//!    what an agent's token reaches only what a window needs to show and
-//!    run chats ([`WINDOW`]). No terminals, sign-in, vault, updates,
-//!    installs, file writes, folder browsing or stopping the engine.
+//!    nothing a peer device may not ([`crate::peer_refused`]), and only what
+//!    a window needs to show and run chats ([`phone`], [`window`]): a list
+//!    of its own, not the agent's token's (an agent may author plugins and
+//!    templates, a phone not). No terminals, sign-in, vault, agent accounts,
+//!    updates, installs, plugins or templates made or switched, file writes,
+//!    folder browsing or stopping the engine.
 //!
 //! Revoking is the engine's: it stops the listener (every connection it
 //! accepted ends with it: they live in its task) and serves a new key.
@@ -142,14 +144,38 @@ fn window(method: &str) -> bool {
     )
 }
 
+/// What a window shows its chats with and runs them by: the devices,
+/// spaces, chats and their transcripts, the harnesses and models to pick,
+/// chats changed (`Mutate`), messages sent and commands queued (a run, a
+/// steer, a stop, an answer: `QueueCommand`, without which a phone can't
+/// drive a chat), and the plugins listed (read only).
+fn phone(method: &str) -> bool {
+    matches!(
+        method,
+        methods::ENGINE_INFO
+            | methods::LOCAL_DEVICE
+            | methods::WATCH_DEVICES
+            | methods::WATCH_SPACES
+            | methods::WATCH_CHATS
+            | methods::WATCH_SESSIONS
+            | methods::WATCH_DOC_MESSAGES
+            | methods::LIST_HARNESSES
+            | methods::LIST_MODELS
+            | methods::MUTATE
+            | methods::QUEUE_MESSAGE
+            | methods::QUEUE_COMMAND
+            | methods::LIST_PLUGINS
+    )
+}
+
 /// The methods a phone-link connection may call (see the module's notes).
-/// An allow-list: a method added later stays this device's until it's
-/// listed.
+/// An allow-list of its own: a method added later, to the agent's token's
+/// list or anywhere, stays this device's until it's listed here.
 pub fn remote_allowed(method: &str, params: &serde_json::Value) -> bool {
     if crate::peer_refused(method, params) {
         return false;
     }
-    crate::agent_allowed(method) || window(method)
+    phone(method) || window(method)
 }
 
 /// A phone-link connection's view of the service.
@@ -356,6 +382,20 @@ mod tests {
             methods::PHONE_LINK_STATUS,
             methods::SET_PHONE_LINK,
             methods::NEW_PHONE_LINK_KEY,
+            // What an agent's token reaches and a window doesn't need.
+            methods::LIST_AGENT_ACCOUNTS,
+            methods::INSTALL_PLUGIN,
+            methods::EXPORT_PLUGIN,
+            methods::PLUGIN_INPUT,
+            methods::CALL_PLUGIN_TOOL,
+            methods::CREATE_TEMPLATE,
+            methods::USE_TEMPLATE,
+            methods::IMPORT_TEMPLATE,
+            methods::DELETE_TEMPLATE,
+            methods::CREATE_THEME,
+            methods::DELETE_THEME,
+            methods::PUBLISH_VISUAL,
+            methods::DEVICE_STATS,
             "SomethingAddedLater",
         ] {
             assert!(!remote_allowed(closed, &none), "{closed}");
