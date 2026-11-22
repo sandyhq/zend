@@ -112,6 +112,34 @@ async fn turned_on_it_serves_its_own_key_scoped_as_a_phone() {
     assert_eq!(again.key().unwrap(), key);
 }
 
+/// With an address it can't bind, the code holds one it listens on.
+#[tokio::test]
+async fn the_code_s_ip_is_one_the_link_listens_on() {
+    let seams = Seams {
+        discover: || {
+            Box::pin(async { Some(Tailnet { name: None, ips: vec!["127.0.0.2".parse().unwrap(), "127.0.0.1".parse().unwrap()] }) })
+        },
+        bind: |addr| {
+            Box::pin(async move {
+                if addr.ip() == IpAddr::from([127, 0, 0, 2]) {
+                    Err(std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "not here"))
+                } else {
+                    tokio::net::TcpListener::bind(addr).await
+                }
+            })
+        },
+        ..loopback()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let link = make_link(dir.path(), seams);
+    let on = link.set(Some(true), Some(Use::Ip)).await.unwrap();
+    assert_eq!(on["listening"].as_array().unwrap().len(), 1, "{on}");
+    assert_eq!(on["host"], "127.0.0.1", "{on}");
+    let key = on["key"].as_str().unwrap().to_owned();
+    let phone = dial(&on, &key).await.unwrap();
+    assert!(phone.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+}
+
 #[tokio::test]
 async fn a_new_key_cuts_and_refuses_the_old_phone() {
     let dir = tempfile::tempdir().unwrap();

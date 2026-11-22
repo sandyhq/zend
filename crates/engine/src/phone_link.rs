@@ -325,7 +325,10 @@ impl PhoneLink {
         let saved = self.saved();
         let on = !running.listening.is_empty();
         let tailnet = running.tailnet.clone().unwrap_or_default();
-        let ip = tailnet.ips.iter().find(|ip| ip.is_ipv4()).or(tailnet.ips.first()).copied();
+        // The code's IP is one the link listens on (on), never one it
+        // couldn't bind; off, the tailnet's, to show.
+        let ips: Vec<IpAddr> = if on { running.listening.iter().map(SocketAddr::ip).collect() } else { tailnet.ips.clone() };
+        let ip = ips.iter().find(|ip| ip.is_ipv4()).or(ips.first()).copied();
         let host = match (saved.use_, &tailnet.name) {
             (Use::Name, Some(name)) => Some(name.clone()),
             _ => ip.map(|ip| ip.to_string()),
