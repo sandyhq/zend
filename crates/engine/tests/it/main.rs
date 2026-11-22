@@ -32,6 +32,7 @@ mod m5_repos_diffs_terminals;
 mod m5c_accounts_uploads_titles;
 mod mcp_endpoint;
 mod message_queue;
+mod phone_reads;
 mod plugin_services;
 mod previews;
 mod project_action_commands;

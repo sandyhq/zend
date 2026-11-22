@@ -274,7 +274,28 @@ impl WorkspaceFiles {
         }
     }
 
+    /// The workspace `target` names, as the caller may open it: a linked
+    /// phone only a chat's own folder, never the home folder, above it, or
+    /// one holding Zend's data ([`crate::phone_reads`]).
     pub(crate) async fn resolve_target(
+        &self,
+        target: &WorkspaceTarget,
+    ) -> Result<ResolvedWorkspace, WorkspaceFilesError> {
+        let phone = crate::phone_reads::is_phone();
+        let workspace = self.resolve_any_target(target).await?;
+        if phone {
+            let home = crate::repos::session_home_dir().ok();
+            let data = [self.inner.repos.data_dir().to_path_buf()];
+            if let Some(why) = crate::phone_reads::too_wide(&workspace.root, home.as_deref(), &data) {
+                return Err(WorkspaceFilesError::Authorization(format!(
+                    "{why}: a linked phone opens only a chat's own folder"
+                )));
+            }
+        }
+        Ok(workspace)
+    }
+
+    async fn resolve_any_target(
         &self,
         target: &WorkspaceTarget,
     ) -> Result<ResolvedWorkspace, WorkspaceFilesError> {
@@ -514,11 +535,12 @@ impl WorkspaceFiles {
         // Only a chat target may read by absolute path; space targets keep
         // the workspace-relative grammar.
         let absolute = request.target.chat_id.is_some() && request.path.starts_with('/');
+        let phone = crate::phone_reads::is_phone();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_on_drop = CancelOnDrop::new(cancel.clone());
         let result = tokio::task::spawn_blocking(move || {
             if absolute {
-                return read_absolute_file_blocking(&workspace, &request.path, &cancel);
+                return read_absolute_file_blocking(&workspace, &request.path, !phone, &cancel);
             }
             let relative = WorkspaceRelativePath::file(&request.path)?;
             let mut file = read_file_blocking(&workspace.root, &relative, &cancel)?;
@@ -537,6 +559,7 @@ impl WorkspaceFiles {
     ) -> Result<zend_proto::WorkspaceImageChunk, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
         let absolute = request.target.chat_id.is_some() && request.path.starts_with('/');
+        let phone = crate::phone_reads::is_phone();
         if !absolute
             && (request.expected_checkout_id.is_empty()
                 || request.expected_checkout_id != workspace.checkout_id)
@@ -558,6 +581,9 @@ impl WorkspaceFiles {
                         }
                         read_image_blocking(&workspace.root, &relative, &request)
                     }
+                    AbsoluteRead::Outside { .. } if phone => Err(
+                        WorkspaceFilesError::Authorization(crate::phone_reads::OUTSIDE.into()),
+                    ),
                     AbsoluteRead::Outside { base, relative } => {
                         read_image_blocking(&base, &relative, &request)
                     }
@@ -1687,10 +1713,12 @@ fn resolve_absolute_read(
 /// exactly like the equivalent relative path (editable, checkout-bound);
 /// outside it is a host file — read-only, no checkout identity — that still
 /// reports Binary, TooLarge, symlink or not-a-regular-file ahead of
-/// `OutsideWorkspace`.
+/// `OutsideWorkspace`. Without `outside_allowed` (a linked phone) a file
+/// outside is refused.
 fn read_absolute_file_blocking(
     workspace: &ResolvedWorkspace,
     path: &str,
+    outside_allowed: bool,
     cancel: &AtomicBool,
 ) -> Result<WorkspaceFileText, WorkspaceFilesError> {
     match resolve_absolute_read(workspace, path)? {
@@ -1699,6 +1727,9 @@ fn read_absolute_file_blocking(
             file.checkout_id = workspace.checkout_id.clone();
             Ok(file)
         }
+        AbsoluteRead::Outside { .. } if !outside_allowed => Err(
+            WorkspaceFilesError::Authorization(crate::phone_reads::OUTSIDE.into()),
+        ),
         AbsoluteRead::Outside { base, relative } => {
             let mut file = read_file_blocking(&base, &relative, cancel)?;
             if file.read_only_reason.is_none() {
@@ -3000,7 +3031,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let file = read_absolute_file_blocking(&workspace, &absolute, &no_cancel()).unwrap();
+        let file = read_absolute_file_blocking(&workspace, &absolute, true, &no_cancel()).unwrap();
         assert_eq!(file.text.as_deref(), Some("inside\n"));
         assert_eq!(file.path, "dir/file.txt");
         assert_eq!(file.checkout_id, "checkout-test");
@@ -3020,7 +3051,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let file = read_absolute_file_blocking(&workspace, &absolute, &no_cancel()).unwrap();
+        let file = read_absolute_file_blocking(&workspace, &absolute, true, &no_cancel()).unwrap();
         assert_eq!(file.text.as_deref(), Some("outside\n"));
         assert_eq!(
             file.read_only_reason,
@@ -3028,11 +3059,14 @@ mod tests {
         );
         assert_eq!(file.checkout_id, "");
         assert_eq!(file.path, absolute);
+        // A linked phone reads no file outside its chat's folder.
+        let refused = read_absolute_file_blocking(&workspace, &absolute, false, &no_cancel());
+        assert!(matches!(refused, Err(WorkspaceFilesError::Authorization(_))), "{refused:?}");
 
         // A stronger existing reason keeps its own classification.
         let binary = outside.path().join("raw.bin");
         std::fs::write(&binary, b"a\0b").unwrap();
-        let file = read_absolute_file_blocking(&workspace, &binary.to_string_lossy(), &no_cancel())
+        let file = read_absolute_file_blocking(&workspace, &binary.to_string_lossy(), true, &no_cancel())
             .unwrap();
         assert_eq!(file.read_only_reason, Some(WorkspaceReadOnlyReason::Binary));
     }
@@ -3050,11 +3084,11 @@ mod tests {
             .join("missing.md")
             .to_string_lossy()
             .into_owned();
-        let error = read_absolute_file_blocking(&workspace, &missing, &no_cancel()).unwrap_err();
+        let error = read_absolute_file_blocking(&workspace, &missing, true, &no_cancel()).unwrap_err();
         assert!(matches!(error, WorkspaceFilesError::NotFound(_)), "{error}");
 
         let directory = outside.path().to_string_lossy().into_owned();
-        let file = read_absolute_file_blocking(&workspace, &directory, &no_cancel()).unwrap();
+        let file = read_absolute_file_blocking(&workspace, &directory, true, &no_cancel()).unwrap();
         assert_eq!(
             file.read_only_reason,
             Some(WorkspaceReadOnlyReason::NotRegularFile)
@@ -3078,7 +3112,7 @@ mod tests {
             "/tmp/./b.md",
         ] {
             assert!(
-                read_absolute_file_blocking(&workspace, path, &no_cancel()).is_err(),
+                read_absolute_file_blocking(&workspace, path, true, &no_cancel()).is_err(),
                 "{path}"
             );
         }
@@ -3115,7 +3149,7 @@ mod tests {
             .join("escape.md")
             .to_string_lossy()
             .into_owned();
-        let file = read_absolute_file_blocking(&workspace, &escape, &no_cancel()).unwrap();
+        let file = read_absolute_file_blocking(&workspace, &escape, true, &no_cancel()).unwrap();
         assert_eq!(
             file.read_only_reason,
             Some(WorkspaceReadOnlyReason::OutsideWorkspace)
@@ -3124,7 +3158,7 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        let file = read_absolute_file_blocking(&workspace, &enter, &no_cancel()).unwrap();
+        let file = read_absolute_file_blocking(&workspace, &enter, true, &no_cancel()).unwrap();
         assert!(file.read_only_reason.is_none());
         assert_eq!(file.path, "real.md");
         assert_eq!(file.checkout_id, "checkout-test");

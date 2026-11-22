@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-22
 
+### Fixed
+- Phone link security: a linked phone reads only its chats' own folders. A host file outside them by absolute path (file or image) is refused, and so is a chat folder that is the home folder, above it, or holds Zend's data (`ipc-token`, `phone-link-key`, `agent-accounts`), for files, listings, search, watches and attachment chunks (`crates/engine/src/phone_reads.rs`). The computer's own window keeps reading host files read-only.
+
 ### Added
 - Phone link over the tailnet (branch direct-link): Settings → Devices → Show code turns on a second listener of the engine on this computer's tailnet address (found with `tailscale status --json`, else an interface in 100.64.0.0/10) and shows a v=2 code (`zend://connect?v=2&host=…&port=…&key=…`, the MagicDNS name or the IP, as chosen there); no relay needed. The phone keeps the desktop (host, port, key; mode 600), runs no engine of its own and drives the desktop's over that link: its sessions, transcripts and sending. The link binds tailnet addresses only, admits tailnet peers only, takes its own key (never the computer's ipc-token) and serves the window's methods only (`Caller::Remote`; no credentials, sign-in, vault or plugin authority); a switch turns it off, New key cuts every phone holding the old one. v=1 relay codes still work.
 

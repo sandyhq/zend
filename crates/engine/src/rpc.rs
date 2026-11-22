@@ -6118,8 +6118,10 @@ impl RpcService for EngineRpc {
             }
             methods::READ_ATTACHMENT_CHUNK => {
                 let p: ReadAttachmentChunkParams = parse_params(params)?;
-                // Path jail: the uploads dir plus every workspace-known chat cwd.
-                let roots: Vec<std::path::PathBuf> = self
+                // Path jail: the uploads dir plus every workspace-known chat cwd
+                // (for a linked phone only a chat's own folder: never home,
+                // above it, or one holding Zend's data).
+                let mut roots: Vec<std::path::PathBuf> = self
                     .workspace
                     .read_chats()
                     .unwrap_or_default()
@@ -6127,6 +6129,18 @@ impl RpcService for EngineRpc {
                     .filter_map(|chat| chat.cwd)
                     .map(std::path::PathBuf::from)
                     .collect();
+                if crate::phone_reads::is_phone() {
+                    let home = session_home_dir().ok();
+                    let data = [
+                        self.repos.data_dir().to_path_buf(),
+                        self.uploads.dir().to_path_buf(),
+                    ];
+                    roots.retain(|root| {
+                        std::fs::canonicalize(root).is_ok_and(|root| {
+                            crate::phone_reads::too_wide(&root, home.as_deref(), &data).is_none()
+                        })
+                    });
+                }
                 let uploads = self.uploads.clone();
                 let chunk = tokio::task::spawn_blocking(move || {
                     uploads.read_chunk(&p.path, p.offset, &roots)
