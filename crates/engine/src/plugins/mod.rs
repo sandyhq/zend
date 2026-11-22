@@ -3771,7 +3771,7 @@ impl Plugins {
         match zend_rpc::caller() {
             zend_rpc::Caller::Local => claimed,
             zend_rpc::Caller::Peer { device: Some(device) } => device,
-            zend_rpc::Caller::Peer { device: None } | zend_rpc::Caller::Agent { .. } => {
+            zend_rpc::Caller::Peer { device: None } | zend_rpc::Caller::Agent { .. } | zend_rpc::Caller::Remote => {
                 *unverified = true;
                 String::new()
             }

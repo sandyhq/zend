@@ -11,6 +11,8 @@
 //!   ([`crate::agent_allowed`]); nothing that grants power.
 //! - [`Caller::Peer`]: another device, through the device-room relay
 //!   ([`crate::peer_refused`] keeps decisions and credentials local).
+//! - [`Caller::Remote`]: a linked phone's window over the tailnet
+//!   ([`crate::remote`]).
 //!
 //! The gates that matter are enforced by method at the transport guards
 //! themselves (the WS server's agent guard, the relay's guard), so they
@@ -30,6 +32,10 @@ pub enum Caller {
     /// Another device through the device-room relay. The relay doesn't say
     /// which device yet, so `device` is `None` until it does.
     Peer { device: Option<String> },
+    /// A linked phone's window over the tailnet, holding the phone-link key
+    /// ([`crate::remote`]): it reaches only [`crate::remote_allowed`]
+    /// methods. Which phone isn't known: treated as an unverified peer.
+    Remote,
 }
 
 impl Caller {
@@ -44,6 +50,7 @@ impl Caller {
             Caller::Local => None,
             Caller::Agent { chat } => Some(serde_json::json!({ "agent": true, "chat": chat })),
             Caller::Peer { device } => Some(serde_json::json!({ "peer": true, "device": device })),
+            Caller::Remote => Some(serde_json::json!({ "remote": true })),
         }
     }
 }

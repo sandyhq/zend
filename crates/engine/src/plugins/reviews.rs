@@ -61,7 +61,7 @@ impl Origin {
         match caller {
             zend_rpc::Caller::Local => Some(Origin::Local),
             zend_rpc::Caller::Peer { device: Some(device) } if !device.is_empty() => Some(Origin::Peer(device.clone())),
-            zend_rpc::Caller::Peer { device: _ } | zend_rpc::Caller::Agent { .. } => None,
+            zend_rpc::Caller::Peer { device: _ } | zend_rpc::Caller::Agent { .. } | zend_rpc::Caller::Remote => None,
         }
     }
 }
@@ -205,6 +205,7 @@ mod tests {
         assert_eq!(Origin::of(&Caller::Peer { device: None }), None);
         assert_eq!(Origin::of(&Caller::Peer { device: Some(String::new()) }), None);
         assert_eq!(Origin::of(&Caller::Agent { chat: Some("c".into()) }), None);
+        assert_eq!(Origin::of(&Caller::Remote), None);
     }
 
     #[test]

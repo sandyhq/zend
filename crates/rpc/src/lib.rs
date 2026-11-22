@@ -22,6 +22,7 @@ mod caller;
 mod client;
 pub mod device_room;
 pub mod ipc_auth;
+pub mod remote;
 mod server;
 mod ws;
 
@@ -33,6 +34,7 @@ pub use device_room::{
     NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenError, TokenSource,
     decode_device_frame, device_room_ws_url, encode_device_frame, is_liveness_probe,
 };
+pub use remote::{bind_remote, in_tailnet, remote_allowed, serve_remote_listener};
 pub use server::{
     agent_service, serve_connection, serve_ws_listener, serve_ws_listener_scoped, serve_ws_streams,
 };
@@ -765,6 +767,16 @@ pub mod methods {
     /// shown as the engine's own are, under the same Settings, at most a few
     /// a minute for each `source`; clicking it opens `session`.
     pub const POST_NOTIFICATION: &str = "PostNotification";
+    /// The phone link (a phone driving this engine over the tailnet,
+    /// [`crate::remote`]): `{}` → `{on, use, name?, ips, port, key?,
+    /// error?}`, what it is now; `{key}` only while it's on.
+    pub const PHONE_LINK_STATUS: &str = "PhoneLinkStatus";
+    /// `{on?, use?: "name" | "ip"}` → as `PhoneLinkStatus`: turn it on or
+    /// off, and which address the code holds (kept across starts).
+    pub const SET_PHONE_LINK: &str = "SetPhoneLink";
+    /// `{}` → as `PhoneLinkStatus`: a new key; phones holding the old one
+    /// are cut and refused.
+    pub const NEW_PHONE_LINK_KEY: &str = "NewPhoneLinkKey";
 }
 
 /// Methods answered only over this device's own local IPC, never to a peer
@@ -822,6 +834,10 @@ pub fn local_only(method: &str) -> bool {
             | methods::SET_BUILTIN_PLUGINS
             | methods::POST_NOTIFICATION
             | methods::EXPORT_PLUGIN
+            // The phone link's key and switch: this device's own window.
+            | methods::PHONE_LINK_STATUS
+            | methods::SET_PHONE_LINK
+            | methods::NEW_PHONE_LINK_KEY
     )
 }
 
