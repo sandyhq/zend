@@ -530,6 +530,13 @@ pub mod methods {
     /// `{}` → stream of `ListPlugins`' reply: the current list at once, then
     /// each change.
     pub const WATCH_PLUGINS: &str = "WatchPlugins";
+    /// `{id, hash, path}` → `{path, sha256, data}` (base64): one file of
+    /// plugin `id`'s checked snapshot at `hash`, by a relative path its
+    /// list entry names (`files`, what a linked phone's list carries): how
+    /// a client runs a plugin's window part without this device's paths.
+    /// Never a link, never a path outside the snapshot, never a file that
+    /// changed since it was checked.
+    pub const READ_PLUGIN_FILE: &str = "ReadPluginFile";
     /// `{id, allow, hash, review?}` → `PluginItem`. Allowing needs `review`,
     /// minted by [`REVIEW_PLUGIN`] for the same `id` and `hash`: only Zend's
     /// consent window holds one. Declining (`allow: false`) needs none.

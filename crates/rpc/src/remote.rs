@@ -137,6 +137,8 @@ fn window(method: &str) -> bool {
             | methods::AUTH_STATUS
             | methods::UPDATE_STATUS
             | methods::WATCH_PLUGINS
+            // A plugin's window part, file by file (by id and relative path).
+            | methods::READ_PLUGIN_FILE
             | methods::VOICE_CAPABILITIES_V2
     )
 }

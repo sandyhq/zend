@@ -19,6 +19,7 @@ pub mod broker;
 pub mod capability;
 pub mod device;
 pub mod check;
+pub mod client;
 pub mod files;
 pub mod guides;
 pub mod install;
@@ -144,6 +145,7 @@ pub fn handles(method: &str) -> bool {
         method,
         methods::LIST_PLUGINS
             | methods::WATCH_PLUGINS
+            | methods::READ_PLUGIN_FILE
             | methods::DECIDE_PLUGIN
             | methods::REVIEW_PLUGIN
             | methods::REVIEW_TEMPLATE
@@ -426,6 +428,17 @@ struct DeliverParams {
     unverified_from: bool,
 }
 
+/// `ReadPluginFile`'s params.
+#[derive(Deserialize)]
+struct ReadFileParams {
+    id: String,
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    path: String,
+}
+
+/// `CallPluginService`'s params.
 #[derive(Deserialize)]
 struct ServiceParams {
     plugin: String,
@@ -1675,6 +1688,32 @@ impl Plugins {
     /// The plugin `id`: Zend's own when a folder of yours squats its id
     /// (that folder is listed Broken beside it, and what's kept under the id
     /// is the built-in's).
+    /// Plugin `id` as loaded at `hash`: on, with its checked snapshot.
+    fn loaded(&self, id: &str, hash: &str) -> Option<Entry> {
+        let entries = lock(&self.inner.entries);
+        entries
+            .iter()
+            .find(|e| e.item.id == id && e.item.hash == hash && e.item.status == Status::On && e.item.snapshot.is_some())
+            .cloned()
+    }
+
+    /// `ListPlugins`' reply as the caller may see it: a client (a linked
+    /// phone) gets no paths of this device's, and each loaded plugin's files
+    /// to fetch with `ReadPluginFile` (`client::for_client`).
+    fn as_caller_sees(&self, list: serde_json::Value) -> serde_json::Value {
+        if !client::is_client(&zend_rpc::caller()) {
+            return list;
+        }
+        self.for_client(list)
+    }
+
+    /// `ListPlugins`' reply as a client sees it.
+    fn for_client(&self, list: serde_json::Value) -> serde_json::Value {
+        client::for_client(list, |id, hash| {
+            self.loaded(id, hash).map(|e| client::listed_files(&e.inspected.files, &e.inspected.manifest_bytes))
+        })
+    }
+
     fn entry(&self, id: &str) -> Option<Entry> {
         let entries = lock(&self.inner.entries);
         entries
@@ -2025,7 +2064,17 @@ impl Plugins {
             }
             methods::LIST_PLUGINS => {
                 self.rescan().await;
-                RpcReply::value(&self.list_value())
+                RpcReply::value(&self.as_caller_sees(self.list_value()))
+            }
+            methods::READ_PLUGIN_FILE => {
+                let p: ReadFileParams = parse_params(params)?;
+                self.ensure_scanned().await;
+                let entry = self
+                    .loaded(&p.id, &p.hash)
+                    .ok_or_else(|| failed(format!("Plugin {} isn't on here as listed: list again", p.id)))?;
+                let snapshot = PathBuf::from(entry.item.snapshot.as_deref().unwrap_or_default());
+                let file = client::read_file(&snapshot, &entry.inspected.files, &entry.inspected.manifest_bytes, &p.path).map_err(failed)?;
+                RpcReply::value(&file)
             }
             methods::REVIEW_PLUGIN | methods::REVIEW_TEMPLATE => {
                 let p: ReviewParams = parse_params(params)?;
@@ -2054,9 +2103,13 @@ impl Plugins {
             }
             methods::WATCH_PLUGINS => {
                 self.ensure_scanned().await;
-                Ok(RpcReply::Stream(watch_stream(
-                    self.inner.list_tx.subscribe(),
-                )))
+                let stream = watch_stream(self.inner.list_tx.subscribe());
+                if !client::is_client(&zend_rpc::caller()) {
+                    return Ok(RpcReply::Stream(stream));
+                }
+                let me = self.clone();
+                // (Decided here: the stream is polled outside this caller's scope.)
+                Ok(RpcReply::Stream(stream.map(move |list| me.for_client(list)).boxed()))
             }
             methods::DECIDE_PLUGIN => {
                 let p: DecideParams = parse_params(params)?;
@@ -3805,6 +3858,8 @@ fn watch_stream(rx: watch::Receiver<serde_json::Value>) -> BoxStream<'static, se
 
 #[cfg(test)]
 mod authority_tests;
+#[cfg(test)]
+mod client_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
