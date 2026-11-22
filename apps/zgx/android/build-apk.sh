@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build Zend's Android APK (sh.zend.zgx): this crate (the whole app,
-# zend-zgx, with the engine in it) for each ABI with cargo-ndk, packed with
+# zend-zgx, a client of a computer's engine: none of its own) for each ABI with cargo-ndk, packed with
 # aapt2, aligned and signed (a local debug key unless KEYSTORE is given). No
 # Gradle, no Java code (NativeActivity). Without --release the APK is
 # debuggable (run-as reads its files): give a debug build fake tokens only.
@@ -39,6 +39,11 @@ rm -rf "$OUT/stage" && mkdir -p "$OUT/stage"
 cd "$here"
 targs=()
 for abi in "${abis[@]}"; do targs+=(-t "$abi"); done
+# No engine and no harness in the phone's library (check-client.sh).
+for abi in "${abis[@]}"; do
+  case "$abi" in arm64-v8a) triple=aarch64-linux-android ;; x86_64) triple=x86_64-linux-android ;; *) triple=$abi ;; esac
+  "$here/check-client.sh" "$triple"
+done
 flag=(); [ $profile = release ] && flag=(--release)
 CARGO_TARGET_DIR=$TARGET cargo ndk "${targs[@]}" -P 29 --link-libcxx-shared -o "$OUT/stage/lib" \
   build -j "$JOBS" -p zend-android "${flag[@]}"
