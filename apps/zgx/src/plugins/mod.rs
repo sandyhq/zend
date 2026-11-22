@@ -2332,14 +2332,7 @@ impl Bridge {
             move |asked| {
                 let plugin = plugin.clone();
                 async move {
-                    let asked = value_json(&asked);
-                    let mut params = json!({ "plugin": plugin, "method": asked["method"], "args": asked["args"] });
-                    if let Some(device) = asked["device"].as_str().filter(|d| !d.is_empty()) {
-                        params["device"] = json!(device);
-                    }
-                    if let Some(timeout) = asked["timeout"].as_f64() {
-                        params["timeout"] = json!(timeout);
-                    }
+                    let params = service_params(&plugin, &value_json(&asked));
                     let reply = call("CallPluginService", params).await.map_err(|e| {
                         if e.contains("unknown method") {
                             "old_engine: This device's Zend is from before plugin services".to_string()
@@ -3793,6 +3786,23 @@ pub(crate) fn vlist(items: Vec<Value>) -> Value {
     Value::List(items.into())
 }
 
+/// `CallPluginService`'s params for plugin `plugin`'s window asking its
+/// service (`zend.service(device?):call`): always that plugin's own,
+/// whatever the script put in what it asked (a `plugin` there is ignored),
+/// and only the method, its args, the device and a timeout. Each plugin's
+/// `plugin.<id>.service_call` is bound to its id as it loads, so a window
+/// can't name another plugin's service; on a phone, the computer answers it
+/// only for a plugin it has on and allowed.
+fn service_params(plugin: &str, asked: &Json) -> Json {
+    let mut params = json!({ "plugin": plugin, "method": asked["method"], "args": asked["args"] });
+    if let Some(device) = asked["device"].as_str().filter(|d| !d.is_empty()) {
+        params["device"] = json!(device);
+    }
+    if let Some(timeout) = asked["timeout"].as_f64() {
+        params["timeout"] = json!(timeout);
+    }
+    params
+}
 
 fn as_f64(value: &Value) -> Option<f64> {
     value.to_json().parse::<f64>().ok()
@@ -3933,6 +3943,22 @@ mod tests {
 
     fn item(json: Json) -> Item {
         Item { json }
+    }
+
+    /// A window's service call names its own plugin's service, never
+    /// another's, and carries nothing that widens what it may do.
+    #[test]
+    fn a_window_calls_its_own_plugin_s_service_only() {
+        let asked = json!({
+            "plugin": "a", "method": "hello", "args": { "x": 1 }, "timeout": 5.0,
+            "permissions": ["commands"], "allowed": ["commands"],
+        });
+        assert_eq!(
+            service_params("b", &asked),
+            json!({ "plugin": "b", "method": "hello", "args": { "x": 1 }, "timeout": 5.0 })
+        );
+        let there = service_params("b", &json!({ "method": "m", "device": "dev-2" }));
+        assert_eq!((there["plugin"].as_str(), there["device"].as_str()), (Some("b"), Some("dev-2")));
     }
 
     /// R26: a plugin removed, or back under its id from somewhere else,

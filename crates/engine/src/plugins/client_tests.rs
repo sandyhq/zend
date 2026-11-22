@@ -143,3 +143,120 @@ async fn a_phone_reads_nothing_outside_a_plugin_s_snapshot() {
     });
     assert!(read("zend.luau".into(), hash.clone()).await.is_err());
 }
+
+
+// A plugin's service, called from the phone: answered here for a plugin
+// that's on and allowed, with what it was allowed here and nothing the call
+// says; refused for one that isn't, and never sent on to another device.
+
+const SERVICE: &str = r#"
+local zend = require("./zend")("svc")
+zend.serve("hello", function(args, call)
+	return { hi = args.name, from = call.from.id }
+end, { safe = true })
+zend.serve("run", function()
+	return zend.run("echo", { "hi" }):await().stdout
+end)
+"#;
+
+/// `method` as this device's consent window sends it (allowing, signing).
+async fn as_window(plugins: &Plugins, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let params = super::authority_tests::as_consent_window(plugins, method, params).await;
+    match plugins.dispatch(method, params).await {
+        Ok(RpcReply::Value(value)) => value,
+        other => panic!("{method}: {:?}", other.err()),
+    }
+}
+
+/// Plugin `svc` with a service and no permission to run programs: yours
+/// (`signed`), or unsigned, as one copied in by hand.
+async fn with_service(plugins: &Plugins, signed: bool) -> PathBuf {
+    let dir = plugins.plugins_dir().join("svc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("init.luau"), "return nil").unwrap();
+    std::fs::write(dir.join("zend.luau"), scaffold::SDK).unwrap();
+    std::fs::write(dir.join("service.luau"), SERVICE).unwrap();
+    let manifest = serde_json::json!({
+        "id": "svc", "name": "Svc", "version": "1.0.0", "entry": "init.luau",
+        "permissions": ["service"], "service": "service.luau",
+    });
+    std::fs::write(dir.join(MANIFEST_FILE), signing::pretty(&manifest)).unwrap();
+    if signed {
+        let signed = as_window(plugins, methods::SIGN_PLUGIN, serde_json::json!({ "id": "svc" })).await;
+        assert!(signed.get("hash").is_some(), "{signed}");
+    }
+    dir
+}
+
+/// Allowed in this device's consent window, as listed now.
+async fn allow(plugins: &Plugins) {
+    let item = as_window(plugins, methods::LIST_PLUGINS, serde_json::json!({})).await["plugins"][0].clone();
+    let decided = as_window(plugins, methods::DECIDE_PLUGIN, serde_json::json!({ "id": "svc", "allow": true, "hash": item["hash"] })).await;
+    assert_eq!(decided["status"], "on", "{decided}");
+}
+
+async fn phone_asks(plugins: &Plugins, params: serde_json::Value) -> serde_json::Value {
+    as_phone(plugins, methods::CALL_PLUGIN_SERVICE, params).await.unwrap_or_else(|e| serde_json::json!({ "refused": e }))
+}
+
+#[tokio::test]
+async fn a_phone_calls_the_service_of_a_plugin_allowed_here() {
+    let f = fixture();
+    let hello = serde_json::json!({ "plugin": "svc", "method": "hello", "args": { "name": "Ada" } });
+    // Not installed.
+    assert_eq!(phone_asks(&f.plugins, hello.clone()).await["reason"], reason::NOT_INSTALLED);
+    // Waiting to be allowed.
+    with_service(&f.plugins, true).await;
+    assert_eq!(phone_asks(&f.plugins, hello.clone()).await["reason"], reason::NOT_APPROVED);
+    allow(&f.plugins).await;
+    // Allowed: answered here, as this device's own window's call.
+    let answered = phone_asks(&f.plugins, hello.clone()).await;
+    assert_eq!(answered, serde_json::json!({ "ok": true, "value": { "hi": "Ada", "from": "dev-1" } }));
+    // With what it was allowed here, whatever the call says.
+    let widened = phone_asks(
+        &f.plugins,
+        serde_json::json!({ "plugin": "svc", "method": "run", "permissions": ["commands"], "allowed": ["commands"], "grants": { "commands": true } }),
+    )
+    .await;
+    assert_eq!(widened["reason"], reason::FAILED, "{widened}");
+    assert!(widened["message"].as_str().unwrap().contains("wasn't allowed to run programs"), "{widened}");
+    // Turned off here.
+    as_window(&f.plugins, methods::SET_PLUGIN_OFF, serde_json::json!({ "id": "svc", "off": true })).await;
+    assert_eq!(phone_asks(&f.plugins, hello.clone()).await["reason"], reason::OFF);
+    as_window(&f.plugins, methods::SET_PLUGIN_OFF, serde_json::json!({ "id": "svc", "off": false })).await;
+    assert_eq!(phone_asks(&f.plugins, hello).await["ok"], true);
+}
+
+#[tokio::test]
+async fn a_phone_is_refused_a_plugin_changed_since_it_was_allowed() {
+    let f = fixture();
+    let hello = serde_json::json!({ "plugin": "svc", "method": "hello", "args": { "name": "Ada" } });
+    // Unsigned, allowed as it was, then changed under you: tampered.
+    let dir = with_service(&f.plugins, false).await;
+    allow(&f.plugins).await;
+    assert_eq!(phone_asks(&f.plugins, hello.clone()).await["ok"], true);
+    std::fs::write(dir.join("init.luau"), "return 1").unwrap();
+    f.plugins.rescan().await;
+    let now = as_window(&f.plugins, methods::LIST_PLUGINS, serde_json::json!({})).await["plugins"][0].clone();
+    assert_eq!(now["status"], "tampered", "{now}");
+    let tampered = phone_asks(&f.plugins, hello).await;
+    assert_eq!(tampered["reason"], reason::BROKEN, "{tampered}");
+}
+
+#[tokio::test]
+async fn a_phone_reaches_this_device_s_services_only() {
+    let f = fixture();
+    with_service(&f.plugins, true).await;
+    allow(&f.plugins).await;
+    // Never sent on to another of this device's devices.
+    let on = phone_asks(&f.plugins, serde_json::json!({ "plugin": "svc", "method": "hello", "device": "dev-9" })).await;
+    assert_eq!(on["reason"], reason::BAD_CALL, "{on}");
+    assert!(lock(&f.plugins.inner.watching).is_empty());
+    let on = phone_asks(&f.plugins, serde_json::json!({ "plugin": "svc", "method": "@watch", "device": "dev-9" })).await;
+    assert_eq!(on["reason"], reason::BAD_CALL, "{on}");
+    assert!(lock(&f.plugins.inner.watching).is_empty());
+    // This device by its own id is a call here.
+    let here = phone_asks(&f.plugins, serde_json::json!({ "plugin": "svc", "method": "hello", "device": "dev-1", "args": { "name": "me" } })).await;
+    assert_eq!(here["value"]["hi"], "me", "{here}");
+}
+

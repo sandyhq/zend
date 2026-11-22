@@ -23,6 +23,20 @@ pub fn is_client(caller: &zend_rpc::Caller) -> bool {
     matches!(caller, zend_rpc::Caller::Remote)
 }
 
+/// A client's call for a plugin's service (`CallPluginService`) naming
+/// `device`: refused unless that's this device (`here`) or none. A linked
+/// phone reaches this device's services only, never another device's
+/// through this one. Which plugins answer, and with what, is the service's
+/// own check, as for this device's window: only one that's on and allowed
+/// here, with what it was allowed here, whatever the call says.
+pub fn service_elsewhere(device: Option<&str>, here: &str) -> Option<super::service::Refusal> {
+    let device = device.map(str::trim).filter(|d| !d.is_empty() && *d != here)?;
+    Some(super::service::Refusal::new(
+        super::service::reason::BAD_CALL,
+        format!("A linked phone calls this computer's plugin services only, not {device}'s"),
+    ))
+}
+
 /// The most of one file a client reads in one answer.
 pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 

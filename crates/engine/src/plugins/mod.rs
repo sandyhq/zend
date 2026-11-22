@@ -2508,6 +2508,12 @@ impl Plugins {
             }
             methods::CALL_PLUGIN_SERVICE => {
                 let p: ServiceParams = parse_params(params)?;
+                // A linked phone's window: this device's services only.
+                if client::is_client(&zend_rpc::caller())
+                    && let Some(refusal) = client::service_elsewhere(p.device.as_deref(), &self.inner.device_id)
+                {
+                    return RpcReply::value(&refusal.to_json());
+                }
                 RpcReply::value(&self.call_service(p).await)
             }
             methods::SERVE_PLUGIN_CALL => {
