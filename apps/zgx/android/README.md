@@ -35,3 +35,8 @@ ANDROID_NDK_HOME, JAVA_HOME, cargo-ndk and the rustup targets.
   Android (their bridge is a process of its own).
 - The edge config is written with `zend_cli::store_edge_config`: whole
   or not at all, mode 600.
+- A computer's direct code (v=2, its phone link over the tailnet) is kept
+  in `files/.config/zend/desktop` with `zend_cli::store_desktop_record` (whole or not at all, mode 600): host,
+  port and the link's key. With it kept the app starts no engine and dials
+  that computer's (src/engine/rpc.rs); the key opens only the link's
+  window-scoped methods, and New key on the computer revokes it.
