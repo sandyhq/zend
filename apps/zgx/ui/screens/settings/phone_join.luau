@@ -16,6 +16,11 @@
 -- pasted text is the view's own, masked, and emptied once submitted: the
 -- code is the computer's key. With sessions running on this phone,
 -- connecting asks first (the engine's restart stops them).
+--
+-- A direct code (v=2, the computer's phone link over the tailnet) answers
+-- `desktop` instead of `edge`: the window then drives that computer's
+-- engine, and "Connected" waits on it answering (its sessions read, the
+-- connection healthy, M.SETTLE seconds on), not on a relay.
 
 local ds = require("@ds")
 local sessions = require("@account/sessions")
@@ -34,6 +39,8 @@ M.joining = ui.state("phone_join_joining", false)
 M.outcome = ui.state("phone_join_outcome", "")
 -- The relay's address as the host shows it (scheme and port).
 M.edge = ui.state("phone_join_edge", "")
+-- The computer's tailnet name or IP, for a direct code ("" for a relay's).
+M.desktop = ui.state("phone_join_desktop", "")
 -- Sessions running here, as a code waits on Connect anyway (0: none waits).
 M.busy = ui.state("phone_join_busy", 0)
 -- (The waiting code itself is no window state.)
@@ -80,8 +87,11 @@ ui.effect(function()
 	if outcome ~= "connecting" and outcome ~= "unreachable" then
 		return
 	end
-	local relay = sessions.now:get().relay
-	if relay == "connected" and settled:get() then
+	local now = sessions.now:get()
+	local up = if M.desktop:get() ~= ""
+		then now.state ~= "loading" and now.connection == nil
+		else now.relay == "connected"
+	if up and settled:get() then
 		ui.after(0, function()
 			if M.outcome:peek() == outcome then
 				M.outcome:set("connected")
@@ -120,6 +130,7 @@ function M.join(code: string, confirmed: boolean?)
 		ui.batch(function()
 			M.joining:set(false)
 			M.edge:set(answer.edge or "")
+			M.desktop:set(answer.desktop or "")
 			M.outcome:set("connecting")
 		end)
 		watch()
@@ -194,8 +205,15 @@ local OUTCOMES: { [string]: string } = {
 local function says(): string
 	local outcome = M.outcome:get()
 	local edge = M.edge:get()
+	local desktop = M.desktop:get()
 	if M.joining:get() then
 		return ui.t("settings.devices.phone.joining"):get()
+	elseif desktop ~= "" and (outcome == "connecting" or outcome == "connected" or outcome == "unreachable") then
+		local key = if outcome == "connected"
+			then "settings.devices.phone.desktop_connected"
+			elseif outcome == "unreachable" then "settings.devices.phone.desktop_unreachable"
+			else "settings.devices.phone.desktop_connecting"
+		return ui.t(key, { desktop = desktop }):get()
 	elseif outcome == "connecting" then
 		return ui.t("settings.devices.phone.saved_connecting", { edge = edge }):get()
 	elseif outcome == "connected" then

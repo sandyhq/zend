@@ -362,6 +362,12 @@ pub(crate) fn start_in_process(config: &Config) -> bool {
     // (The edge read again at each start, not the config's from the app's
     // start: a phone joined to a relay (src/phone_link.rs) has just written
     // it, and stopped the engine for this.)
+    // (A phone that is a window onto a desktop runs no engine of its own:
+    // every dial goes to the desktop's, src/engine/rpc.rs.)
+    #[cfg(target_os = "android")]
+    if crate::phone_link::kept_desktop().is_some() {
+        return false;
+    }
     #[cfg(target_os = "android")]
     return crate::android::start_engine(crate::android::EngineStart {
         data_dir: config.data_dir.clone(),

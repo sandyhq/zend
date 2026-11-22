@@ -29,8 +29,9 @@ use std::{
 };
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::net::TcpStream;
 #[cfg(not(target_os = "android"))]
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 
 /// How long a dial may take: a real engine answers on localhost in
 /// milliseconds; something else holding the port must not hang us.
@@ -50,6 +51,13 @@ pub enum DialError {
 /// The engine's current IPC token, if it has written one. Android's
 /// engine, in this process, keeps its token in memory (src/android.rs).
 pub fn read_token(data_dir: &Path) -> Option<String> {
+    // (A phone that is a window onto a desktop: that engine's phone-link
+    // key, src/phone_link.rs.)
+    #[cfg(target_os = "android")]
+    if let Some(desktop) = crate::phone_link::kept_desktop() {
+        let _ = data_dir;
+        return Some(desktop.key);
+    }
     #[cfg(target_os = "android")]
     if crate::android::IN_PROCESS_IPC {
         let _ = data_dir;
@@ -108,7 +116,85 @@ impl Frames {
 #[cfg(not(target_os = "android"))]
 type Stream = TcpStream;
 #[cfg(target_os = "android")]
-type Stream = std::os::unix::net::UnixStream;
+pub(crate) enum Stream {
+    /// The engine in this process (one end of a socket pair).
+    Local(std::os::unix::net::UnixStream),
+    /// A desktop's engine over the tailnet: its phone link.
+    Desktop(TcpStream),
+}
+
+#[cfg(target_os = "android")]
+impl Stream {
+    pub(crate) fn set_nonblocking(&self, on: bool) -> std::io::Result<()> {
+        match self {
+            Self::Local(s) => s.set_nonblocking(on),
+            Self::Desktop(s) => s.set_nonblocking(on),
+        }
+    }
+
+    pub(crate) fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            Self::Local(s) => s.set_read_timeout(timeout),
+            Self::Desktop(s) => s.set_read_timeout(timeout),
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl std::io::Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Local(s) => s.read(buf),
+            Self::Desktop(s) => s.read(buf),
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl std::io::Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Local(s) => s.write(buf),
+            Self::Desktop(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Local(s) => s.flush(),
+            Self::Desktop(s) => s.flush(),
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl AsRawFd for Stream {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        match self {
+            Self::Local(s) => s.as_raw_fd(),
+            Self::Desktop(s) => s.as_raw_fd(),
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+/// A connection to `host:port` (each address the name resolves to tried in
+/// turn), and the URI its handshake asks for.
+fn dial_tcp(host: &str, port: u16) -> Result<(TcpStream, String), DialError> {
+    use std::net::ToSocketAddrs;
+    let addresses = (host, port).to_socket_addrs().map_err(|error| DialError::Other(format!("resolve: {error}")))?;
+    let mut last = DialError::Other("resolve: no address".into());
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, DIAL_TIMEOUT) {
+            Ok(stream) => {
+                let _ = stream.set_nodelay(true);
+                return Ok((stream, crate::phone_link::ws_url(host, port)));
+            }
+            Err(error) => last = refused_or(error),
+        }
+    }
+    Err(last)
+}
 type Socket = tungstenite::WebSocket<Stream>;
 
 fn refused_or(error: std::io::Error) -> DialError {
@@ -130,8 +216,14 @@ fn open(port: u16) -> Result<(Stream, String), DialError> {
 #[cfg(target_os = "android")]
 fn open(port: u16) -> Result<(Stream, String), DialError> {
     let _ = port;
+    // A desktop kept (a v=2 code scanned): its engine, never one of this
+    // app's own (src/engine/manager.rs starts none then).
+    if let Some(desktop) = crate::phone_link::kept_desktop() {
+        let (stream, uri) = dial_tcp(&desktop.host, desktop.port)?;
+        return Ok((Stream::Desktop(stream), uri));
+    }
     let stream = crate::android::dial_engine().map_err(refused_or)?;
-    Ok((stream, "ws://localhost/".into()))
+    Ok((Stream::Local(stream), "ws://localhost/".into()))
 }
 
 /// The handshake, blocking (on the network thread).
@@ -670,6 +762,20 @@ impl Drop for Watch {
 
 #[cfg(all(test, unix))]
 mod tests {
+    /// A phone dials a desktop by its host and port (a name resolved, each
+    /// address tried), and asks its handshake for that host; nothing there:
+    /// refused, so the supervisor waits (it starts no engine of the phone's).
+    #[test]
+    fn a_desktop_is_dialled_at_its_host_and_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (_stream, uri) = super::dial_tcp("localhost", port).unwrap();
+        assert_eq!(uri, format!("ws://localhost:{port}"));
+        drop(listener);
+        assert!(matches!(super::dial_tcp("127.0.0.1", port), Err(super::DialError::Refused)));
+        assert!(matches!(super::dial_tcp("no-such-host.invalid", port), Err(super::DialError::Other(_))));
+    }
+
     use super::*;
 
     /// A connection with no socket: frames handed to it as the network

@@ -1,5 +1,14 @@
-//! Connecting a phone to this computer's relay (Settings → Devices).
+//! Connecting a phone to this computer (Settings → Devices).
 //!
+//! Now (v=2, the phone link): the computer's engine listens on its tailnet
+//! address too (crates/engine/src/phone_link.rs, off until the person shows
+//! the code or turns it on), and the code holds that address (its MagicDNS
+//! name or its IP, as the person chose), the port and the engine's
+//! phone-link key: `zend://connect?v=2&host=…&port=…&key=…`. The phone
+//! keeps them (`zend_cli`'s `desktop` record, mode 600), runs no engine of
+//! its own any more, and is a window onto the desktop's (src/engine/rpc.rs).
+//!
+//! Before (v=1, still read):
 //! The owner's relay is the self-hosted edge (on a VM over Tailscale), with
 //! the edge's dev bearer as the account: no hosted sign-in. The computer
 //! shows a QR code holding its edge and its own bearer, on a click and for
@@ -8,9 +17,13 @@
 //! `edge-url`, `edge-token`, mode 600) and starts its engine again on them.
 //!
 //! ```text
-//! call    phone.connect_code  (none)    { svg, modules }: this computer's code, as a QR
-//!                                       (fails "no_edge": no relay or no bearer here)
-//! call    phone.connect       { code }  { edge }: the code kept, the engine started on it
+//! call    phone.connect_code  (none)    { svg, modules, on, use, name, ip, host, port }:
+//!                                       the phone link turned on, its code as a QR
+//!                                       (fails "no_tailnet", "offline", "failed")
+//! call    phone.link_status   (none)    { on, use, name, ip, host, port, error }
+//! call    phone.link_set      { on?, use? }   the same: turned on or off, "name" or "ip"
+//! call    phone.link_new_key  (none)    the same: a new key, every phone cut
+//! call    phone.connect       { code }  { edge } or { desktop }: the code kept, started on it
 //!                                       (Android; fails "bad_code", "store", "engine")
 //! call    phone.scan          (none)    the code the camera found (Android; fails
 //!                                       "denied", "no_camera", "camera", "stopped")
@@ -64,6 +77,72 @@ pub struct Connect {
     pub token: String,
 }
 
+/// A desktop's phone link (v=2): where on the tailnet the phone dials its
+/// engine, and the key that engine takes from phones.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Direct {
+    pub host: String,
+    pub port: u16,
+    pub key: String,
+}
+
+/// What a code holds: a relay to join (v=1), or a desktop to drive (v=2).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Code {
+    Edge(Connect),
+    Direct(Direct),
+}
+
+/// The code for a desktop's phone link:
+/// `zend://connect?v=2&host=…&port=…&key=…`.
+pub fn encode_direct(host: &str, port: u16, key: &str) -> String {
+    format!("{PREFIX}v=2&host={}&port={port}&key={}", escape(host.trim()), escape(key.trim()))
+}
+
+/// Whether `ip` is a tailnet address (Tailscale's CGNAT range, or its
+/// IPv6 prefix).
+pub fn in_tailnet(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            a == 100 && (64..128).contains(&b)
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            (s[0], s[1], s[2]) == (0xfd7a, 0x115c, 0xa1e0) || v6.to_ipv4_mapped().is_some_and(|v4| in_tailnet(v4.into()))
+        }
+    }
+}
+
+/// `host` as a code may hold it, canonical: a tailnet address (an IPv6
+/// one without brackets), or a DNS name (MagicDNS's), in lower case.
+pub fn canonical_host(host: &str) -> Option<String> {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return in_tailnet(ip).then(|| ip.to_string());
+    }
+    let name = host.strip_suffix('.').unwrap_or(&host);
+    let valid = !name.is_empty()
+        && name.len() <= 253
+        && !name.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && name.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        });
+    valid.then(|| name.to_owned())
+}
+
+fn valid_key(key: &str) -> bool {
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `ws://host:port`, the address a phone dials (an IPv6 host bracketed).
+pub fn ws_url(host: &str, port: u16) -> String {
+    if host.contains(':') { format!("ws://[{host}]:{port}") } else { format!("ws://{host}:{port}") }
+}
+
 /// The code for `edge` and `token`: `zend://connect?v=1&edge=…&token=…`,
 /// both percent-encoded.
 pub fn encode(edge: &str, token: &str) -> String {
@@ -77,25 +156,29 @@ const MAX_CODE: usize = 3000;
 const MAX_EDGE: usize = 256;
 const MAX_TOKEN: usize = 1024;
 
-/// The edge and bearer a code holds (pasted text may come with spaces or
-/// a line break around it), or why it's not one. The edge is checked as a
-/// URL (http or https, a host, a valid port, nothing else: no user, path,
-/// query or fragment) and given in its canonical form; the bearer is one
-/// printable word. Fields other than these three are passed over without
-/// decoding them; one of them twice refuses the code.
-pub fn decode(text: &str) -> Result<Connect, &'static str> {
+/// What a code holds (pasted text may come with spaces or a line break
+/// around it), or why it's not one. v=1: a relay's edge, checked as a URL
+/// (http or https, a host, a valid port, nothing else: no user, path,
+/// query or fragment) and given in its canonical form, and a bearer of one
+/// printable word. v=2: a desktop's host on the tailnet ([canonical_host]),
+/// its port (1 to 65535) and its key (64 hex digits). Other fields are
+/// passed over without decoding them; one of them twice refuses the code.
+pub fn decode(text: &str) -> Result<Code, &'static str> {
     let text = text.trim();
     if text.len() > MAX_CODE {
         return Err("too long");
     }
     let query = text.strip_prefix(PREFIX).ok_or("not a Zend connect code")?;
-    let (mut version, mut edge, mut token) = (None, None, None);
+    let (mut version, mut edge, mut token, mut host, mut port, mut key) = (None, None, None, None, None, None);
     for pair in query.split('&') {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let slot = match key {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let slot = match name {
             "v" => &mut version,
             "edge" => &mut edge,
             "token" => &mut token,
+            "host" => &mut host,
+            "port" => &mut port,
+            "key" => &mut key,
             _ => continue,
         };
         if slot.is_some() {
@@ -103,12 +186,24 @@ pub fn decode(text: &str) -> Result<Connect, &'static str> {
         }
         *slot = Some(unescape(value).ok_or("badly encoded")?);
     }
-    if version.as_deref() != Some("1") {
-        return Err("a code of another version");
+    match version.as_deref() {
+        Some("1") => {
+            let edge = edge.as_deref().and_then(canonical_edge).ok_or("no relay address in it")?;
+            let token = token.filter(|t| valid_token(t)).ok_or("no key in it")?;
+            Ok(Code::Edge(Connect { edge, token }))
+        }
+        Some("2") => {
+            let host = host.as_deref().and_then(canonical_host).ok_or("no tailnet address in it")?;
+            let port = port
+                .filter(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|p| p.parse::<u16>().ok())
+                .filter(|p| *p != 0)
+                .ok_or("no port in it")?;
+            let key = key.filter(|k| valid_key(k)).ok_or("no key in it")?.to_ascii_lowercase();
+            Ok(Code::Direct(Direct { host, port, key }))
+        }
+        _ => Err("a code of another version"),
     }
-    let edge = edge.as_deref().and_then(canonical_edge).ok_or("no relay address in it")?;
-    let token = token.filter(|t| valid_token(t)).ok_or("no key in it")?;
-    Ok(Connect { edge, token })
 }
 
 /// `edge` in its canonical form (`scheme://host[:port]`, lower case, no
@@ -195,30 +290,77 @@ pub fn qr_svg(text: &str) -> Option<(String, usize)> {
     Some((svg, total as usize))
 }
 
-/// Whether `edge` is a relay this computer is on: an address a phone may
-/// keep, not the never-answering default an unconfigured Zend has.
-fn is_relay(edge: &str) -> bool {
-    canonical_edge(edge).is_some_and(|edge| {
-        let host = edge.split_once("://").map_or("", |(_, rest)| rest.rsplit_once(':').map_or(rest, |(host, _)| host));
-        !host.ends_with(".invalid")
-    })
+/// The code a desktop's phone-link status (the engine's PhoneLinkStatus
+/// or SetPhoneLink reply) gives: v=2, its chosen host, port and key.
+fn direct_code(status: &serde_json::Value) -> Result<String, String> {
+    let host = status["host"].as_str().and_then(canonical_host).ok_or("no_tailnet")?;
+    let port = status["port"].as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0).ok_or("failed")?;
+    let key = status["key"].as_str().filter(|k| valid_key(k)).ok_or("failed")?;
+    Ok(encode_direct(&host, port, key))
 }
 
-/// This computer's code: the edge its engine uses and its bearer, both as
-/// a phone would accept them.
-fn this_computers_code() -> Result<String, String> {
-    let edge = crate::auth::endpoint().edge;
-    let token = zend_cli::edge_token_from_env().filter(|t| valid_token(t)).ok_or("no_edge")?;
-    let edge = canonical_edge(&edge).filter(|e| is_relay(e)).ok_or("no_edge")?;
-    Ok(encode(&edge, &token))
+/// The phone link's status as the page sees it: everything but the key.
+fn shown_status(status: &serde_json::Value) -> Vec<(&'static str, Value)> {
+    let text = |name: &str| Value::from(status[name].as_str().unwrap_or_default());
+    let ips: Vec<&str> = status["ips"].as_array().map(|ips| ips.iter().filter_map(|ip| ip.as_str()).collect()).unwrap_or_default();
+    vec![
+        ("on", Value::Bool(status["on"].as_bool().unwrap_or(false))),
+        ("use", text("use")),
+        ("name", text("name")),
+        ("ip", Value::from(ips.iter().find(|ip| !ip.contains(':')).or(ips.first()).copied().unwrap_or_default())),
+        ("host", text("host")),
+        ("port", Value::from(status["port"].as_f64().unwrap_or(0.0))),
+        ("error", text("error")),
+    ]
+}
+
+/// What the page is told of an engine's refusal: a fixed word.
+fn link_error(error: &str) -> String {
+    if error.contains("no_tailnet") {
+        "no_tailnet".into()
+    } else if crate::engine::outcome(error) == "offline" {
+        "offline".into()
+    } else {
+        "failed".into()
+    }
+}
+
+async fn link_call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    crate::engine::get().call(method, params).await.map_err(|error| link_error(&error))
 }
 
 pub fn install(host: &ScriptHost) {
+    // This computer's code: its phone link turned on (the tailnet found
+    // and listened on), as a QR. The key goes into the code alone.
     host.async_action("phone.connect_code", |_| async move {
         crate::plugins::preview::refuse("phone.connect_code")?;
-        let code = this_computers_code()?;
+        let status = link_call("SetPhoneLink", serde_json::json!({ "on": true })).await?;
+        let code = direct_code(&status)?;
         let (svg, modules) = qr_svg(&code).ok_or("too_long")?;
-        Ok(Value::record([("svg", Value::from(svg.as_str())), ("modules", Value::from(modules as f64))]))
+        let mut fields = shown_status(&status);
+        fields.push(("svg", Value::from(svg.as_str())));
+        fields.push(("modules", Value::from(modules as f64)));
+        Ok(Value::record(fields))
+    });
+    host.async_action("phone.link_status", |_| async move {
+        crate::plugins::preview::refuse("phone.link_status")?;
+        Ok(Value::record(shown_status(&link_call("PhoneLinkStatus", serde_json::json!({})).await?)))
+    });
+    // { on?, use? = "name" | "ip" }
+    host.async_action("phone.link_set", |arg| async move {
+        crate::plugins::preview::refuse("phone.link_set")?;
+        let mut params = serde_json::Map::new();
+        if let Some(on) = arg.field("on") {
+            params.insert("on".into(), serde_json::Value::Bool(on.truthy()));
+        }
+        if let Some(choice) = arg.field("use").map(crate::auth::text).filter(|c| c == "name" || c == "ip") {
+            params.insert("use".into(), serde_json::Value::from(choice));
+        }
+        Ok(Value::record(shown_status(&link_call("SetPhoneLink", serde_json::Value::Object(params)).await?)))
+    });
+    host.async_action("phone.link_new_key", |_| async move {
+        crate::plugins::preview::refuse("phone.link_new_key")?;
+        Ok(Value::record(shown_status(&link_call("NewPhoneLinkKey", serde_json::json!({})).await?)))
     });
     #[cfg(target_os = "android")]
     crate::android_camera::install(host);
@@ -264,32 +406,81 @@ where
     Ok(())
 }
 
-/// Keep the code's edge and bearer as this app's (`zend_cli::config_dir`)
-/// and start its engine again on them: the running one is asked to stop,
-/// and the supervisor starts the next, which reads them. An engine that
-/// won't stop keeps what it had, and so does the config folder.
+/// The desktop this app is a window onto, if it keeps one (a v=2 code
+/// scanned): then no engine runs here, and every dial goes to that one.
+pub fn kept_desktop() -> Option<Direct> {
+    kept_desktop_in(&zend_cli::config_dir()?)
+}
+
+/// The desktop kept in `dir`: a record holding a tailnet host and a key
+/// (anything else is none, and the app runs its own engine).
+pub fn kept_desktop_in(dir: &std::path::Path) -> Option<Direct> {
+    let (host, port, key) = zend_cli::desktop_record_in(dir)?;
+    let host = canonical_host(&host)?;
+    valid_key(&key).then_some(Direct { host, port, key })
+}
+
+/// Keep what the code holds as this app's (zend_cli::config_dir) and
+/// start again on it: the running engine (or connection) is asked to stop,
+/// and the supervisor dials the next. A v=1 code keeps a relay and starts
+/// this app's own engine on it (no desktop kept any more); a v=2 code keeps
+/// the desktop, and the app becomes a window onto that desktop's engine.
+/// An engine that won't stop keeps what it had, and so does the folder.
 #[cfg(target_os = "android")]
 pub async fn connect(code: &str) -> Result<Value, String> {
-    let connect = decode(code).map_err(|why| {
+    let code = decode(code).map_err(|why| {
         log::warn!("zend: phone link: not a code ({why})");
         "bad_code".to_owned()
     })?;
     let dir = zend_cli::config_dir().ok_or("store")?;
-    log::info!("zend: phone link: keeping {} and its key, then starting the engine on them", edge_diagnostic(&connect.edge));
-    keep_and_restart(&dir, &connect, || async {
+    let stop = || async {
         match crate::engine::get().stop().await {
             // No connection and no engine thread: none runs, and the next
             // to start reads what's kept.
             Err(error) if error == "offline" && !crate::android::engine_running() => Ok(()),
             other => other,
         }
-    })
-    .await
-    .map_err(|word| {
+    };
+    let failed = |word: &'static str| {
         log::error!("zend: phone link: {}", if word == "store" { "the code couldn't be kept" } else { "the engine didn't stop: nothing changed" });
         word.to_owned()
-    })?;
-    Ok(Value::record([("edge", Value::from(shown_edge(&connect.edge).as_str()))]))
+    };
+    match code {
+        Code::Edge(connect) => {
+            log::info!("zend: phone link: keeping {} and its key, then starting the engine on them", edge_diagnostic(&connect.edge));
+            zend_cli::clear_desktop_record(&dir).map_err(|_| failed("store"))?;
+            keep_and_restart(&dir, &connect, stop).await.map_err(failed)?;
+            Ok(Value::record([("edge", Value::from(shown_edge(&connect.edge).as_str()))]))
+        }
+        Code::Direct(desktop) => {
+            // (The key is never logged; the host is the person's own desktop.)
+            log::info!("zend: phone link: keeping the desktop at {}:{}, then driving its engine", desktop.host, desktop.port);
+            keep_desktop_and_restart(&dir, &desktop, stop).await.map_err(failed)?;
+            Ok(Value::record([("desktop", Value::from(desktop.host.as_str()))]))
+        }
+    }
+}
+
+/// Keep desktop in dir, then restart: one that fails puts back the
+/// desktop kept before (or none).
+pub async fn keep_desktop_and_restart<F, Fut>(dir: &std::path::Path, desktop: &Direct, restart: F) -> Result<(), &'static str>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let before = zend_cli::desktop_record_in(dir);
+    zend_cli::store_desktop_record(dir, &desktop.host, desktop.port, &desktop.key).map_err(|_| "store")?;
+    if restart().await.is_err() {
+        let put_back = match &before {
+            Some((host, port, key)) => zend_cli::store_desktop_record(dir, host, *port, key),
+            None => zend_cli::clear_desktop_record(dir),
+        };
+        if put_back.is_err() {
+            eprintln!("zend: phone link: the engine didn't stop, and the desktop kept before couldn't be put back");
+        }
+        return Err("engine");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -302,7 +493,7 @@ mod tests {
         assert_eq!(code, "zend://connect?v=1&edge=http%3A%2F%2F100.64.0.1%3A27640%2F&token=u-phone%2B1%40org");
         assert_eq!(
             decode(&format!("  {code}\n")),
-            Ok(Connect { edge: "http://100.64.0.1:27640".into(), token: "u-phone+1@org".into() })
+            Ok(Code::Edge(Connect { edge: "http://100.64.0.1:27640".into(), token: "u-phone+1@org".into() }))
         );
         for bad in [
             "",
@@ -420,16 +611,103 @@ mod tests {
             ("http://relay.example:80/", "http://relay.example"),
             ("http://[fd7a:115c::1]:27640", "http://[fd7a:115c::1]:27640"),
         ] {
-            assert_eq!(decode(&encode(given, "u-x@org")).map(|c| c.edge), Ok(kept.to_owned()), "{given}");
+            let edge = match decode(&encode(given, "u-x@org")) {
+                Ok(Code::Edge(c)) => Ok(c.edge),
+                other => Err(format!("{other:?}")),
+            };
+            assert_eq!(edge, Ok(kept.to_owned()), "{given}");
         }
     }
 
+    /// A v=2 code holds a desktop's tailnet host, port and key, and nothing
+    /// else is one: a host off the tailnet, a bad port or key is refused.
     #[test]
-    fn only_a_relay_is_offered() {
-        assert!(is_relay("http://100.115.228.74:27640"));
-        assert!(is_relay("https://relay.example.com"));
-        assert!(!is_relay("https://edge.zend.invalid"));
-        assert!(!is_relay(""));
+    fn a_direct_code_holds_a_tailnet_host_a_port_and_a_key() {
+        let key = "0123456789abcdef".repeat(4);
+        let code = encode_direct("omarchy.tailf80f26.ts.net", 27871, &key);
+        assert_eq!(code, format!("zend://connect?v=2&host=omarchy.tailf80f26.ts.net&port=27871&key={key}"));
+        let want = |host: &str| Ok(Code::Direct(Direct { host: host.into(), port: 27871, key: key.clone() }));
+        assert_eq!(decode(&format!(" {code}\n")), want("omarchy.tailf80f26.ts.net"));
+        assert_eq!(decode(&encode_direct("100.102.122.72", 27871, &key)), want("100.102.122.72"));
+        assert_eq!(decode(&encode_direct("[FD7A:115C:A1E0::1]", 27871, &key.to_uppercase())), want("fd7a:115c:a1e0::1"));
+        assert_eq!(decode(&encode_direct("Omarchy.TS.net.", 27871, &key)), want("omarchy.ts.net"));
+        for (host, port, k) in [
+            ("192.168.1.5", "27871", key.as_str()),
+            ("127.0.0.1", "27871", key.as_str()),
+            ("0.0.0.0", "27871", key.as_str()),
+            ("8.8.8.8", "27871", key.as_str()),
+            ("::1", "27871", key.as_str()),
+            ("1.2.3", "27871", key.as_str()),
+            ("a b", "27871", key.as_str()),
+            ("evil.example/path", "27871", key.as_str()),
+            ("user@host", "27871", key.as_str()),
+            ("-bad.example", "27871", key.as_str()),
+            ("", "27871", key.as_str()),
+            ("omarchy", "0", key.as_str()),
+            ("omarchy", "65536", key.as_str()),
+            ("omarchy", "+80", key.as_str()),
+            ("omarchy", "", key.as_str()),
+            ("omarchy", "27871", "short"),
+            ("omarchy", "27871", &"g".repeat(64)),
+            ("omarchy", "27871", ""),
+        ] {
+            let bad = format!("zend://connect?v=2&host={}&port={port}&key={}", escape(host), escape(k));
+            assert!(decode(&bad).is_err(), "accepted {bad}");
+        }
+        assert!(decode(&format!("{code}&host=other")).is_err(), "a field twice");
+        assert!(decode(&format!("zend://connect?v=3&host=omarchy&port=1&key={key}")).is_err());
+        // A v=1 code still reads.
+        assert!(matches!(decode(&encode("http://100.64.0.1:27640", "u-x@org")), Ok(Code::Edge(_))));
+        assert_eq!(ws_url("fd7a:115c:a1e0::1", 1), "ws://[fd7a:115c:a1e0::1]:1");
+        assert_eq!(ws_url("omarchy.ts.net", 27871), "ws://omarchy.ts.net:27871");
+    }
+
+    /// The code a status gives is v=2 with its host, and the page is told
+    /// everything but the key.
+    #[test]
+    fn the_shown_code_comes_from_the_engine_s_status_and_the_page_never_sees_the_key() {
+        let key = "ab".repeat(32);
+        let status = serde_json::json!({ "on": true, "use": "ip", "name": "omarchy.ts.net", "ips": ["fd7a:115c:a1e0::9", "100.102.122.72"], "host": "100.102.122.72", "port": 27871, "key": key });
+        let code = direct_code(&status).unwrap();
+        assert_eq!(decode(&code), Ok(Code::Direct(Direct { host: "100.102.122.72".into(), port: 27871, key: key.clone() })));
+        let shown = Value::record(shown_status(&status)).to_json();
+        assert!(!shown.contains(&key), "{shown}");
+        assert!(shown.contains("100.102.122.72") && shown.contains("omarchy.ts.net"), "{shown}");
+        assert_eq!(direct_code(&serde_json::json!({ "on": false, "port": 1 })), Err("no_tailnet".into()));
+        assert_eq!(link_error("rpc error: no_tailnet"), "no_tailnet");
+    }
+
+    /// A desktop kept, then a restart that fails: the one kept before (or
+    /// none) is put back.
+    #[test]
+    fn a_failed_restart_puts_back_the_desktop_kept_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Direct { host: "100.64.0.1".into(), port: 27871, key: "a".repeat(64) };
+        let new = Direct { host: "omarchy.ts.net".into(), port: 27872, key: "b".repeat(64) };
+        block_on(keep_desktop_and_restart(dir.path(), &old, || async { Ok(()) })).unwrap();
+        assert_eq!(block_on(keep_desktop_and_restart(dir.path(), &new, || async { Err("busy".to_owned()) })), Err("engine"));
+        assert_eq!(zend_cli::desktop_record_in(dir.path()), Some((old.host.clone(), old.port, old.key.clone())));
+        let empty = tempfile::tempdir().unwrap();
+        let _ = block_on(keep_desktop_and_restart(empty.path(), &new, || async { Err("busy".to_owned()) }));
+        assert_eq!(zend_cli::desktop_record_in(empty.path()), None);
+    }
+
+    /// A phone keeping a desktop is a window onto it (src/engine/rpc.rs
+    /// dials it, src/engine/manager.rs starts no engine); a record that
+    /// isn't one leaves the app on its own engine.
+    #[test]
+    fn the_remote_mode_is_chosen_from_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(kept_desktop_in(dir.path()), None);
+        let desktop = Direct { host: "omarchy.tailf80f26.ts.net".into(), port: 27871, key: "c".repeat(64) };
+        block_on(keep_desktop_and_restart(dir.path(), &desktop, || async { Ok(()) })).unwrap();
+        assert_eq!(kept_desktop_in(dir.path()), Some(desktop));
+        zend_cli::store_desktop_record(dir.path(), "192.168.1.9", 27871, &"c".repeat(64)).unwrap();
+        assert_eq!(kept_desktop_in(dir.path()), None, "a host off the tailnet");
+        zend_cli::store_desktop_record(dir.path(), "100.64.0.1", 27871, "short").unwrap();
+        assert_eq!(kept_desktop_in(dir.path()), None, "a key that isn't one");
+        zend_cli::clear_desktop_record(dir.path()).unwrap();
+        assert_eq!(kept_desktop_in(dir.path()), None);
     }
 
     /// The code drawn as the page draws it (`ui.svg`, rasterized) reads back

@@ -15,7 +15,7 @@
 --   settings_stub.refuse_next      the next change is refused ("refused")
 --   settings_stub.not_admin        you're a member, not an admin, from now on
 --   settings_stub.signed_in_again  the browser sign-in a delete waits on lands
---   settings_stub.phone_no_edge    this computer has no relay to share
+--   settings_stub.phone_no_tailnet this computer isn't on a tailnet
 --   settings_stub.phone_quick      a phone code shows for 1 s, not 60
 --   settings_stub.on_android       the page as the phone shows it (no session
 --                                  runs on it: here is a phone of its own)
@@ -146,7 +146,19 @@ local function find(list: { any }, id: string): number?
 end
 
 -- A phone's connect code (src/phone_link.rs), with a fake relay and key.
-local phone_edge = ui.state("settings_stub_phone_edge", true)
+local phone_tailnet = ui.state("settings_stub_phone_tailnet", true)
+-- The phone link as the engine keeps it (crates/engine/src/phone_link.rs).
+local link = { on = false, use = "name", key = 1 }
+local function link_status(): any
+	return {
+		on = link.on,
+		use = link.use,
+		name = "omarchy.tail0.ts.net",
+		ip = "100.64.0.1",
+		host = if link.use == "ip" then "100.64.0.1" else "omarchy.tail0.ts.net",
+		port = 27872,
+	}
+end
 -- What the next scan answers: "found", "wait" (until phone_scan_lands), "denied".
 local scan_word = ui.state("settings_stub_scan_word", "found")
 local scan_waiting: ((any) -> ())? = nil
@@ -155,7 +167,33 @@ local FAKE_QR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><re
 
 local answers: { [string]: (arg: any) -> any } = {
 	["phone.connect_code"] = function(): any
-		return if phone_edge:peek() then settled({ svg = FAKE_QR, modules = 29 }) else settled(nil, "no_edge")
+		if not phone_tailnet:peek() then
+			return settled(nil, "no_tailnet")
+		end
+		link.on = true
+		local answer = link_status()
+		answer.svg = FAKE_QR
+		answer.modules = 29
+		return settled(answer)
+	end,
+	["phone.link_status"] = function(): any
+		return settled(link_status())
+	end,
+	["phone.link_set"] = function(arg: any): any
+		if arg.on == true and not phone_tailnet:peek() then
+			return settled(nil, "no_tailnet")
+		end
+		if arg.on ~= nil then
+			link.on = arg.on == true
+		end
+		if arg.use == "name" or arg.use == "ip" then
+			link.use = arg.use
+		end
+		return settled(link_status())
+	end,
+	["phone.link_new_key"] = function(): any
+		link.key += 1
+		return settled(link_status())
 	end,
 	["phone.scan"] = function(): any
 		local word = scan_word:peek()
@@ -170,7 +208,10 @@ local answers: { [string]: (arg: any) -> any } = {
 	end,
 	["phone.connect"] = function(arg: any): any
 		local code = string.match(arg.code or "", "^%s*(.-)%s*$") or ""
-		return if string.sub(code, 1, 15) == "zend://connect?" then settled({ edge = "http://…:27640" }) else settled(nil, "bad_code")
+		if string.sub(code, 1, 15) ~= "zend://connect?" then
+			return settled(nil, "bad_code")
+		end
+		return if string.find(code, "v=2", 1, true) then settled({ desktop = "omarchy.tail0.ts.net" }) else settled({ edge = "http://…:27640" })
 	end,
 	["account.me"] = function()
 		return settled(table.clone(me))
@@ -403,7 +444,10 @@ local function detail(arg: any): string
 	if type(arg) == "string" then
 		return arg
 	elseif type(arg) == "table" then
-		return arg.id or arg.method or arg.name or arg.path or ""
+		if arg.on ~= nil then
+			return if arg.on then "on" else "off"
+		end
+		return arg.id or arg.method or arg.name or arg.path or arg.use or ""
 	end
 	return ""
 end
@@ -546,10 +590,10 @@ end
 
 -- The launch before the engine has answered, and the engine saying signed out.
 ui.command {
-	id = "settings_stub.phone_no_edge",
-	title = "No relay to share",
+	id = "settings_stub.phone_no_tailnet",
+	title = "Not on a tailnet",
 	run = function()
-		phone_edge:set(false)
+		phone_tailnet:set(false)
 	end,
 }
 ui.command {

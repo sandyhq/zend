@@ -1,7 +1,9 @@
 -- Settings → Devices, connecting a phone (src/phone_link.rs): on a
--- computer, Show code draws the QR code the host answers, says how long it
--- stays, and hides after that time or when Hide is pressed; with no relay
--- to share it says so, and a failure keeps a way to ask again. On the
+-- computer, Show code draws the QR code the host answers (and turns the
+-- phone link on), says how long it stays, and hides after that time or
+-- when Hide is pressed; with no tailnet it says so, and a failure keeps a
+-- way to ask again. The link's switch turns it off (the code hidden), the
+-- Name/IP choice is sent to the host, New key asks for one. On the
 -- phone, Scan code and a pasted code each reach phone.connect: "Saved,
 -- connecting" until the engine's room is joined, then Connected; Stop
 -- ends a scan (its late answer dropped); a refused camera says so; with a
@@ -67,11 +69,52 @@ test("the code hides by itself once its time is up", function()
 	expect(app:has(CODE)).to_be(false)
 end)
 
-test("with no relay to share, it says so instead of a code", function()
-	local app = open({ "settings_stub.phone_no_edge" })
+test("with no tailnet, it says so instead of a code", function()
+	local app = open({ "settings_stub.phone_no_tailnet" })
 	app:click(`{PAGE} >> role:button "Show code"`)
-	expect(app:wait(`{PAGE} >> "No relay to share"`, { timeout_ms = 5000 })).to_be(true)
+	expect(app:wait(`{PAGE} >> "Not on a tailnet"`, { timeout_ms = 5000 })).to_be(true)
 	expect(app:has(CODE)).to_be(false)
+end)
+
+test("Show code turns the link on, and its switch turns it off and hides the code", function()
+	local app = open()
+	expect(app:wait(`{PAGE} >> "Off: nothing listens beyond this computer."`, { timeout_ms = 5000 })).to_be(true)
+	show(app)
+	expect(app:wait(`{PAGE} >> "On: phones reach this computer at omarchy.tail0.ts.net, port 27872."`, { timeout_ms = 5000 })).to_be(true)
+	app:click(`{PAGE} >> role:switch "Phone link"`)
+	-- (Frames, not a wait: a wait runs the clock past the code's minute.)
+	app:frames(30)
+	expect(app:has(`{PAGE} >> "Off: nothing listens beyond this computer."`)).to_be(true)
+	expect(asked(app, "phone.link_set:off")).to_be(true)
+	expect(app:has(CODE)).to_be(false)
+	expect(app:has(`{PAGE} >> role:button "Show code"`)).to_be(true)
+end)
+
+test("the code holds the name or the IP, as chosen", function()
+	local app = open()
+	show(app)
+	app:click(`{PAGE} >> #phone-link-use >> "IP"`)
+	expect(app:wait(`{PAGE} >> "On: phones reach this computer at 100.64.0.1, port 27872."`, { timeout_ms = 5000 })).to_be(true)
+	expect(asked(app, "phone.link_set:ip")).to_be(true)
+	-- (The code shown is drawn again for the new choice.)
+	expect(app:wait(CODE, { timeout_ms = 5000 })).to_be(true)
+end)
+
+test("New key asks the host for one and hides the old code", function()
+	local app = open()
+	show(app)
+	app:click(`{PAGE} >> role:button "New key"`)
+	app:frames(30)
+	expect(asked(app, "phone.link_new_key")).to_be(true)
+	expect(app:has(CODE)).to_be(false)
+	expect(app:has(`{PAGE} >> role:button "Show code"`)).to_be(true)
+end)
+
+test("on the phone, a computer's direct code connects to that computer", function()
+	local app = open({ "settings_stub.on_android" })
+	app:fill(`{PAGE} >> "Connect code"`, "zend://connect?v=2&host=omarchy.tail0.ts.net&port=27872&key=k")
+	app:click(`{PAGE} >> role:button "Connect"`)
+	expect(app:wait(`{PAGE} >> "Saved. Connecting to omarchy.tail0.ts.net…"`, { timeout_ms = 5000 })).to_be(true)
 end)
 
 test("on the phone, a scanned code connects: saved, then connected once the relay answers", function()
@@ -153,7 +196,7 @@ test("on the phone, with a session running here, Connect asks first", function()
 end)
 
 test("on a computer, a failed code keeps a way to ask again", function()
-	local app = open({ "settings_stub.phone_no_edge" })
+	local app = open({ "settings_stub.phone_no_tailnet" })
 	app:click(`{PAGE} >> role:button "Show code"`)
 	expect(app:wait(`{PAGE} >> role:button "Try again"`, { timeout_ms = 5000 })).to_be(true)
 end)

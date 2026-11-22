@@ -15,10 +15,14 @@
 -- its row alone. Before the engine answers, skeleton rows hold its place;
 -- with no engine, a callout says so.
 --
--- Under it, connecting a phone to the owner's relay (src/phone_link.rs):
--- on a computer, "Show code" draws a QR code with its relay's address and
--- its own key, for a minute or until Hide (no guess at which device used
--- it: a join can't be tied to the code); on the phone (Android), the view
+-- Under it, connecting a phone to this computer (src/phone_link.rs): on a
+-- computer, "Show code" turns on its phone link (its engine listening on
+-- its tailnet address too, crates/engine/src/phone_link.rs) and draws a QR
+-- code with that address (its name or its IP, as chosen here), the port
+-- and the link's key, for a minute or until Hide (no guess at which device
+-- used it: a join can't be tied to the code). A switch turns the link off
+-- again (every phone cut), New key cuts the phones holding the old one;
+-- with no tailnet it says so and nothing listens. On the phone (Android), the view
 -- of phone_join.luau: "Scan code" reads it with the camera, or its text is
 -- pasted, and the phone's engine starts again on it.
 
@@ -366,6 +370,35 @@ local code_svg = ui.state("settings_phone_code", nil :: string?)
 local code_error = ui.state("settings_phone_code_error", "")
 local code_left = ui.state("settings_phone_code_left", 0)
 local code_turn = ui.state("settings_phone_code_turn", 0)
+-- The phone link as the host last said: on, what the code holds ("name"
+-- or "ip"), this computer's tailnet name and IP, and the port.
+local link_on = ui.state("settings_phone_link_on", false)
+local link_use = ui.state("settings_phone_link_use", "name")
+local link_name = ui.state("settings_phone_link_name", "")
+local link_ip = ui.state("settings_phone_link_ip", "")
+local link_port = ui.state("settings_phone_link_port", 0)
+-- The choice the host has (a change of link_use not yet sent is the
+-- person's).
+local link_sent_use = "name"
+
+local function took_status(answer: any)
+	if type(answer) ~= "table" and type(answer) ~= "userdata" then
+		return
+	end
+	ui.batch(function()
+		link_on:set(answer.on == true)
+		local use = if answer.use == "ip" then "ip" else "name"
+		link_sent_use = use
+		link_use:set(use)
+		link_name:set(answer.name or "")
+		link_ip:set(answer.ip or "")
+		link_port:set(answer.port or 0)
+	end)
+end
+
+local function error_word(err: any): string
+	return if type(err) == "table" or type(err) == "userdata" then err.message or "failed" else tostring(err)
+end
 
 local function hide_code()
 	ui.batch(function()
@@ -383,6 +416,7 @@ local function show_code()
 		if code_turn:peek() ~= turn then
 			return
 		end
+		took_status(answer)
 		ui.batch(function()
 			code_left:set(M.SHOWN_FOR)
 			code_svg:set(answer.svg)
@@ -394,9 +428,95 @@ local function show_code()
 		end)
 	end, function(err: any)
 		if code_turn:peek() == turn then
-			code_error:set(if type(err) == "table" or type(err) == "userdata" then err.message or "failed" else tostring(err))
+			code_error:set(error_word(err))
 		end
 	end)
+end
+
+-- The link's switch, what the code holds, and a new key: each the host's
+-- answer taken as the link's state (a code shown hides as the link goes
+-- off or its key changes, and is drawn again for a new choice).
+local function set_link(params: any)
+	host.call("phone.link_set", params):after(function(answer: any)
+		took_status(answer)
+		if not link_on:peek() then
+			hide_code()
+		elseif params.use ~= nil and code_svg:peek() ~= nil then
+			show_code()
+		end
+	end, function(err: any)
+		link_on:set(false)
+		code_error:set(error_word(err))
+	end)
+end
+
+local function new_key()
+	host.call("phone.link_new_key", {}):after(function(answer: any)
+		took_status(answer)
+		hide_code()
+		toast.show { title = ui.t("settings.devices.phone.new_key_done"):get(), tone = "success" }
+	end, function(err: any)
+		code_error:set(error_word(err))
+	end)
+end
+
+local function link_rows(): Node
+	host.call("phone.link_status", {}):after(took_status, function() end)
+	ui.effect(function()
+		local use = link_use:get()
+		if use ~= link_sent_use then
+			link_sent_use = use
+			set_link({ use = use })
+		end
+	end)
+	return ds.Settings.Group {
+		ds.Settings.Row {
+			label = ui.t("settings.devices.phone.link_label"),
+			description = function(): string
+				if not link_on:get() then
+					return ui.t("settings.devices.phone.link_off"):get()
+				end
+				local at = if link_use:get() == "ip" then link_ip:get() else link_name:get()
+				return ui.t("settings.devices.phone.link_on", { at = if at ~= "" then at else link_ip:get(), port = link_port:get() }):get()
+			end,
+			control = ds.Switch {
+				value = link_on,
+				label = ui.t("settings.devices.phone.link_label"),
+				on_change = function(on: boolean)
+					set_link({ on = on })
+				end,
+			},
+		},
+		ds.Settings.Row {
+			label = ui.t("settings.devices.phone.use_label"),
+			description = function(): string
+				local name, ip = link_name:get(), link_ip:get()
+				if name == "" and ip == "" then
+					return ui.t("settings.devices.phone.use_unknown"):get()
+				end
+				return ui.t("settings.devices.phone.use_hint", { name = if name ~= "" then name else "–", ip = if ip ~= "" then ip else "–" }):get()
+			end,
+			control = ds.Segmented {
+				value = link_use,
+				id = "phone-link-use",
+				label = ui.t("settings.devices.phone.use_label"),
+				options = {
+					{ value = "name", label = ui.t("settings.devices.phone.use_name") },
+					{ value = "ip", label = ui.t("settings.devices.phone.use_ip") },
+				} :: any,
+			},
+		},
+		ds.Settings.Row {
+			label = ui.t("settings.devices.phone.new_key_label"),
+			description = ui.t("settings.devices.phone.new_key_hint"),
+			control = ds.Button {
+				ui.t("settings.devices.phone.new_key"),
+				tone = "secondary",
+				size = "sm",
+				on_click = new_key,
+			},
+		},
+	}
 end
 
 local function code_view(): Node
@@ -465,12 +585,12 @@ local function computer_section(): Node
 				if string.sub(kind, 1, 4) == "code" then
 					return ds.Settings.Group { ui.component(code_view)({}) }
 				elseif kind == "error" then
-					local no_edge = code_error:peek() == "no_edge"
+					local no_tailnet = code_error:peek() == "no_tailnet"
 					return ds.Callout {
-						tone = if no_edge then "neutral" else "danger",
-						title = (if no_edge then ui.t("settings.devices.phone.no_edge_title") else ui.t("settings.devices.phone.couldnt")) :: any,
-						body = (if no_edge then ui.t("settings.devices.phone.no_edge_body") else ui.t("settings.devices.try_later")) :: any,
-						-- (Set up the relay, or the moment passes: ask again.)
+						tone = if no_tailnet then "neutral" else "danger",
+						title = (if no_tailnet then ui.t("settings.devices.phone.no_tailnet_title") else ui.t("settings.devices.phone.couldnt")) :: any,
+						body = (if no_tailnet then ui.t("settings.devices.phone.no_tailnet_body") else ui.t("settings.devices.try_later")) :: any,
+						-- (Start Tailscale, or the moment passes: ask again.)
 						action = { label = ui.t("settings.devices.phone.retry"), on_click = show_code },
 					}
 				end
@@ -486,7 +606,8 @@ local function computer_section(): Node
 						},
 					},
 				}
-			end, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
+			end, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
+			ui.component(link_rows)({}),
 		}
 	)
 end
