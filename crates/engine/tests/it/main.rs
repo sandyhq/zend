@@ -45,6 +45,7 @@ mod queued_attachments;
 mod registry_login_tunnel;
 mod registry_writes_live;
 mod relay_delivery;
+mod remote_scope;
 mod restart_resume;
 mod rich_composer_delivery;
 mod run_recovery;

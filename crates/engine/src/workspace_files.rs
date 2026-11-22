@@ -274,21 +274,22 @@ impl WorkspaceFiles {
         }
     }
 
-    /// The workspace `target` names, as the caller may open it: a linked
-    /// phone only a chat's own folder, never the home folder, above it, or
-    /// one holding Zend's data ([`crate::phone_reads`]).
+    /// The workspace `target` names, as the caller may open it: another
+    /// Zend (a linked phone, another device) only a chat's own folder, never
+    /// the home folder, above it, or one holding Zend's data
+    /// ([`crate::phone_reads`]).
     pub(crate) async fn resolve_target(
         &self,
         target: &WorkspaceTarget,
     ) -> Result<ResolvedWorkspace, WorkspaceFilesError> {
-        let phone = crate::phone_reads::is_phone();
+        let fenced = crate::phone_reads::fenced();
         let workspace = self.resolve_any_target(target).await?;
-        if phone {
+        if fenced {
             let home = crate::repos::session_home_dir().ok();
             let data = [self.inner.repos.data_dir().to_path_buf()];
             if let Some(why) = crate::phone_reads::too_wide(&workspace.root, home.as_deref(), &data) {
                 return Err(WorkspaceFilesError::Authorization(format!(
-                    "{why}: a linked phone opens only a chat's own folder"
+                    "{why}: another Zend opens only a chat's own folder"
                 )));
             }
         }
@@ -535,12 +536,12 @@ impl WorkspaceFiles {
         // Only a chat target may read by absolute path; space targets keep
         // the workspace-relative grammar.
         let absolute = request.target.chat_id.is_some() && request.path.starts_with('/');
-        let phone = crate::phone_reads::is_phone();
+        let fenced = crate::phone_reads::fenced();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_on_drop = CancelOnDrop::new(cancel.clone());
         let result = tokio::task::spawn_blocking(move || {
             if absolute {
-                return read_absolute_file_blocking(&workspace, &request.path, !phone, &cancel);
+                return read_absolute_file_blocking(&workspace, &request.path, !fenced, &cancel);
             }
             let relative = WorkspaceRelativePath::file(&request.path)?;
             let mut file = read_file_blocking(&workspace.root, &relative, &cancel)?;
@@ -559,7 +560,7 @@ impl WorkspaceFiles {
     ) -> Result<zend_proto::WorkspaceImageChunk, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
         let absolute = request.target.chat_id.is_some() && request.path.starts_with('/');
-        let phone = crate::phone_reads::is_phone();
+        let fenced = crate::phone_reads::fenced();
         if !absolute
             && (request.expected_checkout_id.is_empty()
                 || request.expected_checkout_id != workspace.checkout_id)
@@ -581,7 +582,7 @@ impl WorkspaceFiles {
                         }
                         read_image_blocking(&workspace.root, &relative, &request)
                     }
-                    AbsoluteRead::Outside { .. } if phone => Err(
+                    AbsoluteRead::Outside { .. } if fenced => Err(
                         WorkspaceFilesError::Authorization(crate::phone_reads::OUTSIDE.into()),
                     ),
                     AbsoluteRead::Outside { base, relative } => {
@@ -1713,7 +1714,7 @@ fn resolve_absolute_read(
 /// exactly like the equivalent relative path (editable, checkout-bound);
 /// outside it is a host file — read-only, no checkout identity — that still
 /// reports Binary, TooLarge, symlink or not-a-regular-file ahead of
-/// `OutsideWorkspace`. Without `outside_allowed` (a linked phone) a file
+/// `OutsideWorkspace`. Without `outside_allowed` (another Zend) a file
 /// outside is refused.
 fn read_absolute_file_blocking(
     workspace: &ResolvedWorkspace,

@@ -259,6 +259,44 @@ struct FinishQueuedMessageEditParams {
     attachments: Option<Vec<String>>,
 }
 
+/// The handles a [`crate::phone_reads::Scope`] is built from, to rebuild it
+/// as chats come and go (a long watch).
+#[derive(Clone)]
+struct ScopeSource {
+    workspace: WorkspaceHost,
+    repos: Repos,
+    uploads: Uploads,
+    device: String,
+}
+
+impl ScopeSource {
+    fn scope(&self) -> crate::phone_reads::Scope {
+        let chats: Vec<String> = self
+            .workspace
+            .read_chats()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|chat| chat.device_id == self.device)
+            .filter_map(|chat| chat.cwd)
+            .collect();
+        let spaces: Vec<String> = self
+            .workspace
+            .read_spaces()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|space| space.device_id == self.device)
+            .map(|space| space.path)
+            .collect();
+        crate::phone_reads::Scope::of(
+            &chats,
+            &spaces,
+            &self.repos.scratch_root(),
+            session_home_dir().ok(),
+            vec![self.repos.data_dir().to_path_buf(), self.uploads.dir().to_path_buf()],
+        )
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RepoPathParams {
@@ -1491,6 +1529,35 @@ impl EngineRpc {
             .await
             .map(|workspace| workspace.root)
             .map_err(Into::into)
+    }
+
+    /// What makes this device's [`crate::phone_reads::Scope`]: its chats'
+    /// and projects' folders as they stand when asked, and Zend's own data.
+    fn scope_source(&self) -> ScopeSource {
+        ScopeSource {
+            workspace: self.workspace.clone(),
+            repos: self.repos.clone(),
+            uploads: self.uploads.clone(),
+            device: self.doc_host.device_id().to_string(),
+        }
+    }
+
+    /// For another Zend (a linked phone, another device: never this
+    /// device's own window or its agents): `path`, as it names it, must
+    /// resolve into a folder of this device's chats or projects, and the
+    /// checkout git finds there must not be too wide (home kept as a
+    /// dotfiles checkout). Git's own files (a worktree's git dir in its main
+    /// repository) aren't the caller's path and aren't fenced.
+    async fn scoped_git_path(&self, path: &str) -> Result<(), RpcError> {
+        if !crate::phone_reads::fenced() {
+            return Ok(());
+        }
+        let scope = self.scope_source().scope();
+        let canonical = scope.path(std::path::Path::new(path)).map_err(RpcError::Failed)?;
+        let identity = Box::pin(self.repos.checkout_identity(&canonical))
+            .await
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        scope.checkout(&identity.root).map_err(RpcError::Failed)
     }
 
     /// Catalogs also serve projectless sessions, which have no workspace space.
@@ -4797,6 +4864,33 @@ impl RpcService for EngineRpc {
                     .get("chatId")
                     .and_then(|chat_id| chat_id.as_str())
                     .map(|chat_id| self.diff_sync.retain_chat(chat_id));
+                // Another Zend sees only the checkouts that aren't too wide
+                // (every checkout here is a chat's; home kept as a dotfiles
+                // checkout is not shown), judged afresh on every frame.
+                if crate::phone_reads::fenced() {
+                    let source = self.scope_source();
+                    let rx = self.diff_sync.watch_diffs();
+                    let stream = futures::stream::unfold((rx, false), move |(mut rx, emitted)| {
+                        let source = source.clone();
+                        async move {
+                            if emitted {
+                                rx.changed().await.ok()?;
+                            }
+                            let mut diffs = rx.borrow_and_update().clone();
+                            let scope = source.scope();
+                            diffs.retain(|diff| scope.checkout(std::path::Path::new(&diff.cwd)).is_ok());
+                            Some((serde_json::to_value(diffs).ok()?, (rx, true)))
+                        }
+                    });
+                    return Ok(RpcReply::Stream(
+                        stream
+                            .map(move |frame| {
+                                let _held = &interest;
+                                frame
+                            })
+                            .boxed(),
+                    ));
+                }
                 Ok(RpcReply::Stream(
                     watch_stream(self.diff_sync.watch_diffs())
                         .map(move |frame| {
@@ -5044,6 +5138,7 @@ impl RpcService for EngineRpc {
                         commit_sha: Option<String>,
                     }
                     let p: P = parse_params(params)?;
+                    self.scoped_git_path(&p.cwd).await?;
                     let identity = self
                         .repos
                         .checkout_identity(std::path::Path::new(&p.cwd))
@@ -5188,6 +5283,7 @@ impl RpcService for EngineRpc {
                 // state in `EngineRpc::handle`'s stack frame.
                 Box::pin(async move {
                     let p: zend_proto::GetCheckoutFileDiffTextRequest = parse_params(params)?;
+                    self.scoped_git_path(&p.cwd).await?;
                     let identity =
                         Box::pin(self.repos.checkout_identity(std::path::Path::new(&p.cwd)))
                             .await
@@ -5430,6 +5526,7 @@ impl RpcService for EngineRpc {
             }
             methods::LIST_BRANCHES => {
                 let p: RepoPathParams = parse_params(params)?;
+                self.scoped_git_path(&p.repo_path).await?;
                 let branches = self
                     .repos
                     .branches(std::path::Path::new(&p.repo_path))
@@ -5439,6 +5536,7 @@ impl RpcService for EngineRpc {
             }
             methods::LIST_REFS => {
                 let p: RepoPathParams = parse_params(params)?;
+                self.scoped_git_path(&p.repo_path).await?;
                 let refs = self
                     .repos
                     .refs(std::path::Path::new(&p.repo_path))
@@ -5460,6 +5558,7 @@ impl RpcService for EngineRpc {
                     crate::repos::GIT_HISTORY_DEFAULT_LIMIT
                 }
                 let p: P = parse_params(params)?;
+                self.scoped_git_path(&p.cwd).await?;
                 let history = self
                     .repos
                     .history(std::path::Path::new(&p.cwd), p.cursor, p.limit)
@@ -5482,6 +5581,7 @@ impl RpcService for EngineRpc {
                     crate::repos::GIT_HISTORY_DEFAULT_LIMIT
                 }
                 let p: P = parse_params(params)?;
+                self.scoped_git_path(&p.cwd).await?;
                 let history = self
                     .repos
                     .search_history(std::path::Path::new(&p.cwd), &p.query, p.cursor, p.limit)
@@ -5509,6 +5609,7 @@ impl RpcService for EngineRpc {
                     crate::repos::GIT_HISTORY_DEFAULT_LIMIT
                 }
                 let p: P = parse_params(params)?;
+                self.scoped_git_path(&p.cwd).await?;
                 let authors: Vec<_> = p
                     .authors
                     .into_iter()
@@ -6119,8 +6220,9 @@ impl RpcService for EngineRpc {
             methods::READ_ATTACHMENT_CHUNK => {
                 let p: ReadAttachmentChunkParams = parse_params(params)?;
                 // Path jail: the uploads dir plus every workspace-known chat cwd
-                // (for a linked phone only a chat's own folder: never home,
-                // above it, or one holding Zend's data).
+                // (for another Zend, a linked phone or another device, only a
+                // chat's own folder: never home, above it, or one holding
+                // Zend's data).
                 let mut roots: Vec<std::path::PathBuf> = self
                     .workspace
                     .read_chats()
@@ -6129,7 +6231,7 @@ impl RpcService for EngineRpc {
                     .filter_map(|chat| chat.cwd)
                     .map(std::path::PathBuf::from)
                     .collect();
-                if crate::phone_reads::is_phone() {
+                if crate::phone_reads::fenced() {
                     let home = session_home_dir().ok();
                     let data = [
                         self.repos.data_dir().to_path_buf(),
