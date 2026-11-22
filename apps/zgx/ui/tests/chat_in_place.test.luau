@@ -208,6 +208,52 @@ test("scrolled up in a page made again, the way back to the latest shows", funct
 	expect(app:wait('role:button "Jump to latest"', { gone = true, timeout_ms = 2000 })).to_be(true)
 end)
 
+-- "Jump to latest" only scrolls: the keys stay where they were. (On a
+-- phone, the pill took the press's focus, then left as the view arrived,
+-- and focus moved on to the next control, the composer: its keyboard
+-- came up.)
+local function focused_line(app: any): string
+	for line in app:tree():gmatch("[^\n]+") do
+		if line:find(" focused", 1, true) then
+			return line
+		end
+	end
+	return ""
+end
+
+local function jump_back(app: any)
+	app:scroll("#transcript", -900)
+	settle(app)
+	expect(app:wait('role:button "Jump to latest"', { timeout_ms = 2000 })).to_be(true)
+	settle(app)
+	app:click('role:button "Jump to latest"')
+	expect(app:wait('role:button "Jump to latest"', { gone = true, timeout_ms = 2000 })).to_be(true)
+	settle(app)
+end
+
+test("jump to latest leaves the composer without the keys when it had none", function()
+	local app = mount("chat_fixture.luau")
+	app:resize(900, 700)
+	open(app, "s1")
+	app:click('role:textbox "Message"')
+	app:key("Escape")
+	settle(app)
+	expect(focused_line(app)).never.to_contain("textbox")
+	jump_back(app)
+	expect(focused_line(app)).never.to_contain('textbox "Message"')
+end)
+
+test("jump to latest leaves the keys in the composer when it had them", function()
+	local app = mount("chat_fixture.luau")
+	app:resize(900, 700)
+	open(app, "s1")
+	app:click('role:textbox "Message"')
+	settle(app)
+	expect(focused_line(app)).to_contain('textbox "Message"')
+	jump_back(app)
+	expect(focused_line(app)).to_contain('textbox "Message"')
+end)
+
 test("scrolled up after a send, the way back to the latest shows", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)

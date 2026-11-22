@@ -2623,6 +2623,11 @@ local function Transcript(props: Props): Node
 					active = { bg = "$zend.menu.solid" },
 				}, "menu")
 				pill.shadow = "$shadow.md"
+				-- A press leaves the keys where they were: it only scrolls.
+				-- (Pressed, it took them, then left as the view arrived, and
+				-- they moved on to the next control, the composer, whose
+				-- keyboard came up on a phone.)
+				pill.focus_on_press = false
 				local pill_ref = ui.ref()
 				pill.ref = pill_ref
 				pill.on_resize = function(size: { w: number, h: number })
