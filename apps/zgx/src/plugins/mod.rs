@@ -35,6 +35,7 @@ pub mod file_events;
 #[cfg(windows)]
 #[path = "file_events_windows.rs"]
 pub mod file_events;
+pub mod fetched;
 pub mod grants;
 pub mod live;
 pub mod records;
@@ -227,6 +228,8 @@ pub struct Bridge {
     state: Cell<&'static str>,
     items: RefCell<Vec<Item>>,
     dirs: RefCell<Option<(PathBuf, PathBuf)>>,
+    /// The engine's list as last heard (heard again when a fetch is done).
+    last_frame: RefCell<Json>,
     /// What zgx loads now (plugins, then the templates' own).
     loaded: RefCell<Vec<Plugin>>,
     /// The ids whose `plugin.<id>.*` are registered.
@@ -534,6 +537,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         templates_page: host.shared("templates", Value::record([("state", Value::from("loading"))])),
         failed_plugins: RefCell::default(),
         raw_items: RefCell::default(),
+        last_frame: RefCell::default(),
         failed_previews: RefCell::default(),
         ui: cx.ui.downgrade(),
         looks: looks::Cache::default(),
@@ -1295,11 +1299,12 @@ impl Bridge {
 
     /// The engine's list, as it changes.
     fn heard(&self, frame: &Json) {
+        *self.last_frame.borrow_mut() = frame.clone();
         let mut list: Vec<Item> = frame["plugins"]
             .as_array()
             .into_iter()
             .flatten()
-            .map(|json| Item { json: json.clone() })
+            .map(|json| Item { json: self.fetched(json) })
             .collect();
         list.sort_by_key(|a| a.name().to_lowercase());
         if let (Some(p), Some(t)) = (frame["dirs"]["plugins"].as_str(), frame["dirs"]["templates"].as_str()) {
@@ -1343,6 +1348,42 @@ impl Bridge {
                 forget_state(&self.host, id);
             }
         }
+    }
+
+    /// A listed plugin as it loads here. One from another engine (a client's:
+    /// files listed, no snapshot) loads from its fetched copy
+    /// (`fetched::ready`), its `snapshot` then; until it's fetched it's
+    /// listed and doesn't run, and its fetch starts (the list heard again
+    /// once it's done).
+    fn fetched(&self, json: &Json) -> Json {
+        let Some(files) = fetched::listed(json) else { return json.clone() };
+        let (id, hash) = (json["id"].as_str().unwrap_or_default().to_string(), json["hash"].as_str().unwrap_or_default().to_string());
+        let Some(root) = engine::data_dir().map(|d| d.join("plugins-remote")) else { return json.clone() };
+        if let Some(dir) = fetched::ready(&root, &id, &hash, files) {
+            let mut json = json.clone();
+            json["snapshot"] = Json::from(dir.display().to_string());
+            return json;
+        }
+        if fetched::start(&id, &hash) {
+            let files = files.clone();
+            let me = Rc::downgrade(&self.me());
+            self.tasks.spawn(async move {
+                let got = fetched::fetch(&root, &id, &hash, &files, |params| call("ReadPluginFile", params)).await;
+                fetched::finished(&id, &hash);
+                match got {
+                    Ok(dir) => eprintln!("zend-zgx: plugins: {id} fetched from its engine into {}", dir.display()),
+                    Err(error) => {
+                        eprintln!("zend-zgx: plugins: {id} couldn't be fetched from its engine: {error}");
+                        return;
+                    }
+                }
+                if let Some(b) = me.upgrade() {
+                    let frame = b.last_frame.borrow().clone();
+                    b.heard(&frame);
+                }
+            });
+        }
+        json.clone()
     }
 
     /// Plugin `id` (as `old` was) is gone: what this side keeps of it goes

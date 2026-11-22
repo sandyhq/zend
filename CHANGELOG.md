@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-22
 
+### Added
+- Phone (branch android-plugins): a phone linked to a computer shows that computer's plugins (sidebar items, pages, menus). The phone link's plugin list names no paths of the computer, only each loaded plugin's files by relative path and sha256; the phone fetches them (`ReadPluginFile`: only listed files of the checked snapshot, no links, re-hashed) into `<app data>/plugins-remote/<id>/<hash16>/`, checks every file against the list and runs the window part from there. The computer's signature check and your decisions apply; service calls stay the computer's window's (refused to a phone for now).
+
 ### Fixed
 - Phone (branch android-ux): scrolling with the composer focused hides the keyboard once instead of hiding and showing it again; a swipe in the file viewer (any direction) never brings the keyboard up, only a tap in a field does; "Jump to latest" scrolls and leaves the composer's focus as it was; a long press on a message selects the word, with Copy, Select All, Mention and Attach, and Copy reaches Android's clipboard. In zgx (branch android-ux): a finger's press that turns into a pan no longer moves the input method, and a long press reaches the text under layers the pointer passes through.
 - Phone (branch android-tls): the app no longer aborts with "out of TLS keys" a few seconds after start. On Android std gives each `thread_local!` a pthread key of its own and bionic has 128 per process; the library had 211. The app's and zgx's thread-locals now share one key (`zgx::tls::thread_local!`, zgx branch android-tls), and build-apk.sh fails when the library would take more than 64 (`apps/zgx/android/count-tls-keys.sh`).
