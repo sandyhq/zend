@@ -24,6 +24,7 @@
 --   settings_stub.phone_scan_lands that scan finds the code (late, if stopped)
 --   settings_stub.phone_denied     the camera isn't allowed
 --   settings_stub.relay_up         the engine's registry room is joined
+--   settings_stub.desktop_answers  the computer's engine answers (no relay)
 
 local host = require("@app/screens/settings/host")
 local api = require("@account/api")
@@ -656,6 +657,18 @@ ui.command {
 		local sessions = require("@account/sessions")
 		local now = table.clone(sessions.now:peek()) :: any
 		now.relay = "connected"
+		sessions.now:set(now)
+	end,
+}
+ui.command {
+	id = "settings_stub.desktop_answers",
+	title = "The computer's engine answers, with no relay of its own",
+	run = function()
+		local sessions = require("@account/sessions")
+		local now = table.clone(sessions.now:peek()) :: any
+		now.here = "omarchy"
+		now.relay = "offline"
+		now.connection = "offline"
 		sessions.now:set(now)
 	end,
 }

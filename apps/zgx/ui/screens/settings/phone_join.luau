@@ -45,6 +45,9 @@ M.desktop = ui.state("phone_join_desktop", "")
 M.busy = ui.state("phone_join_busy", 0)
 -- (The waiting code itself is no window state.)
 local held: string? = nil
+-- The engine this window drove when the code was kept: a direct code is
+-- connected once another one (the computer's) answers.
+local here_before: string? = nil
 local settled = ui.state("phone_join_settled", false)
 local scan_turn = 0
 local watch_turn = 0
@@ -88,8 +91,9 @@ ui.effect(function()
 		return
 	end
 	local now = sessions.now:get()
+	-- (Not the computer's relay: a computer reached directly needs none.)
 	local up = if M.desktop:get() ~= ""
-		then now.state ~= "loading" and now.connection == nil
+		then now.state ~= "loading" and now.here ~= nil and now.here ~= here_before
 		else now.relay == "connected"
 	if up and settled:get() then
 		ui.after(0, function()
@@ -120,6 +124,7 @@ function M.join(code: string, confirmed: boolean?)
 		return
 	end
 	held = nil
+	here_before = sessions.here:peek()
 	watch_turn += 1
 	ui.batch(function()
 		M.busy:set(0)

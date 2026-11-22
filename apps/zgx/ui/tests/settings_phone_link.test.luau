@@ -115,6 +115,12 @@ test("on the phone, a computer's direct code connects to that computer", functio
 	app:fill(`{PAGE} >> "Connect code"`, "zend://connect?v=2&host=omarchy.tail0.ts.net&port=27872&key=k")
 	app:click(`{PAGE} >> role:button "Connect"`)
 	expect(app:wait(`{PAGE} >> "Saved. Connecting to omarchy.tail0.ts.net…"`, { timeout_ms = 5000 })).to_be(true)
+	-- Still the phone's own engine: not connected yet.
+	app:frames(10)
+	expect(app:has(`{PAGE} >> "Saved. Connecting to omarchy.tail0.ts.net…"`)).to_be(true)
+	-- The computer answers; its relay (it has none) doesn't count.
+	app:command("settings_stub.desktop_answers")
+	expect(app:wait(`{PAGE} >> "Connected to omarchy.tail0.ts.net."`, { timeout_ms = 12000 })).to_be(true)
 end)
 
 test("on the phone, a scanned code connects: saved, then connected once the relay answers", function()
