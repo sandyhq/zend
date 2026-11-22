@@ -109,20 +109,18 @@ M.appearance = ui.persist("appearance", "system" :: Appearance)
 -- The organization worked in: the one made, or the one the account was in.
 M.last_org = ui.persist("last_org", "")
 
--- On the phone (Android) every way through joins a computer's relay
--- first, right after sign-in: the steps after it ask the relay (the
--- account's name, its organization), and a phone has none of its own.
+-- On the phone (Android) setup is Connect to a computer alone: the phone
+-- is a client of a computer's engine (plans/client-server), with no
+-- account, GitHub or agents of its own; those are the computer's.
+M.PHONE = { "connect" } :: { Step }
+
 local function on_phone(): boolean
 	return ui.shared("platform", ""):peek() == "android"
 end
+M.on_phone = on_phone
 
 local function with_connect(steps: { Step }): { Step }
-	if not on_phone() or table.find(steps :: { string }, "connect") then
-		return steps
-	end
-	local out = table.clone(steps) :: { string }
-	table.insert(out, (table.find(out, "signin") or 0) + 1, "connect")
-	return out :: { Step }
+	return if on_phone() then M.PHONE else steps
 end
 
 -- The computer this phone is a window onto ("" for none: a computer, or a

@@ -32,7 +32,7 @@ JAR=$ANDROID_HOME/platforms/android-36/android.jar
 OUT=${OUT:-$HOME/.cache/android-app/apk}
 TARGET=${CARGO_TARGET_DIR:-$HOME/.cache/android-app/target-app}
 JOBS=${JOBS:-5}
-# When this build was made, for About (crates/engine/build.rs): Android runs
+# When this build was made, for About (apps/zgx/build.rs): Android runs
 # the app as the system's app_process, whose file time says nothing of it.
 export ZEND_BUILD_TIME=${ZEND_BUILD_TIME:-$(date +%s)}
 rm -rf "$OUT/stage" && mkdir -p "$OUT/stage"

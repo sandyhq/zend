@@ -165,7 +165,7 @@ end
 -- What the next scan answers: "found", "wait" (until phone_scan_lands), "denied".
 local scan_word = ui.state("settings_stub_scan_word", "found")
 local scan_waiting: ((any) -> ())? = nil
-local FAKE_CODE = "zend://connect?v=1&edge=http%3A%2F%2F100.64.0.1%3A27640&token=u-fake%40invalid"
+local FAKE_CODE = "zend://connect?v=2&host=omarchy.tail0.ts.net&port=27872&key=k-fake"
 local FAKE_QR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/><path d="M4 4h7v7h-7z" fill="#000"/></svg>'
 
 local answers: { [string]: (arg: any) -> any } = {
@@ -214,7 +214,8 @@ local answers: { [string]: (arg: any) -> any } = {
 		if string.sub(code, 1, 15) ~= "zend://connect?" then
 			return settled(nil, "bad_code")
 		end
-		return if string.find(code, "v=2", 1, true) then settled({ desktop = "omarchy.tail0.ts.net" }) else settled({ edge = "http://…:27640" })
+		-- (A phone is a computer's client: a relay's code, v=1, is refused.)
+		return if string.find(code, "v=2", 1, true) then settled({ desktop = "omarchy.tail0.ts.net" }) else settled(nil, "relay_code")
 	end,
 	["account.me"] = function()
 		return settled(table.clone(me))

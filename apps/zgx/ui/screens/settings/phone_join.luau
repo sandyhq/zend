@@ -1,31 +1,28 @@
--- Connecting the phone (Android) to a computer: its direct code (the
--- computer's phone link over the tailnet) or its relay's (v=1), by the
--- camera's scan or the code's text pasted, both to the host's
--- `phone.connect` (src/phone_link.rs). Settings → Devices and
--- onboarding's Connect to a computer draw the same view, on the same
--- state. While the camera scans, what it sees shows under Scan code
--- (`phone.scan_preview`: the newest frame, small, grey and upright, from
--- src/android_camera.rs; nil when no scan runs), so the code can be aimed
--- at.
+-- Connecting the phone (Android) to a computer: its direct code (v=2, the
+-- computer's phone link over the tailnet), by the camera's scan or the
+-- code's text pasted, both to the host's `phone.connect`
+-- (src/phone_link.rs). Settings → Devices and onboarding's Connect to a
+-- computer draw the same view, on the same state. While the camera scans,
+-- what it sees shows under Scan code (`phone.scan_preview`: the newest
+-- frame, small, grey and upright, from src/android_camera.rs; nil when no
+-- scan runs), so the code can be aimed at.
 --
--- After the code is kept the engine starts again on it: "Saved,
--- connecting…" until the engine says its registry room is joined
--- (`sessions.now.relay` "connected" M.SETTLE seconds after it: the
--- engine reports a failing room only after 4 s of grace, so an earlier
--- "connected" proves nothing), then "Connected"; no answer
--- in M.WAIT_FOR seconds says so (and turns to Connected if it comes).
+-- The phone is a client of that computer's engine (plans/client-server):
+-- it runs none of its own, so a relay's code (v=1) is refused
+-- (`relay_code`). Once the code is kept the window dials the computer:
+-- "Saved, connecting…" until its engine answers (its sessions read, M.SETTLE
+-- seconds on, from another engine than the one before; the same computer
+-- linked again, a new key say: from its engine, the device the same), then
+-- "Connected"; no answer in M.WAIT_FOR seconds says so (and turns to
+-- Connected if it comes). Linking again stops nothing: the sessions are
+-- the computer's. (Untested here: a code the computer kept before but no
+-- longer takes reads Connected on the sessions it showed last.)
 --
 -- A scan is ended (`phone.scan_stop`, and its answer dropped) when the
 -- view goes (another page, another step) or the app is sent away (not
--- while Android's camera dialog has the focus). The
--- pasted text is the view's own, masked, and emptied once submitted: the
--- code is the computer's key. With sessions running on this phone,
--- connecting asks first (the engine's restart stops them).
---
--- A direct code (v=2, the computer's phone link over the tailnet) answers
--- `desktop` instead of `edge`: the window then drives that computer's
--- engine, and "Connected" waits on it answering (its sessions read, the
--- connection healthy, M.SETTLE seconds on), not on a relay.
+-- while Android's camera dialog has the focus). The pasted text is the
+-- view's own, masked, and emptied once submitted: the code is the
+-- computer's key.
 
 local ds = require("@ds")
 local sessions = require("@account/sessions")
@@ -44,37 +41,21 @@ M.PREVIEW_H = 320
 M.scanning = ui.state("phone_join_scanning", false)
 M.joining = ui.state("phone_join_joining", false)
 -- What came of the last try: "" nothing yet, "connecting" (kept, waiting
--- on the relay), "connected", "unreachable", or a failure's word.
+-- on the computer), "connected", "unreachable", or a failure's word.
 M.outcome = ui.state("phone_join_outcome", "")
--- The relay's address as the host shows it (scheme and port).
-M.edge = ui.state("phone_join_edge", "")
--- The computer's tailnet name or IP, for a direct code ("" for a relay's).
+-- The computer's tailnet name or IP, as the code kept named it.
 M.desktop = ui.state("phone_join_desktop", "")
--- Sessions running here, as a code waits on Connect anyway (0: none waits).
-M.busy = ui.state("phone_join_busy", 0)
--- (The waiting code itself is no window state.)
-local held: string? = nil
--- The engine this window drove when the code was kept: a direct code is
--- connected once another one (the computer's) answers.
+-- The computer this window drove when the code was kept (nil: none, or the
+-- same computer linked again): connected once another one answers.
 local here_before: string? = nil
+-- The computer kept before this run (src/phone_link.rs).
+local linked = ui.shared("phone.desktop", "")
 local settled = ui.state("phone_join_settled", false)
 local scan_turn = 0
 local watch_turn = 0
 
 local function word_of(err: any): string
 	return if type(err) == "string" then err elseif type(err) == "table" or type(err) == "userdata" then err.message or "failed" else "failed"
-end
-
--- Sessions of this phone that a restart of its engine would stop.
-local function running_here(): number
-	local here = sessions.here:peek()
-	local n = 0
-	for _, c in (sessions.now:peek().chats or {}) :: { any } do
-		if here ~= nil and c.device == here and (c.status == "working" or c.status == "waiting" or c.status == "input") then
-			n += 1
-		end
-	end
-	return n
 end
 
 local function watch()
@@ -93,17 +74,14 @@ local function watch()
 	end)
 end
 
--- Kept and waiting: Connected once the new engine's room is joined.
+-- Kept and waiting: Connected once the computer's engine answers.
 ui.effect(function()
 	local outcome = M.outcome:get()
 	if outcome ~= "connecting" and outcome ~= "unreachable" then
 		return
 	end
 	local now = sessions.now:get()
-	-- (Not the computer's relay: a computer reached directly needs none.)
-	local up = if M.desktop:get() ~= ""
-		then now.state ~= "loading" and now.here ~= nil and now.here ~= here_before
-		else now.relay == "connected"
+	local up = now.state ~= "loading" and now.here ~= nil and now.here ~= here_before
 	if up and settled:get() then
 		ui.after(0, function()
 			if M.outcome:peek() == outcome then
@@ -113,38 +91,32 @@ ui.effect(function()
 	end
 end)
 
--- Whether this phone is on a relay now: joined in this run, or one it
--- already had answers.
+-- Whether this phone reaches a computer now: linked in this run, or one
+-- it kept before answers.
 M.connected = ui.computed(function(): boolean
 	local outcome = M.outcome:get()
-	return outcome == "connected" or (outcome == "" and sessions.now:get().relay == "connected")
+	local now = sessions.now:get()
+	return outcome == "connected" or (outcome == "" and linked:get() ~= "" and now.state ~= "loading" and now.here ~= nil)
 end)
 
--- Keep `code` and start the engine on it; with sessions running here,
--- only once confirmed.
-function M.join(code: string, confirmed: boolean?)
+-- Keep `code` and dial the computer it names.
+function M.join(code: string)
 	if M.joining:peek() or string.match(code, "^%s*$") then
 		return
 	end
-	local n = running_here()
-	if n > 0 and not confirmed then
-		held = code
-		M.busy:set(n)
-		return
-	end
-	held = nil
 	here_before = sessions.here:peek()
 	watch_turn += 1
 	ui.batch(function()
-		M.busy:set(0)
 		M.joining:set(true)
 		M.outcome:set("")
 	end)
 	host.call("phone.connect", { code = code }):after(function(answer: any)
 		ui.batch(function()
 			M.joining:set(false)
-			M.edge:set(answer.edge or "")
 			M.desktop:set(answer.desktop or "")
+			if answer.desktop == linked:peek() then
+				here_before = nil
+			end
 			M.outcome:set("connecting")
 		end)
 		watch()
@@ -154,18 +126,6 @@ function M.join(code: string, confirmed: boolean?)
 			M.outcome:set(word_of(err))
 		end)
 	end)
-end
-
-function M.confirm()
-	local code = held
-	if code then
-		M.join(code, true)
-	end
-end
-
-function M.cancel_confirm()
-	held = nil
-	M.busy:set(0)
 end
 
 function M.start_scan()
@@ -208,32 +168,25 @@ end
 
 local OUTCOMES: { [string]: string } = {
 	bad_code = "settings.devices.phone.bad_code",
+	relay_code = "settings.devices.phone.relay_code",
 	denied = "settings.devices.phone.denied",
 	no_camera = "settings.devices.phone.no_camera",
 	camera = "settings.devices.phone.camera_failed",
 	store = "settings.devices.phone.store_failed",
-	engine = "settings.devices.phone.engine_failed",
 	busy = "settings.devices.phone.camera_failed",
 }
 
 local function says(): string
 	local outcome = M.outcome:get()
-	local edge = M.edge:get()
 	local desktop = M.desktop:get()
 	if M.joining:get() then
 		return ui.t("settings.devices.phone.joining"):get()
-	elseif desktop ~= "" and (outcome == "connecting" or outcome == "connected" or outcome == "unreachable") then
+	elseif outcome == "connecting" or outcome == "connected" or outcome == "unreachable" then
 		local key = if outcome == "connected"
 			then "settings.devices.phone.desktop_connected"
 			elseif outcome == "unreachable" then "settings.devices.phone.desktop_unreachable"
 			else "settings.devices.phone.desktop_connecting"
 		return ui.t(key, { desktop = desktop }):get()
-	elseif outcome == "connecting" then
-		return ui.t("settings.devices.phone.saved_connecting", { edge = edge }):get()
-	elseif outcome == "connected" then
-		return ui.t("settings.devices.phone.connected", { edge = edge }):get()
-	elseif outcome == "unreachable" then
-		return ui.t("settings.devices.phone.unreachable", { edge = edge }):get()
 	elseif outcome ~= "" then
 		return ui.t(OUTCOMES[outcome] or "settings.devices.try_later"):get()
 	end
@@ -245,7 +198,6 @@ function M.view(): Node
 	local pasted = ui.use_state("")
 	ui.on_cleanup(function()
 		M.stop_scan()
-		M.cancel_confirm()
 	end)
 	-- (Not while the camera is asked for: the system's dialog takes the
 	-- window's focus too.)
@@ -347,19 +299,6 @@ function M.view(): Node
 				overflow = "hidden",
 			},
 		}),
-		ui.show(function(): boolean
-			return M.busy:get() > 0
-		end, ds.Callout {
-				tone = "warning",
-				title = ui.t("settings.devices.phone.busy_title") :: any,
-				body = function(): string
-					return ui.t("settings.devices.phone.busy_body", { n = M.busy:get() }):get()
-				end :: any,
-				actions = {
-					{ label = ui.t("settings.devices.phone.busy_go"), on_click = M.confirm, primary = true },
-					{ label = ui.t("common.cancel"), on_click = M.cancel_confirm },
-				},
-			}),
 		ui.text {
 			says,
 			id = "phone-join-outcome",

@@ -83,10 +83,15 @@ local function forward(from: string): { string }
 	state.step:set(from :: any)
 	local seen = { from }
 	for _ = 1, 12 do
-		if state.step:peek() == "done" then
+		local before = state.step:peek()
+		if before == "done" then
 			break
 		end
 		actions.next()
+		-- (On the phone the last step opens the window instead: no Done.)
+		if state.step:peek() == before then
+			break
+		end
 		table.insert(seen, state.step:peek())
 	end
 	return seen
@@ -244,52 +249,29 @@ test("someone who already had Zend is welcomed with only their username and card
 	state.welcome = false
 end)
 
-test("on the phone, every run joins a computer's relay right after sign-in", function()
-	local platform = ui.shared("platform", "")
-	platform:set("android")
-	expect(run { path = "signed_in" }).to_be("connect")
-	expect(forward("connect")).to_equal({ "connect", "appearance", "username", "card", "org", "invite", "github", "providers", "done" })
-	-- (Signed in, Back from it goes nowhere: leaving is Sign out.)
-	expect(backward("connect")).to_equal({ "connect" })
-	local n, count = state.position("connect")
-	expect(n).to_be(1)
-	expect(count).to_be(9)
-	-- Not signed in: first too, and the look's Back returns to it.
-	expect(run { path = "skipped" }).to_be("connect")
-	expect(backward("appearance")).to_equal({ "appearance", "connect", "signin" })
-	state.step:set("connect")
-	actions.connected()
-	expect(state.step:peek()).to_be("appearance")
-	expect(state.device_done:peek().connect).to_be(true)
-	-- Joined in an earlier run: passed over, as a page finished.
-	expect(run { path = "signed_in", passed = { "connect" } }).to_be("appearance")
-	-- Welcomed: the relay first, then the username and card.
-	state.welcome = true
-	expect(run { path = "signed_in" }).to_be("connect")
-	expect(forward("connect")).to_equal({ "connect", "username", "card", "done" })
-	state.welcome = false
-	platform:set("")
-	-- (On a computer, no such step.)
-	expect(run { path = "signed_in" }).to_be("appearance")
-end)
-
-test("on a phone linked to a computer, setup passes over the account's steps", function()
+test("on the phone, setup is Connect to a computer alone, whatever the account", function()
 	local platform = ui.shared("platform", "")
 	local desktop = ui.shared("phone.desktop", "")
 	platform:set("android")
-	-- (Not linked yet: the account's steps are there.)
-	expect(run { path = "signed_in" }).to_be("connect")
-	expect(forward("connect")).to_equal({ "connect", "appearance", "username", "card", "org", "invite", "github", "providers", "done" })
-	-- A direct code kept: the computer's account, set up there.
+	-- (A phone has no account of its own: no sign-in, no account's steps,
+	-- no GitHub, no agents; those are the computer's.)
+	for _, path in { "signed_in", "skipped" } :: { any } do
+		expect(run { path = path }).to_be("connect")
+		expect(forward("connect")).to_equal({ "connect" })
+		expect(backward("connect")).to_equal({ "connect" })
+		expect(state.full(path)).to_equal({ "connect" })
+	end
+	local n, count = state.position("connect")
+	expect(n).to_be(1)
+	expect(count).to_be(1)
+	-- Welcomed, or linked already: the same.
+	state.welcome = true
+	expect(forward("connect")).to_equal({ "connect" })
+	state.welcome = false
 	desktop:set("omarchy.tail0.ts.net")
 	expect(run { path = "signed_in" }).to_be("connect")
-	expect(forward("connect")).to_equal({ "connect", "appearance", "github", "providers", "done" })
-	expect(backward("done")).to_equal({ "done", "providers", "github", "appearance", "connect" })
-	-- Welcomed: nothing of the account's to show.
-	state.welcome = true
-	expect(forward("connect")).to_equal({ "connect", "done" })
-	state.welcome = false
-	-- (On a computer the link means nothing.)
+	expect(forward("connect")).to_equal({ "connect" })
+	-- (On a computer, no such step, and the link means nothing.)
 	platform:set("")
 	expect(run { path = "signed_in" }).to_be("appearance")
 	expect(forward("appearance")).to_equal({ "appearance", "username", "card", "org", "invite", "github", "providers", "done" })

@@ -623,11 +623,13 @@ fn feed_outcome(error: &str) -> String {
     }
 }
 
-/// The build id a packaged build was given (Android links the engine, which
-/// embeds it); none on the desktop, whose executable's time says it.
+/// The build id a packaged build was given (Android's: its commit and the
+/// time build-apk.sh packaged it, from build.rs), as an engine's build id
+/// reads; none on the desktop, whose executable's time says it.
 #[cfg(target_os = "android")]
 fn packaged_build() -> Option<String> {
-    zend_engine::embedded_build_time().map(|_| zend_engine::build_id().to_owned())
+    let built: u64 = env!("ZEND_ZGX_BUILD_TIME").parse().ok().filter(|&secs| secs > 0)?;
+    Some(format!("{}.{built}", env!("ZEND_ZGX_COMMIT")))
 }
 
 #[cfg(not(target_os = "android"))]

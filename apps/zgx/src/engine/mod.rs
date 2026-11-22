@@ -171,7 +171,12 @@ impl Engine {
 
     /// Asks the engine to stop: the connection ends and the supervisor
     /// starts the engine on disk in its place (if this app may start one).
+    /// Never from a phone: the engine it reaches is a computer's, not its
+    /// own to stop (`client`).
     pub async fn stop(&self) -> Result<(), String> {
+        if manager::CLIENT_ONLY {
+            return Err("client".into());
+        }
         let Some(rpc) = self.rpc.borrow().clone() else {
             return Err("offline".into());
         };
@@ -179,6 +184,15 @@ impl Engine {
             Ok(_) => Ok(()),
             Err(error) if error == "closed" => Ok(()),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Ends the connection on this side, so the supervisor dials again
+    /// (a phone linked to another computer: that one). The engine is left
+    /// running.
+    pub fn reconnect(&self) {
+        if let Some(rpc) = self.rpc.borrow().clone() {
+            rpc.close();
         }
     }
 
@@ -284,6 +298,10 @@ impl Engine {
     }
 
     fn follow_session(&self) {
+        // (A phone's account is never the computer's engine's to follow.)
+        if manager::CLIENT_ONLY {
+            return;
+        }
         let scope = self.scope.borrow().clone();
         if self.restarting.get() || !manager::needs_restart(scope.as_deref(), self.signed_in.get()) {
             return;

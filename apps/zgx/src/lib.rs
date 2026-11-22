@@ -366,10 +366,13 @@ fn launch(
             Opening::Main => screen = Screen::Main,
         }
     }
-    // Android has one window, the activity's: no intro over a desktop, setup
-    // at once (its welcome too) where the desktop plays it first.
-    if cfg!(target_os = "android") && matches!(screen, Screen::Intro) {
-        screen = Screen::Onboarding;
+    // Android has one window, the activity's, and is a client of a
+    // computer's engine (plans/client-server): linked to one, the main
+    // window at once; not yet, only Connect to a computer (setup's
+    // `connect` step, `onboarding.start`), with no account of its own.
+    #[cfg(target_os = "android")]
+    if !matches!(screen, Screen::Gallery | Screen::Fixture(_)) {
+        screen = if phone_link::kept_desktop().is_some() { Screen::Main } else { Screen::Onboarding };
     }
 
     // The scripts this launch runs, compiled on a worker while AppKit, the
@@ -746,6 +749,9 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
     }
     if let Ok(step) = std::env::var("ZEND_ZGX_STEP") {
         host.shared("onboarding.start", step.as_str());
+    } else if cfg!(target_os = "android") {
+        // (A phone's setup is Connect to a computer alone.)
+        host.shared("onboarding.start", "connect");
     }
     // Their username and card only (`welcome_due`).
     if WELCOME.load(std::sync::atomic::Ordering::Relaxed) {

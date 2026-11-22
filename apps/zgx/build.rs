@@ -38,6 +38,25 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
     }
 
+    // Android's About (src/about.rs `packaged_build`): the commit and the
+    // time build-apk.sh packaged it, as the engine's build id has them (the
+    // phone links no engine to ask; its executable is the system's
+    // app_process, whose time says nothing of this build).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        let commit = std::process::Command::new("git")
+            .args(["rev-parse", "--short=12", "HEAD"])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".into());
+        println!("cargo:rustc-env=ZEND_ZGX_COMMIT={commit}");
+        println!("cargo:rustc-env=ZEND_ZGX_BUILD_TIME={}", std::env::var("ZEND_BUILD_TIME").unwrap_or_default().trim());
+        println!("cargo:rerun-if-env-changed=ZEND_BUILD_TIME");
+    }
+
     // (Read as it runs, not with `env!`: a target dir shared between
     // checkouts can run a build script compiled in another, which then
     // read that checkout's manifest, or none once it was removed.)

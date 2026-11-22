@@ -9,23 +9,20 @@
 //!   them as the desktop finds its packaged copy. The fonts are in the
 //!   binary already (lib.rs `fonts()`).
 //! - **Home**: `HOME` and `XDG_DATA_HOME` are the app's files folder
-//!   (`internalDataPath`), `TMPDIR` its cache: what the desktop keeps under
-//!   home (the engine's ~/.zend, the window's saved state, the account) is
-//!   the app's own, kept across starts and removed with the app.
-//! - **Engine**: started in this process, on a thread of its own
-//!   ([`start_engine`], by src/engine/manager.rs): the app talks to it over
-//!   its WebSocket and token as the desktop does. Its edge is the
-//!   self-hosted one over Tailscale, read as the desktop fork reads it
-//!   (zend_cli): `<files>/.config/zend/edge-url` and `edge-token` (the dev
-//!   bearer). Without them it runs offline, a local workspace. No WorkOS
-//!   sign-in on Android.
+//!   (`internalDataPath`), `TMPDIR` its cache: what the window keeps under
+//!   home (its saved state, the computer it is linked to) is the app's own,
+//!   kept across starts and removed with the app.
+//! - **No engine**: the phone is a client of a computer's (plans/client-server
+//!   step 1). Unlinked, it shows only Connect to a computer; linked (a v=2
+//!   code kept, src/phone_link.rs), every call goes to that computer's engine
+//!   over its phone link (src/engine/rpc.rs). No account, no harness here.
 //! - **Insets**: the status, navigation and keyboard bars over the window
 //!   (Android draws the app under them), for the interface as
 //!   `ui.shared("system.insets")` (ui/ds/insets.luau): `{ top, right,
 //!   bottom, left, keyboard }` in points.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use zgx_desktop::WindowContext;
@@ -76,17 +73,6 @@ pub fn main(app: AndroidApp, pack: &'static [u8]) {
         log::info!("zend: notifications: posting a check banner");
         zend_notify::post("Zend", "Notifications reach this device.", None);
     }
-    // The engine now, beside the window: the supervisor (src/engine) would
-    // start it only after its first dial is refused, which waits for the
-    // window's first frames (5 s on the emulator). It finds it running; an
-    // activity made again finds the one the last started.
-    let account = crate::auth::endpoint();
-    match crate::engine::manager::Config::from_env(&account.edge, &account.client, account.port) {
-        Ok(config) => {
-            crate::engine::manager::start_in_process(&config);
-        }
-        Err(error) => log::warn!("zend: engine: {error}"),
-    }
     if let Err(error) = crate::launch(crate::Screen::Intro, false, false, None) {
         log::error!("zend: {error}");
     }
@@ -116,13 +102,11 @@ fn set_up_process(app: &AndroidApp, pack: &'static [u8]) -> Result<PathBuf, Stri
     let dir = files.join("app");
     unpack(pack, &dir).map_err(|error| format!("unpacking the app's files into {}: {error}", dir.display()))?;
     let _ = APP_DIR.set(dir);
-    // The IPC tokens builds before the in-process engine left on disk:
-    // nothing reads them now.
-    for name in ["ipc-token", "ipc-token-agent"] {
-        let _ = std::fs::remove_file(files.join(".zend").join(name));
-    }
+    // (What builds with an engine of their own left in <files>/.zend stays
+    // there unread: removing the phone's old workspace is the person's
+    // call, not an upgrade's.)
     // SAFETY: no other thread of the app runs yet: this is the first
-    // activity's `android_main`, before its window or engine.
+    // activity's `android_main`, before its window.
     unsafe {
         std::env::set_var("HOME", &files);
         std::env::set_var("XDG_DATA_HOME", &files);
@@ -192,8 +176,7 @@ fn unpack(mut rest: &[u8], dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// What the app and the engine write to stderr (`eprintln!`, the
-/// engine's tracing), into the log (logcat, tag `zend`), line by line.
+/// What the app writes to stderr (`eprintln!`), into the log (logcat, tag `zend`), line by line.
 fn stderr_to_log() {
     use std::io::BufRead;
     use std::os::fd::FromRawFd;
@@ -209,134 +192,6 @@ fn stderr_to_log() {
         for line in std::io::BufReader::new(read).lines().map_while(Result::ok) {
             log::info!("{line}");
         }
-    });
-}
-
-/// The engine reached in this process, not on a port (src/engine/rpc.rs).
-pub const IN_PROCESS_IPC: bool = true;
-
-/// The way to the in-process engine while its thread runs (or starts or
-/// stops): set as it starts, cleared as its thread ends, however it ends.
-static ENGINE: Mutex<Option<zend_engine::InProcessDialer>> = Mutex::new(None);
-
-fn engine() -> std::sync::MutexGuard<'static, Option<zend_engine::InProcessDialer>> {
-    ENGINE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Whether an engine thread runs (or starts or stops) in this process.
-pub fn engine_running() -> bool {
-    engine().is_some()
-}
-
-/// A new connection to the engine (one end of a socket pair it serves).
-/// `ConnectionRefused` while none runs: the supervisor then starts one.
-pub fn dial_engine() -> std::io::Result<std::os::unix::net::UnixStream> {
-    let dialer = engine().clone();
-    dialer.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::ConnectionRefused))?.dial()
-}
-
-/// The bearer the running engine's handshakes take (kept in memory only).
-pub fn engine_token() -> Option<String> {
-    engine().as_ref().map(|dialer| dialer.token().to_string())
-}
-
-/// What the in-process engine is started with (src/engine/manager.rs).
-pub struct EngineStart {
-    pub data_dir: PathBuf,
-    pub edge: String,
-}
-
-/// Clears [`ENGINE`] as the engine's thread ends, a panic included, and
-/// says so when it wasn't asked to stop.
-struct EngineThread {
-    stopped: bool,
-}
-
-impl Drop for EngineThread {
-    fn drop(&mut self) {
-        engine().take();
-        if !self.stopped {
-            log::error!("zend: engine: its thread ended unexpectedly (a panic); the app starts it again on its next dial");
-        }
-    }
-}
-
-/// Start the engine on a thread of its own, unless one runs. It takes its
-/// connections from this process alone (`zend_engine::InProcessIpc`): no
-/// port, no token file. Whether one was started. When it stops
-/// (`StopEngine`, signing in on a local workspace), the next dial starts
-/// another.
-pub fn start_engine(start: EngineStart) -> bool {
-    let mut running = engine();
-    if running.is_some() {
-        return false;
-    }
-    let (ipc, dialer) = match zend_engine::InProcessIpc::new() {
-        Ok(pair) => pair,
-        Err(error) => {
-            log::error!("zend: engine: {error}");
-            return false;
-        }
-    };
-    *running = Some(dialer);
-    drop(running);
-    let spawned = std::thread::Builder::new().name("zend-engine".into()).spawn(move || {
-        let mut thread = EngineThread { stopped: false };
-        tracing();
-        // As a development build's spawned engine has it (manager.rs
-        // `spawn`): the self-hosted edge zend_cli resolves (`edge-url` in
-        // the app's config folder, else an edge that never answers:
-        // offline), its dev bearer from `edge-token` there (none: no
-        // sync), and no hosted sign-in client (no WorkOS on the phone).
-        let edge_token = zend_cli::edge_token_from_env();
-        // (Fixed words: the edge is a code's, anyone's to make.)
-        log::info!(
-            "zend: engine: {} ({})",
-            crate::phone_link::edge_diagnostic(&start.edge),
-            if edge_token.is_some() { "with its bearer" } else { "no bearer: offline" }
-        );
-        let config = zend_engine::EngineConfig {
-            data_dir: start.data_dir,
-            edge_url: start.edge,
-            edge_token,
-            // (No port: the app's connections come in-process.)
-            ipc_port: 0,
-            // (For doc-command runs only: no agent runs on the phone.)
-            default_harness: zend_engine::HarnessId::ClaudeCode,
-            org_id: None,
-            workos_client_id: None,
-        };
-        let ran = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("zend-engine-rt")
-            .build()
-            .map_err(anyhow::Error::from)
-            .and_then(|runtime| runtime.block_on(zend_engine::Engine::new(config).run_in_process(ipc)));
-        thread.stopped = true;
-        match ran {
-            Ok(()) => log::info!("zend: engine stopped"),
-            Err(error) => log::error!("zend: engine stopped: {error:#}"),
-        }
-    });
-    if let Err(error) = spawned {
-        engine().take();
-        log::error!("zend: engine thread: {error}");
-        return false;
-    }
-    true
-}
-
-/// The engine's tracing, to stderr and so to the log, once.
-fn tracing() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let filter = tracing_subscriber::EnvFilter::try_from_env("ZEND_LOG")
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_ansi(false)
-            .with_writer(std::io::stderr)
-            .try_init();
     });
 }
 

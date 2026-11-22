@@ -5,10 +5,10 @@
 //! the code or turns it on), and the code holds that address (its MagicDNS
 //! name or its IP, as the person chose), the port and the engine's
 //! phone-link key: `zend://connect?v=2&host=…&port=…&key=…`. The phone
-//! keeps them (`zend_cli`'s `desktop` record, mode 600), runs no engine of
-//! its own any more, and is a window onto the desktop's (src/engine/rpc.rs).
+//! keeps them (`zend_cli`'s `desktop` record, mode 600) and is a client of
+//! the desktop's engine (src/engine/rpc.rs): it has none of its own.
 //!
-//! Before (v=1, still read):
+//! Before (v=1, still decoded; a phone refuses it, `relay_code`):
 //! The owner's relay is the self-hosted edge (on a VM over Tailscale), with
 //! the edge's dev bearer as the account: no hosted sign-in. The computer
 //! shows a QR code holding its edge and its own bearer, on a click and for
@@ -23,8 +23,8 @@
 //! call    phone.link_status   (none)    { on, use, name, ip, host, port, error }
 //! call    phone.link_set      { on?, use? }   the same: turned on or off, "name" or "ip"
 //! call    phone.link_new_key  (none)    the same: a new key, every phone cut
-//! call    phone.connect       { code }  { edge } or { desktop }: the code kept, started on it
-//!                                       (Android; fails "bad_code", "store", "engine")
+//! call    phone.connect       { code }  { desktop }: the computer kept, its engine dialled
+//!                                       (Android; fails "bad_code", "relay_code", "store")
 //! call    phone.scan          (none)    the code the camera found (Android; fails
 //!                                       "denied", "no_camera", "camera", "stopped")
 //! invoke  phone.scan_stop     (none)    stop scanning (Android)
@@ -397,8 +397,10 @@ pub fn edge_diagnostic(edge: &str) -> &'static str {
     }
 }
 
-/// What the page shows of a kept edge (canonical, so only a scheme and a
-/// port of digits): its scheme and port, not where it is.
+/// What a page would show of a kept edge (canonical, so only a scheme and
+/// a port of digits): its scheme and port, not where it is. (No page does
+/// now: a phone refuses a relay's code.)
+#[cfg(test)]
 pub fn shown_edge(edge: &str) -> String {
     let Some(edge) = canonical_edge(edge) else { return String::new() };
     let (scheme, rest) = edge.split_once("://").unwrap_or(("", ""));
@@ -406,25 +408,6 @@ pub fn shown_edge(edge: &str) -> String {
         Some((_, port)) if port.bytes().all(|b| b.is_ascii_digit()) => format!("{scheme}://…:{port}"),
         _ => format!("{scheme}://…"),
     }
-}
-
-/// Keep `connect` in `dir` as the edge and bearer, then `restart` the
-/// engine on them. A restart that fails puts back what was kept before
-/// (both halves, or none), so the running engine and the kept pair agree.
-pub async fn keep_and_restart<F, Fut>(dir: &std::path::Path, connect: &Connect, restart: F) -> Result<(), &'static str>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<(), String>>,
-{
-    let before = zend_cli::edge_record_in(dir);
-    zend_cli::store_edge_config(dir, &connect.edge, &connect.token).map_err(|_| "store")?;
-    if restart().await.is_err() {
-        if zend_cli::restore_edge_record(dir, before.as_ref()).is_err() {
-            eprintln!("zend: phone link: the engine didn't stop, and the relay kept before couldn't be put back");
-        }
-        return Err("engine");
-    }
-    Ok(())
 }
 
 /// The desktop this app is a window onto, if it keeps one (a v=2 code
@@ -441,44 +424,38 @@ pub fn kept_desktop_in(dir: &std::path::Path) -> Option<Direct> {
     valid_key(&key).then_some(Direct { host, port, key })
 }
 
-/// Keep what the code holds as this app's (zend_cli::config_dir) and
-/// start again on it: the running engine (or connection) is asked to stop,
-/// and the supervisor dials the next. A v=1 code keeps a relay and starts
-/// this app's own engine on it (no desktop kept any more); a v=2 code keeps
-/// the desktop, and the app becomes a window onto that desktop's engine.
-/// An engine that won't stop keeps what it had, and so does the folder.
+/// Keep the computer a direct code (v=2) names as this app's
+/// (zend_cli::config_dir) and drive its engine: the connection there is (to
+/// the computer kept before) ends on this side and the supervisor dials the
+/// new one. Nothing is asked to stop: the engine reached is a computer's. A
+/// relay's code (v=1) is refused (`relay_code`): the phone runs no engine
+/// to join a relay with. A record that can't be kept leaves the one before.
 #[cfg(target_os = "android")]
 pub async fn connect(code: &str) -> Result<Value, String> {
-    let code = decode(code).map_err(|why| {
-        log::warn!("zend: phone link: not a code ({why})");
-        "bad_code".to_owned()
+    let desktop = client_code(code).map_err(|word| {
+        log::warn!("zend: phone link: {}", if word == "relay_code" { "a relay's code (v=1): this phone needs a computer's direct code" } else { "not a code" });
+        word.to_owned()
     })?;
     let dir = zend_cli::config_dir().ok_or("store")?;
-    let stop = || async {
-        match crate::engine::get().stop().await {
-            // No connection and no engine thread: none runs, and the next
-            // to start reads what's kept.
-            Err(error) if error == "offline" && !crate::android::engine_running() => Ok(()),
-            other => other,
-        }
+    // (The key is never logged; the host is the person's own desktop.)
+    log::info!("zend: phone link: keeping the desktop at {}:{}, then driving its engine", desktop.host, desktop.port);
+    let reconnect = || async {
+        crate::engine::get().reconnect();
+        Ok(())
     };
-    let failed = |word: &'static str| {
-        log::error!("zend: phone link: {}", if word == "store" { "the code couldn't be kept" } else { "the engine didn't stop: nothing changed" });
+    keep_desktop_and_restart(&dir, &desktop, reconnect).await.map_err(|word| {
+        log::error!("zend: phone link: the code couldn't be kept");
         word.to_owned()
-    };
-    match code {
-        Code::Edge(connect) => {
-            log::info!("zend: phone link: keeping {} and its key, then starting the engine on them", edge_diagnostic(&connect.edge));
-            zend_cli::clear_desktop_record(&dir).map_err(|_| failed("store"))?;
-            keep_and_restart(&dir, &connect, stop).await.map_err(failed)?;
-            Ok(Value::record([("edge", Value::from(shown_edge(&connect.edge).as_str()))]))
-        }
-        Code::Direct(desktop) => {
-            // (The key is never logged; the host is the person's own desktop.)
-            log::info!("zend: phone link: keeping the desktop at {}:{}, then driving its engine", desktop.host, desktop.port);
-            keep_desktop_and_restart(&dir, &desktop, stop).await.map_err(failed)?;
-            Ok(Value::record([("desktop", Value::from(desktop.host.as_str()))]))
-        }
+    })?;
+    Ok(Value::record([("desktop", Value::from(desktop.host.as_str()))]))
+}
+
+/// The computer a code names, for a phone: a direct code's (v=2); a relay's
+/// (v=1) is `relay_code`, anything else `bad_code`.
+pub fn client_code(text: &str) -> Result<Direct, &'static str> {
+    match decode(text).map_err(|_| "bad_code")? {
+        Code::Direct(desktop) => Ok(desktop),
+        Code::Edge(_) => Err("relay_code"),
     }
 }
 
@@ -603,23 +580,16 @@ mod tests {
         }
     }
 
-    /// An engine that won't stop leaves the pair kept before, whole; one
-    /// that stops keeps the new pair.
+    /// A phone is a client of a computer: it takes a direct code only.
     #[test]
-    fn a_failed_restart_puts_back_the_relay_kept_before() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = Connect { edge: "http://100.64.0.1:27640".into(), token: "u-old@org".into() };
-        let new = Connect { edge: "http://100.64.0.2:27641".into(), token: "u-new@org".into() };
-        block_on(keep_and_restart(dir.path(), &old, || async { Ok(()) })).unwrap();
-        let failed = block_on(keep_and_restart(dir.path(), &new, || async { Err("busy".to_owned()) }));
-        assert_eq!(failed, Err("engine"));
-        assert_eq!(zend_cli::edge_record_in(dir.path()), Some((old.edge.clone(), old.token.clone())));
-        // With nothing kept before, nothing is kept after.
-        let empty = tempfile::tempdir().unwrap();
-        let _ = block_on(keep_and_restart(empty.path(), &new, || async { Err("busy".to_owned()) }));
-        assert_eq!(zend_cli::edge_config_in(empty.path()), None);
-        block_on(keep_and_restart(dir.path(), &new, || async { Ok(()) })).unwrap();
-        assert_eq!(zend_cli::edge_record_in(dir.path()), Some((new.edge, new.token)));
+    fn a_phone_takes_a_computer_s_direct_code_and_refuses_a_relay_s() {
+        let key = "a1".repeat(32);
+        let direct = encode_direct("omarchy.tail1234.ts.net", 27941, &key);
+        let desktop = client_code(&direct).expect("a direct code");
+        assert_eq!((desktop.host.as_str(), desktop.port), ("omarchy.tail1234.ts.net", 27941));
+        assert_eq!(client_code(&encode("http://100.64.0.1:27640", "u-1@org")).err(), Some("relay_code"));
+        assert_eq!(client_code("zend://connect?v=9").err(), Some("bad_code"));
+        assert_eq!(client_code("hello").err(), Some("bad_code"));
     }
 
     /// What's kept is the edge's canonical form: scheme and host in lower

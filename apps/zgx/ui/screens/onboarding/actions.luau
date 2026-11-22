@@ -232,12 +232,15 @@ function M.skip_sign_in()
 	M.start_run({})
 end
 
--- The phone joined a computer's relay (Connect to a computer): signed in,
--- the account is asked about again, now that there's a relay to ask, and
--- the run goes on from the first page left; else on to the next step.
+-- The phone reached a computer (Connect to a computer): its setup is done,
+-- and the main window opens on the computer's sessions. (Off a phone, a
+-- signed-in run asks about the account again and goes on from the first
+-- page left; else on to the next step.)
 function M.connected()
 	M.finished("connect")
-	if state.path:peek() == "signed_in" then
+	if state.on_phone() then
+		M.finish()
+	elseif state.path:peek() == "signed_in" then
 		M.signed_in()
 	else
 		M.next()

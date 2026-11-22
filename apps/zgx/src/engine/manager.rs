@@ -44,10 +44,9 @@
 //!                                 chats: for comparing against the shipping
 //!                                 app; never sign out from it)
 //!
-//! **Android** runs the engine inside the app, on a thread of its own
-//! (src/android.rs `start_engine`), not as a process: the staging engine's
-//! port and data (~/.zend, HOME being the app's files folder), started when
-//! nothing answers, as a development build starts its `zend-engine`.
+//! **Android** starts no engine at all: it is a client of a computer's
+//! (plans/client-server step 1), dialled over that computer's phone link
+//! (src/engine/rpc.rs, src/phone_link.rs); unlinked, nothing answers.
 //!
 //! A signed-out engine opens a local workspace and keeps it; signing in
 //! takes a new one (the shipping app's sync switch). So once the engine's
@@ -87,8 +86,9 @@ const STAGING_DATA: &str = ".zend";
 
 const BETA: bool = cfg!(feature = "beta");
 
-/// The engine runs in this process (Android's), not as one of its own.
-const IN_PROCESS: bool = cfg!(target_os = "android");
+/// Android starts no engine: it is a client of a computer's, reached over
+/// that computer's phone link (src/engine/rpc.rs), or of none.
+pub(crate) const CLIENT_ONLY: bool = cfg!(target_os = "android");
 
 /// The soonest a second engine is started after the first.
 const SPAWN_SPACING: Duration = Duration::from_secs(10);
@@ -120,13 +120,13 @@ const STARTED: &str = "zgx-started-build";
 impl Config {
     /// The engine this app would start now, if it may start one.
     pub fn startable(&self) -> Option<&Path> {
-        if self.spawn { self.bin.as_deref() } else { None }
+        if self.spawn && !CLIENT_ONLY { self.bin.as_deref() } else { None }
     }
 
-    /// Whether this app can start an engine, should none answer: one it has
-    /// (`startable`), or Android's own, in this process.
+    /// Whether this app can start an engine, should none answer (never on
+    /// Android, which only dials a computer's).
     pub fn can_start(&self) -> bool {
-        self.startable().is_some() || (IN_PROCESS && self.spawn)
+        self.startable().is_some()
     }
 
     /// Whether this is Zend.app's engine, which follows its bundle by
@@ -306,17 +306,8 @@ impl Spawner {
     /// engine that holds the data dir without serving yet is on its way in or
     /// out: none is started beside it, and one follows once it has let go.
     pub fn start_if_due(&mut self, config: &Config) -> bool {
-        if !config.spawn || self.last.is_some_and(|at| at.elapsed() < SPAWN_SPACING) {
+        if !config.spawn || CLIENT_ONLY || self.last.is_some_and(|at| at.elapsed() < SPAWN_SPACING) {
             return false;
-        }
-        if IN_PROCESS {
-            // (One still running, or on its way out, is left alone; one that
-            // fails at once is tried again no sooner than a spawned one.)
-            let started = start_in_process(config);
-            if started {
-                self.last = Some(Instant::now());
-            }
-            return started;
         }
         let Some(bin) = &config.bin else {
             if !self.said_missing {
@@ -354,29 +345,6 @@ impl Spawner {
                 false
             }
         }
-    }
-}
-
-/// Android's engine, on a thread of this process (src/android.rs).
-pub(crate) fn start_in_process(config: &Config) -> bool {
-    // (The edge read again at each start, not the config's from the app's
-    // start: a phone joined to a relay (src/phone_link.rs) has just written
-    // it, and stopped the engine for this.)
-    // (A phone that is a window onto a desktop runs no engine of its own:
-    // every dial goes to the desktop's, src/engine/rpc.rs.)
-    #[cfg(target_os = "android")]
-    if crate::phone_link::kept_desktop().is_some() {
-        return false;
-    }
-    #[cfg(target_os = "android")]
-    return crate::android::start_engine(crate::android::EngineStart {
-        data_dir: config.data_dir.clone(),
-        edge: crate::auth::endpoint().edge,
-    });
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = config;
-        false
     }
 }
 

@@ -1750,6 +1750,7 @@
         "connect": "Connect",
         "joining": "Connecting…",
         "bad_code": "That's not a Zend connect code.",
+        "relay_code": "That's a relay's code. On the computer, open Settings > Devices and show its code.",
         "denied": "Camera not allowed. Allow it in Android's settings, or paste the code.",
         "no_camera": "This phone has no camera Zend can use. Paste the code instead.",
         "camera_failed": "The camera didn't start. Try again, or paste the code.",

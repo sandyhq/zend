@@ -5,10 +5,11 @@
 -- way to ask again. The link's switch turns it off (the code hidden), the
 -- Name/IP choice is sent to the host, New key asks for one. On the
 -- phone, Scan code and a pasted code each reach phone.connect: "Saved,
--- connecting" until the engine's room is joined, then Connected; Stop
--- ends a scan (its late answer dropped); a refused camera says so; with a
--- session running here, Connect asks first; the pasted code is masked and
--- emptied once sent.
+-- connecting" until the computer's engine answers, then Connected; a
+-- relay's code is refused (the phone runs no engine to join it with);
+-- Stop ends a scan (its late answer dropped); a refused camera says so;
+-- linking again asks nothing (it stops no session); the pasted code is
+-- masked and emptied once sent.
 -- The QR's own pixels are checked in Rust (phone_link.rs's test). On the
 -- shell in ui/shell_fixture.luau, Settings' calls answered by
 -- ui/settings_stub.luau (a fake relay and key).
@@ -16,8 +17,8 @@
 local PAGE = "#settings-page"
 local NAV = "#settings-nav"
 local CODE = `{PAGE} >> #phone-code`
-local SAVED = `{PAGE} >> "Saved. Connecting to the relay at http://…:27640…"`
-local JOINED = `{PAGE} >> "Connected to the relay at http://…:27640."`
+local SAVED = `{PAGE} >> "Saved. Connecting to omarchy.tail0.ts.net…"`
+local JOINED = `{PAGE} >> "Connected to omarchy.tail0.ts.net."`
 
 local function open(before: { string }?): any
 	local app = mount("shell_fixture.luau")
@@ -126,7 +127,7 @@ test("on the phone, a computer's direct code connects to that computer", functio
 	expect(app:wait(`{PAGE} >> "Connected to omarchy.tail0.ts.net."`, { timeout_ms = 12000 })).to_be(true)
 end)
 
-test("on the phone, a scanned code connects: saved, then connected once the relay answers", function()
+test("on the phone, a scanned code connects: saved, then connected once the computer answers", function()
 	local app = open({ "settings_stub.on_android" })
 	expect(app:has(`{PAGE} >> role:button "Show code"`)).to_be(false)
 	app:click(`{PAGE} >> role:button "Scan code"`)
@@ -134,21 +135,21 @@ test("on the phone, a scanned code connects: saved, then connected once the rela
 	expect(asked(app, "phone.scan")).to_be(true)
 	expect(asked(app, "phone.connect")).to_be(true)
 	expect(app:has(JOINED)).to_be(false)
-	app:command("settings_stub.relay_up")
-	expect(app:wait(JOINED, { timeout_ms = 12000 })).to_be(true)
-end)
-
--- The engine started again reads "connected" until 4 s of failing have
--- passed: that early word is no proof the relay answered.
-test("on the phone, a relay that reads connected at once is not taken at its word", function()
-	local app = open({ "settings_stub.on_android" })
-	app:click(`{PAGE} >> role:button "Scan code"`)
-	expect(app:wait(SAVED, { timeout_ms = 5000 })).to_be(true)
-	-- (Down before, as the engine before had no relay; up at once after.)
+	-- (A relay up means nothing to a phone: it has none.)
 	app:command("settings_stub.relay_up")
 	app:frames(10)
 	expect(app:has(JOINED)).to_be(false)
-	expect(app:has(SAVED)).to_be(true)
+	app:command("settings_stub.desktop_answers")
+	expect(app:wait(JOINED, { timeout_ms = 12000 })).to_be(true)
+end)
+
+-- The computer kept before, linked again (a new key say): its engine is
+-- the same device, and answering again is Connected.
+test("on the phone, the computer linked again connects", function()
+	local app = open({ "settings_stub.linked_phone" })
+	app:command("settings_stub.desktop_answers")
+	app:click(`{PAGE} >> role:button "Scan code"`)
+	expect(app:wait(SAVED, { timeout_ms = 5000 })).to_be(true)
 	expect(app:wait(JOINED, { timeout_ms = 12000 })).to_be(true)
 end)
 
@@ -207,21 +208,23 @@ test("on the phone, a pasted code connects, and other text is refused", function
 	app:fill(`{PAGE} >> "Connect code"`, "hello")
 	app:click(`{PAGE} >> role:button "Connect"`)
 	expect(app:wait(`{PAGE} >> "That's not a Zend connect code."`, { timeout_ms = 5000 })).to_be(true)
+	-- A relay's code (v=1): the phone runs no engine to join it with.
 	app:fill(`{PAGE} >> "Connect code"`, " zend://connect?v=1&edge=http%3A%2F%2F100.64.0.1%3A27640&token=u-fake%40invalid ")
+	app:click(`{PAGE} >> role:button "Connect"`)
+	expect(app:wait(`{PAGE} >> "That's a relay's code. On the computer, open Settings > Devices and show its code."`, { timeout_ms = 5000 })).to_be(true)
+	app:fill(`{PAGE} >> "Connect code"`, " zend://connect?v=2&host=omarchy.tail0.ts.net&port=27872&key=k-fake ")
 	app:click(`{PAGE} >> role:button "Connect"`)
 	expect(app:wait(SAVED, { timeout_ms = 5000 })).to_be(true)
 	-- (Emptied once sent, and never shown: the code is the computer's key.)
 	expect(app:tree(PAGE):find("u-fake", 1, true) == nil).to_be(true)
+	expect(app:tree(PAGE):find("k-fake", 1, true) == nil).to_be(true)
 end)
 
-test("on the phone, with a session running here, Connect asks first", function()
+test("on the phone, sessions running on the computer don't hold up linking", function()
 	local app = open({ "settings_stub.on_android", "settings_stub.phone_busy" })
 	app:click(`{PAGE} >> role:button "Scan code"`)
-	expect(app:wait(`{PAGE} >> "Sessions are running on this phone"`, { timeout_ms = 5000 })).to_be(true)
-	expect(asked(app, "phone.connect")).to_be(false)
-	app:click(`{PAGE} >> role:button "Connect anyway"`)
 	expect(app:wait(SAVED, { timeout_ms = 5000 })).to_be(true)
-	expect(asked(app, "phone.connect")).to_be(true)
+	expect(app:has(`{PAGE} >> "Sessions are running on this phone"`)).to_be(false)
 end)
 
 test("on a computer, a failed code keeps a way to ask again", function()

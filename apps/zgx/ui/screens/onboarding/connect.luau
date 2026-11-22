@@ -1,8 +1,7 @@
--- Connect to a computer, on the phone (Android) the step after sign-in:
--- joining a computer's relay by its code, scanned or pasted, as Settings →
--- Devices does it (settings/phone_join.luau, the same view and state). The
--- steps after it ask the relay, so Continue waits until it answers (a
--- relay this phone had already, answering, counts).
+-- Connect to a computer, the phone's (Android) whole setup: reaching a
+-- computer's engine by its direct code, scanned or pasted, as Settings →
+-- Devices does it (settings/phone_join.luau, the same view and state).
+-- Continue waits until that engine answers, then opens the main window.
 
 local ds = require("@ds")
 local Onboarding = ds.Onboarding
@@ -13,8 +12,9 @@ export type Props = { on_back: () -> (), on_continue: () -> () }
 
 return function(props: Props): Node
 	return Onboarding.Step {
-		-- (Back is Sign in, which a signed-in run has passed.)
-		back = if state.path:peek() == "signed_in" then nil else Onboarding.Back { on_click = props.on_back },
+		-- (Back is Sign in, which a signed-in run has passed; a phone's setup
+		-- has nothing before it.)
+		back = if state.path:peek() == "signed_in" or state.on_phone() then nil else Onboarding.Back { on_click = props.on_back },
 		continue = {
 			label = ui.t("common.continue") :: any,
 			disabled = function(): boolean

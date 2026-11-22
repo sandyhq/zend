@@ -48,24 +48,20 @@ pub enum DialError {
     Other(String),
 }
 
-/// The engine's current IPC token, if it has written one. Android's
-/// engine, in this process, keeps its token in memory (src/android.rs).
+/// The engine's current IPC token, if it has written one. On a phone, the
+/// kept computer's phone-link key (src/phone_link.rs), or none.
 pub fn read_token(data_dir: &Path) -> Option<String> {
-    // (A phone that is a window onto a desktop: that engine's phone-link
-    // key, src/phone_link.rs.)
     #[cfg(target_os = "android")]
-    if let Some(desktop) = crate::phone_link::kept_desktop() {
+    {
         let _ = data_dir;
-        return Some(desktop.key);
+        crate::phone_link::kept_desktop().map(|desktop| desktop.key)
     }
-    #[cfg(target_os = "android")]
-    if crate::android::IN_PROCESS_IPC {
-        let _ = data_dir;
-        return crate::android::engine_token();
+    #[cfg(not(target_os = "android"))]
+    {
+        let raw = std::fs::read_to_string(data_dir.join("ipc-token")).ok()?;
+        let token = raw.trim();
+        (!token.is_empty()).then(|| token.to_string())
     }
-    let raw = std::fs::read_to_string(data_dir.join("ipc-token")).ok()?;
-    let token = raw.trim();
-    (!token.is_empty()).then(|| token.to_string())
 }
 
 #[derive(Default)]
@@ -111,71 +107,8 @@ impl Frames {
 }
 
 /// What the engine is reached over: its port on loopback, or on Android
-/// a socket pair with the engine in this process (no port: nothing outside
-/// the app reaches it).
-#[cfg(not(target_os = "android"))]
+/// the kept computer's phone link (its tailnet address).
 type Stream = TcpStream;
-#[cfg(target_os = "android")]
-pub(crate) enum Stream {
-    /// The engine in this process (one end of a socket pair).
-    Local(std::os::unix::net::UnixStream),
-    /// A desktop's engine over the tailnet: its phone link.
-    Desktop(TcpStream),
-}
-
-#[cfg(target_os = "android")]
-impl Stream {
-    pub(crate) fn set_nonblocking(&self, on: bool) -> std::io::Result<()> {
-        match self {
-            Self::Local(s) => s.set_nonblocking(on),
-            Self::Desktop(s) => s.set_nonblocking(on),
-        }
-    }
-
-    pub(crate) fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
-        match self {
-            Self::Local(s) => s.set_read_timeout(timeout),
-            Self::Desktop(s) => s.set_read_timeout(timeout),
-        }
-    }
-}
-
-#[cfg(target_os = "android")]
-impl std::io::Read for Stream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Local(s) => s.read(buf),
-            Self::Desktop(s) => s.read(buf),
-        }
-    }
-}
-
-#[cfg(target_os = "android")]
-impl std::io::Write for Stream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Local(s) => s.write(buf),
-            Self::Desktop(s) => s.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Local(s) => s.flush(),
-            Self::Desktop(s) => s.flush(),
-        }
-    }
-}
-
-#[cfg(target_os = "android")]
-impl AsRawFd for Stream {
-    fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        match self {
-            Self::Local(s) => s.as_raw_fd(),
-            Self::Desktop(s) => s.as_raw_fd(),
-        }
-    }
-}
 
 #[cfg(any(target_os = "android", test))]
 /// A connection to `host:port` (each address the name resolves to tried in
@@ -213,17 +146,13 @@ fn open(port: u16) -> Result<(Stream, String), DialError> {
     Ok((stream, format!("ws://127.0.0.1:{port}")))
 }
 
+/// The kept computer's engine (a v=2 code scanned or pasted); none kept:
+/// nothing to dial, as if it refused (the phone has no engine of its own).
 #[cfg(target_os = "android")]
 fn open(port: u16) -> Result<(Stream, String), DialError> {
     let _ = port;
-    // A desktop kept (a v=2 code scanned): its engine, never one of this
-    // app's own (src/engine/manager.rs starts none then).
-    if let Some(desktop) = crate::phone_link::kept_desktop() {
-        let (stream, uri) = dial_tcp(&desktop.host, desktop.port)?;
-        return Ok((Stream::Desktop(stream), uri));
-    }
-    let stream = crate::android::dial_engine().map_err(refused_or)?;
-    Ok((Stream::Local(stream), "ws://localhost/".into()))
+    let desktop = crate::phone_link::kept_desktop().ok_or(DialError::Refused)?;
+    dial_tcp(&desktop.host, desktop.port)
 }
 
 /// The handshake, blocking (on the network thread).
@@ -327,6 +256,10 @@ pub(crate) fn poll_fd(fd: &impl AsRawFd, events: libc::c_short) -> libc::pollfd 
 #[cfg(unix)]
 const QUIET_MS: libc::c_int = 2000;
 
+/// What [`Rpc::close`] hands the network thread: no frame of the engine's
+/// (those are JSON), so it closes the socket instead of sending it.
+const CLOSE: &str = "\u{0}close";
+
 /// The network thread: requests out, frames in, and asleep between.
 fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, #[cfg(unix)] heard: OwnedFd) {
     // Without a pipe to wait on (not unix), short reads let the thread
@@ -343,6 +276,11 @@ fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, #[cfg(u
     loop {
         loop {
             match rx.try_recv() {
+                Ok(text) if text == CLOSE => {
+                    let _ = socket.close(None);
+                    let _ = socket.flush();
+                    return;
+                }
                 Ok(text) => match socket.write(tungstenite::Message::text(text)) {
                     Ok(()) => {}
                     Err(error) if would_block(&error) => {}
@@ -543,6 +481,13 @@ impl Rpc {
 
     pub fn is_closed(&self) -> bool {
         self.0.closed.get()
+    }
+
+    /// Ends this connection from this side: `pump` returns (calls fail,
+    /// watches end) and the network thread closes the socket.
+    pub fn close(&self) {
+        self.post(CLOSE.to_owned());
+        self.0.frames.push(None, Some("closed by this app".into()));
     }
 
     /// A unary call: its `ok`, or its `err`.
@@ -828,6 +773,41 @@ mod tests {
         let waker = std::task::Waker::noop();
         assert!(pump.as_mut().poll(&mut std::task::Context::from_waker(waker)).is_ready());
         assert_eq!(*ended.borrow(), vec!["no checkout".to_string(), "closed".to_string()]);
+    }
+
+    /// A phone linked to another computer ends its connection on its own
+    /// side (`Rpc::close`): the network thread is told to close the socket
+    /// (nothing is sent to the engine, StopEngine least of all), and `pump`
+    /// returns, failing what waits on it, so the supervisor dials again.
+    #[test]
+    fn closing_from_this_side_ends_the_connection_and_asks_the_engine_nothing() {
+        let (heard, bell) = pipe().unwrap();
+        let (tx, rx) = mpsc::channel::<String>();
+        let frames = Frames(Arc::default());
+        let rpc = Rpc(Rc::new(Inner {
+            tx,
+            bell: Arc::new(bell),
+            frames: frames.clone(),
+            next_id: Cell::new(1),
+            pending: RefCell::default(),
+            closed: Cell::new(false),
+        }));
+        let ended: Rc<RefCell<Vec<String>>> = Rc::default();
+        let e = ended.clone();
+        let _open = rpc.watch_ending("W", json!({}), |_| {}, move |why| e.borrow_mut().push(why));
+        rpc.close();
+        let posted: Vec<String> = rx.try_iter().collect();
+        assert_eq!(posted.last().map(String::as_str), Some(CLOSE));
+        assert!(posted.iter().all(|text| !text.contains("StopEngine")));
+        assert!(drain(&heard));
+        let mut pump = std::pin::pin!(rpc.pump());
+        let waker = std::task::Waker::noop();
+        match pump.as_mut().poll(&mut std::task::Context::from_waker(waker)) {
+            std::task::Poll::Ready(why) => assert_eq!(why, "closed by this app"),
+            std::task::Poll::Pending => panic!("pump still running after close"),
+        }
+        assert!(rpc.is_closed());
+        assert_eq!(*ended.borrow(), vec!["closed".to_string()]);
     }
 
     /// The engine answers plugin watches `setup_incomplete` until an
