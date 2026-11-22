@@ -112,6 +112,33 @@ async fn turned_on_it_serves_its_own_key_scoped_as_a_phone() {
     assert_eq!(again.key().unwrap(), key);
 }
 
+/// The two keys don't cross: the phone-link key opens nothing on this
+/// device's own IPC listener (bearer or challenge), and its IPC tokens
+/// don't open the phone link.
+#[tokio::test]
+async fn the_link_s_key_and_the_ipc_tokens_open_only_their_own_listener() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = make_link(dir.path(), loopback());
+    let on = link.set(Some(true), None).await.unwrap();
+    let key = on["key"].as_str().unwrap().to_owned();
+    // This device's own listener, with the tokens an engine start issues.
+    let tokens = zend_rpc::ipc_auth::issue_tokens(dir.path()).unwrap();
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", local.local_addr().unwrap());
+    let _served = tokio::spawn(zend_rpc::serve_ws_listener_scoped(local, Arc::new(Echo), tokens.clone()));
+    let five = Duration::from_secs(5);
+
+    let refused = tokio::time::timeout(five, zend_rpc::connect_ws(&url, Some(&key))).await.unwrap().err().expect("the link's key opened the IPC listener");
+    assert!(refused.to_string().contains("401"), "{refused}");
+    assert!(tokio::time::timeout(five, zend_rpc::connect_phone_link(&url, &key)).await.unwrap().is_err());
+    let window = tokio::time::timeout(five, zend_rpc::connect_ws(&url, Some(&tokens.full))).await.unwrap().expect("the IPC token opens it");
+    assert_eq!(window.call(methods::ENGINE_INFO, json!({})).await.unwrap()["caller"], "Local");
+
+    for token in [&tokens.full, &tokens.agent] {
+        assert!(dial(&on, token).await.is_err(), "an IPC token opened the phone link");
+    }
+}
+
 /// With an address it can't bind, the code holds one it listens on.
 #[tokio::test]
 async fn the_code_s_ip_is_one_the_link_listens_on() {
