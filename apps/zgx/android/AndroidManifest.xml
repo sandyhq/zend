@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Zend's app on Android (apps/zgx, the desktop's interface), an APK
      beside sh.zend.android (apps/android, the Kotlin app), which it does not
-     replace. No Java: NativeActivity loads libzend_android.so (lib.rs).
+     replace. Its activity, ZendActivity (java/), is NativeActivity, which
+     loads libzend_android.so (lib.rs), plus what NativeActivity lacks: the
+     keyboard's text connection and the selection's handles and toolbar.
      Debuggable only as a debug build (build-apk.sh passes aapt2
      -debug-mode without -release). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -23,7 +25,7 @@
          interface keeps clear of them by system.insets (src/android.rs). -->
     <application
         android:label="Zend"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -33,7 +35,7 @@
              on top; with predictive back, the default from targetSdk 36,
              the system would finish the activity instead.) -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="sh.zend.zgx.ZendActivity"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.TranslucentDecor"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density"

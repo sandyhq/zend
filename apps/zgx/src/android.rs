@@ -73,7 +73,16 @@ pub fn main(app: AndroidApp, pack: &'static [u8]) {
         log::info!("zend: notifications: posting a check banner");
         zend_notify::post("Zend", "Notifications reach this device.", None);
     }
-    if let Err(error) = crate::launch(crate::Screen::Intro, false, false, None) {
+    // Devtools (`zgx inspect`'s socket, in the cache folder) for the
+    // emulator tests (apps/zgx/android/e2e): asked for by a file only the
+    // app's own user can make, so only through `run-as`, which only a
+    // debuggable build allows (`adb shell run-as sh.zend.zgx touch
+    // files/zgx-inspect`). Kept: it holds for every start after.
+    let inspect = files.join("zgx-inspect").exists();
+    if inspect {
+        log::info!("zend: devtools on (files/zgx-inspect)");
+    }
+    if let Err(error) = crate::launch(crate::Screen::Intro, false, inspect, None) {
         log::error!("zend: {error}");
     }
     log::info!("zend: activity ended");

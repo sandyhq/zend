@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The emulator tests' input method (apps/zgx/android/e2e): it types what
+     a broadcast tells it through the editor's InputConnection, as a phone's
+     keyboard does (composing, committing, deleting, Enter), and reports what
+     it sees to the log (tag ZendE2eIme). Installed and chosen by run.sh on
+     the emulator only, never on a phone. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="sh.zend.e2e.ime"
+    android:versionCode="1"
+    android:versionName="1">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+    <application android:label="Zend e2e keyboard" android:hasCode="true">
+        <service
+            android:name=".TestIme"
+            android:label="Zend e2e keyboard"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data android:name="android.view.im" android:resource="@xml/method" />
+        </service>
+    </application>
+</manifest>

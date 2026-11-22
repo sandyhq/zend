@@ -2,7 +2,9 @@
 # Build Zend's Android APK (sh.zend.zgx): this crate (the whole app,
 # zend-zgx, a client of a computer's engine: none of its own) for each ABI with cargo-ndk, packed with
 # aapt2, aligned and signed (a local debug key unless KEYSTORE is given). No
-# Gradle, no Java code (NativeActivity). Without --release the APK is
+# Gradle: the activity's Java (java/, NativeActivity with the keyboard's
+# text connection and selection handles) is compiled with javac and d8.
+# Without --release the APK is
 # debuggable (run-as reads its files): give a debug build fake tokens only.
 #
 #   apps/zgx/android/build-apk.sh [--release [--debuggable]] [--abi x86_64|arm64-v8a]...
@@ -56,6 +58,12 @@ done
 "$BT/aapt2" compile --dir res -o "$OUT/res.zip"
 debug=(); { [ $profile = debug ] || [ $debuggable = 1 ]; } && debug=(--debug-mode)
 "$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest AndroidManifest.xml -I "$JAR" "${debug[@]}" "$OUT/res.zip"
+# The activity's Java, as classes.dex.
+rm -rf "$OUT/classes" "$OUT/dex" && mkdir -p "$OUT/classes" "$OUT/dex"
+PATH=${JAVA_HOME:+$JAVA_HOME/bin:}$PATH
+javac --release 17 -nowarn -cp "$JAR" -d "$OUT/classes" $(find java -name '*.java')
+"$BT/d8" --min-api 29 --lib "$JAR" $([ $profile = release ] && echo --release) --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
+(cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
 # Native libraries stored uncompressed (extractNativeLibs=false): loaded
 # straight from the APK.
 (cd "$OUT/stage" && zip -q -0 -r "$OUT/unsigned.apk" lib)

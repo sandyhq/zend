@@ -4,6 +4,19 @@ The desktop app (apps/zgx) as an Android APK: a NativeActivity loading
 `libzend_android.so` (this crate), the engine on a thread inside the app
 (src/android.rs). No Kotlin, no Gradle.
 
+The activity is `sh.zend.zgx.ZendActivity` (java/, compiled into
+classes.dex by build-apk.sh with javac and d8): a NativeActivity with what
+it lacks for a native feel, all driven from zgx-desktop's `android_ime.rs`:
+
+- the keyboard's text connection (an `InputConnection` over a mirror of
+  the focused editor): composing text, suggestions, voice typing, emoji and
+  umlauts reach the editor as TSF's do on Windows (`text_store.rs`); a text
+  area's Enter is a line break, a field's Enter submits;
+- the text selection's handles and floating toolbar (`SelectionUi`: Cut,
+  Copy, Paste, Select all);
+- the long-press timeout (`ViewConfiguration`) and its haptic tick: a
+  row, a tab or anything draggable drags only once held; a swipe scrolls.
+
 ## Build
 
 Needs ANDROID_HOME (build-tools 36.1.0, platforms;android-36),
@@ -11,13 +24,27 @@ ANDROID_NDK_HOME, JAVA_HOME, cargo-ndk and the rustup targets.
 
     ./build-apk.sh --abi x86_64 --release     # emulator; arm64-v8a for a phone
     adb install -r ~/.cache/android-app/apk/zend.apk
-    adb shell am start -n sh.zend.zgx/android.app.NativeActivity
+    adb shell am start -n sh.zend.zgx/.ZendActivity
 
 | Build | debuggable | use |
 |---|---|---|
 | `./build-apk.sh` (debug profile) | yes | rarely: the library is ~900 MB |
 | `--release --debuggable` | yes | tests on an emulator: `run-as sh.zend.zgx` reads its files |
 | `--release` | no | a phone with real tokens |
+
+### End-to-end tests
+
+    e2e/run.sh --apk ~/.cache/android-app/apk-x86/zend.apk
+
+Boots the AVD `zgxpoc` headless (unless an emulator is up), installs a
+test keyboard (e2e/ime: commits text as a real keyboard does, over the
+InputConnection) and the APK (an x86_64 `--release --debuggable` build),
+runs a stand-in engine with a mock model, seeds chats, links the app to it
+and drives it with adb and the app's devtools: umlauts typed and sent,
+Enter as a line break, the keyboard on scroll, in the file viewer and on
+Jump to latest, the selection's handles and Copy, held drag versus swipe.
+Exits non-zero on a failure; screenshots in ~/.cache/android-app/e2e/out.
+About 2½ minutes.
 
 ### Thread-locals
 

@@ -36,6 +36,10 @@ How to use: [plugins.md](../apps/zgx/docs/plugins.md), section "Telling your age
 Below 600 pt wide (a phone, a narrow split) the window rearranges instead of squeezing: the sidebar is a drawer over the page (the title bar's toggle or a swipe in from the left edge opens it; a tap beside it, a swipe back, Escape or choosing anything closes it), the panel opens as a sheet over the whole page, Settings shows its list of pages or one page with a Settings button back to the list, and the title bar's controls are 44 pt touch targets (no Forward). Wider windows look exactly as before.
 Code: `apps/zgx/ui/screens/shell/fit_policy.luau` (`COMPACT_BELOW`), `fit.luau`, `init.luau` (the drawer), `settings.luau`, `ds/title_bar.luau` (touch). Plan: `plans/android-zgx-app` (G4).
 
+### Typing, selecting and dragging on the phone
+The Android app types, selects and drags like other Android apps: the keyboard's composing text, suggestions, voice typing, umlauts and emoji reach the composer, Enter is a new line (send with the button), a long press on text shows Android's selection handles and floating toolbar, and a sidebar row or tab drags only after a long-press hold (a swipe scrolls).
+Code: `apps/zgx/android/java/` (ZendActivity, SelectionUi), zgx-desktop `android_ime.rs`, `touch.rs`. Tests: `apps/zgx/android/e2e/run.sh`.
+
 ### Connect a phone by QR code
 Settings → Devices on a computer has Show code: a QR code with this computer's relay (edge) address and its own key, for a minute or until a new device joins. On the Android app the same page has Scan code (the camera; Android asks for it the first time) and a box to paste the code's text. The phone keeps the relay and key in its own files and reconnects at once; your computer's sessions then show on it. Anyone who sees the code can join your relay as you: show it only to your own phone.
 Code: `apps/zgx/src/phone_link.rs`, `src/android_camera.rs`, `ui/screens/settings/devices.luau`. Plan: `plans/android-zgx-app` (G3).
