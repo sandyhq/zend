@@ -300,6 +300,92 @@ const cases = {
     }
     L.expect(after.y < before.y - 20, `the list didn't scroll (${before.y} → ${after.y})`);
   },
+
+  // The system's gestures take a finger that lands on their edge (home and
+  // recents from the bottom, back from the left and right), sometimes after
+  // it rested or moved, and cancel it for the app (ACTION_CANCEL): the touch
+  // did nothing, no word selected, no drag, no tap, no keyboard.
+  async systemGestures() {
+    await openChat("E2E long reply");
+    await hideKeyboard();
+    const size = L.sh("wm size").match(/(\d+)x(\d+)\s*$/m);
+    const [W, H] = [+size[1], +size[2]];
+    const para = await until("a paragraph of the reply on screen", () => paragraphs().find((n) => n.y > 150 && n.y + 40 < 700));
+    const py = L.px(para.y + 8);
+    const cancel = (x, y) => L.sh(`input touchscreen motionevent CANCEL ${x} ${y}`);
+    const moves = (x, y, dx, dy, n) => { for (let i = 1; i <= n; i++) L.move(Math.round(x + dx * i), Math.round(y + dy * i)); };
+    // How often the system took a gesture from the app, as InputDispatcher logs it.
+    const taken = () => (L.sh("logcat -d -s InputDispatcher:I", { ok: true }).match(/stealing input gesture/g) || []).length;
+    const front = () => /mCurrentFocus=Window\{[^}]*sh\.zend\.zgx/.test(L.sh("dumpsys window | grep mCurrentFocus", { ok: true }));
+    const activity = L.sh(`cmd package resolve-activity --brief ${L.PKG}`).trim().split("\n").pop();
+    const traces = [];
+    async function after(name, { system = false } = {}) {
+      // (Back from another app the composer's keyboard comes up again, the
+      // gesture or not: `input keyevent 3` and back does it too. Not a
+      // gesture's trace, so not counted once the app went to the back.)
+      let left_app = false;
+      if (system) {
+        await L.sleep(1200);
+        if (!front()) { left_app = true; L.sh(`am start -n ${activity}`, { ok: true }); await L.sleep(2500); }
+      }
+      await L.sleep(800);
+      const left = [];
+      const p = popups();
+      if (p.length) left.push(`selection (${p.length} popups)`);
+      if (dragging()) left.push("a drag");
+      if (openTitle() !== "E2E long reply") left.push(`opened ${openTitle()}`);
+      if (sidebarShown()) left.push("the sidebar opened");
+      if (!left_app && L.imeShown()) left.push("the keyboard up");
+      if (left.length) traces.push(`${name}: ${left.join(", ")}`);
+      // The next one starts clean: a tap on the reply clears a selection.
+      if (popups().length) { L.tap(W / 2, L.px(300)); await L.sleep(600); }
+      if (popups().length) { L.sh("input keyevent 4"); await L.sleep(600); }
+      if (sidebarShown()) await sidebar(false);
+      if (L.imeShown()) await hideKeyboard();
+    }
+    L.sh("logcat -c", { ok: true });
+    // Taken after a rest on text, and after a move on it (motionevent CANCEL,
+    // as the system sends it).
+    { const [x, y] = [L.px(para.x + 40), py]; L.down(x, y); await L.sleep(900); cancel(x, y); await after("held on text, then cancelled"); }
+    { const [x, y] = [L.px(para.x + 40), py]; L.down(x, y); moves(x, y, L.px(6), 0, 5); cancel(x + L.px(30), y); await after("moved on text, then cancelled"); }
+    // The bottom edge: held, then cancelled; a real home swipe; held, then one.
+    { const [x, y] = [W / 2, H - 4]; L.down(x, y); await L.sleep(900); cancel(x, y); await after("held on the bottom edge, then cancelled"); }
+    const swipes = [];
+    const real = async (name, fn) => {
+      const was = taken();
+      await fn();
+      await L.sleep(800);
+      if (taken() === was) traces.push(`${name}: the system didn't take it (no "stealing input gesture")`);
+      await after(name, { system: true });
+      swipes.push(name);
+    };
+    await real("home swipe from the bottom edge", async () => { L.swipe(W / 2, H - 2, W / 2, Math.round(H * 0.55), 400); });
+    await real("held on the bottom edge, then a home swipe", async () => {
+      const [x, y] = [W / 2, H - 4]; L.down(x, y); await L.sleep(900); moves(x, y, 0, -L.px(25), 10); L.up(x, y - L.px(250));
+    });
+    // Back from the left and right edges, the back zones widened so the
+    // reply's text lies in them (as a person's wider back setting or a
+    // phone's wider edge does): held on a word there, then swiped.
+    try {
+      L.sh("settings put secure back_gesture_inset_scale_left 2.0", { ok: true });
+      L.sh("settings put secure back_gesture_inset_scale_right 2.0", { ok: true });
+      await L.sleep(1500);
+      const inLeft = L.px(para.x) + 15;
+      const inRight = Math.min(L.px(para.x + para.w) - 20, W - 20);
+      for (const [side, x, dx] of [["left", inLeft, 1], ["right", inRight, -1]]) {
+        const y = py;
+        { L.down(x, y); await L.sleep(900); cancel(x, y); await after(`held on text at the ${side} edge, then cancelled`); }
+        await real(`back swipe from the ${side} edge`, async () => { L.swipe(x, y, x + dx * L.px(200), y, 300); });
+        await real(`held on text at the ${side} edge, then a back swipe`, async () => {
+          L.down(x, y); await L.sleep(900); moves(x, y, dx * L.px(20), 0, 10); L.up(x + dx * L.px(200), y);
+        });
+      }
+    } finally {
+      L.sh("settings delete secure back_gesture_inset_scale_left", { ok: true });
+      L.sh("settings delete secure back_gesture_inset_scale_right", { ok: true });
+    }
+    L.expect(traces.length === 0, `a system gesture left a trace: ${traces.join("; ")}`);
+  },
 };
 
 async function openFile(name) {
