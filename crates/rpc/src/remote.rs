@@ -196,21 +196,25 @@ impl RpcService for RemoteGuard {
     }
 }
 
+/// Whether a connecting peer may be heard: asked of its address before its
+/// handshake is read (the engine asks Tailscale whether it's a node of the
+/// tailnet; tests let loopback in).
+pub type Admits = fn(IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
+
 /// Serve the phone link on `listener` (from [`bind_remote`]) with `key`:
-/// only peers in the tailnet, only with the key, only [`remote_allowed`].
-/// Every connection lives in this future: dropping it (aborting its task)
-/// ends them all, which is how a new key revokes the old.
+/// only peers in the tailnet's ranges, only with the key, only
+/// [`remote_allowed`]. Every connection lives in this future: dropping it
+/// (aborting its task) ends them all, which is how a new key revokes the old.
 pub async fn serve_remote_listener(listener: TcpListener, service: Arc<dyn RpcService>, key: String) {
-    serve_remote_listener_admitting(listener, service, key, in_tailnet).await
+    serve_remote_listener_admitting(listener, service, key, |ip| Box::pin(std::future::ready(in_tailnet(ip)))).await
 }
 
-/// [`serve_remote_listener`] with the peer check given (tests dial from
-/// loopback).
+/// [`serve_remote_listener`] with the peer check given.
 pub async fn serve_remote_listener_admitting(
     listener: TcpListener,
     service: Arc<dyn RpcService>,
     key: String,
-    admits: fn(IpAddr) -> bool,
+    admits: Admits,
 ) {
     let service: Arc<dyn RpcService> = Arc::new(RemoteGuard { inner: service });
     let key: Arc<str> = key.into();
@@ -219,14 +223,17 @@ pub async fn serve_remote_listener_admitting(
         while connections.try_join_next().is_some() {}
         match listener.accept().await {
             Ok((stream, peer)) => {
-                if !admits(peer.ip()) {
-                    tracing::warn!(%peer, "rpc: phone link: refused a peer outside the tailnet");
-                    drop(stream);
-                    continue;
-                }
-                tracing::info!(%peer, "rpc: phone link: connection");
-                let _ = stream.set_nodelay(true);
-                connections.spawn(serve_remote_socket(stream, service.clone(), key.clone()));
+                let (service, key) = (service.clone(), key.clone());
+                // (In the set: a new key cuts one still being admitted too.)
+                connections.spawn(async move {
+                    if !admits(peer.ip()).await {
+                        tracing::warn!(%peer, "rpc: phone link: refused a peer outside the tailnet");
+                        return;
+                    }
+                    tracing::info!(%peer, "rpc: phone link: connection");
+                    let _ = stream.set_nodelay(true);
+                    serve_remote_socket(stream, service, key).await;
+                });
             }
             Err(err) => {
                 tracing::warn!(error = %err, "rpc: phone link: accept failed");
@@ -416,7 +423,15 @@ mod tests {
         assert!(!remote_allowed(methods::INSTALL_PLUGIN, &serde_json::json!({ "path": "/tmp/x" })));
     }
 
-    async fn serving(key: &str, admits: fn(IpAddr) -> bool) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    fn anyone(_: IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+        Box::pin(std::future::ready(true))
+    }
+
+    fn tailnet(ip: IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+        Box::pin(std::future::ready(in_tailnet(ip)))
+    }
+
+    async fn serving(key: &str, admits: Admits) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(serve_remote_listener_admitting(listener, Arc::new(Echo), key.into(), admits));
@@ -489,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn a_peer_outside_the_tailnet_is_refused_even_with_the_key() {
         let key = crate::ipc_auth::generate_token().unwrap();
-        let (addr, _task) = serving(&key, in_tailnet).await;
+        let (addr, _task) = serving(&key, tailnet).await;
         assert!(link(addr, &key).await.is_err());
     }
 
@@ -497,7 +512,7 @@ mod tests {
     async fn only_the_key_opens_the_link_and_its_caller_is_remote() {
         let key = crate::ipc_auth::generate_token().unwrap();
         let ipc = crate::ipc_auth::generate_token().unwrap();
-        let (addr, _task) = serving(&key, |_| true).await;
+        let (addr, _task) = serving(&key, anyone).await;
         // The key as a bearer (a phone before the challenge): refused, as
         // is a handshake with no challenge at all.
         for bearer in [key.as_str(), ipc.as_str()] {
@@ -530,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn a_phone_that_doesn_t_prove_the_key_is_served_nothing() {
         let key = crate::ipc_auth::generate_token().unwrap();
-        let (addr, _task) = serving(&key, |_| true).await;
+        let (addr, _task) = serving(&key, anyone).await;
         for first in [
             |_: &str, _: &str, _: &str| serde_json::json!({ "id": 1, "method": methods::ENGINE_INFO, "params": {} }).to_string(),
             |_: &str, np: &str, nd: &str| crate::link_proof::phone_frame(&crate::ipc_auth::generate_token().unwrap(), np, nd),
@@ -620,7 +635,7 @@ mod tests {
             listener,
             Arc::new(Blocks(started.clone(), ended.clone())),
             key.clone(),
-            |_| true,
+            anyone,
         ));
         let mut ws = link(addr, &key).await.unwrap();
         ws.send(Message::text(serde_json::json!({ "id": 1, "method": methods::WATCH_SESSIONS, "params": {} }).to_string()))
@@ -645,7 +660,7 @@ mod tests {
     #[tokio::test]
     async fn stopping_the_listener_cuts_its_phones() {
         let key = crate::ipc_auth::generate_token().unwrap();
-        let (addr, task) = serving(&key, |_| true).await;
+        let (addr, task) = serving(&key, anyone).await;
         let mut ws = link(addr, &key).await.unwrap();
         assert_eq!(ask(&mut ws, 1, methods::ENGINE_INFO).await["id"], 1);
         task.abort();

@@ -4,10 +4,10 @@
 //!
 //! Off until the person turns it on (Settings → Devices: "Show code", or
 //! the switch there). On, it finds this device's tailnet address
-//! ([discover]: tailscale status --json, else the interfaces' addresses
-//! in the tailnet's ranges), binds each tailnet address on the IPC port
+//! ([discover]: tailscale status --json, nothing else), binds each tailnet address on the IPC port
 //! (never another: [zend_rpc::bind_remote]) and serves
-//! [zend_rpc::serve_remote_listener] there with the phone-link key.
+//! the phone link there with the phone-link key, admitting only peers
+//! Tailscale knows as nodes of the tailnet ([tailnet_peer]).
 //!
 //! Kept in the data dir: phone-link-key (32 random bytes as hex, mode
 //! 600, atomic; kept across starts so a linked phone stays linked) and
@@ -83,66 +83,61 @@ fn valid_name(name: &str) -> bool {
         })
 }
 
-/// This device on the tailnet: Tailscale's own word, else the addresses
-/// its interfaces hold in the tailnet's ranges (no name then).
+/// This device on the tailnet: Tailscale's own word (`tailscale status
+/// --json`), or none. Never an address read off an interface: one in the
+/// tailnet's ranges needn't be Tailscale's (a carrier's CGNAT uses the same
+/// 100.64.0.0/10), and a link bound there would face that network.
 pub async fn discover() -> Option<Tailnet> {
+    let out = tailscale(&["status", "--json"]).await?;
+    parse_status(&out)
+}
+
+/// `tailscale <args>`'s output, when it ran and succeeded within 3 s.
+async fn tailscale(args: &[&str]) -> Option<String> {
     let asked = tokio::time::timeout(
         Duration::from_secs(3),
         tokio::process::Command::new("tailscale")
-            .args(["status", "--json"])
+            .args(args)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
             .output(),
     )
     .await;
-    if let Ok(Ok(out)) = asked
-        && out.status.success()
-        && let Some(found) = parse_status(&String::from_utf8_lossy(&out.stdout))
-    {
-        return Some(found);
+    match asked {
+        Ok(Ok(out)) if out.status.success() => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => None,
     }
-    let ips = interface_ips().into_iter().filter(|ip| zend_rpc::in_tailnet(*ip)).collect::<Vec<_>>();
-    (!ips.is_empty()).then_some(Tailnet { name: None, ips })
 }
 
-/// Every address this device's interfaces hold.
-#[cfg(unix)]
-fn interface_ips() -> Vec<IpAddr> {
-    let mut out = Vec::new();
-    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: getifaddrs fills head with a list freed below; each entry's
-    // address is read only for its own family's size.
-    unsafe {
-        if libc::getifaddrs(&mut head) != 0 {
-            return out;
+/// Whether `ip`, a connecting peer's address, is a node of this tailnet
+/// as Tailscale itself says (`tailscale whois`), not only an address in
+/// its ranges: a packet from another interface with a tailnet source gets
+/// no answer back through it, and anything Tailscale can't vouch for
+/// (no CLI, not running, no such node) is refused.
+pub fn tailnet_peer(ip: IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+    Box::pin(async move {
+        if !zend_rpc::in_tailnet(ip) {
+            return false;
         }
-        let mut at = head;
-        while !at.is_null() {
-            let addr = (*at).ifa_addr;
-            if !addr.is_null() {
-                match i32::from((*addr).sa_family) {
-                    libc::AF_INET => {
-                        let v4 = &*(addr as *const libc::sockaddr_in);
-                        out.push(IpAddr::from(u32::from_be(v4.sin_addr.s_addr).to_be_bytes()));
-                    }
-                    libc::AF_INET6 => {
-                        let v6 = &*(addr as *const libc::sockaddr_in6);
-                        out.push(IpAddr::from(v6.sin6_addr.s6_addr));
-                    }
-                    _ => {}
-                }
-            }
-            at = (*at).ifa_next;
+        let ip_text = ip.to_string();
+        match tailscale(&["whois", "--json", &ip_text]).await {
+            Some(out) => whois_names(&out, ip),
+            None => false,
         }
-        libc::freeifaddrs(head);
-    }
-    out
+    })
 }
 
-#[cfg(not(unix))]
-fn interface_ips() -> Vec<IpAddr> {
-    Vec::new()
+/// Whether `tailscale whois --json` output names a node that holds `ip`.
+pub(crate) fn whois_names(out: &str, ip: IpAddr) -> bool {
+    let Ok(answer) = serde_json::from_str::<Value>(out) else {
+        return false;
+    };
+    answer["Node"]["Addresses"].as_array().is_some_and(|addresses| {
+        addresses.iter().filter_map(Value::as_str).any(|a| {
+            a.split('/').next().and_then(|a| a.parse::<IpAddr>().ok()) == Some(ip)
+        })
+    })
 }
 
 /// Which address the code holds.
@@ -171,7 +166,7 @@ type Bound = futures::future::BoxFuture<'static, std::io::Result<tokio::net::Tcp
 pub struct Seams {
     pub discover: fn() -> Found,
     pub bind: fn(SocketAddr) -> Bound,
-    pub admits: fn(IpAddr) -> bool,
+    pub admits: zend_rpc::remote::Admits,
 }
 
 impl Seams {
@@ -179,7 +174,7 @@ impl Seams {
         Self {
             discover: || Box::pin(discover()),
             bind: |addr| Box::pin(zend_rpc::bind_remote(addr)),
-            admits: zend_rpc::in_tailnet,
+            admits: tailnet_peer,
         }
     }
 }

@@ -865,7 +865,7 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         let listener = rt.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
         let port = listener.local_addr().unwrap().port();
-        rt.spawn(zend_rpc::remote::serve_remote_listener_admitting(listener, std::sync::Arc::new(Echo), key.into(), |_| true));
+        rt.spawn(zend_rpc::remote::serve_remote_listener_admitting(listener, std::sync::Arc::new(Echo), key.into(), |_| Box::pin(std::future::ready(true))));
         (rt, port)
     }
 

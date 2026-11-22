@@ -14,7 +14,7 @@ fn loopback() -> Seams {
     Seams {
         discover: || Box::pin(async { Some(Tailnet { name: Some("omarchy.tailf80f26.ts.net".into()), ips: vec!["127.0.0.1".parse().unwrap()] }) }),
         bind: |addr| Box::pin(tokio::net::TcpListener::bind(addr)),
-        admits: |_| true,
+        admits: |_| Box::pin(std::future::ready(true)),
     }
 }
 
@@ -49,6 +49,27 @@ fn the_tailnet_is_read_from_tailscale_s_status() {
     // A name a code can't hold is left out; the address stays.
     let odd = parse_status(r#"{"Self":{"DNSName":"a b/c.","TailscaleIPs":["100.64.0.9"]}}"#).unwrap();
     assert_eq!(odd, Tailnet { name: None, ips: vec!["100.64.0.9".parse().unwrap()] });
+}
+
+/// A peer is admitted only as a node Tailscale names, never for an address
+/// in the tailnet's ranges alone (a carrier's CGNAT shares 100.64.0.0/10).
+#[tokio::test]
+async fn a_peer_is_admitted_only_when_tailscale_names_it() {
+    let admits = Seams::real().admits;
+    // Outside the ranges: refused before Tailscale is asked.
+    assert!(!admits("192.168.1.20".parse().unwrap()).await);
+    assert!(!admits("127.0.0.1".parse().unwrap()).await);
+    // In the ranges but no node of this tailnet (or no Tailscale here at
+    // all): refused. The base admitted it for its range.
+    assert!(!admits("100.64.0.99".parse().unwrap()).await);
+
+    let ip: IpAddr = "100.102.122.72".parse().unwrap();
+    let whois = r#"{"Node":{"Name":"omarchy.tailf80f26.ts.net.","Addresses":["100.102.122.72/32","fd7a:115c:a1e0::6532:7a49/128"]}}"#;
+    assert!(whois_names(whois, ip));
+    assert!(whois_names(whois, "fd7a:115c:a1e0::6532:7a49".parse().unwrap()));
+    assert!(!whois_names(whois, "100.102.122.73".parse().unwrap()));
+    assert!(!whois_names("peer not found", ip));
+    assert!(!whois_names(r#"{"Node":{}}"#, ip));
 }
 
 #[tokio::test]

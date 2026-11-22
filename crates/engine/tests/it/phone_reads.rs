@@ -28,7 +28,7 @@ async fn phone(core: &EngineCore) -> (RpcClient, tokio::task::JoinHandle<()>) {
         listener,
         core.rpc_service(),
         key.clone(),
-        |_| true,
+        |_| Box::pin(std::future::ready(true)),
     ));
     let client = tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_phone_link(&format!("ws://{addr}"), &key))
         .await
