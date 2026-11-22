@@ -46,8 +46,23 @@ fn lane(service: Arc<dyn RpcService>, out: mpsc::Sender<String>) -> Lane {
     lane
 }
 
+/// A connection's calls in flight, each on a task of its own: aborted when
+/// this goes, however the connection ends. Dropped with the connection's
+/// future too (a phone-link key replaced aborts its listener and every
+/// connection in it), so no call it started runs on after it.
+struct InFlight(HashMap<u64, tokio::task::AbortHandle>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        for (_, task) in self.0.drain() {
+            task.abort();
+        }
+    }
+}
+
 /// Serve one connection: read client frames from `inbound`, write server frames to `out`.
-/// Returns when `inbound` closes; all in-flight request tasks are aborted on exit, but
+/// Returns when `inbound` closes; all in-flight request tasks are aborted on exit (or
+/// when this future is dropped before), but
 /// a terminal's input already sent still goes in ([`ordered`] calls: one lane a
 /// terminal, each one after another in the order sent, beside the rest).
 pub async fn serve_connection(
@@ -55,7 +70,7 @@ pub async fn serve_connection(
     out: mpsc::Sender<String>,
     mut inbound: mpsc::Receiver<String>,
 ) {
-    let mut running: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
+    let mut running = InFlight(HashMap::new());
     let mut lanes: HashMap<String, Lane> = HashMap::new();
     while let Some(payload) = inbound.recv().await {
         // ndjson: a transport may batch several frames per message.
@@ -71,9 +86,9 @@ pub async fn serve_connection(
                     continue;
                 }
             };
-            running.retain(|_, task| !task.is_finished());
+            running.0.retain(|_, task| !task.is_finished());
             if frame.cancel {
-                if let Some(task) = running.remove(&frame.id) {
+                if let Some(task) = running.0.remove(&frame.id) {
                     task.abort();
                 }
                 continue;
@@ -96,12 +111,10 @@ pub async fn serve_connection(
                 method,
                 frame.params,
             ));
-            running.insert(frame.id, task.abort_handle());
+            running.0.insert(frame.id, task.abort_handle());
         }
     }
-    for (_, task) in running {
-        task.abort();
-    }
+    drop(running);
     // (Each lane ends once what was queued has gone in.)
     drop(lanes);
 }

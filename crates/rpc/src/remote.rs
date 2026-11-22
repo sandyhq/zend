@@ -588,6 +588,59 @@ mod tests {
         assert!(!heard.contains("linkProof"), "a proof reached the impostor: {heard}");
     }
 
+    /// Holds every call until it's dropped, and says so.
+    struct Blocks(Arc<std::sync::atomic::AtomicUsize>, Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl RpcService for Blocks {
+        async fn handle(&self, _method: &str, _params: serde_json::Value) -> Result<RpcReply, RpcError> {
+            struct Count(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Count {
+                fn drop(&mut self) {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ended = Count(self.1.clone());
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    /// A call still running as the listener ends (a new key) ends with it:
+    /// nothing a revoked phone started runs on.
+    #[tokio::test]
+    async fn a_call_in_flight_ends_with_the_listener() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let key = crate::ipc_auth::generate_token().unwrap();
+        let (started, ended) = (Arc::new(std::sync::atomic::AtomicUsize::new(0)), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve_remote_listener_admitting(
+            listener,
+            Arc::new(Blocks(started.clone(), ended.clone())),
+            key.clone(),
+            |_| true,
+        ));
+        let mut ws = link(addr, &key).await.unwrap();
+        ws.send(Message::text(serde_json::json!({ "id": 1, "method": methods::WATCH_SESSIONS, "params": {} }).to_string()))
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while started.load(SeqCst) == 0 {
+            assert!(tokio::time::Instant::now() < deadline, "the call never started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(ended.load(SeqCst), 0);
+        task.abort();
+        let _ = task.await;
+        while ended.load(SeqCst) == 0 {
+            assert!(tokio::time::Instant::now() < deadline, "the call outlived its listener");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cut(&mut ws).await);
+    }
+
     /// Ending the listener (a new key) ends every connection it took.
     #[tokio::test]
     async fn stopping_the_listener_cuts_its_phones() {
