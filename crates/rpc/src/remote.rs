@@ -251,7 +251,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     use crate::link_proof;
-    use futures::{SinkExt as _, StreamExt as _};
+    use futures::StreamExt as _;
     use tokio_tungstenite::tungstenite::{Message, http::HeaderValue};
 
     // What the phone's first frame must carry, once the handshake set it.
