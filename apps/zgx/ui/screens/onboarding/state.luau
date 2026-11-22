@@ -125,6 +125,21 @@ local function with_connect(steps: { Step }): { Step }
 	return out :: { Step }
 end
 
+-- The computer this phone is a window onto ("" for none: a computer, or a
+-- phone on a relay; src/phone_link.rs). Its account's steps (the username,
+-- its card, the organization and inviting to it) ask the account's edge
+-- with the computer's bearer, which the computer never hands a phone: a
+-- phone linked to one passes over them (they're done on the computer),
+-- as it passes over a username already had.
+M.linked = ui.shared("phone.desktop", "")
+M.ON_COMPUTER = { username = true, card = true, org = true, invite = true } :: { [string]: boolean }
+
+-- Whether this run passes over the account's steps: on a phone linked to
+-- a computer.
+function M.on_computer(): boolean
+	return on_phone() and M.linked:get() ~= ""
+end
+
 -- A path's every step, as this device has it (`M.PATHS`, with Connect to
 -- a computer on the phone).
 function M.full(path: Path): { Step }
@@ -141,9 +156,11 @@ end
 function M.order(): { Step }
 	local order = way()
 	local name_done, org_done = M.name_done:get(), M.org_done:get()
+	local on_computer = M.on_computer()
 	local out: { Step } = {}
 	for _, s in order do
-		local passed = (name_done and s == "username")
+		local passed = (on_computer and M.ON_COMPUTER[s])
+			or (name_done and s == "username")
 			or (org_done and (s == "org" or (s == "invite" and not M.org_admin:get())))
 		if not passed then
 			table.insert(out, s)

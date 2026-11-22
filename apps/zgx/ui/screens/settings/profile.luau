@@ -546,6 +546,11 @@ ui.effect(function()
 end)
 
 -- No card yet: its outline in the same place, and the way to one.
+local phone_desktop = ui.shared("phone.desktop", "")
+local function linked_phone(): boolean
+	return ui.shared("platform", ""):get() == "android" and phone_desktop:get() ~= ""
+end
+
 local function missing(): Node
 	return ui.column {
 		w = CARD_W,
@@ -564,7 +569,21 @@ local function missing(): Node
 			ui.text { "zend", font = "$font.sans", weight = "$font.weight.bold", text_size = "$font.size.xs", color = "$text.disabled" },
 		},
 		ui.text { ui.t("settings.profile.card.none"), text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary", wrap = true },
-		ds.Button {
+		-- A phone linked to a computer can't reach the account's edge (the
+		-- computer keeps its bearer, src/phone_link.rs): claimed there.
+		ui.show(function(): boolean
+			return linked_phone()
+		end, ui.text {
+			id = "profile-claim-on-computer",
+			ui.t("settings.profile.claim.on_computer"),
+			text_size = "$font.size.sm",
+			line_height = "$font.line.sm",
+			color = "$text.secondary",
+			wrap = true,
+		}),
+		ui.show(function(): boolean
+			return not linked_phone()
+		end, ds.Button {
 			ui.t("settings.profile.claim.open"),
 			tone = "secondary",
 			size = "sm",
@@ -572,7 +591,7 @@ local function missing(): Node
 				claim_error:set(nil)
 				claiming:set(true)
 			end,
-		},
+		}),
 	}
 end
 

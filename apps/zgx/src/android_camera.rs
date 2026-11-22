@@ -6,8 +6,11 @@
 //! back by asking again (a NativeActivity isn't told it).
 //!
 //! The host's side of src/phone_link.rs's `phone.scan`, `phone.scan_stop`
-//! and `phone.connect`. What the camera sees is never kept or logged: only
-//! how many frames it looked at, and, for the code it found, that it is one.
+//! and `phone.connect`. While a scan runs, `phone.scan_preview` holds the
+//! newest frame, small, grey and upright (src/scan_preview.rs), for the
+//! scan view to draw; nil otherwise. What the camera sees is never kept or
+//! logged: only how many frames it looked at, and, for the code it found,
+//! that it is one.
 
 use std::ffi::{c_int, c_void, CStr};
 use std::time::{Duration, Instant};
@@ -32,12 +35,16 @@ const ASK_FOR: Duration = Duration::from_secs(60);
 /// often one is looked at.
 const WIDTH: i32 = 640;
 const HEIGHT: i32 = 480;
-const EVERY: Duration = Duration::from_millis(150);
+const EVERY: Duration = Duration::from_millis(100);
+
+/// A frame for the preview, as the scan view draws it.
+type Frame = std::sync::Arc<zgx::image::ImageData>;
 
 /// What the scanning thread tells the UI.
 enum Progress {
-    /// "asking" (the permission) or "scanning", with the frames looked at.
-    State(&'static str, u32),
+    /// "asking" (the permission) or "scanning", with the frames looked at,
+    /// and the newest frame's preview.
+    State(&'static str, u32, Option<Frame>),
     /// The code found, or why there is none.
     Done(Result<String, &'static str>),
 }
@@ -46,10 +53,12 @@ fn status_value(state: &str, frames: u32) -> Value {
     Value::record([("state", Value::from(state)), ("frames", Value::from(frames as f64))])
 }
 
-pub fn install(host: &ScriptHost) {
+pub fn install(host: &ScriptHost, desktop: zgx_script::Shared) {
     let status = host.shared("phone.scan", status_value("idle", 0));
+    let preview = host.shared("phone.scan_preview", Value::Nil);
     host.async_action("phone.scan", move |_| {
         let status = status.clone();
+        let preview = preview.clone();
         async move {
             crate::plugins::preview::refuse("phone.scan")?;
             let attempt = SCANS.begin();
@@ -58,41 +67,58 @@ pub fn install(host: &ScriptHost) {
             };
             let (tx, mut rx) = zgx::task::latest::<Progress>();
             let spawned = std::thread::Builder::new().name("zend-camera".into()).spawn(move || {
-                let found = scan(&app, attempt, &|state, frames| {
-                    tx.send(Progress::State(state, frames));
+                let found = scan(&app, attempt, &|state, frames, frame| {
+                    tx.send(Progress::State(state, frames, frame));
                 });
                 tx.send(Progress::Done(found));
             });
             if spawned.is_err() {
                 return Err("camera".to_owned());
             }
-            loop {
+            let mut shown = ("idle", 0);
+            let ended = loop {
                 let progress = rx.recv().await;
                 // An ended scan says nothing more: a newer one has the page.
                 if !SCANS.live(attempt) {
-                    return Err("stopped".to_owned());
+                    break Err("stopped".to_owned());
                 }
                 match progress {
-                    Some(Progress::State(state, frames)) => {
-                        status.set(status_value(state, frames));
+                    Some(Progress::State(state, frames, frame)) => {
+                        if let Some(frame) = frame {
+                            preview.set(Value::Image(frame));
+                        }
+                        if shown != (state, frames) {
+                            shown = (state, frames);
+                            status.set(status_value(state, frames));
+                        }
                     }
                     Some(Progress::Done(found)) => {
                         status.set(status_value("idle", 0));
-                        return found.map(|code| Value::from(code.as_str())).map_err(str::to_owned);
+                        break found.map(|code| Value::from(code.as_str())).map_err(str::to_owned);
                     }
                     None => {
                         status.set(status_value("idle", 0));
-                        return Err("camera".to_owned());
+                        break Err("camera".to_owned());
                     }
                 }
-            }
+            };
+            // (The last frame let go of: none is kept past its scan.)
+            preview.set(Value::Nil);
+            ended
         }
     });
     host.action("phone.scan_stop", |_| SCANS.stop());
-    host.async_action("phone.connect", |arg| async move {
-        crate::plugins::preview::refuse("phone.connect")?;
-        let code = arg.field("code").map(crate::auth::text).unwrap_or_default();
-        crate::phone_link::connect(&code).await
+    host.async_action("phone.connect", move |arg| {
+        let desktop = desktop.clone();
+        async move {
+            crate::plugins::preview::refuse("phone.connect")?;
+            let code = arg.field("code").map(crate::auth::text).unwrap_or_default();
+            let answer = crate::phone_link::connect(&code).await?;
+            // (A relay's code: no computer kept any more.)
+            let linked = answer.field("desktop").map(crate::auth::text).unwrap_or_default();
+            desktop.set(Value::from(linked.as_str()));
+            Ok(answer)
+        }
     });
 }
 
@@ -102,12 +128,12 @@ const DIALOG_WITHIN: Duration = Duration::from_millis(1500);
 
 /// Ask for the camera, then look until a connect code shows, the scan is
 /// ended (`attempt` no longer live), or [`SCAN_FOR`] passes.
-fn scan(app: &AndroidApp, attempt: u64, tell: &dyn Fn(&'static str, u32)) -> Result<String, &'static str> {
+fn scan(app: &AndroidApp, attempt: u64, tell: &dyn Fn(&'static str, u32, Option<Frame>)) -> Result<String, &'static str> {
     let live = || SCANS.live(attempt);
     match camera_allowed(app, false) {
         Ok(true) => {}
         Ok(false) => {
-            tell("asking", 0);
+            tell("asking", 0, None);
             log::info!("zend: camera: asking for the permission");
             camera_allowed(app, true).map_err(|_| "camera")?;
             // The answer comes as the system's dialog closes (the window has
@@ -142,13 +168,15 @@ fn scan(app: &AndroidApp, attempt: u64, tell: &dyn Fn(&'static str, u32)) -> Res
         return Err("stopped");
     }
     LOST.store(false, std::sync::atomic::Ordering::SeqCst);
-    tell("scanning", 0);
+    tell("scanning", 0, None);
     // SAFETY: Camera owns what it opens and frees it as it drops, on this
     // thread; nothing of it leaves.
     let camera = unsafe { Camera::open() }?;
-    log::info!("zend: camera: scanning");
+    log::info!("zend: camera: scanning (sensor at {}°{})", camera.orientation, if camera.front { ", front" } else { "" });
     let started = Instant::now();
     let mut frames = 0u32;
+    let mut reported = 0u32;
+    let mut display = display_rotation(app).unwrap_or(0);
     let mut grey = Vec::new();
     loop {
         if !live() {
@@ -167,8 +195,15 @@ fn scan(app: &AndroidApp, attempt: u64, tell: &dyn Fn(&'static str, u32)) -> Res
         let Some((w, h)) = (unsafe { camera.latest(&mut grey) }) else { continue };
         frames += 1;
         if frames % 10 == 1 {
-            tell("scanning", frames);
+            reported = frames;
+            // (The phone may have turned since: asked again now and then.)
+            display = display_rotation(app).unwrap_or(display);
         }
+        let turn = crate::scan_preview::turn(camera.orientation, display, camera.front);
+        let frame = crate::scan_preview::preview(w, h, &grey, turn, camera.front)
+            .and_then(|(pw, ph, rgba)| zgx::image::ImageData::new(pw, ph, rgba).ok())
+            .map(std::sync::Arc::new);
+        tell("scanning", reported, frame);
         if let Some(text) = read_code(w, h, &grey) {
             log::info!("zend: camera: a connect code, in frame {frames} ({w}x{h})");
             return Ok(text);
@@ -212,6 +247,25 @@ fn camera_allowed(app: &AndroidApp, ask: bool) -> jni::errors::Result<bool> {
     answer
 }
 
+/// How far the display is turned from the phone's natural (upright)
+/// orientation, in degrees (`getWindowManager().getDefaultDisplay().getRotation()`).
+fn display_rotation(app: &AndroidApp) -> jni::errors::Result<i32> {
+    use jni::objects::JObject;
+    // SAFETY: as in camera_allowed.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    let rotation = (|| -> jni::errors::Result<i32> {
+        let manager = env.call_method(&activity, "getWindowManager", "()Landroid/view/WindowManager;", &[])?.l()?;
+        let display = env.call_method(&manager, "getDefaultDisplay", "()Landroid/view/Display;", &[])?.l()?;
+        env.call_method(&display, "getRotation", "()I", &[])?.i()
+    })();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    rotation.map(|quarter| (quarter & 3) * 90)
+}
+
 /// Whether the activity's window has the focus (`hasWindowFocus`): not
 /// while the system's permission dialog is over it.
 fn window_focused(app: &AndroidApp) -> jni::errors::Result<bool> {
@@ -237,6 +291,11 @@ struct Camera {
     target: *mut ffi::ACameraOutputTarget,
     request: *mut ffi::ACaptureRequest,
     session: *mut ffi::ACameraCaptureSession,
+    /// How far its frames are turned from the phone held upright
+    /// (ACAMERA_SENSOR_ORIENTATION, degrees), and whether it faces the
+    /// person (its frames mirrored then).
+    orientation: i32,
+    front: bool,
     // (Kept for the device's and the session's life.)
     device_callbacks: Box<ffi::ACameraDevice_StateCallbacks>,
     session_callbacks: Box<ffi::ACameraCaptureSession_stateCallbacks>,
@@ -273,6 +332,8 @@ impl Camera {
             target: std::ptr::null_mut(),
             request: std::ptr::null_mut(),
             session: std::ptr::null_mut(),
+            orientation: 90,
+            front: false,
             device_callbacks: Box::new(ACameraDevice_StateCallbacks {
                 context: std::ptr::null_mut(),
                 on_disconnected: on_device_disconnected,
@@ -288,7 +349,9 @@ impl Camera {
         if camera.manager.is_null() {
             return Err("camera");
         }
-        let id = camera.pick().ok_or("no_camera")?;
+        let (id, facing, orientation) = camera.pick().ok_or("no_camera")?;
+        camera.front = facing == Some(ACAMERA_LENS_FACING_FRONT);
+        camera.orientation = orientation.unwrap_or(90);
         let callbacks: *mut ACameraDevice_StateCallbacks = &mut *camera.device_callbacks;
         let status = ACameraManager_openCamera(camera.manager, id.as_ptr(), callbacks, &mut camera.device);
         if status != 0 {
@@ -339,8 +402,9 @@ impl Camera {
         Ok(camera)
     }
 
-    /// The id of the back camera, else of the first one there is.
-    unsafe fn pick(&self) -> Option<std::ffi::CString> {
+    /// The id of the back camera, else of the first one there is, with
+    /// which way it faces and its sensor's orientation.
+    unsafe fn pick(&self) -> Option<(std::ffi::CString, Option<u8>, Option<i32>)> {
         use ffi::*;
         let mut list = std::ptr::null_mut();
         if ACameraManager_getCameraIdList(self.manager, &mut list) != 0 || list.is_null() {
@@ -350,21 +414,29 @@ impl Camera {
             .map(|i| CStr::from_ptr(*(*list).camera_ids.add(i)).to_owned())
             .collect();
         ACameraManager_deleteCameraIdList(list);
-        let back = ids.iter().find(|id| {
+        let about = |id: &std::ffi::CString| -> (Option<u8>, Option<i32>) {
             let mut meta = std::ptr::null_mut();
             if ACameraManager_getCameraCharacteristics(self.manager, id.as_ptr(), &mut meta) != 0 {
-                return false;
+                return (None, None);
             }
             let mut entry = ACameraMetadata_const_entry { tag: 0, kind: 0, count: 0, data: std::ptr::null() };
-            let facing = ACameraMetadata_getConstEntry(meta, ACAMERA_LENS_FACING, &mut entry) == 0
+            let facing = (ACameraMetadata_getConstEntry(meta, ACAMERA_LENS_FACING, &mut entry) == 0
                 && entry.count > 0
-                && !entry.data.is_null()
-                && *(entry.data as *const u8) == ACAMERA_LENS_FACING_BACK;
+                && !entry.data.is_null())
+            .then(|| *(entry.data as *const u8));
+            let mut entry = ACameraMetadata_const_entry { tag: 0, kind: 0, count: 0, data: std::ptr::null() };
+            let orientation = (ACameraMetadata_getConstEntry(meta, ACAMERA_SENSOR_ORIENTATION, &mut entry) == 0
+                && entry.count > 0
+                && !entry.data.is_null())
+            .then(|| *(entry.data as *const i32));
             ACameraMetadata_free(meta);
-            facing
-        });
+            (facing, orientation)
+        };
+        let back = ids.iter().find(|id| about(id).0 == Some(ACAMERA_LENS_FACING_BACK));
         log::info!("zend: camera: {} cameras, {}", ids.len(), if back.is_some() { "a back one" } else { "no back one" });
-        back.or(ids.first()).cloned()
+        let id = back.or(ids.first())?.clone();
+        let (facing, orientation) = about(&id);
+        Some((id, facing, orientation))
     }
 
     /// The newest frame's brightness into `grey` (row after row) and its
@@ -465,6 +537,10 @@ mod ffi {
     /// ACAMERA_LENS_START (ACAMERA_LENS = 8, shifted 16) + 5.
     pub const ACAMERA_LENS_FACING: u32 = (8 << 16) + 5;
     pub const ACAMERA_LENS_FACING_BACK: u8 = 1;
+    pub const ACAMERA_LENS_FACING_FRONT: u8 = 0;
+    /// ACAMERA_SENSOR_START (ACAMERA_SENSOR = 14, shifted 16) + 14: an int32,
+    /// degrees.
+    pub const ACAMERA_SENSOR_ORIENTATION: u32 = (14 << 16) + 14;
 
     #[repr(C)]
     pub struct ACameraIdList {

@@ -112,6 +112,9 @@ end)
 
 test("on the phone, a computer's direct code connects to that computer", function()
 	local app = open({ "settings_stub.on_android" })
+	-- (Its title says a computer, not a relay: a direct code has none.)
+	expect(app:has(`{PAGE} >> "Connect to a computer"`)).to_be(true)
+	expect(app:has(`{PAGE} >> "Join a computer's relay"`)).to_be(false)
 	app:fill(`{PAGE} >> "Connect code"`, "zend://connect?v=2&host=omarchy.tail0.ts.net&port=27872&key=k")
 	app:click(`{PAGE} >> role:button "Connect"`)
 	expect(app:wait(`{PAGE} >> "Saved. Connecting to omarchy.tail0.ts.net…"`, { timeout_ms = 5000 })).to_be(true)
@@ -159,6 +162,26 @@ test("on the phone, Stop ends the scan, and its late answer is dropped", functio
 	app:command("settings_stub.phone_scan_lands")
 	app:frames(20)
 	expect(asked(app, "phone.connect")).to_be(false)
+end)
+
+test("on the phone, what the camera sees shows while it scans, and goes with the scan", function()
+	local app = open({ "settings_stub.on_android", "settings_stub.phone_scan_waits" })
+	local PREVIEW = `{PAGE} >> #phone-scan-preview`
+	app:click(`{PAGE} >> role:button "Scan code"`)
+	expect(app:wait(`{PAGE} >> role:button "Stop"`, { timeout_ms = 5000 })).to_be(true)
+	-- (No frame yet: nothing drawn in its place.)
+	expect(app:has(PREVIEW)).to_be(false)
+	app:command("settings_stub.phone_scan_frame")
+	expect(app:wait(PREVIEW, { timeout_ms = 5000 })).to_be(true)
+	expect(app:has(`{PAGE} >> role:img "What the camera sees"`)).to_be(true)
+	-- Upright and the camera's shape, whatever the frame's size.
+	local line = string.match(app:tree(PREVIEW), "[^\n]+") or ""
+	local w, h = string.match(line, " ([%d.]+)x([%d.]+)")
+	expect(tonumber(w)).to_be(240)
+	expect(tonumber(h)).to_be(320)
+	app:command("settings_stub.phone_scan_lands")
+	expect(app:wait(SAVED, { timeout_ms = 5000 })).to_be(true)
+	expect(app:has(PREVIEW)).to_be(false)
 end)
 
 test("on the phone, leaving the page ends the scan", function()

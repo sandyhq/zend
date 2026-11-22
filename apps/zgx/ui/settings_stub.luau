@@ -22,6 +22,8 @@
 --   settings_stub.phone_busy       a session runs on this phone
 --   settings_stub.phone_scan_waits the next scan looks until scan_lands
 --   settings_stub.phone_scan_lands that scan finds the code (late, if stopped)
+--   settings_stub.phone_scan_frame the camera's newest frame, as the host shares it
+--   settings_stub.linked_phone     the phone, a window onto a computer (a direct code kept)
 --   settings_stub.phone_denied     the camera isn't allowed
 --   settings_stub.relay_up         the engine's registry room is joined
 --   settings_stub.desktop_answers  the computer's engine answers (no relay)
@@ -619,6 +621,15 @@ ui.command {
 	end,
 }
 ui.command {
+	id = "settings_stub.linked_phone",
+	title = "The phone, a window onto a computer",
+	run = function()
+		ui.shared("platform", ""):set("android")
+		ui.shared("phone.desktop", ""):set("omarchy.tail0.ts.net")
+		here_is("pixel")
+	end,
+}
+ui.command {
 	id = "settings_stub.phone_busy",
 	title = "A session runs on this phone",
 	run = function()
@@ -638,9 +649,20 @@ ui.command {
 	run = function()
 		local ok = scan_waiting
 		scan_waiting = nil
+		-- (The host lets the scan's last frame go as it ends.)
+		ui.shared("phone.scan_preview", nil :: any):set(nil)
 		if ok then
 			ok(FAKE_CODE)
 		end
+	end,
+}
+ui.command {
+	id = "settings_stub.phone_scan_frame",
+	title = "The camera's newest frame",
+	run = function()
+		ui.shared("phone.scan_preview", nil :: any):set(ui.bitmap(3, 4, function(x: number, y: number): number
+			return (x + y) / 5
+		end))
 	end,
 }
 ui.command {

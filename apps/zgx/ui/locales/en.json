@@ -1736,7 +1736,7 @@
         "new_key": "New key",
         "new_key_done": "New key made. Phones that had the old one are cut off.",
         "couldnt": "Couldn't show the code",
-        "join_title": "Join a computer's relay",
+        "join_title": "Connect to a computer",
         "join_description": "On the computer, open Settings > Devices and tap Show code.",
         "scan_label": "Scan its code",
         "scan_hint": "With the camera. Zend asks for it the first time.",
@@ -1744,6 +1744,7 @@
         "cancel": "Stop",
         "asking": "Allow the camera to scan the code.",
         "scanning": "Point the camera at the code on the computer.",
+        "preview": "What the camera sees",
         "paste_label": "Or paste the code's text",
         "paste_name": "Connect code",
         "connect": "Connect",
@@ -1758,7 +1759,7 @@
         "connected": "Connected to the relay at {edge}.",
         "unreachable": "Saved, but the relay at {edge} doesn't answer yet. Check that this phone is on its network, then scan again.",
         "busy_title": "Sessions are running on this phone",
-        "busy_body": "{n, plural, one {# session is} other {# sessions are}} running here. Connecting to another relay stops {n, plural, one {it} other {them}}.",
+        "busy_body": "{n, plural, one {# session is} other {# sessions are}} running here. Connecting to a computer stops {n, plural, one {it} other {them}}.",
         "busy_go": "Connect anyway",
         "retry": "Try again",
         "desktop_connecting": "Saved. Connecting to {desktop}…",
@@ -2265,7 +2266,8 @@
         "body": "Your card's address. It's chosen once, and yours for good.",
         "confirm": "Claim",
         "placeholder": "yourname",
-        "invalid": "3 to 20 letters, digits, _ or -."
+        "invalid": "3 to 20 letters, digits, _ or -.",
+        "on_computer": "This phone shows your computer's Zend. Claim your username there, in Settings > Account."
       },
       "save": "Save changes",
       "signed_out": {
@@ -2921,7 +2923,8 @@
     "try_again": "Try again",
     "connect": {
       "title": "Connect to a computer",
-      "body": "Zend on this phone shows the sessions of your computer's relay. On the computer, open Settings > Devices and tap Show code, then scan it here."
+      "body": "Zend on this phone shows your computer's sessions and runs them there. On the computer, open Settings > Devices and tap Show code, then scan it here.",
+      "account_on_computer": "Your username and organization are set up on the computer, in Settings > Account: this phone uses the computer's."
     }
   },
   "intro": {

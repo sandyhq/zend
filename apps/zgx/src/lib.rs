@@ -67,6 +67,8 @@ mod math;
 mod menu_bar;
 mod mermaid;
 mod phone_link;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod scan_preview;
 #[cfg(target_os = "android")]
 mod android_camera;
 mod plugins;

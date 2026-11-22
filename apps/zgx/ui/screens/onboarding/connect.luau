@@ -27,6 +27,18 @@ return function(props: Props): Node
 			title = ui.t("onboarding.connect.title") :: any,
 			body = ui.t("onboarding.connect.body") :: any,
 			ui.component(phone_join.view)({}),
+			-- Linked to a computer: the account's steps are the computer's
+			-- (state.on_computer), and the next steps pass over them.
+			ui.show(function(): boolean
+				return phone_join.connected:get() and state.on_computer()
+			end, ui.text {
+				id = "onboarding-account-on-computer",
+				ui.t("onboarding.connect.account_on_computer"),
+				text_size = "$font.size.sm",
+				line_height = "$font.line.sm",
+				color = "$text.secondary",
+				wrap = true,
+			}),
 		},
 	}
 end

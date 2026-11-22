@@ -29,6 +29,12 @@
 //!                                       "denied", "no_camera", "camera", "stopped")
 //! invoke  phone.scan_stop     (none)    stop scanning (Android)
 //! shared  phone.scan          { state, frames, detail? }   the camera's progress (Android)
+//! shared  phone.scan_preview  a Bitmap: the newest frame, while a scan runs; else nil (Android)
+//! shared  phone.desktop       the computer this phone is a window onto (its tailnet name
+//!                             or IP), "" for none: a computer, or a phone on its own
+//!                             engine. Its account's edge isn't the phone's to reach
+//!                             (the computer's engine never hands a phone its bearer),
+//!                             so the window offers no edge-account steps then.
 //! ```
 //!
 //! None of these is offered to plugins (`expose_action`): the code is the
@@ -364,8 +370,21 @@ pub fn install(host: &ScriptHost) {
         crate::plugins::preview::refuse("phone.link_new_key")?;
         Ok(Value::record(shown_status(&link_call("NewPhoneLinkKey", serde_json::json!({})).await?)))
     });
+    let desktop = host.shared("phone.desktop", Value::from(linked_desktop().as_str()));
     #[cfg(target_os = "android")]
-    crate::android_camera::install(host);
+    crate::android_camera::install(host, desktop);
+    #[cfg(not(target_os = "android"))]
+    let _ = desktop;
+}
+
+/// The computer this app is a window onto, by its tailnet name or IP; ""
+/// for none (always, but on a phone).
+fn linked_desktop() -> String {
+    #[cfg(target_os = "android")]
+    if let Some(desktop) = kept_desktop() {
+        return desktop.host;
+    }
+    String::new()
 }
 
 /// What the log says of an edge: a fixed word, never text of the edge

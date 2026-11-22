@@ -1,7 +1,12 @@
--- Joining a computer's relay from the phone (Android): the camera's scan
--- or the code's text pasted, both to the host's `phone.connect`
--- (src/phone_link.rs). Settings → Devices and onboarding's Connect to a
--- computer draw the same view, on the same state.
+-- Connecting the phone (Android) to a computer: its direct code (the
+-- computer's phone link over the tailnet) or its relay's (v=1), by the
+-- camera's scan or the code's text pasted, both to the host's
+-- `phone.connect` (src/phone_link.rs). Settings → Devices and
+-- onboarding's Connect to a computer draw the same view, on the same
+-- state. While the camera scans, what it sees shows under Scan code
+-- (`phone.scan_preview`: the newest frame, small, grey and upright, from
+-- src/android_camera.rs; nil when no scan runs), so the code can be aimed
+-- at.
 --
 -- After the code is kept the engine starts again on it: "Saved,
 -- connecting…" until the engine says its registry room is joined
@@ -32,6 +37,10 @@ M.SETTLE = 8
 M.WAIT_FOR = 30
 
 local scan = ui.shared("phone.scan", { state = "idle", frames = 0 } :: any)
+local preview = ui.shared("phone.scan_preview", nil :: any)
+-- The preview's size on the page, in points (the camera's 4:3, upright).
+M.PREVIEW_W = 240
+M.PREVIEW_H = 320
 M.scanning = ui.state("phone_join_scanning", false)
 M.joining = ui.state("phone_join_joining", false)
 -- What came of the last try: "" nothing yet, "connecting" (kept, waiting
@@ -318,6 +327,26 @@ function M.view(): Node
 				},
 			},
 		},
+		-- What the camera sees, while it scans (a frame turned the other way,
+		-- the phone on its side, keeps its own shape).
+		ui.show(function(): boolean
+			return M.scanning:get() and preview:get() ~= nil
+		end, ui.row {
+			w_full = true,
+			justify = "center",
+			ui.image {
+				id = "phone-scan-preview",
+				src = function(): any
+					return preview:get()
+				end,
+				label = ui.t("settings.devices.phone.preview"),
+				fit = "contain",
+				w = M.PREVIEW_W,
+				h = M.PREVIEW_H,
+				rounded = "$radius.lg",
+				overflow = "hidden",
+			},
+		}),
 		ui.show(function(): boolean
 			return M.busy:get() > 0
 		end, ds.Callout {

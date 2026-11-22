@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-22
 
+### Fixed
+- Phone (branch direct-ui): scanning a code shows what the camera sees (the frames' brightness, shrunk to 320 px and turned upright for the sensor and the display, about 10 a second; only the newest is held, none kept or logged). A phone linked to a computer by a direct code passes over setup's account steps (username, card, organization, invite) and Profile says the username is claimed on the computer, in place of a check that could only say "Couldn't check" (the computer never hands a phone its bearer). The phone page's title says "Connect to a computer", not "Join a computer's relay".
+
 ### Added
 - Phone link over the tailnet (branch direct-link): Settings → Devices → Show code turns on a second listener of the engine on this computer's tailnet address (found with `tailscale status --json`, else an interface in 100.64.0.0/10) and shows a v=2 code (`zend://connect?v=2&host=…&port=…&key=…`, the MagicDNS name or the IP, as chosen there); no relay needed. The phone keeps the desktop (host, port, key; mode 600), runs no engine of its own and drives the desktop's over that link: its sessions, transcripts and sending. The link binds tailnet addresses only, admits tailnet peers only, takes its own key (never the computer's ipc-token) and serves the window's methods only (`Caller::Remote`; no credentials, sign-in, vault or plugin authority); a switch turns it off, New key cuts every phone holding the old one. v=1 relay codes still work.
 

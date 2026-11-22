@@ -273,6 +273,29 @@ test("on the phone, every run joins a computer's relay right after sign-in", fun
 	expect(run { path = "signed_in" }).to_be("appearance")
 end)
 
+test("on a phone linked to a computer, setup passes over the account's steps", function()
+	local platform = ui.shared("platform", "")
+	local desktop = ui.shared("phone.desktop", "")
+	platform:set("android")
+	-- (Not linked yet: the account's steps are there.)
+	expect(run { path = "signed_in" }).to_be("connect")
+	expect(forward("connect")).to_equal({ "connect", "appearance", "username", "card", "org", "invite", "github", "providers", "done" })
+	-- A direct code kept: the computer's account, set up there.
+	desktop:set("omarchy.tail0.ts.net")
+	expect(run { path = "signed_in" }).to_be("connect")
+	expect(forward("connect")).to_equal({ "connect", "appearance", "github", "providers", "done" })
+	expect(backward("done")).to_equal({ "done", "providers", "github", "appearance", "connect" })
+	-- Welcomed: nothing of the account's to show.
+	state.welcome = true
+	expect(forward("connect")).to_equal({ "connect", "done" })
+	state.welcome = false
+	-- (On a computer the link means nothing.)
+	platform:set("")
+	expect(run { path = "signed_in" }).to_be("appearance")
+	expect(forward("appearance")).to_equal({ "appearance", "username", "card", "org", "invite", "github", "providers", "done" })
+	desktop:set("")
+end)
+
 return ui.text {
 	id = "result",
 	if #failures == 0 then "ok" else table.concat(failures, "\n"),

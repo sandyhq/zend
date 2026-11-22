@@ -363,6 +363,23 @@ test("Profile asks whether a username is free only while you're choosing one", f
 	expect(asked(app, "account.check_username:ada")).to_be(true)
 end)
 
+test("on a phone linked to a computer, Profile says the username is claimed on the computer", function()
+	local app = mount("shell_fixture.luau")
+	app:resize(1200, 900)
+	app:frames(30)
+	app:command("settings_stub.sign_in")
+	app:command("settings_stub.linked_phone")
+	app:command("shell.settings")
+	app:frames(20)
+	app:click(`{NAV} >> role:tab "Account"`)
+	app:frames(30)
+	expect(app:wait(`{PAGE} >> #profile-claim-on-computer`, { timeout_ms = 2000 })).to_be(true)
+	expect(app:has(`{PAGE} >> role:button "Claim a username"`)).to_be(false)
+	for _, c in calls(app) do
+		expect(string.find(c, "account.check_username", 1, true)).to_be_nil()
+	end
+end)
+
 test("Profile's fields stay the same nodes as the card moves over and beside them", function()
 	local app = open("Account")
 	local field = node(app, PAGE, "textbox", "Name")
