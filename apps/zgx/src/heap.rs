@@ -27,7 +27,7 @@ unsafe extern "C" {
     fn mi_stats_print(out: *mut std::ffi::c_void);
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

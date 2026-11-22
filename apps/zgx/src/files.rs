@@ -157,7 +157,7 @@ struct Files {
     started: Cell<bool>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static FILES: Rc<Files> = Rc::new(Files::new());
 }
 
@@ -315,7 +315,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
 
 /// A number unique to this run, never 0.
 fn operation_token() -> u64 {
-    thread_local! {
+    zgx::tls::thread_local! {
         static NEXT: Cell<u64> = const { Cell::new(0) };
     }
     NEXT.with(|next| {
@@ -453,7 +453,7 @@ impl PictureRead {
 /// `bytes` kept as a file named by their hash (one already there is the
 /// same picture), with the extension its media type says.
 fn keep_image(hash: &str, mime: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
-    thread_local! {
+    zgx::tls::thread_local! {
         static PRUNED: Cell<bool> = const { Cell::new(false) };
     }
     let dir = image_dir()?;
@@ -1222,7 +1222,7 @@ fn entry_value(entry: &Json) -> Value {
 /// A mutation's id, unique to this run (the engine matches its change
 /// frames to it).
 fn operation_id() -> String {
-    thread_local! {
+    zgx::tls::thread_local! {
         static NEXT: Cell<u64> = const { Cell::new(0) };
     }
     let n = NEXT.with(|next| {

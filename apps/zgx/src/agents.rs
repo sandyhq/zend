@@ -187,7 +187,7 @@ struct Reset {
     generation: u64,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// Agents from the ACP registry's icons, by harness (`acp.<id>`), as the
     /// harness lists have carried them: for the sidebar's rows, whose chats
     /// name only their harness.
@@ -250,7 +250,7 @@ async fn learn_icons() {
     }
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static ICONS_SEEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -265,7 +265,7 @@ pub(crate) fn registry_icon(harness: &str) -> Option<String> {
     REGISTRY_ICONS.with(|icons| icons.borrow().get(harness).cloned())
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static AGENTS: Rc<Agents> = Rc::new(Agents::new());
 }
 

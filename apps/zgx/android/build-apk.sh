@@ -47,6 +47,11 @@ done
 flag=(); [ $profile = release ] && flag=(--release)
 CARGO_TARGET_DIR=$TARGET cargo ndk "${targs[@]}" -P 29 --link-libcxx-shared -o "$OUT/stage/lib" \
   build -j "$JOBS" -p zend-android "${flag[@]}"
+# Bionic's 128 pthread keys: each std thread_local! takes one on Android.
+for abi in "${abis[@]}"; do
+  case $abi in arm64-v8a) triple=aarch64-linux-android ;; x86_64) triple=x86_64-linux-android ;; *) triple=$abi ;; esac
+  "$here/count-tls-keys.sh" "$TARGET/$triple/$profile/libzend_android.so" "${TLS_KEY_BUDGET:-64}"
+done
 # The backup rules (res/xml): compiled, then linked in.
 "$BT/aapt2" compile --dir res -o "$OUT/res.zip"
 debug=(); { [ $profile = debug ] || [ $debuggable = 1 ]; } && debug=(--debug-mode)

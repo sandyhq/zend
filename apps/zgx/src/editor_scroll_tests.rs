@@ -15,7 +15,7 @@ use zgx_script::{ScriptHost, testing::TestApp};
 
 const EDITOR: &str = "role:textbox \"zwide.txt\"";
 
-thread_local! {
+zgx::tls::thread_local! {
     /// The code's left edge in the window, as it stands unscrolled.
     static LEFT: std::cell::Cell<f32> = const { std::cell::Cell::new(0.) };
 }

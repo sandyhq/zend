@@ -119,7 +119,7 @@ struct Updates {
     published: Cell<u32>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static UPDATES: Rc<Updates> = Rc::new(Updates::default());
 }
 

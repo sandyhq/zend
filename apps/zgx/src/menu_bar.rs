@@ -401,7 +401,7 @@ impl Drop for Owner {
     }
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static APP: RefCell<Option<Rc<MenuBar>>> = const { RefCell::new(None) };
 }
 

@@ -42,7 +42,7 @@ struct Previews {
     listening: std::cell::Cell<bool>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static PREVIEWS: Rc<Previews> = Rc::new(Previews::default());
 }
 

@@ -54,7 +54,7 @@ struct Registry {
     loading: Cell<u64>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static REGISTRY: Rc<Registry> = Rc::new(Registry {
         shared: RefCell::default(),
         look: Cell::new(Look::Looking),

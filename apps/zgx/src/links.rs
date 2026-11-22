@@ -39,7 +39,7 @@ pub fn parse(url: &str) -> Option<(Target, Option<String>)> {
     Some((Target::Chat(link.chat_id), Some(link.workspace)))
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static WINDOWS: RefCell<Vec<Shared>> = const { RefCell::new(Vec::new()) };
     static SEQ: Cell<u64> = const { Cell::new(0) };
     static LAST: RefCell<Value> = RefCell::new(Value::record([("seq", Value::from(0.0))]));

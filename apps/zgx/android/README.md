@@ -19,6 +19,16 @@ ANDROID_NDK_HOME, JAVA_HOME, cargo-ndk and the rustup targets.
 | `--release --debuggable` | yes | tests on an emulator: `run-as sh.zend.zgx` reads its files |
 | `--release` | no | a phone with real tokens |
 
+### Thread-locals
+
+On Android std has no ELF TLS: every std `thread_local!` static takes a
+pthread key of its own, and bionic aborts past 128 per process ("out of
+TLS keys"; the platform's libraries use some too). Write
+`zgx::tls::thread_local!` in the app: on Android all of those share one
+key. build-apk.sh runs `count-tls-keys.sh` on the built library and fails
+above 64 (`TLS_KEY_BUDGET`); `tests/it/android_tls_keys.rs` catches a
+std one in the app's sources without an Android build.
+
 ## Secrets
 
 - A debuggable build lets anyone with adb read the app's files (`run-as`):

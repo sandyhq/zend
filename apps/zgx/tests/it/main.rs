@@ -5,6 +5,7 @@
 //! state that plain `cargo test` would share) stays a top-level tests/<name>.rs.
 
 mod android_gates;
+mod android_tls_keys;
 mod archived_list;
 mod chat_drop;
 mod chat_paste;

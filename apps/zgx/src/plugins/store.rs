@@ -15,7 +15,7 @@ use serde_json::{Map, Value as Json};
 /// A plugin's storage at most, as written.
 pub const MAX_BYTES: usize = 1024 * 1024;
 
-thread_local! {
+zgx::tls::thread_local! {
     /// The plugins whose preview runs in the window now.
     static PREVIEWING: RefCell<HashSet<String>> = RefCell::default();
 }

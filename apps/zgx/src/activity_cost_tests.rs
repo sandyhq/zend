@@ -87,7 +87,7 @@ fn dump_row(bench: &mut Bench) {
     walk(&scene, row, 0, &line);
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// Whether `ACTIVITY_NODE` has shown its node.
     static NODE_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Whether frames show their damage now (`ACTIVITY_DAMAGE`: the scroll's).
@@ -111,7 +111,7 @@ fn show_damage(scene: &zgx::scene::Scene, damage: &[zgx::scene::Rect]) {
         all.push((id, depth));
         stack.extend(scene.children(id).iter().map(|c| (*c, depth + 1)));
     }
-    thread_local!(static ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    zgx::tls::thread_local!(static ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
     if !ONCE.replace(true) {
         // Once: every box that fades its edges or blurs what's behind it.
         for (id, depth) in &all {

@@ -323,7 +323,7 @@ where
     call().await
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static AUTH: Rc<Auth> = Rc::new(Auth::new());
 }
 

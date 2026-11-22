@@ -207,7 +207,7 @@ fn apply_rows(rows: &mut Vec<Json>, changes: &Changes, key: &str, index: &mut In
 #[cfg(test)]
 pub(crate) mod work {
     use std::cell::Cell;
-    thread_local! {
+    zgx::tls::thread_local! {
         static DONE: Cell<usize> = const { Cell::new(0) };
     }
     pub(crate) fn add(n: usize) {
@@ -237,7 +237,7 @@ struct List {
     _watch: Option<Watch>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static LISTS: RefCell<Vec<Rc<RefCell<List>>>> = const { RefCell::new(Vec::new()) };
     static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }

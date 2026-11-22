@@ -49,7 +49,7 @@ fn data_dir() -> Option<PathBuf> {
     crate::engine::data_dir()
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// The main window's library, once installed.
     static LIBRARY: RefCell<Option<Rc<Shared>>> = const { RefCell::new(None) };
     /// The templates' own themes, as their bridge last told them.

@@ -67,7 +67,7 @@ struct Tokens {
     blocks: RefCell<Bounded>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static TOKENS: Tokens = Tokens {
         key: RandomState::new(),
         files: RefCell::new(Bounded::new(FILES)),

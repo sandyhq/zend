@@ -436,7 +436,7 @@ struct Visuals {
     rests: RefCell<Vec<zgx::idle::IdleTrim>>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static VISUALS: Rc<Visuals> = Rc::default();
 }
 
@@ -716,7 +716,7 @@ pub fn preload(id: &str, title: &str, source: &str) {
 }
 
 #[cfg(test)]
-thread_local! {
+zgx::tls::thread_local! {
     static SERVED: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::default();
 }
 
@@ -2045,7 +2045,7 @@ struct GpuUser {
     using: std::cell::Cell<bool>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static GPU_USER: GpuUser = const { GpuUser { using: std::cell::Cell::new(false) } };
 }
 

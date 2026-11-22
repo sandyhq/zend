@@ -122,7 +122,7 @@ impl Kept {
     }
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static KEPT: RefCell<Kept> = RefCell::default();
 }
 

@@ -115,7 +115,7 @@ pub struct Preview {
     pub name: String,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static NOW: RefCell<Option<Preview>> = const { RefCell::new(None) };
     /// What's told of the change (the host's toast and menu follow it).
     static HEARD: RefCell<Vec<Box<dyn Fn(Option<&Preview>)>>> = RefCell::default();
@@ -301,7 +301,7 @@ pub fn safe() -> bool {
 }
 
 #[cfg(test)]
-thread_local! {
+zgx::tls::thread_local! {
     /// A test's own safe mode, on its thread alone (tests run in parallel).
     static TEST_SAFE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }

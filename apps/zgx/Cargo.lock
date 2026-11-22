@@ -7555,6 +7555,7 @@ dependencies = [
  "zerotrie",
  "zerovec",
  "zgx-taffy",
+ "zgx-tls",
 ]
 
 [[package]]
@@ -7613,6 +7614,7 @@ name = "zgx-components"
 version = "0.1.10"
 dependencies = [
  "zgx",
+ "zgx-tls",
 ]
 
 [[package]]
@@ -7688,6 +7690,7 @@ dependencies = [
  "zgx-ghostty-sys",
  "zgx-gpu",
  "zgx-terminal",
+ "zgx-tls",
 ]
 
 [[package]]
@@ -7730,6 +7733,7 @@ dependencies = [
  "zgx",
  "zgx-cosmic-text",
  "zgx-text",
+ "zgx-tls",
  "zgx-zune-jpeg",
 ]
 
@@ -7767,6 +7771,7 @@ dependencies = [
  "zgx",
  "zgx-desktop",
  "zgx-script",
+ "zgx-tls",
 ]
 
 [[package]]
@@ -7793,6 +7798,7 @@ dependencies = [
  "zgx-components",
  "zgx-gpu",
  "zgx-mlua",
+ "zgx-tls",
 ]
 
 [[package]]
@@ -7828,6 +7834,7 @@ dependencies = [
  "windows-sys 0.59.0",
  "zgx",
  "zgx-alacritty-terminal",
+ "zgx-tls",
 ]
 
 [[package]]
@@ -7840,6 +7847,14 @@ dependencies = [
  "unicode-segmentation",
  "zgx",
  "zgx-cosmic-text",
+ "zgx-tls",
+]
+
+[[package]]
+name = "zgx-tls"
+version = "0.1.10"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

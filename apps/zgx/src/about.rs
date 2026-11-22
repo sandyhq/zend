@@ -65,7 +65,7 @@ struct About {
 /// How long a restart to update waits on the engine going with it.
 const ENGINE_STOP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
 
-thread_local! {
+zgx::tls::thread_local! {
     static ABOUT: Rc<About> = Rc::default();
 }
 

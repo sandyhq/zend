@@ -145,7 +145,7 @@ impl Notice {
     }
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static NOTICES: RefCell<Option<zgx::reactive::Signal<Vec<Shown>>>> = const { RefCell::new(None) };
     static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Whether Zend shows Chinese now, as the toasts last read it.
@@ -610,7 +610,7 @@ struct Corner {
     told: f32,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static CORNER: RefCell<Option<Corner>> = const { RefCell::new(None) };
 }
 
@@ -657,7 +657,7 @@ mod tests {
     use super::*;
     use zgx_script::{ScriptHost, testing::TestApp};
 
-    thread_local! {
+    zgx::tls::thread_local! {
         /// The language a test's toasts show in.
         static TEST_LOCALE: std::cell::Cell<&'static str> = const { std::cell::Cell::new("en") };
     }

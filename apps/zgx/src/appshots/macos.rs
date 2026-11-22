@@ -179,7 +179,7 @@ struct HotKeyRegistration {
     shortcut: Option<Shortcut>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     // Carbon registration and replacement always run on GPUI's main thread.
     static HOT_KEY: RefCell<Option<HotKeyRegistration>> = const { RefCell::new(None) };
     // What a press does: set once, as the handler is installed.

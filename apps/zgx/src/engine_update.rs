@@ -78,7 +78,7 @@ fn stamp_of(bin: &std::path::Path) -> Option<Stamp> {
     Some((bin.to_path_buf(), meta.len(), meta.modified().ok(), inode))
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// The binary's build as last asked, by its stamp.
     static ASKED: RefCell<Option<(Stamp, Option<String>)>> = const { RefCell::new(None) };
 }
@@ -107,7 +107,7 @@ async fn build_of(bin: std::path::PathBuf) -> Option<String> {
 /// disk again (a rebuild while the app runs).
 const RECHECK: Duration = Duration::from_secs(60);
 
-thread_local! {
+zgx::tls::thread_local! {
     /// Every window's `engine.update`, and what it says now: one checker for
     /// the process, however many windows.
     static WINDOWS: RefCell<Vec<Shared>> = const { RefCell::new(Vec::new()) };

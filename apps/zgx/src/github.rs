@@ -117,7 +117,7 @@ struct GitHub {
     generation: Cell<u64>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static GITHUB: Rc<GitHub> = Rc::new(GitHub::new());
 }
 

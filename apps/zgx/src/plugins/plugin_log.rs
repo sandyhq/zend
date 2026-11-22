@@ -33,7 +33,7 @@ struct Queue {
     dropped: usize,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static QUEUE: RefCell<Queue> = RefCell::default();
 }
 

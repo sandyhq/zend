@@ -23,7 +23,7 @@ pub struct Shown {
 
 type Heard = Vec<Box<dyn Fn(&[Shown])>>;
 
-thread_local! {
+zgx::tls::thread_local! {
     static NOW: RefCell<Vec<Shown>> = const { RefCell::new(Vec::new()) };
     static HEARD: RefCell<Heard> = RefCell::default();
 }

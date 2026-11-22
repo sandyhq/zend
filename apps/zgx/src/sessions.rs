@@ -754,7 +754,7 @@ fn top_row(
     value
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static SESSIONS: Rc<Sessions> = Rc::new(Sessions::default());
 }
 
@@ -2209,7 +2209,7 @@ pub(crate) fn now_seconds() -> i64 {
 }
 
 #[cfg(test)]
-thread_local! {
+zgx::tls::thread_local! {
     /// A test's own time (Unix seconds), while it sets one.
     static CLOCK: Cell<Option<i64>> = const { Cell::new(None) };
     /// How many times the chat lists were built whole, and kept.

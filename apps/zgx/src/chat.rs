@@ -67,7 +67,7 @@ const STALE_SECONDS: i64 = 45;
 /// shipping app's).
 const CHUNK: usize = 680_000;
 
-thread_local! {
+zgx::tls::thread_local! {
     static CHATS: Rc<Chats> = Rc::new(Chats::default());
 }
 
@@ -513,7 +513,7 @@ fn room_to_keep() -> bool {
 /// `ZEND_ZGX_KEEP_CHATS=0`: chats let go of are kept as they were before
 /// (one, two seconds, for a split taking it), to compare what keeping costs.
 fn keeping_chats() -> bool {
-    thread_local! {
+    zgx::tls::thread_local! {
         static ON: bool = std::env::var("ZEND_ZGX_KEEP_CHATS").map_or(true, |v| v != "0");
     }
     ON.with(|on| *on)
@@ -4174,7 +4174,7 @@ struct LiveRow {
     /// `draft_of` looks for it.
     last_text: Option<usize>,
 }
-thread_local! {
+zgx::tls::thread_local! {
     /// Replies being written (`LiveRow`), by id; a few at once.
     static LIVE_ROWS: RefCell<rustc_hash::FxHashMap<String, LiveRow>> = RefCell::default();
     /// While a row is built whole for a test (`built_whole`): `LIVE_ROWS`
@@ -4487,7 +4487,7 @@ struct Seen {
 /// A short word is kept for every row, while there are few of them.
 const COMMON_LEN: usize = 16;
 const COMMON_MOST: usize = 4096;
-thread_local! {
+zgx::tls::thread_local! {
     static COMMON: RefCell<std::collections::HashSet<Rc<str>>> = RefCell::default();
     /// The settled row being built (`built_entry`): its tools so far, by the
     /// part each is of, each built once however many of its layouts show it.
@@ -6467,7 +6467,7 @@ fn held_elsewhere(here: Option<&str>, owner: &str) -> bool {
 
 /// This window process's id, as an editor of queued messages.
 fn instance_id() -> String {
-    thread_local! {
+    zgx::tls::thread_local! {
         static ID: String = new_id();
     }
     ID.with(Clone::clone)

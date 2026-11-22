@@ -41,7 +41,7 @@ struct Open {
 
 type Last = Rc<RefCell<Option<Json>>>;
 
-thread_local! {
+zgx::tls::thread_local! {
     static OPEN: RefCell<Option<Open>> = const { RefCell::new(None) };
 }
 

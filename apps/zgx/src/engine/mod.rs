@@ -98,7 +98,7 @@ pub struct Engine {
     supervising: Cell<bool>,
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     static ENGINE: Rc<Engine> = Rc::new(Engine::new());
 }
 

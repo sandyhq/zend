@@ -553,7 +553,7 @@ fn item(args: &Value, kind: &str, then: Option<&str>) -> String {
     path
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// Which wait for a sign-in again is the live one: cancelling moves it on.
     static STEP_UP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }

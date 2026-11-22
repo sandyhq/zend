@@ -691,7 +691,7 @@ fn live_overlay() -> live::Overlay {
     LIVE_OVERLAY.with(|o| o.borrow().clone())
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// What `prepare_live` laid down, for the bridge to start from.
     static LIVE_OVERLAY: RefCell<live::Overlay> = RefCell::default();
     /// And what it laid it down from, so the window's first look composes
@@ -830,7 +830,7 @@ pub fn plugin_preview_action(id: &str, keep: Option<&str>) {
 }
 
 #[cfg(test)]
-thread_local! {
+zgx::tls::thread_local! {
     /// The host commands a test ran (`host_command`).
     pub(crate) static HOST_COMMANDS_RAN: RefCell<Vec<String>> = RefCell::default();
 }
@@ -849,7 +849,7 @@ pub fn ask_zend_template() {
     ZEND_TEMPLATE.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-thread_local! {
+zgx::tls::thread_local! {
     /// The main window's bridge, for what the app's host tells it.
     static BRIDGE: RefCell<Weak<Bridge>> = const { RefCell::new(Weak::new()) };
     /// Plugin commands the menu bar shows without their shortcut, by
@@ -3758,7 +3758,7 @@ fn as_f64(value: &Value) -> Option<f64> {
 }
 
 fn next_id() -> u64 {
-    thread_local!(static NEXT: Cell<u64> = const { Cell::new(0) });
+    zgx::tls::thread_local!(static NEXT: Cell<u64> = const { Cell::new(0) });
     NEXT.with(|n| {
         n.set(n.get() + 1);
         n.get()
