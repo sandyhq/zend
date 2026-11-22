@@ -29,7 +29,7 @@ fn make_link(dir: &Path, seams: Seams) -> Arc<PhoneLink> {
 
 async fn dial(status: &Value, key: &str) -> Result<zend_rpc::RpcClient, RpcError> {
     let url = format!("ws://{}", status["listening"][0].as_str().unwrap());
-    tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_ws(&url, Some(key))).await.expect("dial timed out")
+    tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_phone_link(&url, key)).await.expect("dial timed out")
 }
 
 #[test]

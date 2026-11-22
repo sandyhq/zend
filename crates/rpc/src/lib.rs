@@ -22,12 +22,13 @@ mod caller;
 mod client;
 pub mod device_room;
 pub mod ipc_auth;
+pub mod link_proof;
 pub mod remote;
 mod server;
 mod ws;
 
 pub use caller::{Caller, caller, with_caller};
-pub use client::{RpcClient, RpcSubscription, connect_ipc, connect_ipc_as_agent, connect_ws};
+pub use client::{RpcClient, RpcSubscription, connect_ipc, connect_ipc_as_agent, connect_phone_link, connect_ws};
 pub use device_room::{
     CallerProof, CallerProofFn, DeviceFrameHeader, DeviceLink, HostRelay, HostRelayConfig,
     LinkCache, LinkCacheConfig, caller_proof_message,

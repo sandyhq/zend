@@ -178,13 +178,18 @@ impl AsRawFd for Stream {
 }
 
 #[cfg(any(target_os = "android", test))]
-/// A connection to `host:port` (each address the name resolves to tried in
-/// turn), and the URI its handshake asks for.
-fn dial_tcp(host: &str, port: u16) -> Result<(TcpStream, String), DialError> {
+/// A connection to `host:port` (each address the name resolves to that
+/// `admits`, the tailnet's, tried in turn; any other is never dialled), and
+/// the URI its handshake asks for.
+fn dial_tcp(host: &str, port: u16, admits: fn(std::net::IpAddr) -> bool) -> Result<(TcpStream, String), DialError> {
     use std::net::ToSocketAddrs;
     let addresses = (host, port).to_socket_addrs().map_err(|error| DialError::Other(format!("resolve: {error}")))?;
     let mut last = DialError::Other("resolve: no address".into());
     for address in addresses {
+        if !admits(address.ip()) {
+            last = DialError::Other(format!("{host} resolves to {}, outside the tailnet: not dialled", address.ip()));
+            continue;
+        }
         match TcpStream::connect_timeout(&address, DIAL_TIMEOUT) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
@@ -196,6 +201,61 @@ fn dial_tcp(host: &str, port: u16) -> Result<(TcpStream, String), DialError> {
     Err(last)
 }
 type Socket = tungstenite::WebSocket<Stream>;
+
+/// A desktop's phone link at `host:port` holding `key`: dialled only at
+/// the addresses `admits` (the tailnet's), and the key proved both ways
+/// without it crossing the wire (crates/rpc/src/link_proof.rs).
+#[cfg(test)]
+fn dial_desktop_at(host: &str, port: u16, key: &str, admits: fn(std::net::IpAddr) -> bool) -> Result<tungstenite::WebSocket<TcpStream>, DialError> {
+    let (stream, uri) = dial_tcp(host, port, admits)?;
+    let _ = stream.set_read_timeout(Some(DIAL_TIMEOUT));
+    desktop_handshake(stream, &uri, key)
+}
+
+/// The phone link's handshake on `stream`: this phone's nonce out, the
+/// desktop's proof checked before anything else is sent (one that can't
+/// prove the key is refused: Unauthorized, a key since replaced or not
+/// that desktop), then this phone's proof as the first frame.
+#[cfg(any(target_os = "android", test))]
+fn desktop_handshake<S: std::io::Read + std::io::Write>(stream: S, uri: &str, key: &str) -> Result<tungstenite::WebSocket<S>, DialError> {
+    use tungstenite::client::IntoClientRequest;
+    use zend_rpc::link_proof;
+    let phone_nonce = link_proof::nonce().map_err(|e| DialError::Other(e.to_string()))?;
+    let mut request = uri.into_client_request().map_err(|e| DialError::Other(e.to_string()))?;
+    let value = tungstenite::http::HeaderValue::from_str(&phone_nonce).map_err(|e| DialError::Other(e.to_string()))?;
+    request.headers_mut().insert(link_proof::NONCE_HEADER, value);
+    let (mut socket, response) = match tungstenite::client::client_with_config(request, stream, Some(socket_config())) {
+        Ok(done) => done,
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))) if response.status().as_u16() == 401 => {
+            return Err(DialError::Unauthorized);
+        }
+        Err(error) => return Err(DialError::Other(error.to_string())),
+    };
+    let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let proved = match (header(link_proof::NONCE_HEADER), header(link_proof::PROOF_HEADER)) {
+        (Some(desktop_nonce), Some(proof)) if link_proof::valid_nonce(&desktop_nonce) => {
+            link_proof::proof_matches(&link_proof::desktop_proof(key, &phone_nonce, &desktop_nonce), &proof).then_some(desktop_nonce)
+        }
+        _ => None,
+    };
+    let Some(desktop_nonce) = proved else {
+        let _ = socket.close(None);
+        let _ = socket.flush();
+        return Err(DialError::Unauthorized);
+    };
+    socket
+        .send(tungstenite::Message::text(link_proof::phone_frame(key, &phone_nonce, &desktop_nonce)))
+        .map_err(|e| DialError::Other(e.to_string()))?;
+    Ok(socket)
+}
+
+/// A long reply can be large; local IPC allows up to 256 MiB.
+fn socket_config() -> tungstenite::protocol::WebSocketConfig {
+    const LIMIT: usize = 256 << 20;
+    tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(LIMIT))
+        .max_frame_size(Some(LIMIT))
+}
 
 fn refused_or(error: std::io::Error) -> DialError {
     if error.kind() == std::io::ErrorKind::ConnectionRefused {
@@ -216,12 +276,6 @@ fn open(port: u16) -> Result<(Stream, String), DialError> {
 #[cfg(target_os = "android")]
 fn open(port: u16) -> Result<(Stream, String), DialError> {
     let _ = port;
-    // A desktop kept (a v=2 code scanned): its engine, never one of this
-    // app's own (src/engine/manager.rs starts none then).
-    if let Some(desktop) = crate::phone_link::kept_desktop() {
-        let (stream, uri) = dial_tcp(&desktop.host, desktop.port)?;
-        return Ok((Stream::Desktop(stream), uri));
-    }
     let stream = crate::android::dial_engine().map_err(refused_or)?;
     Ok((Stream::Local(stream), "ws://localhost/".into()))
 }
@@ -229,6 +283,17 @@ fn open(port: u16) -> Result<(Stream, String), DialError> {
 /// The handshake, blocking (on the network thread).
 fn dial(port: u16, token: Option<&str>) -> Result<Socket, DialError> {
     use tungstenite::client::IntoClientRequest;
+    // A desktop kept (a v=2 code scanned): its engine, never one of this
+    // app's own (src/engine/manager.rs starts none then). Its host, port
+    // and key read once, together: a pairing kept meanwhile is the next
+    // dial's, never half of this one's.
+    #[cfg(target_os = "android")]
+    if let Some(desktop) = crate::phone_link::kept_desktop() {
+        let _ = token;
+        let (stream, uri) = dial_tcp(&desktop.host, desktop.port, crate::phone_link::in_tailnet)?;
+        let _ = stream.set_read_timeout(Some(DIAL_TIMEOUT));
+        return desktop_handshake(Stream::Desktop(stream), &uri, &desktop.key);
+    }
     let (stream, uri) = open(port)?;
     let _ = stream.set_read_timeout(Some(DIAL_TIMEOUT));
     let mut request = uri
@@ -241,12 +306,7 @@ fn dial(port: u16, token: Option<&str>) -> Result<Socket, DialError> {
             .headers_mut()
             .insert(tungstenite::http::header::AUTHORIZATION, value);
     }
-    // A long reply can be large; local IPC allows up to 256 MiB.
-    const LIMIT: usize = 256 << 20;
-    let config = tungstenite::protocol::WebSocketConfig::default()
-        .max_message_size(Some(LIMIT))
-        .max_frame_size(Some(LIMIT));
-    match tungstenite::client::client_with_config(request, stream, Some(config)) {
+    match tungstenite::client::client_with_config(request, stream, Some(socket_config())) {
         Ok((socket, _)) => Ok(socket),
         Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)))
             if response.status().as_u16() == 401 =>
@@ -769,14 +829,110 @@ mod tests {
     fn a_desktop_is_dialled_at_its_host_and_port() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (_stream, uri) = super::dial_tcp("localhost", port).unwrap();
+        let (_stream, uri) = super::dial_tcp("localhost", port, |_| true).unwrap();
         assert_eq!(uri, format!("ws://localhost:{port}"));
         drop(listener);
-        assert!(matches!(super::dial_tcp("127.0.0.1", port), Err(super::DialError::Refused)));
-        assert!(matches!(super::dial_tcp("no-such-host.invalid", port), Err(super::DialError::Other(_))));
+        assert!(matches!(super::dial_tcp("127.0.0.1", port, |_| true), Err(super::DialError::Refused)));
+        assert!(matches!(super::dial_tcp("no-such-host.invalid", port, |_| true), Err(super::DialError::Other(_))));
     }
 
     use super::*;
+
+    /// Answers every call with the caller it was served as (an engine's
+    /// phone link, by hand: zgx has no async-trait).
+    struct Echo;
+    impl zend_rpc::RpcService for Echo {
+        fn handle<'a, 'b, 'c>(
+            &'a self,
+            method: &'b str,
+            _params: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<zend_rpc::RpcReply, zend_rpc::RpcError>> + Send + 'c>>
+        where
+            'a: 'c,
+            'b: 'c,
+            Self: 'c,
+        {
+            // (Read as the call runs: the caller is the scope it's polled in.)
+            Box::pin(async move {
+                Ok(zend_rpc::RpcReply::Value(json!({ "method": method, "caller": format!("{:?}", zend_rpc::caller()) })))
+            })
+        }
+    }
+
+    /// A desktop's phone link on loopback (any peer let in), on a runtime
+    /// of its own; keep the runtime.
+    fn desktop(key: &str) -> (tokio::runtime::Runtime, u16) {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let listener = rt.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        rt.spawn(zend_rpc::remote::serve_remote_listener_admitting(listener, std::sync::Arc::new(Echo), key.into(), |_| true));
+        (rt, port)
+    }
+
+    fn key() -> String {
+        (0..64).map(|i| b"0123456789abcdef"[(i * 7 + std::process::id() as usize) % 16] as char).collect()
+    }
+
+    /// A phone drives its desktop through the challenge, served as a
+    /// phone; one holding another key is turned away before it sends.
+    #[test]
+    fn a_phone_drives_its_desktop_once_both_prove_the_key() {
+        let key = key();
+        let (_rt, port) = desktop(&key);
+        let mut socket = dial_desktop_at("127.0.0.1", port, &key, |_| true).unwrap();
+        socket.send(tungstenite::Message::text(json!({ "id": 1, "method": "EngineInfo", "params": {} }).to_string())).unwrap();
+        let reply = socket.read().unwrap();
+        let reply: Value = serde_json::from_str(reply.to_text().unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(reply["ok"]["caller"], "Remote", "{reply}");
+        let other: String = key.chars().rev().collect();
+        assert!(matches!(dial_desktop_at("127.0.0.1", port, &other, |_| true), Err(DialError::Unauthorized)));
+    }
+
+    /// Something else at the address (a wrong DNS answer, a stranger on
+    /// the network) never hears the key, nor anything made with it.
+    #[test]
+    fn an_impostor_desktop_never_hears_the_key() {
+        let key = key();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let heard = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let headers = Arc::new(Mutex::new(String::new()));
+            let record = headers.clone();
+            let note = move |req: &tungstenite::handshake::server::Request, mut resp: tungstenite::handshake::server::Response| {
+                record.lock().unwrap().push_str(&format!("{:?}", req.headers()));
+                let fake = tungstenite::http::HeaderValue::from_static("00");
+                resp.headers_mut().insert(zend_rpc::link_proof::NONCE_HEADER, fake.clone());
+                resp.headers_mut().insert(zend_rpc::link_proof::PROOF_HEADER, fake);
+                Ok(resp)
+            };
+            let mut heard = String::new();
+            if let Ok(mut ws) = tungstenite::accept_hdr(stream, note) {
+                while let Ok(frame) = ws.read() {
+                    heard.push_str(&format!("{frame:?}"));
+                }
+            }
+            format!("{} {heard}", headers.lock().unwrap())
+        });
+        assert!(dial_desktop_at("127.0.0.1", port, &key, |_| true).is_err());
+        let heard = heard.join().unwrap();
+        assert!(!heard.contains(&key), "the key reached the impostor: {heard}");
+        assert!(!heard.to_ascii_lowercase().contains("authorization"), "{heard}");
+        assert!(!heard.contains("linkProof"), "{heard}");
+    }
+
+    /// A name that resolves outside the tailnet isn't dialled at all.
+    #[test]
+    fn a_phone_dials_only_tailnet_addresses() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(dial_desktop_at("localhost", port, &key(), crate::phone_link::in_tailnet).is_err());
+        std::thread::sleep(Duration::from_millis(100));
+        let accepted = listener.accept();
+        assert!(matches!(&accepted, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock), "dialled: {accepted:?}");
+    }
 
     /// A connection with no socket: frames handed to it as the network
     /// thread would.

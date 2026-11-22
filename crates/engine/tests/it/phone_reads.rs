@@ -30,7 +30,7 @@ async fn phone(core: &EngineCore) -> (RpcClient, tokio::task::JoinHandle<()>) {
         key.clone(),
         |_| true,
     ));
-    let client = tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_ws(&format!("ws://{addr}"), Some(&key)))
+    let client = tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_phone_link(&format!("ws://{addr}"), &key))
         .await
         .expect("dial timed out")
         .expect("phone dials in");

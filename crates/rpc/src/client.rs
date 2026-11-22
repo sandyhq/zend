@@ -497,6 +497,14 @@ async fn dial(url: &str, token: Option<&str>) -> Result<RpcClient, DialError> {
         }
         other => DialError::Other(RpcError::Transport(other.to_string())),
     })?;
+    Ok(client_on(ws, url))
+}
+
+/// A client on an open socket: its pump runs in a task of its own.
+fn client_on<S>(ws: tokio_tungstenite::WebSocketStream<S>, url: &str) -> RpcClient
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     let client = RpcClient::new(out_tx, in_rx);
@@ -508,5 +516,50 @@ async fn dial(url: &str, token: Option<&str>) -> Result<RpcClient, DialError> {
             let _ = close_reason.set(reason);
         }
     });
-    Ok(client)
+    client
+}
+
+/// Dial a desktop's phone link at `url` (`ws://host:port`) holding `key`,
+/// the way a phone does ([`crate::link_proof`]): the desktop proves it
+/// holds the key before this sends anything, and the key itself never goes
+/// out. A desktop that can't prove it (a wrong key, or not that desktop) is
+/// an error, and nothing was sent to it.
+pub async fn connect_phone_link(url: &str, key: &str) -> Result<RpcClient, RpcError> {
+    use crate::link_proof;
+    use futures::SinkExt as _;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let phone_nonce = link_proof::nonce().map_err(|e| RpcError::Transport(e.to_string()))?;
+    let mut request = url.into_client_request().map_err(|e| RpcError::Transport(e.to_string()))?;
+    request.headers_mut().insert(
+        link_proof::NONCE_HEADER,
+        HeaderValue::from_str(&phone_nonce).map_err(|e| RpcError::Transport(e.to_string()))?,
+    );
+    let (mut ws, response) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async_with_config(request, Some(crate::ws::config()), true),
+    )
+    .await
+    .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
+    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let proved = match (header(link_proof::NONCE_HEADER), header(link_proof::PROOF_HEADER)) {
+        (Some(desktop_nonce), Some(proof)) if link_proof::valid_nonce(&desktop_nonce) => {
+            link_proof::proof_matches(&link_proof::desktop_proof(key, &phone_nonce, &desktop_nonce), &proof)
+                .then_some(desktop_nonce)
+        }
+        _ => None,
+    };
+    let Some(desktop_nonce) = proved else {
+        let _ = ws.close(None).await;
+        return Err(RpcError::Transport(format!(
+            "{url} didn't prove it holds the phone-link key (a key since replaced, or not that desktop): nothing was sent"
+        )));
+    };
+    ws.send(Message::text(link_proof::phone_frame(key, &phone_nonce, &desktop_nonce)))
+        .await
+        .map_err(|e| RpcError::Transport(e.to_string()))?;
+    Ok(client_on(ws, url))
 }

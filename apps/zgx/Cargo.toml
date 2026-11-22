@@ -139,6 +139,9 @@ zend-voice = { path = "../../crates/voice" }
 zend-notify = { path = "../../crates/notify" }
 # (A message between chats: its routing header, read as the engine writes it.)
 zend-proto = { path = "../../crates/proto" }
+# The phone link's challenge (crates/rpc/src/link_proof.rs), on the phone's
+# side; already in the build through zend-cli.
+zend-rpc = { path = "../../crates/rpc" }
 # (Already in the build through zend-proto: its times are chrono's, and its
 # rows are read straight from the engine's JSON, not cloned first.)
 chrono = "0.4"

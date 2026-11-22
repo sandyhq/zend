@@ -7,10 +7,11 @@
 //!    refuses anything else, `0.0.0.0` included), and a connection from a
 //!    peer outside the tailnet's ranges ([`in_tailnet`]) is dropped before
 //!    its handshake is read.
-//! 2. Who. The handshake must carry `Authorization: Bearer <key>`: the
-//!    phone-link key, a secret of its own (never the IPC token), compared in
-//!    constant time. A browser's handshake (`Origin`) is refused as on
-//!    local IPC.
+//! 2. Who. Both sides prove they hold the phone-link key, a secret of its
+//!    own (never the IPC token), without it crossing the wire
+//!    ([`crate::link_proof`]): this side answers the handshake's nonce
+//!    first, and serves nothing until the phone's first frame proves the
+//!    key too. A browser's handshake (`Origin`) is refused as on local IPC.
 //! 3. What. Its connections reach only [`remote_allowed`] methods, served as
 //!    [`crate::Caller::Remote`]: never [`crate::local_only`] (credentials),
 //!    nothing a peer device may not ([`crate::peer_refused`]), and beyond
@@ -209,37 +210,68 @@ pub async fn serve_remote_listener_admitting(
     }
 }
 
+/// How long a phone has to send its proof once the handshake is done.
+const PROOF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn serve_remote_socket<S>(stream: S, service: Arc<dyn RpcService>, key: Arc<str>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    use crate::link_proof;
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::{Message, http::HeaderValue};
+
+    // What the phone's first frame must carry, once the handshake set it.
+    let expected = std::sync::Mutex::new(None::<String>);
     #[allow(clippy::result_large_err)]
-    let authorize = |req: &HandshakeRequest, resp: HandshakeResponse| {
+    let authorize = |req: &HandshakeRequest, mut resp: HandshakeResponse| {
+        let refuse = |status: StatusCode, why: &str| {
+            let mut err = ErrorResponse::new(Some(why.to_string()));
+            *err.status_mut() = status;
+            err
+        };
         if req.headers().get("origin").is_some() {
-            let mut err = ErrorResponse::new(Some("origin not allowed".to_string()));
-            *err.status_mut() = StatusCode::FORBIDDEN;
-            return Err(err);
+            return Err(refuse(StatusCode::FORBIDDEN, "origin not allowed"));
         }
-        let presented = req
+        let Some(phone_nonce) = req
             .headers()
-            .get(tokio_tungstenite::tungstenite::http::header::AUTHORIZATION)
-            .map(|value| value.as_bytes());
-        if !crate::ipc_auth::bearer_matches(&key, presented) {
-            // (Never what was presented.)
-            tracing::warn!(presented = presented.is_some(), "rpc: phone link: refused a handshake without the key");
-            let mut err = ErrorResponse::new(Some("wrong or missing phone-link key".to_string()));
-            *err.status_mut() = StatusCode::UNAUTHORIZED;
-            return Err(err);
+            .get(link_proof::NONCE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .filter(|n| link_proof::valid_nonce(n))
+        else {
+            // (A phone that sends the key as a bearer predates the
+            // challenge; whatever it sent isn't looked at.)
+            tracing::warn!("rpc: phone link: refused a handshake without a challenge");
+            return Err(refuse(StatusCode::UNAUTHORIZED, "the phone link needs its challenge: update Zend on the phone"));
+        };
+        let Ok(desktop_nonce) = link_proof::nonce() else {
+            return Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "no randomness"));
+        };
+        let proof = link_proof::desktop_proof(&key, phone_nonce, &desktop_nonce);
+        for (name, value) in [(link_proof::NONCE_HEADER, &desktop_nonce), (link_proof::PROOF_HEADER, &proof)] {
+            let value = HeaderValue::from_str(value).map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "header"))?;
+            resp.headers_mut().insert(name, value);
         }
+        *expected.lock().unwrap() = Some(link_proof::phone_proof(&key, phone_nonce, &desktop_nonce));
         Ok(resp)
     };
-    let ws = match tokio_tungstenite::accept_hdr_async_with_config(stream, authorize, Some(crate::ws::config())).await {
+    let mut ws = match tokio_tungstenite::accept_hdr_async_with_config(stream, authorize, Some(crate::ws::config())).await {
         Ok(ws) => ws,
         Err(err) => {
             tracing::debug!(error = %err, "rpc: phone link: handshake failed");
             return;
         }
     };
+    let Some(expected) = expected.into_inner().ok().flatten() else {
+        return;
+    };
+    let first = tokio::time::timeout(PROOF_TIMEOUT, ws.next()).await;
+    if !matches!(&first, Ok(Some(Ok(Message::Text(frame)))) if link_proof::frame_proves(frame, &expected)) {
+        // (Never what was presented.)
+        tracing::warn!("rpc: phone link: refused a phone that didn't prove the key");
+        let _ = ws.close(None).await;
+        return;
+    }
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     let mut pump = tokio::spawn(async move {
@@ -351,23 +383,56 @@ mod tests {
         (addr, task)
     }
 
-    async fn dial(
-        addr: SocketAddr,
-        bearer: Option<&str>,
-    ) -> Result<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-        tokio_tungstenite::tungstenite::Error,
-    > {
+    type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    /// The handshake as a phone before the challenge made it: the key as a
+    /// bearer.
+    async fn dial_with_bearer(addr: SocketAddr, bearer: &str) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
         let mut request = format!("ws://{addr}/").into_client_request().unwrap();
-        if let Some(bearer) = bearer {
-            request
-                .headers_mut()
-                .insert(http::header::AUTHORIZATION, http::HeaderValue::from_str(&format!("Bearer {bearer}")).unwrap());
-        }
+        request
+            .headers_mut()
+            .insert(http::header::AUTHORIZATION, http::HeaderValue::from_str(&format!("Bearer {bearer}")).unwrap());
         tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
             .await
             .expect("dial timed out")
             .map(|(ws, _)| ws)
+    }
+
+    /// A handshake with the phone's nonce: the socket, its nonce and what
+    /// the desktop answered (its nonce and proof).
+    async fn challenge(addr: SocketAddr) -> Result<(Ws, String, Option<String>, Option<String>), tokio_tungstenite::tungstenite::Error> {
+        let nonce = crate::link_proof::nonce().unwrap();
+        let mut request = format!("ws://{addr}/").into_client_request().unwrap();
+        request.headers_mut().insert(crate::link_proof::NONCE_HEADER, http::HeaderValue::from_str(&nonce).unwrap());
+        let (ws, response) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+            .await
+            .expect("dial timed out")?;
+        let header = |name: &str| response.headers().get(name).map(|v| v.to_str().unwrap().to_owned());
+        Ok((ws, nonce, header(crate::link_proof::NONCE_HEADER), header(crate::link_proof::PROOF_HEADER)))
+    }
+
+    /// Dial as a phone holding `key` does: the desktop's proof checked,
+    /// then the phone's sent. Err("unproved") when the desktop's doesn't
+    /// match (nothing sent).
+    async fn link(addr: SocketAddr, key: &str) -> Result<Ws, String> {
+        let (mut ws, nonce, desktop_nonce, proof) = challenge(addr).await.map_err(|e| e.to_string())?;
+        let (Some(desktop_nonce), Some(proof)) = (desktop_nonce, proof) else {
+            return Err("no challenge".into());
+        };
+        if !crate::link_proof::proof_matches(&crate::link_proof::desktop_proof(key, &nonce, &desktop_nonce), &proof) {
+            return Err("unproved".into());
+        }
+        ws.send(Message::text(crate::link_proof::phone_frame(key, &nonce, &desktop_nonce))).await.map_err(|e| e.to_string())?;
+        Ok(ws)
+    }
+
+    /// Whether the socket ends without a text frame.
+    async fn cut<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> bool
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let next = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("connection not cut");
+        !matches!(next, Some(Ok(Message::Text(_))))
     }
 
     async fn ask<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>, id: u64, method: &str) -> serde_json::Value
@@ -385,7 +450,7 @@ mod tests {
     async fn a_peer_outside_the_tailnet_is_refused_even_with_the_key() {
         let key = crate::ipc_auth::generate_token().unwrap();
         let (addr, _task) = serving(&key, in_tailnet).await;
-        assert!(dial(addr, Some(&key)).await.is_err());
+        assert!(link(addr, &key).await.is_err());
     }
 
     #[tokio::test]
@@ -393,19 +458,94 @@ mod tests {
         let key = crate::ipc_auth::generate_token().unwrap();
         let ipc = crate::ipc_auth::generate_token().unwrap();
         let (addr, _task) = serving(&key, |_| true).await;
-        for wrong in [None, Some(ipc.as_str()), Some(&key[..63])] {
-            let refused = dial(addr, wrong).await;
+        // The key as a bearer (a phone before the challenge): refused, as
+        // is a handshake with no challenge at all.
+        for bearer in [key.as_str(), ipc.as_str()] {
+            let refused = dial_with_bearer(addr, bearer).await;
             assert!(
                 matches!(&refused, Err(tokio_tungstenite::tungstenite::Error::Http(r)) if r.status() == 401),
                 "{refused:?}"
             );
         }
-        let mut ws = dial(addr, Some(&key)).await.unwrap();
+        // A phone holding another key: this desktop doesn't prove it, so
+        // the phone sends nothing.
+        for wrong in [ipc.as_str(), &key[..63]] {
+            assert_eq!(link(addr, wrong).await.err().as_deref(), Some("unproved"));
+        }
+        let mut ws = link(addr, &key).await.unwrap();
         let open = ask(&mut ws, 1, methods::WATCH_SESSIONS).await;
         assert_eq!(open["ok"]["caller"], "Remote", "{open}");
         let closed = ask(&mut ws, 2, methods::ACCESS_TOKEN).await;
         assert!(closed["err"].is_object() || closed["err"].is_string(), "{closed}");
         assert!(closed.get("ok").is_none(), "{closed}");
+        // The async client does the same.
+        let client = crate::connect_phone_link(&format!("ws://{addr}"), &key).await.unwrap();
+        assert_eq!(client.call(methods::ENGINE_INFO, serde_json::json!({})).await.unwrap()["caller"], "Remote");
+        assert!(crate::connect_phone_link(&format!("ws://{addr}"), &ipc).await.is_err());
+    }
+
+    /// The answer to the challenge holds no key, and a phone that doesn't
+    /// prove the key (no proof, a wrong one, a call instead) is served
+    /// nothing: its socket ends.
+    #[tokio::test]
+    async fn a_phone_that_doesn_t_prove_the_key_is_served_nothing() {
+        let key = crate::ipc_auth::generate_token().unwrap();
+        let (addr, _task) = serving(&key, |_| true).await;
+        for first in [
+            |_: &str, _: &str, _: &str| serde_json::json!({ "id": 1, "method": methods::ENGINE_INFO, "params": {} }).to_string(),
+            |_: &str, np: &str, nd: &str| crate::link_proof::phone_frame(&crate::ipc_auth::generate_token().unwrap(), np, nd),
+            // The desktop's proof sent back: the sides are labelled apart.
+            |key: &str, np: &str, nd: &str| serde_json::json!({ "linkProof": crate::link_proof::desktop_proof(key, np, nd) }).to_string(),
+        ] {
+            let (mut ws, nonce, desktop_nonce, proof) = challenge(addr).await.unwrap();
+            let (desktop_nonce, proof) = (desktop_nonce.unwrap(), proof.unwrap());
+            assert!(!proof.contains(&key) && !desktop_nonce.contains(&key));
+            assert!(crate::link_proof::proof_matches(&crate::link_proof::desktop_proof(&key, &nonce, &desktop_nonce), &proof));
+            ws.send(Message::text(first(&key, &nonce, &desktop_nonce))).await.unwrap();
+            let _ = ws.send(Message::text(serde_json::json!({ "id": 2, "method": methods::ENGINE_INFO, "params": {} }).to_string())).await;
+            assert!(cut(&mut ws).await);
+        }
+    }
+
+    /// Dialling something that isn't the desktop (a wrong DNS answer, a
+    /// stranger at the address) gives it neither the key nor a proof made
+    /// with it: the phone checks the desktop's proof before it sends.
+    #[tokio::test]
+    async fn an_impostor_desktop_learns_nothing_of_the_key() {
+        let key = crate::ipc_auth::generate_token().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let heard = Arc::new(std::sync::Mutex::new(String::new()));
+        let record = heard.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let record = record.clone();
+                tokio::spawn(async move {
+                    let headers = record.clone();
+                    let note = move |req: &HandshakeRequest, mut resp: HandshakeResponse| {
+                        headers.lock().unwrap().push_str(&format!("{:?}", req.headers()));
+                        // Answers the challenge as it can: without the key.
+                        let fake = crate::link_proof::nonce().unwrap();
+                        resp.headers_mut().insert(crate::link_proof::NONCE_HEADER, http::HeaderValue::from_str(&fake).unwrap());
+                        resp.headers_mut().insert(crate::link_proof::PROOF_HEADER, http::HeaderValue::from_str(&fake).unwrap());
+                        Ok::<_, ErrorResponse>(resp)
+                    };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(stream, note).await else { return };
+                    while let Some(Ok(frame)) = ws.next().await {
+                        record.lock().unwrap().push_str(&format!("{frame:?}"));
+                    }
+                });
+            }
+        });
+        let url = format!("ws://{addr}");
+        assert!(crate::connect_phone_link(&url, &key).await.is_err());
+        assert_eq!(link(addr, &key).await.err().as_deref(), Some("unproved"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let heard = heard.lock().unwrap().clone();
+        assert!(heard.contains(crate::link_proof::NONCE_HEADER), "{heard}");
+        assert!(!heard.contains(&key), "the key reached the impostor: {heard}");
+        assert!(!heard.to_ascii_lowercase().contains("authorization"), "{heard}");
+        assert!(!heard.contains("linkProof"), "a proof reached the impostor: {heard}");
     }
 
     /// Ending the listener (a new key) ends every connection it took.
@@ -413,12 +553,11 @@ mod tests {
     async fn stopping_the_listener_cuts_its_phones() {
         let key = crate::ipc_auth::generate_token().unwrap();
         let (addr, task) = serving(&key, |_| true).await;
-        let mut ws = dial(addr, Some(&key)).await.unwrap();
+        let mut ws = link(addr, &key).await.unwrap();
         assert_eq!(ask(&mut ws, 1, methods::ENGINE_INFO).await["id"], 1);
         task.abort();
         let _ = task.await;
-        let next = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("connection not cut");
-        assert!(!matches!(next, Some(Ok(Message::Text(_)))), "{next:?}");
-        assert!(dial(addr, Some(&key)).await.is_err());
+        assert!(cut(&mut ws).await);
+        assert!(link(addr, &key).await.is_err());
     }
 }
