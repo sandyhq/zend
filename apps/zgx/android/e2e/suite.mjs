@@ -320,13 +320,9 @@ const cases = {
     const activity = L.sh(`cmd package resolve-activity --brief ${L.PKG}`).trim().split("\n").pop();
     const traces = [];
     async function after(name, { system = false } = {}) {
-      // (Back from another app the composer's keyboard comes up again, the
-      // gesture or not: `input keyevent 3` and back does it too. Not a
-      // gesture's trace, so not counted once the app went to the back.)
-      let left_app = false;
       if (system) {
         await L.sleep(1200);
-        if (!front()) { left_app = true; L.sh(`am start -n ${activity}`, { ok: true }); await L.sleep(2500); }
+        if (!front()) { L.sh(`am start -n ${activity}`, { ok: true }); await L.sleep(2500); }
       }
       await L.sleep(800);
       const left = [];
@@ -335,7 +331,7 @@ const cases = {
       if (dragging()) left.push("a drag");
       if (openTitle() !== "E2E long reply") left.push(`opened ${openTitle()}`);
       if (sidebarShown()) left.push("the sidebar opened");
-      if (!left_app && L.imeShown()) left.push("the keyboard up");
+      if (L.imeShown()) left.push("the keyboard up");
       if (left.length) traces.push(`${name}: ${left.join(", ")}`);
       // The next one starts clean: a tap on the reply clears a selection.
       if (popups().length) { L.tap(W / 2, L.px(300)); await L.sleep(600); }
@@ -385,6 +381,45 @@ const cases = {
       L.sh("settings delete secure back_gesture_inset_scale_right", { ok: true });
     }
     L.expect(traces.length === 0, `a system gesture left a trace: ${traces.join("; ")}`);
+  },
+
+  // Back from another app, from Home or from a home swipe, the composer's
+  // keyboard is as it was when the app left: up if it was up, down if the
+  // person had put it away (the composer still focused, a tap brings it up).
+  async keyboardAfterReturn() {
+    await openChat("E2E long reply");
+    const size = L.sh("wm size").match(/(\d+)x(\d+)\s*$/m);
+    const [W, H] = [+size[1], +size[2]];
+    const activity = L.sh(`cmd package resolve-activity --brief ${L.PKG}`).trim().split("\n").pop();
+    const front = () => /mCurrentFocus=Window\{[^}]*sh\.zend\.zgx/.test(L.sh("dumpsys window | grep mCurrentFocus", { ok: true }));
+    const leaves = {
+      "Home": () => L.sh("input keyevent 3"),
+      "another app": () => L.sh("am start -a android.settings.SETTINGS", { ok: true }),
+      "a home swipe": () => L.swipe(W / 2, H - 2, W / 2, Math.round(H * 0.55), 400),
+    };
+    const wrong = [];
+    for (const up of [true, false]) {
+      for (const [how, leave] of Object.entries(leaves)) {
+        await focusComposer();
+        if (!up) await hideKeyboard();
+        await L.sleep(500);
+        leave();
+        await L.sleep(1500);
+        if (front()) { wrong.push(`${how}: the app didn't go to the back`); continue; }
+        // The keyboard's shows from here on, sampled every 150 ms.
+        const seen = await L.watchIme(async () => { L.sh(`am start -n ${activity}`, { ok: true }); }, { tail: 3500 });
+        const shows = L.reshows(seen) + (seen[0] ? 1 : 0);
+        const last = seen[seen.length - 1];
+        const trace = seen.map(Number).join("");
+        if (up && !last) wrong.push(`up, then ${how}: the keyboard down after the return (${trace})`);
+        if (up && shows > 1) wrong.push(`up, then ${how}: shown ${shows} times (${trace})`);
+        if (!up && shows > 0) wrong.push(`put away, then ${how}: the keyboard came up (${trace})`);
+        await hideKeyboard();
+      }
+    }
+    // Put away and back: the composer still takes a tap's keyboard.
+    await focusComposer();
+    L.expect(wrong.length === 0, wrong.join("; "));
   },
 };
 

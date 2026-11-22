@@ -3,6 +3,9 @@ package sh.zend.zgx;
 import android.app.NativeActivity;
 import android.content.Context;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ResultReceiver;
 import android.util.Log;
 import android.text.Editable;
 import android.text.Selection;
@@ -65,6 +68,15 @@ public class ZendActivity extends NativeActivity {
     }
 
     @Override
+    public void onTopResumedActivityChanged(boolean top) {
+        // Leaving (another app, Home, a home swipe), before the window loses
+        // focus and while the keyboard still shows if it did: down with it,
+        // and remember whether it was up, for the return (imeLeftShown).
+        if (!top && input != null) input.leaving();
+        super.onTopResumedActivityChanged(top);
+    }
+
+    @Override
     protected void onDestroy() {
         if (selection != null) selection.hide();
         super.onDestroy();
@@ -80,6 +92,16 @@ public class ZendActivity extends NativeActivity {
     /** No editor takes text: the keyboard down, the connection closed. */
     public void imeStop() {
         runOnUiThread(() -> input.stop());
+    }
+
+    /**
+     * Whether the keyboard was up as the activity last left the top: back, it comes up only then.
+     * Asked once per return; then up again, for a focus lost without leaving the top (the shade).
+     */
+    public boolean imeLeftShown() {
+        boolean shown = input.shownWhenLeft;
+        input.shownWhenLeft = true;
+        return shown;
     }
 
     /** The keyboard up again for the editor that has it (a tap on it). */
@@ -155,6 +177,29 @@ public class ZendActivity extends NativeActivity {
             if (!hasFocus()) requestFocus();
             imm.restartInput(this);
             if (show) imm.showSoftInput(this, 0);
+        }
+
+        /**
+         * Whether the keyboard showed as the activity last left the top (leaving); until the
+         * keyboard's answer comes, or without one, up (as before this was known).
+         */
+        volatile boolean shownWhenLeft = true;
+
+        /**
+         * The activity leaves the top: the keyboard down, and whether it was up (hideSoftInputFromWindow
+         * answers RESULT_HIDDEN when it was, RESULT_UNCHANGED_HIDDEN when the person had put it away).
+         * The window's insets can't say: with adjustNothing they never carry the keyboard here.
+         */
+        void leaving() {
+            if (!editing) return;
+            shownWhenLeft = true;
+            imm.hideSoftInputFromWindow(getWindowToken(), 0, new ResultReceiver(new Handler(Looper.getMainLooper())) {
+                @Override
+                protected void onReceiveResult(int code, Bundle data) {
+                    shownWhenLeft = code != InputMethodManager.RESULT_UNCHANGED_HIDDEN;
+                    Log.i("ZendIme", "left with the keyboard " + (shownWhenLeft ? "up" : "down"));
+                }
+            });
         }
 
         void show() {
