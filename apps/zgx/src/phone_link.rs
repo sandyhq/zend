@@ -71,7 +71,7 @@ impl Attempts {
 const PREFIX: &str = "zend://connect?";
 
 /// A connect code's contents.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Connect {
     pub edge: String,
     pub token: String,
@@ -390,22 +390,74 @@ pub fn shown_edge(edge: &str) -> String {
 }
 
 /// Keep `connect` in `dir` as the edge and bearer, then `restart` the
-/// engine on them. A restart that fails puts back what was kept before
-/// (both halves, or none), so the running engine and the kept pair agree.
+/// engine on them (see [`keep_code_and_restart`]).
+#[cfg(test)]
 pub async fn keep_and_restart<F, Fut>(dir: &std::path::Path, connect: &Connect, restart: F) -> Result<(), &'static str>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let before = zend_cli::edge_record_in(dir);
-    zend_cli::store_edge_config(dir, &connect.edge, &connect.token).map_err(|_| "store")?;
-    if restart().await.is_err() {
-        if zend_cli::restore_edge_record(dir, before.as_ref()).is_err() {
-            eprintln!("zend: phone link: the engine didn't stop, and the relay kept before couldn't be put back");
+    keep_code_and_restart(dir, &Code::Edge(connect.clone()), restart).await
+}
+
+/// Keep what `code` holds in `dir` (a relay: its edge and bearer, no
+/// desktop any more; a desktop: its host, port and key), then `restart`.
+/// One transaction over both records: what was kept before (a relay, a
+/// desktop, both or none) is read first, and if keeping or restarting fails
+/// it is all put back, so what runs and what's kept agree.
+pub async fn keep_code_and_restart<F, Fut>(dir: &std::path::Path, code: &Code, restart: F) -> Result<(), &'static str>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let edge_before = zend_cli::edge_record_in(dir);
+    let desktop_before = zend_cli::desktop_record_in(dir);
+    let put_back = || {
+        let edge = zend_cli::restore_edge_record(dir, edge_before.as_ref());
+        let desktop = match &desktop_before {
+            Some((host, port, key)) => zend_cli::store_desktop_record(dir, host, *port, key),
+            None => zend_cli::clear_desktop_record(dir),
+        };
+        if edge.is_err() || desktop.is_err() {
+            eprintln!("zend-zgx: phone link: what was kept before couldn't all be put back");
         }
+    };
+    let kept = match code {
+        Code::Edge(connect) => zend_cli::store_edge_config(dir, &connect.edge, &connect.token)
+            .and_then(|()| zend_cli::clear_desktop_record(dir)),
+        Code::Direct(desktop) => zend_cli::store_desktop_record(dir, &desktop.host, desktop.port, &desktop.key),
+    };
+    if kept.is_err() {
+        put_back();
+        return Err("store");
+    }
+    if restart().await.is_err() {
+        put_back();
         return Err("engine");
     }
     Ok(())
+}
+
+/// Keep `code` and let go of what this app drives now: a desktop's engine
+/// (a desktop was kept) is hung up on (`hang_up`; it isn't this app's to
+/// stop, and it refuses StopEngine from a phone), this app's own engine is
+/// asked to stop (`stop_engine`). Either way the supervisor's next dial
+/// reads what's kept now.
+pub async fn keep_code<S, Fut>(dir: &std::path::Path, code: &Code, stop_engine: S, hang_up: impl FnOnce()) -> Result<(), &'static str>
+where
+    S: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let onto_desktop = kept_desktop_in(dir).is_some();
+    keep_code_and_restart(dir, code, || async move {
+        if onto_desktop {
+            hang_up();
+            Ok(())
+        } else {
+            stop_engine().await
+        }
+    })
+    .await
 }
 
 /// The desktop this app is a window onto, if it keeps one (a v=2 code
@@ -423,8 +475,9 @@ pub fn kept_desktop_in(dir: &std::path::Path) -> Option<Direct> {
 }
 
 /// Keep what the code holds as this app's (zend_cli::config_dir) and
-/// start again on it: the running engine (or connection) is asked to stop,
-/// and the supervisor dials the next. A v=1 code keeps a relay and starts
+/// start again on it ([`keep_code`]): this app's own engine is asked to
+/// stop, a desktop's connection is hung up on, and the supervisor dials the
+/// next. A v=1 code keeps a relay and starts
 /// this app's own engine on it (no desktop kept any more); a v=2 code keeps
 /// the desktop, and the app becomes a window onto that desktop's engine.
 /// An engine that won't stop keeps what it had, and so does the folder.
@@ -447,42 +500,29 @@ pub async fn connect(code: &str) -> Result<Value, String> {
         log::error!("zend: phone link: {}", if word == "store" { "the code couldn't be kept" } else { "the engine didn't stop: nothing changed" });
         word.to_owned()
     };
-    match code {
+    let shown = match &code {
         Code::Edge(connect) => {
             log::info!("zend: phone link: keeping {} and its key, then starting the engine on them", edge_diagnostic(&connect.edge));
-            zend_cli::clear_desktop_record(&dir).map_err(|_| failed("store"))?;
-            keep_and_restart(&dir, &connect, stop).await.map_err(failed)?;
-            Ok(Value::record([("edge", Value::from(shown_edge(&connect.edge).as_str()))]))
+            ("edge", shown_edge(&connect.edge))
         }
         Code::Direct(desktop) => {
             // (The key is never logged; the host is the person's own desktop.)
             log::info!("zend: phone link: keeping the desktop at {}:{}, then driving its engine", desktop.host, desktop.port);
-            keep_desktop_and_restart(&dir, &desktop, stop).await.map_err(failed)?;
-            Ok(Value::record([("desktop", Value::from(desktop.host.as_str()))]))
+            ("desktop", desktop.host.clone())
         }
-    }
+    };
+    keep_code(&dir, &code, stop, || crate::engine::get().hang_up()).await.map_err(failed)?;
+    Ok(Value::record([(shown.0, Value::from(shown.1.as_str()))]))
 }
 
-/// Keep desktop in dir, then restart: one that fails puts back the
-/// desktop kept before (or none).
+/// Keep desktop in dir, then restart (see [`keep_code_and_restart`]).
+#[cfg(test)]
 pub async fn keep_desktop_and_restart<F, Fut>(dir: &std::path::Path, desktop: &Direct, restart: F) -> Result<(), &'static str>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let before = zend_cli::desktop_record_in(dir);
-    zend_cli::store_desktop_record(dir, &desktop.host, desktop.port, &desktop.key).map_err(|_| "store")?;
-    if restart().await.is_err() {
-        let put_back = match &before {
-            Some((host, port, key)) => zend_cli::store_desktop_record(dir, host, *port, key),
-            None => zend_cli::clear_desktop_record(dir),
-        };
-        if put_back.is_err() {
-            eprintln!("zend: phone link: the engine didn't stop, and the desktop kept before couldn't be put back");
-        }
-        return Err("engine");
-    }
-    Ok(())
+    keep_code_and_restart(dir, &Code::Direct(desktop.clone()), restart).await
 }
 
 #[cfg(test)]
@@ -697,6 +737,65 @@ mod tests {
     /// A phone keeping a desktop is a window onto it (src/engine/rpc.rs
     /// dials it, src/engine/manager.rs starts no engine); a record that
     /// isn't one leaves the app on its own engine.
+    /// Re-paired while it's a window onto a desktop, the phone hangs up on
+    /// that desktop's engine and never asks it to stop (the desktop refuses
+    /// StopEngine from a phone: the base failed every re-pairing then, with
+    /// "the engine didn't stop"). With its own engine, it asks that to stop.
+    #[test]
+    fn re_pairing_hangs_up_on_a_desktop_and_stops_only_its_own_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Direct { host: "omarchy.tailf80f26.ts.net".into(), port: 27871, key: "a".repeat(64) };
+        let new = Direct { host: "100.102.122.72".into(), port: 27871, key: "b".repeat(64) };
+        let asked = std::cell::RefCell::new(Vec::<&str>::new());
+        let asked = &asked;
+        let stop_engine = || async move {
+            asked.borrow_mut().push("StopEngine");
+            Err::<(), _>("local only".to_owned())
+        };
+        // Its own engine (nothing kept): asked to stop.
+        let first = block_on(keep_code(dir.path(), &Code::Direct(old.clone()), || async move {
+            asked.borrow_mut().push("StopEngine");
+            Ok(())
+        }, || asked.borrow_mut().push("hang up")));
+        assert_eq!(first, Ok(()));
+        assert_eq!(*asked.borrow(), ["StopEngine"]);
+        asked.borrow_mut().clear();
+        // A desktop kept: hung up on, never asked; the new desktop kept.
+        assert_eq!(block_on(keep_code(dir.path(), &Code::Direct(new.clone()), stop_engine, || asked.borrow_mut().push("hang up"))), Ok(()));
+        assert_eq!(*asked.borrow(), ["hang up"]);
+        assert_eq!(kept_desktop_in(dir.path()), Some(new));
+        asked.borrow_mut().clear();
+        // And to a relay: hung up on too, the desktop let go of.
+        let relay = Connect { edge: "http://100.64.0.1:27640".into(), token: "u-phone".into() };
+        assert_eq!(block_on(keep_code(dir.path(), &Code::Edge(relay), stop_engine, || asked.borrow_mut().push("hang up"))), Ok(()));
+        assert_eq!(*asked.borrow(), ["hang up"]);
+        assert_eq!(kept_desktop_in(dir.path()), None);
+    }
+
+    /// Both records are one transaction: a relay code whose restart fails
+    /// puts back the desktop it had cleared (the base cleared it first and
+    /// never put it back), and a desktop code puts back the relay as it was.
+    #[test]
+    fn a_failed_re_pairing_puts_back_everything_kept_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let desktop = Direct { host: "omarchy.tailf80f26.ts.net".into(), port: 27871, key: "a".repeat(64) };
+        let relay = Connect { edge: "http://100.64.0.1:27640".into(), token: "u-phone".into() };
+        zend_cli::store_edge_config(dir.path(), &relay.edge, &relay.token).unwrap();
+        zend_cli::store_desktop_record(dir.path(), &desktop.host, desktop.port, &desktop.key).unwrap();
+        let other = Connect { edge: "http://100.64.0.2:27640".into(), token: "u-other".into() };
+        let failed = block_on(keep_code_and_restart(dir.path(), &Code::Edge(other), || async { Err("busy".to_owned()) }));
+        assert_eq!(failed, Err("engine"));
+        assert_eq!(kept_desktop_in(dir.path()), Some(desktop.clone()));
+        assert_eq!(zend_cli::edge_record_in(dir.path()), Some((relay.edge.clone(), relay.token.clone())));
+
+        let empty = tempfile::tempdir().unwrap();
+        zend_cli::store_edge_config(empty.path(), &relay.edge, &relay.token).unwrap();
+        let failed = block_on(keep_code_and_restart(empty.path(), &Code::Direct(desktop), || async { Err("busy".to_owned()) }));
+        assert_eq!(failed, Err("engine"));
+        assert_eq!(kept_desktop_in(empty.path()), None);
+        assert_eq!(zend_cli::edge_record_in(empty.path()), Some((relay.edge, relay.token)));
+    }
+
     #[test]
     fn the_remote_mode_is_chosen_from_the_record() {
         let dir = tempfile::tempdir().unwrap();

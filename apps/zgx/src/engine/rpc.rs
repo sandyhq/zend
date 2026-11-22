@@ -23,7 +23,11 @@ use std::{
     path::Path,
     pin::Pin,
     rc::Rc,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     task::{Poll, Waker},
     time::Duration,
 };
@@ -388,7 +392,7 @@ pub(crate) fn poll_fd(fd: &impl AsRawFd, events: libc::c_short) -> libc::pollfd 
 const QUIET_MS: libc::c_int = 2000;
 
 /// The network thread: requests out, frames in, and asleep between.
-fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, #[cfg(unix)] heard: OwnedFd) {
+fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, hung_up: Arc<AtomicBool>, #[cfg(unix)] heard: OwnedFd) {
     // Without a pipe to wait on (not unix), short reads let the thread
     // interleave outgoing requests.
     #[cfg(unix)]
@@ -401,6 +405,13 @@ fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, #[cfg(u
     #[cfg(unix)]
     let mut read_some = false;
     loop {
+        // This side let go (Rpc::hang_up): a close, and the end said.
+        if hung_up.load(Ordering::Acquire) {
+            let _ = socket.close(None);
+            let _ = socket.flush();
+            frames.push(None, Some("hung up".into()));
+            return;
+        }
         loop {
             match rx.try_recv() {
                 Ok(text) => match socket.write(tungstenite::Message::text(text)) {
@@ -477,6 +488,8 @@ fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, #[cfg(u
 pub fn connect(port: u16, token: Option<String>) -> impl Future<Output = Result<Rpc, DialError>> {
     let frames = Frames(Arc::default());
     let (tx, rx) = mpsc::channel::<String>();
+    let hung_up = Arc::new(AtomicBool::new(false));
+    let thread_hung_up = hung_up.clone();
     let opened = Arc::new(Mutex::new((None::<Result<(), DialError>>, None::<Waker>)));
     #[cfg(unix)]
     let (heard, bell) = match pipe() {
@@ -513,10 +526,10 @@ pub fn connect(port: u16, token: Option<String>) -> impl Future<Output = Result<
             open(Ok(()));
             #[cfg(unix)]
             if let Some(heard) = heard {
-                serve(socket, rx, thread_frames, heard);
+                serve(socket, rx, thread_frames, thread_hung_up, heard);
             }
             #[cfg(not(unix))]
-            serve(socket, rx, thread_frames);
+            serve(socket, rx, thread_frames, thread_hung_up);
         })
     });
     if let Some(Err(error)) = spawned {
@@ -539,6 +552,7 @@ pub fn connect(port: u16, token: Option<String>) -> impl Future<Output = Result<
                     next_id: Cell::new(1),
                     pending: RefCell::default(),
                     closed: Cell::new(false),
+                    hung_up: hung_up.clone(),
                 }))))
             }
             Some(Err(error)) => Poll::Ready(Err(error)),
@@ -575,6 +589,9 @@ struct Inner {
     next_id: Cell<u64>,
     pending: RefCell<HashMap<u64, Pending>>,
     closed: Cell<bool>,
+    /// Set by [`Rpc::hang_up`]; the network thread closes the socket.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    hung_up: Arc<AtomicBool>,
 }
 
 /// One connection. Cheap to clone; calls made after it closed fail at once.
@@ -603,6 +620,17 @@ impl Rpc {
 
     pub fn is_closed(&self) -> bool {
         self.0.closed.get()
+    }
+
+    /// End this connection from this side, whoever else holds it: the
+    /// socket is closed and [`Rpc::pump`] returns ("hung up"), so the
+    /// supervisor dials again. The engine at the other end keeps running.
+    /// (Only a phone re-paired lets go so: Android's src/phone_link.rs.)
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn hang_up(&self) {
+        self.0.hung_up.store(true, Ordering::Release);
+        #[cfg(unix)]
+        ring(&self.0.bell);
     }
 
     /// A unary call: its `ok`, or its `err`.
@@ -922,6 +950,37 @@ mod tests {
         assert!(!heard.contains("linkProof"), "{heard}");
     }
 
+    /// Hung up from this side, the connection ends (a close frame to the
+    /// other end, its pump returns) and the engine there is never asked to
+    /// stop: how a phone lets go of a desktop it is re-paired away from.
+    #[test]
+    fn a_connection_hung_up_here_ends_and_asks_nothing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let engine = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let mut heard = Vec::new();
+            loop {
+                match ws.read() {
+                    Ok(tungstenite::Message::Close(_)) => return (heard, true),
+                    Ok(frame) => heard.push(frame.to_string()),
+                    Err(_) => return (heard, false),
+                }
+            }
+        });
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rpc = rt.block_on(connect(port, None)).unwrap();
+        rpc.hang_up();
+        let reason = rt.block_on(rpc.pump());
+        assert_eq!(reason, "hung up");
+        assert!(rpc.is_closed());
+        let (heard, closed) = engine.join().unwrap();
+        assert!(closed, "no close frame");
+        assert!(heard.is_empty(), "asked: {heard:?}");
+    }
+
     /// A name that resolves outside the tailnet isn't dialled at all.
     #[test]
     fn a_phone_dials_only_tailnet_addresses() {
@@ -947,6 +1006,7 @@ mod tests {
             next_id: Cell::new(1),
             pending: RefCell::default(),
             closed: Cell::new(false),
+            hung_up: Arc::default(),
         }));
         (rpc, frames, heard)
     }

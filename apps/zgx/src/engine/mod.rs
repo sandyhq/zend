@@ -182,6 +182,17 @@ impl Engine {
         }
     }
 
+    /// Lets go of the connection from this side, the engine left running:
+    /// the supervisor dials again and reads what's kept anew. For a phone
+    /// re-paired while it is a window onto a desktop, whose engine is not
+    /// this app's to stop (it refuses StopEngine from a phone anyway).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn hang_up(&self) {
+        if let Some(rpc) = self.rpc.borrow().clone() {
+            rpc.hang_up();
+        }
+    }
+
     /// The connection, while there is one (to start a watch on it now).
     pub fn current(&self) -> Option<Rpc> {
         self.rpc.borrow().clone()
