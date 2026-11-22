@@ -104,6 +104,15 @@ pub async fn serve_connection(
                 let _ = queue.send((frame.id, method, frame.params));
                 continue;
             }
+            // A wire id names one live call: a second call under it would
+            // take its slot, and cancelling the id would no longer reach the
+            // first. Refused before it runs.
+            if running.0.contains_key(&frame.id) {
+                tracing::warn!(id = frame.id, method = %method, "rpc: refusing a call that reuses a live wire id");
+                let refusal = Err(RpcError::Failed(format!("call id {} is still in use", frame.id)));
+                tokio::spawn(respond(out.clone(), frame.id, method, refusal));
+                continue;
+            }
             let task = tokio::spawn(handle_request(
                 service.clone(),
                 out.clone(),
@@ -533,6 +542,65 @@ mod tests {
         }
         assert_eq!(seen(&recorder, "free"), (0..20).collect::<Vec<_>>());
         assert!(seen(&recorder, "stuck").is_empty());
+    }
+
+    /// A call reusing the wire id of one still running is refused before
+    /// it runs: it can't take that id's slot, so cancelling the id still
+    /// stops the first call (before, the second one ran, took the slot, and
+    /// the first could no longer be cancelled).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_live_wire_id_reused_is_refused_and_the_first_call_still_cancels() {
+        type Log = Arc<Mutex<Vec<u64>>>;
+        struct OnDrop(u64, Log);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.1.lock().unwrap().push(self.0);
+            }
+        }
+        struct Holder {
+            started: Log,
+            dropped: Log,
+        }
+        #[async_trait::async_trait]
+        impl RpcService for Holder {
+            async fn handle(&self, _method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+                let n = params["n"].as_u64().unwrap_or_default();
+                self.started.lock().unwrap().push(n);
+                let _dropped = OnDrop(n, self.dropped.clone());
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+        let (started, dropped): (Log, Log) = Default::default();
+        let holder = Arc::new(Holder { started: started.clone(), dropped: dropped.clone() });
+        let (to_server, server_in) = mpsc::channel::<String>(64);
+        let (server_out, _from_server) = mpsc::channel::<String>(64);
+        tokio::spawn(serve_connection(holder, server_out, server_in));
+        let hold = |id: u64, n: u64| serde_json::json!({ "id": id, "method": "Hold", "params": { "n": n } }).to_string();
+        let until = |log: &Log, n: u64| {
+            let log = log.clone();
+            async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                while !log.lock().unwrap().contains(&n) {
+                    if tokio::time::Instant::now() > deadline {
+                        return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                true
+            }
+        };
+        to_server.send(hold(1, 1)).await.unwrap();
+        assert!(until(&started, 1).await);
+        to_server.send(hold(1, 2)).await.unwrap();
+        // A later call: once it runs, the reused id's frame has been read.
+        to_server.send(hold(2, 3)).await.unwrap();
+        assert!(until(&started, 3).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!started.lock().unwrap().contains(&2), "the reused id ran: {:?}", started.lock().unwrap());
+        to_server.send(serde_json::json!({ "id": 1, "cancel": true }).to_string()).await.unwrap();
+        assert!(until(&dropped, 1).await, "cancelling id 1 stopped {:?}", dropped.lock().unwrap());
+        assert!(!dropped.lock().unwrap().contains(&3));
     }
 
     /// Input sent just before the connection ends still goes in, in order.
