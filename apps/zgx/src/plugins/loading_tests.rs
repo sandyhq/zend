@@ -633,6 +633,50 @@ ui.effect(function() theirs:get() end)
     assert!(a.error().unwrap_or_default().contains("plugin.words.calls"), "{:?}", a.error());
 }
 
+/// A service's events (on a phone, the linked computer's) reach the plugin
+/// they name alone: its inbox is its own, another plugin's window can't
+/// read it, and an event for one is never heard by another.
+#[test]
+fn a_plugin_hears_only_its_own_service_s_events() {
+    let ping = r##"
+local zend = require("./zend")("ping")
+local got = ui.state("got", "")
+zend.service():on("shouted", function(data) got:set(got:peek() .. data.n) end)
+ui.contribute { target = "#bar", after = ui.text { id = "got", function() return "ping got " .. got:get() end } }
+"##;
+    let pong = ping.replace("\"ping\"", "\"pong\"").replace("ping got", "pong got");
+    let root = dir("own-inbox");
+    let items = [
+        plugin(&root, "ping", ping, &["ui.add", "service"], &[], &[]),
+        plugin(&root, "pong", &pong, &["ui.add", "service"], &[], &[]),
+    ];
+    let (mut a, _) = app(&root, &items, vec![]);
+    a.frames(2);
+    assert_eq!(a.error(), None);
+    a.host.shared("plugin.ping.inbox", vlist(Vec::new())).set(vlist(vec![Value::record([
+        ("seq", Value::from(1.)),
+        ("from", Value::record([("id", Value::from("desk")), ("name", Value::from("Desk"))])),
+        ("event", Value::from("shouted")),
+        ("here", Value::from(true)),
+        ("data", Value::record([("n", Value::from("x"))])),
+        ("at", Value::from(0.)),
+    ])]));
+    a.frames(3);
+    assert!(has_text(&mut a, "ping got x"), "{}", a.tree());
+    assert!(has_text(&mut a, "pong got "), "{}", a.tree());
+    assert!(!has_text(&mut a, "pong got x"), "{}", a.tree());
+
+    let snoop = r#"
+local theirs = ui.shared("plugin.ping.inbox", {})
+ui.effect(function() theirs:get() end)
+"#;
+    let root = dir("their-inbox");
+    let items = [plugin(&root, "ping", "-- nothing", &["service"], &[], &[]), plugin(&root, "snoop", snoop, &["ui.add"], &[], &[])];
+    let (a, _) = app(&root, &items, vec![]);
+    a.frames(2);
+    assert!(a.error().unwrap_or_default().contains("plugin.ping.inbox"), "{:?}", a.error());
+}
+
 #[test]
 fn messages_arrive_once_each_and_are_acknowledged() {
     let init = r##"

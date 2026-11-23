@@ -530,6 +530,13 @@ pub mod methods {
     /// `{}` → stream of `ListPlugins`' reply: the current list at once, then
     /// each change.
     pub const WATCH_PLUGINS: &str = "WatchPlugins";
+    /// `{id, hash, path}` → `{path, sha256, data}` (base64): one file of
+    /// plugin `id`'s checked snapshot at `hash`, by a relative path its
+    /// list entry names (`files`, what a linked phone's list carries): how
+    /// a client runs a plugin's window part without this device's paths.
+    /// Never a link, never a path outside the snapshot, never a file that
+    /// changed since it was checked.
+    pub const READ_PLUGIN_FILE: &str = "ReadPluginFile";
     /// `{id, allow, hash, review?}` → `PluginItem`. Allowing needs `review`,
     /// minted by [`REVIEW_PLUGIN`] for the same `id` and `hash`: only Zend's
     /// consent window holds one. Declining (`allow: false`) needs none.
@@ -601,6 +608,8 @@ pub mod methods {
     /// allowed it decides. A peer may call it.
     pub const SERVE_PLUGIN_AGENTS: &str = "ServePluginAgents";
     /// `{}` → stream (the app) of `{plugin, from: {id, name}, data, at}`.
+    /// A linked phone gets a stream of its own: only this device's
+    /// services' events (`zend.emit`) of plugins on and allowed here.
     pub const WATCH_PLUGIN_CHANNEL: &str = "WatchPluginChannel";
     /// `{}` → `{key, registered}`.
     pub const PLUGIN_SIGNING_KEY: &str = "PluginSigningKey";
