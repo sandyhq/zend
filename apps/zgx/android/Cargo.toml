@@ -16,4 +16,4 @@ path = "lib.rs"
 
 [target.'cfg(target_os = "android")'.dependencies]
 zend-zgx = { path = ".." }
-zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "2415cb77098cc6fdcb2a82c2b0a766c3e74e0de8" }
+zgx-desktop = { git = "https://github.com/sandyhq/zengx", rev = "a141dbdc681eeedae7c8a5c9dfdba8b66c18362b" }
