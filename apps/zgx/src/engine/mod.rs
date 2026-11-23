@@ -187,12 +187,14 @@ impl Engine {
         }
     }
 
-    /// Ends the connection on this side, so the supervisor dials again
-    /// (a phone linked to another computer: that one). The engine is left
-    /// running.
-    pub fn reconnect(&self) {
+    /// Lets go of the connection from this side, the engine left running:
+    /// the supervisor dials again and reads what's kept anew. For a phone
+    /// re-paired while it is a window onto a desktop, whose engine is not
+    /// this app's to stop (it refuses StopEngine from a phone anyway).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn hang_up(&self) {
         if let Some(rpc) = self.rpc.borrow().clone() {
-            rpc.close();
+            rpc.hang_up();
         }
     }
 

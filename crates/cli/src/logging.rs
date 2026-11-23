@@ -31,6 +31,20 @@ pub fn spawn_malloc_trimmer() {
     }
 }
 
+/// The WebSocket crates log at trace what crosses the wire: tungstenite's
+/// client the whole upgrade request (`Authorization: Bearer <ipc-token>`),
+/// both sides every frame (a phone-link status holds the link's key). Capped
+/// at debug whatever `RUST_LOG` says, so a trace log holds no credential.
+pub fn without_websocket_payloads(
+    filter: tracing_subscriber::EnvFilter,
+) -> tracing_subscriber::EnvFilter {
+    ["tungstenite=debug", "tokio_tungstenite=debug"]
+        .into_iter()
+        .fold(filter, |filter, directive| {
+            filter.add_directive(directive.parse().expect("a valid directive"))
+        })
+}
+
 /// Logging for a process: stdout (stderr for `zend mcp`, whose stdout is
 /// the protocol), mirrored to `{data_dir}/logs/zend-{mode}.log` for
 /// long-running modes — a process launched from Finder or by the app has no
@@ -48,8 +62,10 @@ pub fn init_logging(long_running: bool, mode: &str, stderr_only: bool) {
     } else {
         "warn"
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| default_filter.into());
+    let filter = without_websocket_payloads(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| default_filter.into()),
+    );
     if stderr_only {
         tracing_subscriber::registry()
             .with(filter)
@@ -485,5 +501,48 @@ fn sweep_stale_pid_logs(dir: &std::path::Path, mode: &str) {
         if stale {
             let _ = std::fs::remove_file(entry.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod websocket_payload_tests {
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// RUST_LOG=trace logs everything but what the WebSocket crates see on
+    /// the wire (their `log` records keep their module as target).
+    #[test]
+    fn a_trace_log_holds_no_websocket_payload() {
+        let key = "d0d0cafe".repeat(8);
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::registry()
+            .with(super::without_websocket_payloads(tracing_subscriber::EnvFilter::new("trace")))
+            .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(move || writer.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "tungstenite::handshake::client", "Request: \"GET / HTTP/1.1\\r\\nAuthorization: Bearer {key}\"");
+            tracing::trace!(target: "tungstenite::protocol", "Sending frame: {{\"ok\":{{\"key\":\"{key}\"}}}}");
+            tracing::trace!(target: "tokio_tungstenite::compat", "Read.read {key}");
+            tracing::debug!(target: "tungstenite::handshake::server", "Server handshake done.");
+            tracing::trace!(target: "zend_engine::phone_link", "still traced");
+        });
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(!log.contains(&key), "{log}");
+        assert!(log.contains("Server handshake done."), "{log}");
+        assert!(log.contains("still traced"), "{log}");
     }
 }

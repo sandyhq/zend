@@ -14,7 +14,7 @@ fn loopback() -> Seams {
     Seams {
         discover: || Box::pin(async { Some(Tailnet { name: Some("omarchy.tailf80f26.ts.net".into()), ips: vec!["127.0.0.1".parse().unwrap()] }) }),
         bind: |addr| Box::pin(tokio::net::TcpListener::bind(addr)),
-        admits: |_| true,
+        admits: |_| Box::pin(std::future::ready(true)),
     }
 }
 
@@ -29,7 +29,7 @@ fn make_link(dir: &Path, seams: Seams) -> Arc<PhoneLink> {
 
 async fn dial(status: &Value, key: &str) -> Result<zend_rpc::RpcClient, RpcError> {
     let url = format!("ws://{}", status["listening"][0].as_str().unwrap());
-    tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_ws(&url, Some(key))).await.expect("dial timed out")
+    tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_phone_link(&url, key)).await.expect("dial timed out")
 }
 
 #[test]
@@ -49,6 +49,27 @@ fn the_tailnet_is_read_from_tailscale_s_status() {
     // A name a code can't hold is left out; the address stays.
     let odd = parse_status(r#"{"Self":{"DNSName":"a b/c.","TailscaleIPs":["100.64.0.9"]}}"#).unwrap();
     assert_eq!(odd, Tailnet { name: None, ips: vec!["100.64.0.9".parse().unwrap()] });
+}
+
+/// A peer is admitted only as a node Tailscale names, never for an address
+/// in the tailnet's ranges alone (a carrier's CGNAT shares 100.64.0.0/10).
+#[tokio::test]
+async fn a_peer_is_admitted_only_when_tailscale_names_it() {
+    let admits = Seams::real().admits;
+    // Outside the ranges: refused before Tailscale is asked.
+    assert!(!admits("192.168.1.20".parse().unwrap()).await);
+    assert!(!admits("127.0.0.1".parse().unwrap()).await);
+    // In the ranges but no node of this tailnet (or no Tailscale here at
+    // all): refused. The base admitted it for its range.
+    assert!(!admits("100.64.0.99".parse().unwrap()).await);
+
+    let ip: IpAddr = "100.102.122.72".parse().unwrap();
+    let whois = r#"{"Node":{"Name":"omarchy.tailf80f26.ts.net.","Addresses":["100.102.122.72/32","fd7a:115c:a1e0::6532:7a49/128"]}}"#;
+    assert!(whois_names(whois, ip));
+    assert!(whois_names(whois, "fd7a:115c:a1e0::6532:7a49".parse().unwrap()));
+    assert!(!whois_names(whois, "100.102.122.73".parse().unwrap()));
+    assert!(!whois_names("peer not found", ip));
+    assert!(!whois_names(r#"{"Node":{}}"#, ip));
 }
 
 #[tokio::test]
@@ -89,6 +110,61 @@ async fn turned_on_it_serves_its_own_key_scoped_as_a_phone() {
     let again = make_link(dir.path(), loopback());
     assert_eq!(again.saved(), Saved { on: true, use_: Use::Ip });
     assert_eq!(again.key().unwrap(), key);
+}
+
+/// The two keys don't cross: the phone-link key opens nothing on this
+/// device's own IPC listener (bearer or challenge), and its IPC tokens
+/// don't open the phone link.
+#[tokio::test]
+async fn the_link_s_key_and_the_ipc_tokens_open_only_their_own_listener() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = make_link(dir.path(), loopback());
+    let on = link.set(Some(true), None).await.unwrap();
+    let key = on["key"].as_str().unwrap().to_owned();
+    // This device's own listener, with the tokens an engine start issues.
+    let tokens = zend_rpc::ipc_auth::issue_tokens(dir.path()).unwrap();
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", local.local_addr().unwrap());
+    let _served = tokio::spawn(zend_rpc::serve_ws_listener_scoped(local, Arc::new(Echo), tokens.clone()));
+    let five = Duration::from_secs(5);
+
+    let refused = tokio::time::timeout(five, zend_rpc::connect_ws(&url, Some(&key))).await.unwrap().err().expect("the link's key opened the IPC listener");
+    assert!(refused.to_string().contains("401"), "{refused}");
+    assert!(tokio::time::timeout(five, zend_rpc::connect_phone_link(&url, &key)).await.unwrap().is_err());
+    let window = tokio::time::timeout(five, zend_rpc::connect_ws(&url, Some(&tokens.full))).await.unwrap().expect("the IPC token opens it");
+    assert_eq!(window.call(methods::ENGINE_INFO, json!({})).await.unwrap()["caller"], "Local");
+
+    for token in [&tokens.full, &tokens.agent] {
+        assert!(dial(&on, token).await.is_err(), "an IPC token opened the phone link");
+    }
+}
+
+/// With an address it can't bind, the code holds one it listens on.
+#[tokio::test]
+async fn the_code_s_ip_is_one_the_link_listens_on() {
+    let seams = Seams {
+        discover: || {
+            Box::pin(async { Some(Tailnet { name: None, ips: vec!["127.0.0.2".parse().unwrap(), "127.0.0.1".parse().unwrap()] }) })
+        },
+        bind: |addr| {
+            Box::pin(async move {
+                if addr.ip() == IpAddr::from([127, 0, 0, 2]) {
+                    Err(std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "not here"))
+                } else {
+                    tokio::net::TcpListener::bind(addr).await
+                }
+            })
+        },
+        ..loopback()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let link = make_link(dir.path(), seams);
+    let on = link.set(Some(true), Some(Use::Ip)).await.unwrap();
+    assert_eq!(on["listening"].as_array().unwrap().len(), 1, "{on}");
+    assert_eq!(on["host"], "127.0.0.1", "{on}");
+    let key = on["key"].as_str().unwrap().to_owned();
+    let phone = dial(&on, &key).await.unwrap();
+    assert!(phone.call(methods::ENGINE_INFO, json!({})).await.is_ok());
 }
 
 #[tokio::test]

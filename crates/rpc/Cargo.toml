@@ -20,6 +20,9 @@ tracing.workspace = true
 uuid.workspace = true
 # OS CSPRNG for the localhost IPC bearer (already in the tree via uuid).
 getrandom = "0.4"
+# The phone link's challenge (src/link_proof.rs): both already in the tree.
+hmac = "0.12"
+sha2.workspace = true
 
 [dev-dependencies]
 zend-doc.workspace = true

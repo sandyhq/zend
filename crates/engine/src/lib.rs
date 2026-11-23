@@ -77,6 +77,7 @@ pub mod live_visuals;
 mod model_catalogs;
 mod plugin_agents;
 pub mod phone_link;
+mod phone_reads;
 pub mod plugins;
 pub mod profile;
 pub mod project_actions;
