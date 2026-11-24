@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-24
+
+### Added
+- Paired servers (peer link, steps 4a–4c): `zend peer pair|join|list|grant|unpair`, an Ed25519 node key per engine, `peers.json`, a tailnet-only peer listener on the IPC port + 1 with mutual key proof, per-peer grants mapped to a method list of their own (everything else refused with a reason), project file reads by relative path only, and chats a server starts under `sessions.run` marked `sandbox: "project"` and refused to run until sandboxed runs land (`crates/rpc/src/peer_link.rs`, `crates/engine/src/peer_link.rs`, `crates/engine/src/rpc/peer_gate.rs`).
+
 ## 2026-11-22
 
 ### Fixed
