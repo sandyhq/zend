@@ -1,7 +1,7 @@
 # Build and test container
 
 A machine with everything this repository needs to build and test: CI's
-system packages, stable and nightly Rust, cargo-nextest (pinned) and
+system packages (plus iproute2, passt and bubblewrap for the zend-harness sandbox tests), stable and nightly Rust, cargo-nextest (pinned) and
 [kache](https://github.com/kunobi-ninja/kache)
 (see [testing.md](../../docs/reference/testing.md); blaze is left out, it fails here). Used on the build server so a
 laptop builds nothing.

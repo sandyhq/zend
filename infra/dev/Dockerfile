@@ -10,7 +10,8 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # CI's system packages (zgx-build.yml, release.yml, voice-tests.yml,
-# zgx-tests.yml), node and python for test fixtures and scripts.
+# zgx-tests.yml), node and python for test fixtures and scripts, and
+# iproute2, passt (pasta) and bubblewrap for the zend-harness sandbox tests.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       build-essential curl git ca-certificates pkg-config cmake clang libclang-dev \
       meson ninja-build \
@@ -19,6 +20,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       libfontconfig1-dev libfreetype-dev libasound2-dev \
       libvulkan-dev mesa-vulkan-drivers libwebkit2gtk-4.1-dev libjson-glib-dev libssl-dev \
       nodejs python3 xz-utils \
+      iproute2 passt bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 # Everything lives under /opt and belongs to the ubuntu user (uid 1000, the
