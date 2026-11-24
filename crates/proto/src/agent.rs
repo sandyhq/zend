@@ -425,6 +425,37 @@ pub enum AccessMode {
     FullAccess,
 }
 
+/// Where a chat's agent runs on its host: confined by the host, whatever
+/// its [`AccessMode`]. Set by the host for a chat another server started
+/// through a `sessions.run:<project>` grant (step 4d of the client/server
+/// plan); a chat without it runs as every chat did before. Spelled
+/// `"project"` on the wire. Fail closed: any value this build doesn't know
+/// reads as [`ChatSandbox::Project`], never as "not sandboxed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatSandbox {
+    /// Only the run's project folder, read-write, under bubblewrap: the
+    /// system read-only, an empty home with just the agent's own login, no
+    /// `~/.ssh`, no Zend data, no other project. The network stays on.
+    Project,
+}
+
+impl<'de> Deserialize<'de> for ChatSandbox {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Whatever it says, a sandbox was asked for: the strictest we know.
+        let _ = serde_json::Value::deserialize(deserializer)?;
+        Ok(ChatSandbox::Project)
+    }
+}
+
+impl ChatSandbox {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatSandbox::Project => "project",
+        }
+    }
+}
+
 impl AccessMode {
     /// The modes every permission-aware agent honors, least to most
     /// trusting (the picker's order). [`AccessMode::Auto`] is offered only
@@ -1400,6 +1431,22 @@ pub enum AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_sandbox_reads_fail_closed() {
+        assert_eq!(serde_json::to_string(&ChatSandbox::Project).unwrap(), "\"project\"");
+        for wire in ["\"project\"", "\"none\"", "\"off\"", "{\"kind\":\"x\"}", "false"] {
+            let read: ChatSandbox = serde_json::from_str(wire).unwrap();
+            assert_eq!(read, ChatSandbox::Project, "{wire}");
+        }
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(default)]
+            sandbox: Option<ChatSandbox>,
+        }
+        let absent: Row = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.sandbox, None);
+    }
 
     #[test]
     fn auto_ranks_between_auto_accept_edits_and_full_access() {

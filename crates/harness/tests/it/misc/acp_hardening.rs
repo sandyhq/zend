@@ -112,6 +112,7 @@ async fn start(harness: &AcpHarness, req: RunRequest) -> Run {
         steering: steer_rx,
         interrupt: interrupt.clone(),
         turn: turn.clone(),
+        sandbox: None,
     };
     let stream = harness.run(req, controls).await.expect("run starts");
     Run {

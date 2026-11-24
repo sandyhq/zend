@@ -92,6 +92,7 @@ async fn main() {
                 steering,
                 interrupt: interrupt.clone(),
                 turn: Default::default(),
+                sandbox: None,
             },
         )
         .await

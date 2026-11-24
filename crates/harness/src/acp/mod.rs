@@ -5410,6 +5410,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn: turn_control,
+        sandbox: _,
     } = controls;
     let request_input = std::sync::Arc::new(request_input);
     let rules = ConfigRules {

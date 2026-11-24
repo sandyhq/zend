@@ -107,6 +107,7 @@ fn controls(answers: Vec<UserInputAnswer>) -> (RunControls, Controls) {
                 rx
             }),
             turn: turn.clone(),
+            sandbox: None,
         },
         Controls {
             steer,

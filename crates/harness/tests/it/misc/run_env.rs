@@ -68,6 +68,7 @@ fn controls() -> RunControls {
         steering,
         interrupt: CancellationToken::new(),
         turn: Default::default(),
+        sandbox: None,
     }
 }
 

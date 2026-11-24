@@ -1227,6 +1227,10 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zend_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // A chat this host must confine (`ChatSandbox`, marked by
+        // [`SessionsEngine::sandbox_chat`]): its confinement, or no run at
+        // all, decided before anything of the turn is recorded or routed.
+        let sandbox = self.inner.run_sandbox(chat_id, harness_id, &request.cwd)?;
         // What this host's plugins tell the chat's agent
         // (`session.instructions`), never what a sender put here. Stamped
         // before routing, so a live runtime is compared with what holds now:
@@ -1563,6 +1567,7 @@ impl SessionsEngine {
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
             turn: turn.clone(),
+            sandbox: sandbox.clone(),
         };
 
         // A revival whose message is no longer the transcript's latest: the
@@ -1684,7 +1689,9 @@ impl SessionsEngine {
         // skips titled chats; the Done-time call below stays as the retry
         // for a failed generation). Not before the agent's first output:
         // the titling agent's own startup competed with this one's.
-        let title = (!idle)
+        // Never for a sandboxed chat: the titling run isn't confined, and its
+        // prompt came from whoever started the chat.
+        let title = (!idle && sandbox.is_none())
             .then(|| self.inner.titles.get().cloned())
             .flatten()
             .map(|titles| {
@@ -2280,6 +2287,28 @@ impl SessionsEngine {
     /// settlement. Background work the runtime held dies with it.
     pub async fn terminate(&self, chat_id: &str) -> Result<bool, EngineError> {
         self.terminate_run(chat_id, None).await
+    }
+
+    /// Confine every run of `chat_id` on this host from now on: its agent
+    /// under bubblewrap, in its project folder only ([`zend_proto::ChatSandbox`],
+    /// [`zend_harness::sandbox`]). For a chat another server starts here
+    /// (step 4d, piece A sets it before the chat's first message). Kept on
+    /// this host only and never taken off; a live runtime started before is
+    /// torn down, so the next message starts confined. Off unless called:
+    /// every other chat runs as before.
+    pub async fn sandbox_chat(
+        &self,
+        chat_id: &str,
+        sandbox: zend_proto::ChatSandbox,
+    ) -> Result<(), EngineError> {
+        self.inner.journal.note_sandbox(chat_id, sandbox)?;
+        self.terminate(chat_id).await?;
+        Ok(())
+    }
+
+    /// The sandbox [`Self::sandbox_chat`] marked `chat_id` with, if any.
+    pub fn chat_sandbox(&self, chat_id: &str) -> Option<zend_proto::ChatSandbox> {
+        self.inner.journal.sandbox(chat_id)
     }
 
     /// [`Self::terminate`], of the run `run_id` only when given.
@@ -3226,6 +3255,38 @@ impl Inner {
     /// instead. Never for a chat that has a parent: delegation is one level
     /// deep, so a side chat can't create chats and keeps its provider's own.
     /// Nor while its parent is unknown here (its run outran its row).
+    /// The confinement a run of `chat_id` in `cwd` gets: `None` for a chat
+    /// that isn't sandboxed (every chat unless [`SessionsEngine::sandbox_chat`]
+    /// marked it), else its sandbox, or an error that refuses the run: an
+    /// agent whose driver can't run sandboxed, no bubblewrap, a folder that
+    /// would show the home or Zend's data. Never `None` for a marked chat.
+    fn run_sandbox(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        cwd: &str,
+    ) -> Result<Option<zend_harness::sandbox::Sandbox>, EngineError> {
+        let Some(zend_proto::ChatSandbox::Project) = self.journal.sandbox(chat_id) else {
+            return Ok(None);
+        };
+        let harness = self.registry.resolve(harness_id)?;
+        if !harness.runs_sandboxed() {
+            return Err(zend_harness::HarnessError::Sandbox(format!(
+                "This session must run sandboxed and was not started: {} can't run sandboxed yet",
+                harness_id.as_str()
+            ))
+            .into());
+        }
+        let mut host = zend_harness::sandbox::Host::current();
+        // This engine's data (`~/.zend-dev` and the like, beyond `~/.zend`).
+        host.hidden.extend(self.journal.dir().parent().map(std::path::Path::to_path_buf));
+        host.hidden.extend(self.scratch_root.get().cloned());
+        Ok(Some(zend_harness::sandbox::Sandbox::project(
+            std::path::Path::new(cwd),
+            host,
+        )?))
+    }
+
     fn side_chats_only(&self, chat_id: &str, harness_id: HarnessId) -> bool {
         !self.registry.native_subagents(harness_id)
             && self.workspace().is_none_or(|ws| {
@@ -6648,6 +6709,7 @@ async fn drive_run(
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
             if *status == DoneStatus::Completed
+                && inner.journal.sandbox(&chat_id).is_none()
                 && let Some(titles) = inner.titles.get()
             {
                 titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);

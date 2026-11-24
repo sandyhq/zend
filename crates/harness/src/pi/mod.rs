@@ -9,7 +9,7 @@ mod ui;
 
 use crate::{
     Harness, HarnessError, RunControls,
-    process::{Command, Stdio, owned::Child},
+    process::{Stdio, owned::Child},
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
@@ -121,6 +121,7 @@ impl PiHarness {
             &[],
             None,
             &Default::default(),
+            None,
         )?;
         let (mut tx, rx) = tokio::sync::oneshot::channel();
         let grace = self.kill_grace;
@@ -147,8 +148,29 @@ impl PiHarness {
         // Plugins' instructions; `None` (a discovery probe) loads none.
         instructions: Option<&[zend_proto::SessionInstruction]>,
         run_env: &std::collections::BTreeMap<String, String>,
+        // A sandboxed run's confinement ([`RunControls::sandbox`]): Pi
+        // under bubblewrap, without Zend's or the plugins' MCP servers and
+        // instructions (their files and tokens stay outside).
+        sandbox: Option<&crate::sandbox::Sandbox>,
     ) -> Result<Process, HarnessError> {
         let exe = self.resolve_executable()?;
+        let launch = match sandbox {
+            Some(sandbox) => {
+                let agent_dir = self.agent_dir.clone();
+                let logins = crate::sandbox::logins(HarnessId::Pi, &sandbox.host().home, &|key| {
+                    match (key, &agent_dir) {
+                        ("PI_CODING_AGENT_DIR", Some(dir)) => Some(dir.clone().into_os_string()),
+                        _ => std::env::var_os(key),
+                    }
+                });
+                Some(crate::sandbox::Launch::new(sandbox, HarnessId::Pi, &exe, cwd, &logins)?)
+            }
+            None => None,
+        };
+        let (mcp, extra_mcp, instructions) = match launch {
+            Some(_) => (None, &[][..], None),
+            None => (mcp, extra_mcp, instructions),
+        };
         if self.executable.is_none() {
             if let Some(version) = crate::executable::binary_version(&exe) {
                 if version < semver::Version::new(0, 85, 1) {
@@ -158,7 +180,7 @@ impl PiHarness {
                 }
             }
         }
-        let mut cmd = Command::new(&exe);
+        let mut cmd = crate::sandbox::command(launch.as_ref(), &exe);
         // Process group plus the same env scrubbing the ACP launch applied.
         crate::process::owned::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
@@ -177,7 +199,7 @@ impl PiHarness {
         let instructions = instructions
             .map(|list| self::instructions::configure(&mut cmd, &mut scratch, list))
             .transpose()?;
-        let child = crate::process::spawn_agent(&mut cmd).map_err(|e| {
+        let child = crate::sandbox::spawn(launch.as_ref(), &mut cmd).map_err(|e| {
             crate::executable::spawn_error(e, Some(cwd), || crate::executable::binary_hint(&exe))
         })?;
         let mut child = Child::new(child);
@@ -312,6 +334,9 @@ impl Harness for PiHarness {
     fn deterministic_turn_end(&self) -> bool {
         true
     }
+    fn runs_sandboxed(&self) -> bool {
+        true
+    }
     /// `set_model` and `set_thinking_level` change the live process. Clearing
     /// either back to the default cannot be expressed that way.
     /// The default, and the same plugins' instructions: different ones are
@@ -422,6 +447,7 @@ impl Harness for PiHarness {
             &request.extra_mcp,
             Some(&request.instructions),
             &request.env,
+            controls.sandbox.as_ref(),
         )?;
         let (tx, rx) = mpsc::channel(256);
         let kill_grace = self.kill_grace;
@@ -461,6 +487,7 @@ impl Harness for PiHarness {
                 mut steering,
                 interrupt,
                 turn: _,
+                sandbox: _,
             } = controls;
             runner.process.dialogs.input = Some(std::sync::Arc::from(request_input));
             let consumer = runner.tx.clone();

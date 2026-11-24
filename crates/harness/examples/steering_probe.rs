@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             rx
         }),
         turn: Default::default(),
+        sandbox: None,
     };
     let mut stream =
         tokio::time::timeout(Duration::from_secs(90), harness.run(request, controls)).await??;

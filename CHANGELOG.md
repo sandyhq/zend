@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-24
+
+### Added
+- Sandboxed sessions (step 4d, piece B): a chat this host marks with `SessionsEngine::sandbox_chat(chat, ChatSandbox::Project)` runs its agent under bubblewrap (`crates/harness/src/sandbox.rs`): the system read-only, an empty tmpfs home holding only the agent's install and login files read-only, its project folder read-write, its own PID namespace and session, an allowlisted environment (no `ZEND_*`, no `SSH_*`), the network on. It fails closed: no bubblewrap, a bubblewrap that can't start, a folder that is or holds the home or Zend's data, or a driver that can't run sandboxed (all but Pi for now) refuses the run. The mark is host-local (beside the run journal) and can't be taken off; unmarked chats run as before.
+
 ## 2026-11-22
 
 ### Fixed

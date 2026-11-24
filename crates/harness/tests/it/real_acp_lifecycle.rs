@@ -24,6 +24,7 @@ async fn live_run(cancel: bool) {
             rx
         }),
         turn: Default::default(),
+        sandbox: None,
     };
     let request = RunRequest {
         mcp: None,

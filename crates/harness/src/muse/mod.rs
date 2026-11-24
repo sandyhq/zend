@@ -162,6 +162,7 @@ impl MuseHarness {
                 mut steering,
                 interrupt,
                 turn,
+                sandbox: _,
             } = controls;
             runner.input = Some(std::sync::Arc::from(request_input));
             runner.turn = turn;

@@ -82,6 +82,7 @@ fn controls(
         steering: steer_rx,
         interrupt: token.clone(),
         turn: Default::default(),
+        sandbox: None,
     };
     (controls, steer_tx, token)
 }
@@ -400,6 +401,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
         steering: steer_rx,
         interrupt: token.clone(),
         turn: Default::default(),
+        sandbox: None,
     };
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 
@@ -447,6 +449,7 @@ async fn questions_closed_unanswered_deny_the_tool() {
         steering: steer_rx,
         interrupt: CancellationToken::new(),
         turn: Default::default(),
+        sandbox: None,
     };
     let events = run_to_end(&harness(), request("scenario:closed-question"), controls).await;
     assert_eq!(
