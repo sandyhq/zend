@@ -113,9 +113,8 @@ impl EngineRpc {
             return Err(refused(format!("{method}: this device answers for itself only")));
         }
         match method {
-            methods::ENGINE_INFO
-            | methods::LIST_HARNESSES
-            | methods::LIST_MODELS => Ok(PeerGate::Pass(params)),
+            methods::ENGINE_INFO => self.peer_engine_info(&grants).map(PeerGate::Reply),
+            methods::LIST_HARNESSES | methods::LIST_MODELS => Ok(PeerGate::Pass(params)),
             methods::WATCH_CHATS => Ok(PeerGate::Reply(RpcReply::Stream(self.peer_watch_chats()))),
             methods::WATCH_SESSIONS => Ok(PeerGate::Reply(RpcReply::Stream(self.peer_watch_sessions()))),
             methods::WATCH_DOC_MESSAGES => {
@@ -381,6 +380,43 @@ impl EngineRpc {
         Ok(config)
     }
 
+    /// `EngineInfo`, plus what the grants name of this device (`peer`):
+    /// whether it reads chats here, and each project a grant names that
+    /// is here, by id and the name it shows (never its folder), with how
+    /// it may run there (`sandboxed`, `unconfined`, none) and whether
+    /// its files are shared. What it was granted, said back: so a project
+    /// it may run in shows in its window before it holds a chat.
+    fn peer_engine_info(&self, grants: &Grants) -> Result<RpcReply, RpcError> {
+        let own = self.doc_host.device_id();
+        let mut named: Vec<&str> = grants
+            .iter()
+            .filter_map(|g| match g {
+                zend_rpc::Grant::SessionsRun(p)
+                | zend_rpc::Grant::SessionsRunUnconfined(p)
+                | zend_rpc::Grant::ProjectsShare(p) => Some(p.as_str()),
+                _ => None,
+            })
+            .collect();
+        named.sort_unstable();
+        named.dedup();
+        let spaces = self.workspace.read_spaces().unwrap_or_default();
+        let projects: Vec<Value> = named
+            .into_iter()
+            .filter_map(|id| spaces.iter().find(|s| s.id == id && s.device_id == own))
+            .map(|space| {
+                let run = match grants.runs_in(&space.id) {
+                    Some(true) => json!("unconfined"),
+                    Some(false) => json!("sandboxed"),
+                    None => Value::Null,
+                };
+                json!({ "id": space.id, "name": shown_name(space), "run": run, "share": grants.shares(&space.id) })
+            })
+            .collect();
+        let mut info = serde_json::to_value(&self.engine_info).map_err(|e| RpcError::Failed(e.to_string()))?;
+        info["peer"] = json!({ "reads": grants.reads(), "projects": projects });
+        Ok(RpcReply::Value(info))
+    }
+
     /// This device's own chats, each one's folder from its project's root.
     fn peer_watch_chats(&self) -> futures::stream::BoxStream<'static, Value> {
         let own = self.doc_host.device_id().to_string();
@@ -478,6 +514,15 @@ pub(crate) fn seen_chats(chats: Value, own: &str, spaces: &[zend_proto::Space]) 
             })
             .collect(),
     )
+}
+
+/// The name a project shows: its own, else its folder's last part.
+fn shown_name(space: &zend_proto::Space) -> String {
+    if let Some(name) = space.name.as_deref().filter(|n| !n.trim().is_empty()) {
+        return name.to_string();
+    }
+    let path = space.path.trim_end_matches(['/', '\\']);
+    path.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(&space.id).to_string()
 }
 
 /// `{project, path?}` of a file call.

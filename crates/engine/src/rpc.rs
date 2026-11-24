@@ -2947,7 +2947,7 @@ fn forwardable(method: &str) -> bool {
 }
 
 /// Forwardable methods whose reply is a stream (proxied item-by-item).
-fn is_stream_method(method: &str) -> bool {
+pub(crate) fn is_stream_method(method: &str) -> bool {
     if method == methods::OWN_VOICE_V2 {
         return true;
     }
@@ -2986,12 +2986,12 @@ where
 
 /// Whether a watch asked for changes only (`{"changes": true}`): opt-in,
 /// so older viewports keep the whole list on every change.
-fn wants_changes(params: &serde_json::Value) -> bool {
+pub(crate) fn wants_changes(params: &serde_json::Value) -> bool {
     params.get("changes").and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 /// What a keyed list stream last sent: its keys in order, and each row.
-type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Value>);
+pub(crate) type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Value>);
 
 /// A list of rows keyed by `key` (`id`, or a session's `chatId`) as change
 /// frames: the whole list first, as [`watch_stream`] sends it; then, per
@@ -3029,7 +3029,7 @@ where
 
 /// `rows` as the frame that follows `last` (`None`: nothing changed), and
 /// what's been sent once it is. No `last`: the whole list.
-fn keyed_frame(rows: Vec<serde_json::Value>, key: &str, last: Option<SentRows>) -> (Option<serde_json::Value>, SentRows) {
+pub(crate) fn keyed_frame(rows: Vec<serde_json::Value>, key: &str, last: Option<SentRows>) -> (Option<serde_json::Value>, SentRows) {
     let keys: Vec<String> = rows
         .iter()
         .map(|row| row.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_owned())

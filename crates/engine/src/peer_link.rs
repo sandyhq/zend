@@ -264,6 +264,8 @@ pub struct PeerLink {
     book: Arc<Book>,
     key: Mutex<Option<Arc<NodeKey>>>,
     running: tokio::sync::Mutex<Running>,
+    /// The paired servers shown to this engine's own window (step 4e).
+    view: std::sync::OnceLock<Arc<crate::peer_view::PeerView>>,
 }
 
 impl Drop for PeerLink {
@@ -284,7 +286,20 @@ impl PeerLink {
             book: Arc::new(Book::load(data_dir)),
             key: Mutex::default(),
             running: tokio::sync::Mutex::new(Running::default()),
+            view: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The paired servers this engine dials for its own window, followed
+    /// from the first time it's asked ([`crate::peer_view`]).
+    pub fn view(self: &Arc<Self>) -> Arc<crate::peer_view::PeerView> {
+        self.view
+            .get_or_init(|| {
+                let view = crate::peer_view::PeerView::new(Arc::downgrade(self));
+                view.start();
+                view
+            })
+            .clone()
     }
 
     /// This engine's node key, made and kept (mode 600) the first time.
@@ -706,7 +721,9 @@ impl RpcService for PeerLinkRpc {
             methods::PEER_PAIR => self.link.pair().await.map(RpcReply::Value),
             methods::PEER_JOIN => {
                 let p: JoinParams = zend_rpc::parse_params(given())?;
-                self.link.join(&p.code).await.map(RpcReply::Value)
+                let joined = self.link.join(&p.code).await.map(RpcReply::Value);
+                self.link.view().refresh();
+                joined
             }
             methods::LIST_PEERS => self.link.status().await.map(RpcReply::Value),
             methods::SET_PEER_GRANTS => {
@@ -716,8 +733,16 @@ impl RpcService for PeerLinkRpc {
             }
             methods::UNPAIR_PEER => {
                 let p: PeerParams = zend_rpc::parse_params(given())?;
-                self.link.unpair(&p.peer).map(RpcReply::Value)
+                let unpaired = self.link.unpair(&p.peer).map(RpcReply::Value);
+                self.link.view().refresh();
+                unpaired
             }
+            // This device's own window: the paired servers' rows in its
+            // lists, its calls naming one of them sent there.
+            _ if zend_rpc::caller().is_local() => match self.link.view().route(&self.inner, method, &params).await {
+                Some(reply) => reply,
+                None => self.inner.handle(method, params).await,
+            },
             _ => self.inner.handle(method, params).await,
         }
     }
@@ -813,6 +838,7 @@ pub fn peer_port(ipc_port: u16) -> u16 {
 pub fn wrap(service: Arc<dyn RpcService>, data_dir: &Path, port: u16) -> Arc<dyn RpcService> {
     let link = PeerLink::new(data_dir, port, service.clone(), Seams::real());
     link.resume();
+    link.view();
     Arc::new(PeerLinkRpc { inner: service, link })
 }
 
