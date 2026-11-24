@@ -14,6 +14,8 @@
 # TARGET=x    the target volume's name part (default: the checkout's folder name), so
 #             each worktree has its own target and two builds never wait on one lock.
 # KACHE=0     no rustc wrapper. KACHE_* variables are passed to kache.
+# Memory is capped at 12 GB, swap included (a whole apps/zgx test suite once grew to
+# 29 GB and took the build server down until the OOM killer came).
 # The image is rebuilt when the Dockerfile or the nextest pin changes.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -40,7 +42,7 @@ export KACHE_PRESERVE_INCREMENTAL="${KACHE_PRESERVE_INCREMENTAL:-1}"
 for v in $(compgen -e | grep '^KACHE_' || true); do env+=(-e "$v"); done
 
 tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-it)
-exec docker run --rm "${tty[@]}" --init \
+exec docker run --rm "${tty[@]}" --init --memory 12g --memory-swap 12g \
   -v "$ROOT:/src" \
   -v "$target:/opt/target" \
   -v zend-dev-registry:/opt/cargo/registry \
