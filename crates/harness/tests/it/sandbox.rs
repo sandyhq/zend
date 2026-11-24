@@ -74,6 +74,9 @@ async fn run_in(fake: &FakeHome, bwrap: PathBuf, script: &str) -> (i32, String, 
         .env("ZEND_IPC_TOKEN", "secret")
         .env("ZEND_ORIGIN", "chat:x")
         .env("PI_CODING_AGENT_DIR", fake.home.join(".pi/agent"))
+        // As a driver sets it (compose_child_path): other tests in this
+        // process change the PATH it would inherit.
+        .env("PATH", "/usr/bin:/bin")
         .current_dir(&fake.project)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -224,4 +227,23 @@ async fn real_pi_lists_its_models_in_the_sandbox() {
         println!("$ pi {}\nexit {}\n{out}{err}", args.join(" "), output.status);
         assert!(output.status.success(), "{err}");
     }
+    // The network stays on: the agent reaches its provider's API by name.
+    let mut command = launch.command("/bin/sh");
+    command
+        .arg("-c")
+        .arg("getent hosts api.anthropic.com && curl -sS -o /dev/null -w 'https %{http_code}\\n' https://api.anthropic.com/")
+        .current_dir(project.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = launch
+        .spawn(&mut command)
+        .unwrap()
+        .wait_with_output()
+        .await
+        .unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    println!("$ network\nexit {}\n{out}{}", output.status, String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success());
+    assert!(out.contains("https "), "{out}");
 }
