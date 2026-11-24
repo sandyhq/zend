@@ -174,11 +174,15 @@ async fn sessions_run_reaches_its_own_chats_in_that_project_only() {
     let a = paired(&["sessions.run:p"]).await;
     a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
 
-    let created = a.b.call(methods::MUTATE, create("peer-chat", "p")).await.expect("create in p");
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    let mut made = create("peer-chat", "p");
+    made["config"] = keyed_config();
+    let created = a.b.call(methods::MUTATE, made).await.expect("create in p");
     assert_eq!(created["sandbox"], "project", "{created}");
     assert_eq!(a.core.workspace.chat("peer-chat").unwrap().unwrap().space_id.as_deref(), Some("p"));
     let mark = a.core.sessions.chat_sandbox("peer-chat").expect("marked");
-    assert_eq!((mark.sandbox, mark.root), (zend_proto::ChatSandbox::Project, Some(a.root.join("p"))));
+    // Confined to its own working copy of p, in Zend's data.
+    assert_eq!((mark.sandbox, mark.root), (zend_proto::ChatSandbox::Project, Some(a.data.join("peer-copies/peer-chat"))));
 
     let mut watch = a.b
         .subscribe_scoped(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "peer-chat" }))
@@ -326,7 +330,8 @@ async fn an_agent_in_a_peer_chat_reaches_only_what_the_peer_may() {
         "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
     }))).await.expect("its own child in p");
     assert_eq!(a.core.sessions.peer_chats().peer("p-child").as_deref(), Some(a.b_key.as_str()));
-    assert_eq!(a.core.sessions.chat_sandbox("p-child").and_then(|m| m.root), Some(a.root.join("p")));
+    // In its parent's working copy.
+    assert_eq!(a.core.sessions.chat_sandbox("p-child").and_then(|m| m.root), Some(a.data.join("peer-copies/peer-chat")));
     let child = a.core.workspace.chat("p-child").unwrap().unwrap();
     assert_eq!(child.parent_chat_id.as_deref(), Some("peer-chat"));
     assert_eq!(child.config.unwrap().access, zend_proto::AccessMode::Supervised);
@@ -505,14 +510,24 @@ async fn shell_run(runs: &Arc<Mutex<Vec<ShellRun>>>, n: usize) -> ShellRun {
     }
 }
 
-/// End to end: B, granted sessions.run:p (and q unconfined), creates a chat
-/// in p over the peer link and queues a run; its agent starts under
-/// bubblewrap with p's folder as root and can read and write p only, not q,
-/// Zend's data or the rest of the home. A child its agent starts is
-/// confined to p too: not in q (though B may run q unconfined), its run in
-/// bubblewrap at p, and no run of it outside p.
+/// The key B's chats run on for anthropic models, set by the owner.
+const B_KEY: &str = "sk-ant-B-ONLY";
+
+/// The config of a chat B makes: a model of a provider B has a key for.
+fn keyed_config() -> Value {
+    json!({ "harness": HarnessId::Mock, "model": "anthropic/claude-test", "sandbox": "danger-full-access", "access": "full-access" })
+}
+
+/// End to end (4d-2, 4d-3): B, granted sessions.run:p (and q unconfined),
+/// creates a chat in p over the peer link and queues a run; its agent
+/// starts under bubblewrap in its own working copy of p in Zend's data,
+/// never in p: the copy is its root and its folder, p itself (the owner's
+/// folder), q, the rest of Zend's data and the home are out of its sight,
+/// and what it writes lands in the copy only. Of the credentials in its
+/// environment only B's key is there, as the provider's variable. A child
+/// its agent starts shares the copy; not in q, and no run of it outside.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_peer_chat_runs_in_bubblewrap_in_its_project_and_so_do_its_children() {
+async fn a_peer_chat_runs_in_its_own_working_copy_on_its_servers_key_and_so_do_its_children() {
     if !sandbox_tools_present() {
         return;
     }
@@ -521,69 +536,338 @@ async fn a_peer_chat_runs_in_bubblewrap_in_its_project_and_so_do_its_children() 
     registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
     let a = paired_with(&["sessions.run:p", "sessions.run.unconfined:q"], registry).await;
     a.core.sessions.set_no_ipc_port();
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
     let p = a.root.join("p");
     let q = a.root.join("q");
+    let copy = a.data.join(zend_engine::peer_copies::COPIES_DIR).join("peer-chat");
     let script = format!(
-        r#"for f in {q}/readme.md {data}/ipc-token {base}/outside.txt; do
+        r#"for f in {p}/readme.md {q}/readme.md {data}/ipc-token {data}/peers.json {data}/peer-keys.json {base}/outside.txt; do
             if cat "$f" >/dev/null 2>&1; then echo "READABLE $f"; fi
         done
         (echo x > {q}/written.txt) 2>/dev/null && echo "WROTE Q"
+        (echo x > {p}/written.txt) 2>/dev/null && echo "WROTE P"
         cat ./readme.md
-        echo made > ./made-in-p.txt && echo "wrote p"
-        echo "in $(pwd)""#,
+        echo made > ./made-in-copy.txt && echo "wrote copy"
+        echo "in $(pwd)"
+        env | grep -E 'KEY|TOKEN|SECRET|AUTH' || true"#,
+        p = p.display(),
         q = q.display(),
         data = a.data.display(),
         base = a.root.display(),
     );
-    let config = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" });
     let created = a
         .b
-        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "peer-chat", "spaceId": "p", "config": config }))
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "peer-chat", "spaceId": "p", "config": keyed_config() }))
         .await
         .expect("create in p");
     assert_eq!(created["sandbox"], "project");
-    assert_eq!(a.core.sessions.chat_sandbox("peer-chat").and_then(|m| m.root), Some(p.clone()));
+    assert_eq!(a.core.sessions.chat_sandbox("peer-chat").and_then(|m| m.root), Some(copy.clone()));
+    assert_eq!(std::fs::read_to_string(copy.join("readme.md")).unwrap(), "project p\n");
 
     let mut queued = run("peer-chat", "/");
     queued["command"]["request"]["prompt"] = script.clone().into();
     a.b.call(methods::QUEUE_COMMAND, queued).await.expect("queued");
     let first = shell_run(&runs, 1).await;
     println!("peer chat: {first:?}");
-    assert_eq!((Path::new(&first.cwd), first.root.as_ref()), (p.as_path(), Some(&p)), "{first:?}");
-    assert!(first.out.contains("project p") && first.out.contains("wrote p"), "{}", first.out);
-    assert!(first.out.contains(&format!("in {}", p.display())), "{}", first.out);
-    assert!(!first.out.contains("READABLE") && !first.out.contains("WROTE Q"), "{}", first.out);
-    assert_eq!(std::fs::read_to_string(p.join("made-in-p.txt")).unwrap(), "made\n");
-    assert!(!q.join("written.txt").exists());
+    assert_eq!((Path::new(&first.cwd), first.root.as_ref()), (copy.as_path(), Some(&copy)), "{first:?}");
+    assert!(first.out.contains("project p") && first.out.contains("wrote copy"), "{}", first.out);
+    assert!(first.out.contains(&format!("in {}", copy.display())), "{}", first.out);
+    assert!(!first.out.contains("READABLE") && !first.out.contains("WROTE"), "{}", first.out);
+    let credentials: Vec<&str> = first.out.lines().filter(|l| l.contains('=')).collect();
+    assert_eq!(credentials, [format!("ANTHROPIC_API_KEY={B_KEY}")], "{}", first.out);
+    assert_eq!(std::fs::read_to_string(copy.join("made-in-copy.txt")).unwrap(), "made\n");
+    assert!(!p.join("made-in-copy.txt").exists() && !p.join("written.txt").exists() && !q.join("written.txt").exists());
 
-    // Its agent's children.
+    // Its agent's children: in its copy.
     let rpc = a.core.rpc_service();
     let agent = Caller::Agent { chat: Some("peer-chat".into()) };
     let child = |id: &str, space: &str| {
         json!({
             "op": "createChat", "chatId": id, "spaceId": space, "deviceId": a.core.device_id,
-            "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
+            "parentChatId": "peer-chat", "childKind": "subagent", "config": keyed_config(),
         })
     };
     let in_q = with_caller(agent.clone(), rpc.handle(methods::MUTATE, child("q-child", "q"))).await;
     assert!(in_q.as_ref().is_err_and(|e| e.to_string().contains("stays in its project")), "{:?}", in_q.map(|_| ()));
     assert!(a.core.workspace.chat("q-child").unwrap().is_none());
     with_caller(agent, rpc.handle(methods::MUTATE, child("p-child", "p"))).await.expect("a child in p");
-    assert_eq!(a.core.sessions.chat_sandbox("p-child").and_then(|m| m.root), Some(p.clone()));
+    assert_eq!(a.core.sessions.chat_sandbox("p-child").and_then(|m| m.root), Some(copy.clone()));
     let mut queued = run("p-child", "/");
     queued["command"]["request"]["prompt"] = script.into();
     a.b.call(methods::QUEUE_COMMAND, queued).await.expect("the child's run queued");
     let second = shell_run(&runs, 2).await;
     println!("child: {second:?}");
-    assert_eq!(second.root.as_ref(), Some(&p), "{second:?}");
-    assert!(second.out.contains("project p") && !second.out.contains("READABLE") && !second.out.contains("WROTE Q"), "{}", second.out);
-    // A run of the child in q doesn't start.
+    assert_eq!((Path::new(&second.cwd), second.root.as_ref()), (copy.as_path(), Some(&copy)), "{second:?}");
+    assert!(second.out.contains("project p") && !second.out.contains("READABLE") && !second.out.contains("WROTE"), "{}", second.out);
+    // A run of the child in q, or in the owner's p beyond the copy's map, doesn't start.
     let mut request: RunRequest = serde_json::from_value(run("p-child", "/")["command"]["request"].clone()).unwrap();
     request.cwd = q.display().to_string();
+    request.model = Some("anthropic/claude-test".into());
     let outside = a.core.sessions.start_idle("p-child", request).await;
     assert!(outside.as_ref().is_err_and(|e| e.to_string().contains("outside its project")), "{outside:?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(runs.lock().unwrap().len(), 2, "{:?}", runs.lock().unwrap());
+}
+
+/// The owner's own methods (this device's app or CLI): the peer link's
+/// RPC as a local caller sees it.
+fn owner(a: &Paired) -> RpcClient {
+    zend_rpc::memory_client(Arc::new(zend_engine::peer_link::PeerLinkRpc { inner: a.core.rpc_service(), link: a.link.clone() }))
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn git_project(dir: &Path) {
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.email", "o@example.com"]);
+    git(dir, &["config", "user.name", "Owner"]);
+    std::fs::write(dir.join("gone.txt"), "to delete\n").unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "base"]);
+}
+
+/// 4d-2: a chat B makes in a git project works in a worktree of it on a
+/// branch of its own, in Zend's data; what it changes comes back only as a
+/// patch the owner lists, reads and applies here (all or nothing: refused
+/// for .git and the protected dot-folders, a link, a path through a link in
+/// the owner's folder, a file the owner changed since), or throws away.
+/// These methods are the owner's: refused to an agent, a phone and B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_changes_reach_the_owners_folder_only_as_a_patch_the_owner_applies() {
+    let a = paired(&["sessions.run:p"]).await;
+    let p = a.root.join("p");
+    git_project(&p);
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
+    assert_eq!(copy, a.data.join("peer-copies/theirs"));
+    assert!(copy.join(".git").is_file(), "a worktree");
+    assert!(git(&p, &["branch", "--list", "zend-peer/theirs"]).contains("zend-peer/theirs"));
+    // The worktree's git folder is the owner's, outside the copy.
+    let pointer = std::fs::read_to_string(copy.join(".git")).unwrap();
+    assert!(pointer.contains(&p.join(".git/worktrees").display().to_string()), "{pointer}");
+
+    let owner = owner(&a);
+    let listed = owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap();
+    assert_eq!(listed["copies"][0]["chat"], "theirs");
+    assert_eq!(listed["copies"][0]["kind"], "worktree");
+    assert_eq!(listed["copies"][0]["changes"], json!([]));
+
+    // What its agent did in the copy.
+    std::fs::write(copy.join("readme.md"), "project p, changed\n").unwrap();
+    std::fs::create_dir_all(copy.join("src")).unwrap();
+    std::fs::write(copy.join("src/new.rs"), "fn main() {}\n").unwrap();
+    std::fs::remove_file(copy.join("gone.txt")).unwrap();
+    std::fs::create_dir_all(copy.join(".pi")).unwrap();
+    std::fs::write(copy.join(".pi/settings.json"), "{}").unwrap();
+    let changes = owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap()["copies"][0]["changes"].clone();
+    let paths: Vec<(&str, &str)> = changes.as_array().unwrap().iter().map(|c| (c["status"].as_str().unwrap(), c["path"].as_str().unwrap())).collect();
+    let mut paths: Vec<(&str, &str)> = paths;
+    paths.sort_by_key(|(_, path)| *path);
+    assert_eq!(paths, [("A", ".pi/settings.json"), ("D", "gone.txt"), ("M", "readme.md"), ("A", "src/new.rs")], "{changes}");
+    let patch = owner.call(methods::SHOW_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap()["patch"].as_str().unwrap().to_string();
+    assert!(patch.contains("+project p, changed") && patch.contains("src/new.rs") && patch.contains("deleted file mode"), "{patch}");
+
+    // Nobody but the owner.
+    for caller in [Caller::Agent { chat: Some("theirs".into()) }, Caller::Remote] {
+        for method in [methods::LIST_PEER_CHANGES, methods::SHOW_PEER_CHANGES, methods::APPLY_PEER_CHANGES, methods::DISCARD_PEER_CHANGES, methods::SET_PEER_KEY, methods::LIST_PEER_KEYS] {
+            let service = zend_engine::peer_link::PeerLinkRpc { inner: a.core.rpc_service(), link: a.link.clone() };
+            let reply = with_caller(caller.clone(), service.handle(method, json!({ "chat": "theirs", "peer": a.b_key, "provider": "anthropic", "key": "x" }))).await;
+            assert!(reply.is_err(), "{method} for {caller:?}");
+        }
+    }
+    for method in [methods::LIST_PEER_CHANGES, methods::SHOW_PEER_CHANGES, methods::APPLY_PEER_CHANGES, methods::DISCARD_PEER_CHANGES, methods::LIST_PEER_KEYS] {
+        assert!(a.b.call(method, json!({ "chat": "theirs" })).await.is_err(), "{method} for B");
+    }
+
+    // A protected folder: nothing applied.
+    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    assert!(refused.contains("nothing applied") && refused.contains(".pi"), "{refused}");
+    assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "project p\n");
+    assert!(p.join("gone.txt").exists() && !p.join("src").exists() && !p.join(".pi").exists());
+    std::fs::remove_dir_all(copy.join(".pi")).unwrap();
+    // A link in the copy: nothing applied.
+    std::os::unix::fs::symlink("/etc/passwd", copy.join("link")).unwrap();
+    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    assert!(refused.contains("symbolic link"), "{refused}");
+    std::fs::remove_file(copy.join("link")).unwrap();
+    // A folder in the owner's p that is a link out: nothing applied there.
+    let elsewhere = a.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, p.join("src")).unwrap();
+    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    assert!(refused.contains("is a link"), "{refused}");
+    assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none());
+    std::fs::remove_file(p.join("src")).unwrap();
+
+    let applied = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
+    assert_eq!(applied["applied"].as_array().unwrap().len(), 3, "{applied}");
+    assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "project p, changed\n");
+    assert_eq!(std::fs::read_to_string(p.join("src/new.rs")).unwrap(), "fn main() {}\n");
+    assert!(!p.join("gone.txt").exists());
+    // Applied: the base moves on.
+    let listed = owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap();
+    assert_eq!(listed["copies"][0]["changes"], json!([]), "{listed}");
+    // The owner changed it since: refused.
+    std::fs::write(p.join("readme.md"), "the owner's\n").unwrap();
+    std::fs::write(copy.join("readme.md"), "theirs again\n").unwrap();
+    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    assert!(refused.contains("changed in your folder"), "{refused}");
+    assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "the owner's\n");
+    // The owner's folder has its git back: it isn't confined.
+    assert!(git(&p, &["status", "--porcelain"]).contains("readme.md"));
+
+    // Thrown away: the copy and its branch go, the owner's folder stays, the chat doesn't run.
+    owner.call(methods::DISCARD_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
+    assert!(!copy.exists());
+    assert!(!git(&p, &["branch", "--list"]).contains("zend-peer/theirs"));
+    assert!(!git(&p, &["worktree", "list"]).contains("peer-copies"));
+    assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "the owner's\n");
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    let mut request: RunRequest = serde_json::from_value(run("theirs", "/")["command"]["request"].clone()).unwrap();
+    request.cwd = p.display().to_string();
+    request.model = Some("anthropic/claude-test".into());
+    let gone = a.core.sessions.start_idle("theirs", request).await;
+    assert!(gone.as_ref().is_err_and(|e| e.to_string().contains("working copy is gone")), "{gone:?}");
+    assert!(owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap()["copies"].as_array().unwrap().is_empty());
+}
+
+/// 4d-2: the copy's git can't make host git run what its agent planted.
+/// The agent writes the copy, not its `.git` pointer (read-only) nor the
+/// worktree's git folder (the owner's, never in its sandbox); the owner's
+/// own filter driver, named by a `.gitattributes` it planted, and a
+/// repository it made in the copy (its config naming an fsmonitor) run
+/// nothing when the owner lists or applies its changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_copys_git_runs_nothing_its_agent_planted() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
+    let a = paired_with(&["sessions.run:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    let p = a.root.join("p");
+    git_project(&p);
+    let marker = a.root.join("PLANTED-RAN");
+    // The owner's own driver (as git-lfs sets one up): a planted
+    // attribute that names it would run it, as the owner.
+    git(&p, &["config", "filter.evil.clean", &format!("touch {}; cat", marker.display())]);
+    git(&p, &["config", "diff.evil.textconv", &format!("touch {}; cat", marker.display())]);
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
+    let worktree_git = p.join(".git/worktrees/theirs");
+    assert!(worktree_git.is_dir());
+    let script = format!(
+        r#"(echo "gitdir: /tmp/evil" > .git) 2>/dev/null && echo "WROTE POINTER"
+        (rm -f .git) 2>/dev/null && echo "REMOVED POINTER"
+        (echo x >> {wt}/config) 2>/dev/null && echo "WROTE WORKTREE GIT"
+        cat {wt}/HEAD >/dev/null 2>&1 && echo "READ WORKTREE GIT"
+        printf '* filter=evil diff=evil
+' > .gitattributes
+        mkdir -p sub/.git && printf '[core]
+	fsmonitor = touch {marker}
+' > sub/.git/config && echo "ref: refs/heads/main" > sub/.git/HEAD
+        echo changed > readme.md
+        echo planted"#,
+        wt = worktree_git.display(),
+        marker = marker.display(),
+    );
+    let mut queued = run("theirs", "/");
+    queued["command"]["request"]["prompt"] = script.into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("queued");
+    let ran = shell_run(&runs, 1).await;
+    println!("{ran:?}");
+    assert!(ran.out.contains("planted"), "{}", ran.out);
+    for not in ["WROTE POINTER", "REMOVED POINTER", "WROTE WORKTREE GIT", "READ WORKTREE GIT"] {
+        assert!(!ran.out.contains(not), "{not}: {}", ran.out);
+    }
+    assert!(std::fs::read_to_string(copy.join(".git")).unwrap().contains("worktrees/theirs"));
+
+    let owner = owner(&a);
+    // A repository in the copy: not opened, the owner told.
+    let listed = owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap();
+    assert!(listed["copies"][0]["error"].as_str().unwrap_or_default().contains("git repository of its own"), "{listed}");
+    assert!(owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.is_err());
+    std::fs::remove_dir_all(copy.join("sub")).unwrap();
+    let patch = owner.call(methods::SHOW_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap()["patch"].as_str().unwrap().to_string();
+    assert!(patch.contains("+changed"), "{patch}");
+    // The planted attributes would make the owner's git run its drivers.
+    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    assert!(refused.contains(".gitattributes") && refused.contains("nothing applied"), "{refused}");
+    std::fs::remove_file(copy.join(".gitattributes")).unwrap();
+    let applied = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
+    assert_eq!(applied["applied"], json!(["readme.md"]), "{applied}");
+    assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "changed\n");
+    assert!(!marker.exists(), "a planted driver or fsmonitor ran");
+    // The owner's own git in its folder: its config, its attributes.
+    git(&p, &["status"]);
+    git(&p, &["diff"]);
+    assert!(!marker.exists(), "a planted driver ran in the owner's folder");
+}
+
+/// 4d-3: a chat of B's runs only on a key the owner kept for B and its
+/// model's provider: none, a key for another provider, the key removed,
+/// or B unpaired (its keys go with it),
+/// and the run is refused with a clear reason. Listing shows names only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_chat_runs_only_on_a_key_kept_for_that_server() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
+    let a = paired_with(&["sessions.run:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
+    let start = |model: &str| {
+        let mut request: RunRequest = serde_json::from_value(run("theirs", "/")["command"]["request"].clone()).unwrap();
+        request.cwd = copy.display().to_string();
+        request.model = Some(model.into());
+        request.prompt = "env | grep -E 'KEY|TOKEN' || true".into();
+        a.core.sessions.start_idle("theirs", request)
+    };
+    let no_key = start("anthropic/claude-test").await;
+    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains("zend peer key set <server> anthropic")), "{no_key:?}");
+
+    let owner = owner(&a);
+    owner.call(methods::SET_PEER_KEY, json!({ "peer": a.b_key, "provider": "openai", "key": "sk-openai-B" })).await.unwrap();
+    let other = start("anthropic/claude-test").await;
+    assert!(other.is_err(), "{other:?}");
+    let set = owner.call(methods::SET_PEER_KEY, json!({ "peer": a.b_key, "provider": "anthropic", "key": B_KEY })).await.unwrap();
+    assert_eq!(set["variable"], "ANTHROPIC_API_KEY");
+    let listed = owner.call(methods::LIST_PEER_KEYS, json!({})).await.unwrap();
+    assert_eq!(listed["keys"][0]["providers"], json!(["anthropic", "openai"]));
+    assert!(!listed.to_string().contains("sk-"), "{listed}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(a.data.join("peer-keys.json")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    let mut queued = run("theirs", "/");
+    queued["command"]["request"]["prompt"] = "env | grep -E 'KEY|TOKEN' || true".into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("runs on B's key");
+    let ran = shell_run(&runs, 1).await;
+    assert_eq!(ran.out.trim(), format!("ANTHROPIC_API_KEY={B_KEY}"), "{}", ran.out);
+
+    owner.call(methods::REMOVE_PEER_KEY, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    let removed = start("anthropic/claude-test").await;
+    assert!(removed.is_err(), "{removed:?}");
+    owner.call(methods::SET_PEER_KEY, json!({ "peer": a.b_key, "provider": "anthropic", "key": B_KEY })).await.unwrap();
+    owner.call(methods::UNPAIR_PEER, json!({ "peer": a.b_key })).await.unwrap();
+    assert_eq!(owner.call(methods::LIST_PEER_KEYS, json!({})).await.unwrap()["keys"], json!([]));
+    let unpaired = start("anthropic/claude-test").await;
+    assert!(unpaired.is_err(), "{unpaired:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(runs.lock().unwrap().len(), 1);
 }
 
 /// An agent that records each prompt it gets and completes the turn, except
@@ -818,7 +1102,7 @@ async fn a_copy_of_a_servers_chat_stays_its_and_sandboxed_alike() {
     let peers = a.core.sessions.peer_chats();
     assert_eq!(peers.peer("theirs-copy").as_deref(), Some(a.b_key.as_str()));
     let root = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("the source is confined");
-    assert_eq!(root, a.root.join("p"));
+    assert_eq!(root, a.data.join("peer-copies/theirs"), "its working copy, never the owner's folder");
     assert_eq!(a.core.sessions.chat_sandbox("theirs-copy").and_then(|m| m.root), Some(root));
     assert_eq!(peers.peer("own-copy"), None);
     assert!(a.core.sessions.chat_sandbox("own-copy").is_none());

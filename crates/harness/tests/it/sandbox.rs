@@ -137,6 +137,66 @@ async fn a_sandboxed_agent_sees_only_its_project_and_its_login() {
     );
 }
 
+/// As a chat another server starts runs: in a working copy in Zend's data,
+/// on a key of its own. None of the owner's logins is there (though the
+/// driver asks for them), the owner's project and the rest of Zend's data
+/// are out of sight, and of the credentials only its key is in its
+/// environment, whatever the driver set.
+#[tokio::test]
+async fn a_working_copy_on_its_own_keys_has_no_owner_login_and_no_owner_project() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let data = fake.home.join(".zend");
+    let copies = data.join("peer-copies");
+    let copy = copies.join("c");
+    std::fs::create_dir_all(&copy).unwrap();
+    std::fs::write(copy.join("README"), "the copy").unwrap();
+    let mut host = host(&fake, bwrap);
+    host.hidden.push(data.clone());
+    let keys = [("ANTHROPIC_API_KEY".to_string(), "PEER-KEY".to_string())].into_iter().collect();
+    let sandbox = Sandbox::working_copy(&copy, &copies, host).unwrap().with_keys(keys).unwrap();
+    let pi_logins = logins(HarnessId::Pi, &fake.home, &|_| None);
+    assert!(!pi_logins.is_empty());
+    let launch = Launch::new(&sandbox, HarnessId::Pi, Path::new("/bin/sh"), &copy, &pi_logins).unwrap();
+    let h = fake.home.display();
+    let script = format!(
+        r#"
+        for f in {h}/.pi/agent/auth.json {h}/.pi/agent/models.json {h}/projects/a/README {h}/.zend/ipc-token; do
+            if cat "$f" >/dev/null 2>&1; then echo "READABLE $f"; fi
+        done
+        cat ./README; echo
+        echo changed > ./out.txt && echo "wrote copy"
+        env | sort
+        "#
+    );
+    let mut command = launch.command("/bin/sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .env("ANTHROPIC_API_KEY", "OWNER-ANTHROPIC")
+        .env("OPENAI_API_KEY", "OWNER-OPENAI")
+        .env("PI_CODING_AGENT_DIR", fake.home.join(".pi/agent"))
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(&copy)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = launch.spawn(&mut command).unwrap().wait_with_output().await.unwrap();
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    println!("exit {:?}\n{out}{}", output.status, String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success());
+    assert!(!out.contains("READABLE"), "{out}");
+    assert!(out.contains("the copy") && out.contains("wrote copy"), "{out}");
+    let credentials: Vec<&str> = out
+        .lines()
+        .filter(|line| ["KEY", "TOKEN", "SECRET", "AUTH"].iter().any(|w| line.split('=').next().unwrap().contains(w)))
+        .collect();
+    assert_eq!(credentials, ["ANTHROPIC_API_KEY=PEER-KEY"], "{out}");
+    assert!(!out.contains("OWNER-"), "{out}");
+    assert_eq!(std::fs::read_to_string(copy.join("out.txt")).unwrap(), "changed\n");
+    assert_eq!(std::fs::read_to_string(fake.project.join("README")).unwrap(), "project a");
+}
+
 #[tokio::test]
 async fn a_sandboxed_agent_inherits_no_zend_or_ssh_variables() {
     let Some(bwrap) = bwrap() else { return };

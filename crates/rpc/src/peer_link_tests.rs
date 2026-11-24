@@ -69,7 +69,20 @@ fn each_grant_opens_only_its_methods() {
     for m in every_method().into_iter().filter(|m| crate::local_only(m)) {
         assert!(peer_server_allowed(m, &all).is_err(), "{m}");
     }
-    for m in [methods::SET_PEER_GRANTS, methods::PEER_PAIR, methods::PEER_JOIN, methods::UNPAIR_PEER, methods::LIST_PEERS] {
+    for m in [
+        methods::SET_PEER_GRANTS,
+        methods::PEER_PAIR,
+        methods::PEER_JOIN,
+        methods::UNPAIR_PEER,
+        methods::LIST_PEERS,
+        methods::LIST_PEER_CHANGES,
+        methods::SHOW_PEER_CHANGES,
+        methods::APPLY_PEER_CHANGES,
+        methods::DISCARD_PEER_CHANGES,
+        methods::SET_PEER_KEY,
+        methods::REMOVE_PEER_KEY,
+        methods::LIST_PEER_KEYS,
+    ] {
         assert!(crate::local_only(m) && !crate::agent_allowed(m) && !crate::remote_allowed(m, &serde_json::Value::Null), "{m}");
     }
     // The window's path-taking methods are never a peer's.

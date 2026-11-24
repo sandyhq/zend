@@ -509,8 +509,51 @@ impl PeerLink {
                 Ok(())
             })
             .map_err(RpcError::Failed)?;
+        // Its keys go with it: its chats run on none of them again.
+        if let Err(error) = crate::peer_keys::PeerKeys::new(&self.data_dir).forget(&key) {
+            tracing::warn!(peer = %key, %error, "peer link: forgetting an unpaired server's API keys failed");
+        }
         grants_changed(&self.data_dir);
         Ok(json!({ "removed": key }))
+    }
+
+    /// The working copies of servers' chats here ([`crate::peer_copies`]).
+    pub fn copies(&self) -> crate::peer_copies::Copies {
+        crate::peer_copies::Copies::new(&self.data_dir)
+    }
+
+    /// The servers' API keys ([`crate::peer_keys`]).
+    pub fn keys(&self) -> crate::peer_keys::PeerKeys {
+        crate::peer_keys::PeerKeys::new(&self.data_dir)
+    }
+
+    /// Every working copy and what it changed (paths only).
+    pub fn list_changes(&self) -> Value {
+        let names: std::collections::BTreeMap<String, Option<String>> =
+            self.book.list().into_iter().map(|p| (p.key, p.name)).collect();
+        let copies: Vec<Value> = self
+            .copies()
+            .list()
+            .into_iter()
+            .map(|(meta, changes)| {
+                let mut row = json!({
+                    "chat": meta.chat,
+                    "peer": meta.peer,
+                    "name": names.get(&meta.peer).cloned().flatten(),
+                    "project": meta.project,
+                    "owner": meta.owner,
+                    "kind": meta.kind,
+                    "branch": meta.branch,
+                    "createdAt": meta.created_at,
+                });
+                match changes {
+                    Ok(changes) => row["changes"] = json!(changes),
+                    Err(error) => row["error"] = json!(error),
+                }
+                row
+            })
+            .collect();
+        json!({ "copies": copies })
     }
 
     pub async fn status(&self) -> Result<Value, RpcError> {
@@ -537,6 +580,19 @@ struct PeerParams {
 }
 
 #[derive(Deserialize)]
+struct ChatParams {
+    chat: String,
+}
+
+#[derive(Deserialize)]
+struct KeyParams {
+    peer: String,
+    provider: String,
+    #[serde(default)]
+    key: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct GrantsParams {
     peer: String,
     grants: Vec<String>,
@@ -553,10 +609,73 @@ impl RpcService for PeerLinkRpc {
     async fn handle(&self, method: &str, params: Value) -> Result<RpcReply, RpcError> {
         let given = || if params.is_null() { json!({}) } else { params.clone() };
         match method {
-            methods::PEER_PAIR | methods::PEER_JOIN | methods::LIST_PEERS | methods::SET_PEER_GRANTS | methods::UNPAIR_PEER
+            methods::PEER_PAIR
+            | methods::PEER_JOIN
+            | methods::LIST_PEERS
+            | methods::SET_PEER_GRANTS
+            | methods::UNPAIR_PEER
+            | methods::LIST_PEER_CHANGES
+            | methods::SHOW_PEER_CHANGES
+            | methods::APPLY_PEER_CHANGES
+            | methods::DISCARD_PEER_CHANGES
+            | methods::SET_PEER_KEY
+            | methods::REMOVE_PEER_KEY
+            | methods::LIST_PEER_KEYS
                 if !zend_rpc::caller().is_local() =>
             {
                 Err(RpcError::Failed(format!("{method} is this device's own")))
+            }
+            methods::LIST_PEER_CHANGES => Ok(RpcReply::Value(self.link.list_changes())),
+            methods::SHOW_PEER_CHANGES => {
+                let p: ChatParams = zend_rpc::parse_params(given())?;
+                let patch = self.link.copies().patch(&p.chat).map_err(RpcError::Failed)?;
+                Ok(RpcReply::Value(json!({ "chat": p.chat, "patch": patch })))
+            }
+            methods::APPLY_PEER_CHANGES => {
+                let p: ChatParams = zend_rpc::parse_params(given())?;
+                let copies = self.link.copies();
+                let applied = tokio::task::spawn_blocking({
+                    let chat = p.chat.clone();
+                    move || copies.apply(&chat)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(RpcError::Failed)?;
+                Ok(RpcReply::Value(json!({ "chat": p.chat, "applied": applied })))
+            }
+            methods::DISCARD_PEER_CHANGES => {
+                let p: ChatParams = zend_rpc::parse_params(given())?;
+                let meta = self.link.copies().discard(&p.chat).map_err(RpcError::Failed)?;
+                // Its chats lose their folder: their live runs end.
+                grants_changed(&self.link.data_dir);
+                Ok(RpcReply::Value(json!({ "chat": p.chat, "discarded": true, "project": meta.project })))
+            }
+            methods::SET_PEER_KEY => {
+                let p: KeyParams = zend_rpc::parse_params(given())?;
+                let peer = self.link.find(&p.peer)?;
+                let key = p.key.ok_or_else(|| RpcError::BadParams("SetPeerKey: no key".into()))?;
+                let variable = self.link.keys().set(&peer, &p.provider, &key).map_err(RpcError::BadParams)?;
+                Ok(RpcReply::Value(json!({ "peer": peer, "provider": p.provider, "variable": variable })))
+            }
+            methods::REMOVE_PEER_KEY => {
+                let p: KeyParams = zend_rpc::parse_params(given())?;
+                let peer = self.link.find(&p.peer)?;
+                let removed = self.link.keys().remove(&peer, &p.provider).map_err(RpcError::Failed)?;
+                // Its live runs on that key end; the next is refused.
+                grants_changed(&self.link.data_dir);
+                Ok(RpcReply::Value(json!({ "peer": peer, "provider": p.provider, "removed": removed })))
+            }
+            methods::LIST_PEER_KEYS => {
+                let names: std::collections::BTreeMap<String, Option<String>> =
+                    self.link.book.list().into_iter().map(|p| (p.key, p.name)).collect();
+                let keys: Vec<Value> = self
+                    .link
+                    .keys()
+                    .list()
+                    .into_iter()
+                    .map(|(peer, providers)| json!({ "peer": peer, "name": names.get(&peer).cloned().flatten(), "providers": providers }))
+                    .collect();
+                Ok(RpcReply::Value(json!({ "keys": keys })))
             }
             methods::PEER_PAIR => self.link.pair().await.map(RpcReply::Value),
             methods::PEER_JOIN => {

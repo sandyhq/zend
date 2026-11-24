@@ -23,6 +23,14 @@
 //!   link-local, carrier-grade NAT (the tailnet) or host address or subnet
 //!   ([`BLOCKED_NETWORKS`]); DNS through pasta's forwarder.
 //!
+//! A run on keys of its own ([`Sandbox::with_keys`], a chat another server
+//! started) gets none of the owner's login files and, of every credential
+//! in its environment, only the keys it was given ([`only_keys`]).
+//!
+//! Its root is a project folder ([`check_root`]) or a working copy Zend
+//! made for it in its own data ([`check_copy_root`]): a chat another server
+//! started works there, never in the owner's folder.
+//!
 //! It never falls back to running unconfined: no bubblewrap or pasta, a
 //! root outside the allowed folders ([`check_root`]), or a launch that can't
 //! set up its namespaces (checked by starting it once, [`Launch::new`]) is
@@ -139,6 +147,8 @@ pub struct Sandbox {
     pasta: PathBuf,
     ip: PathBuf,
     state: Option<PathBuf>,
+    /// The run's own keys ([`Self::with_keys`]): no owner login, only these.
+    keys: Option<std::collections::BTreeMap<String, String>>,
 }
 
 fn refuse(why: impl std::fmt::Display) -> HarnessError {
@@ -216,20 +226,75 @@ pub fn check_root(root: &Path, home: &Path, hidden: &[PathBuf]) -> Result<PathBu
     Ok(canonical)
 }
 
+/// A working copy's root, canonical: a folder directly in `copies` (where
+/// Zend keeps the working copies of chats other servers start, in its own
+/// data: hidden, so [`check_root`] refuses it), its name not hidden, that
+/// is not and holds neither the home nor a hidden folder. Only that folder
+/// is bound: the rest of Zend's data stays out of sight.
+pub fn check_copy_root(root: &Path, copies: &Path, home: &Path, hidden: &[PathBuf]) -> Result<PathBuf, HarnessError> {
+    let canonical = std::fs::canonicalize(root)
+        .map_err(|e| refuse(format!("its working copy {}: {e}", root.display())))?;
+    if !canonical.is_dir() {
+        return Err(refuse(format!("{} is not a folder", canonical.display())));
+    }
+    let copies = std::fs::canonicalize(copies)
+        .map_err(|e| refuse(format!("the working copies' folder {}: {e}", copies.display())))?;
+    let named = canonical.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if canonical.parent() != Some(copies.as_path()) || named.is_empty() || named.starts_with('.') {
+        return Err(refuse(format!(
+            "{} is not a working copy in {}",
+            canonical.display(),
+            copies.display()
+        )));
+    }
+    let home = canonical_or(home);
+    if home.starts_with(&canonical) {
+        return Err(refuse(format!("its working copy {} would show the home folder", canonical.display())));
+    }
+    for dir in hidden_dirs(&home, hidden) {
+        if dir.starts_with(&canonical) {
+            return Err(refuse(format!(
+                "its working copy {} would show {}",
+                canonical.display(),
+                dir.display()
+            )));
+        }
+    }
+    Ok(canonical)
+}
+
+/// bubblewrap, pasta and `ip`, or why the run can't be sandboxed.
+fn tools_of(host: &Host) -> Result<(PathBuf, PathBuf, PathBuf), HarnessError> {
+    if !cfg!(target_os = "linux") {
+        return Err(refuse("sandboxed sessions need Linux with bubblewrap"));
+    }
+    let bwrap = tool(&host.bwrap, "bwrap", "bubblewrap (bwrap)")?;
+    let pasta = tool(&host.pasta, "pasta", "pasta (passt), the sandbox's network,")?;
+    let ip = tool(&None, "ip", "ip (iproute2)")?;
+    Ok((bwrap, pasta, ip))
+}
+
 impl Sandbox {
     /// Confine to `root` (the chat's granted project folder). Refused, never
     /// relaxed: no bubblewrap, pasta or `ip`; a root [`check_root`] refuses.
     pub fn project(root: &Path, host: Host) -> Result<Self, HarnessError> {
-        if !cfg!(target_os = "linux") {
-            return Err(refuse("sandboxed sessions need Linux with bubblewrap"));
-        }
-        let bwrap = tool(&host.bwrap, "bwrap", "bubblewrap (bwrap)")?;
-        let pasta = tool(&host.pasta, "pasta", "pasta (passt), the sandbox's network,")?;
-        let ip = tool(&None, "ip", "ip (iproute2)")?;
+        let tools = tools_of(&host)?;
         let root = check_root(root, &host.home, &host.hidden)?;
+        Ok(Self::new(root, host, tools))
+    }
+
+    /// Confine to `root`, a working copy in `copies` ([`check_copy_root`]).
+    /// Refused as [`Self::project`] is.
+    pub fn working_copy(root: &Path, copies: &Path, host: Host) -> Result<Self, HarnessError> {
+        let tools = tools_of(&host)?;
+        let root = check_copy_root(root, copies, &host.home, &host.hidden)?;
+        Ok(Self::new(root, host, tools))
+    }
+
+    fn new(root: PathBuf, host: Host, (bwrap, pasta, ip): (PathBuf, PathBuf, PathBuf)) -> Self {
         let home = canonical_or(&host.home);
         let hidden = hidden_dirs(&home, &host.hidden);
-        Ok(Self {
+        Self {
             root,
             host,
             home,
@@ -238,7 +303,25 @@ impl Sandbox {
             pasta,
             ip,
             state: None,
-        })
+            keys: None,
+        }
+    }
+
+    /// Run on these keys of its own (variable name → key, each one of
+    /// [`PROVIDER_KEYS`]): none of the owner's login files is bound,
+    /// whatever its driver asks for, and of the credentials in its
+    /// environment only these reach it ([`only_keys`]). Empty: none at all.
+    pub fn with_keys(mut self, keys: std::collections::BTreeMap<String, String>) -> Result<Self, HarnessError> {
+        if let Some(name) = keys.keys().find(|name| !PROVIDER_KEYS.contains(&name.as_str())) {
+            return Err(refuse(format!("{name} is not a provider's API key variable")));
+        }
+        self.keys = Some(keys);
+        Ok(self)
+    }
+
+    /// The keys it runs on ([`Self::with_keys`]), if it runs on its own.
+    pub fn own_keys(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        self.keys.as_ref()
     }
 
     /// Also give the run `dir`, read-write at the same path: what the agent
@@ -514,6 +597,75 @@ pub const PROVIDER_KEYS: [&str; 38] = [
     "ANTHROPIC_WORKSPACE_ID",
 ];
 
+/// The variable a model provider's API key is read from (pi-ai's
+/// `env-api-keys`, Pi 1.5.2), for the providers [`PROVIDER_KEYS`] lists;
+/// `None` for one that signs in only with a login (`openai-codex`,
+/// `github-copilot`) or isn't known.
+pub fn provider_key_var(provider: &str) -> Option<&'static str> {
+    Some(match provider {
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "azure" => "AZURE_OPENAI_API_KEY",
+        "google" => "GEMINI_API_KEY",
+        "google-vertex" => "GOOGLE_CLOUD_API_KEY",
+        "ant-ling" => "ANT_LING_API_KEY",
+        "qwen-token-plan" | "qwen-token-plan-individual" => "QWEN_TOKEN_PLAN_API_KEY",
+        "qwen-token-plan-cn" | "qwen-token-plan-individual-cn" => "QWEN_TOKEN_PLAN_CN_API_KEY",
+        "nvidia" => "NVIDIA_API_KEY",
+        "deepseek" => "DEEPSEEK_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "cerebras" => "CEREBRAS_API_KEY",
+        "xai" => "XAI_API_KEY",
+        "typesafe" => "TYPESAFE_API_KEY",
+        "radius" => "RADIUS_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
+        "vercel-ai-gateway" => "AI_GATEWAY_API_KEY",
+        "zai" => "ZAI_API_KEY",
+        "zai-coding-cn" => "ZAI_CODING_CN_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        "minimax" => "MINIMAX_API_KEY",
+        "minimax-cn" => "MINIMAX_CN_API_KEY",
+        "moonshotai" | "moonshotai-cn" => "MOONSHOT_API_KEY",
+        "fireworks" => "FIREWORKS_API_KEY",
+        "together" => "TOGETHER_API_KEY",
+        "baseten" => "BASETEN_API_KEY",
+        "opencode" | "opencode-go" => "OPENCODE_API_KEY",
+        "kimi-coding" => "KIMI_API_KEY",
+        "meta" => "META_API_KEY",
+        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => "CLOUDFLARE_API_KEY",
+        "xiaomi" => "XIAOMI_API_KEY",
+        "xiaomi-token-plan-cn" => "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+        "xiaomi-token-plan-ams" => "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+        "xiaomi-token-plan-sgp" => "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+        _ => return None,
+    })
+}
+
+/// Whether `key` names a credential: a provider key ([`PROVIDER_KEYS`]) or
+/// any variable whose name says key, token, secret, password, credential
+/// or auth.
+fn is_credential(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    PROVIDER_KEYS.contains(&key)
+        || ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+            .iter()
+            .any(|word| upper.contains(word))
+}
+
+/// `env` for a run on its own keys ([`Sandbox::with_keys`]): every
+/// credential taken out ([`is_credential`]), whoever set it, then `keys`
+/// put in.
+pub fn only_keys(
+    mut env: std::collections::BTreeMap<OsString, OsString>,
+    keys: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<OsString, OsString> {
+    env.retain(|key, _| key.to_str().is_some_and(|key| !is_credential(key)));
+    for (key, value) in keys {
+        env.insert(key.into(), value.into());
+    }
+    env
+}
+
 /// The agent's own variables: its settings and, for the agents that sign
 /// in with API keys, those keys.
 fn harness_prefixes(harness: HarnessId) -> &'static [&'static str] {
@@ -639,11 +791,14 @@ pub struct Launch {
     /// bubblewrap's own arguments (for tests and logs).
     bwrap_args: Vec<OsString>,
     home: PathBuf,
+    /// Its own keys ([`Sandbox::with_keys`]): only these credentials.
+    keys: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl Launch {
     /// The launch of `exe` (the agent CLI) for `harness`, in `cwd` (inside
-    /// the sandbox's root), with `logins` (from [`logins`]) read-only.
+    /// the sandbox's root), with `logins` (from [`logins`]) read-only, none
+    /// for a sandbox on its own keys ([`Sandbox::with_keys`]).
     /// Starts it once with the same mounts and network (running `true`), so a
     /// device where it can't make its namespaces fails here, plainly,
     /// rather than as an agent that exits at once.
@@ -743,6 +898,7 @@ impl Launch {
         for (source, target) in &binds {
             push(&["--ro-bind".as_ref(), source.as_os_str(), target.as_os_str()]);
         }
+        let logins = if sandbox.keys.is_some() { &[][..] } else { logins };
         for file in logins {
             if let Ok(real) = std::fs::canonicalize(file) {
                 if let Some(hidden) = sandbox.hidden.iter().find(|dir| real.starts_with(dir)) {
@@ -821,6 +977,7 @@ impl Launch {
             args,
             bwrap_args,
             home,
+            keys: sandbox.keys.clone(),
         };
         launch.preflight()?;
         Ok(launch)
@@ -870,7 +1027,10 @@ impl Launch {
             .get_envs()
             .map(|(k, v)| (k.to_os_string(), v.map(OsStr::to_os_string)))
             .collect();
-        let env = final_env(self.harness, &self.home, std::env::vars_os(), explicit);
+        let mut env = final_env(self.harness, &self.home, std::env::vars_os(), explicit);
+        if let Some(keys) = &self.keys {
+            env = only_keys(env, keys);
+        }
         let std = command.as_std_mut();
         std.env_clear();
         std.envs(env);
@@ -1036,6 +1196,59 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("bubblewrap (bwrap) was not found"), "{error}");
+    }
+
+    /// A working copy is a folder directly in the copies' folder (in Zend's
+    /// data, hidden), and nothing else there or around it.
+    #[test]
+    fn only_a_folder_directly_in_the_copies_folder_is_a_working_copy() {
+        let home = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(home.path()).unwrap();
+        let data = home.join(".zend");
+        let copies = data.join("peer-copies");
+        for dir in ["c", "c/sub", ".dot", "c.meta"] {
+            std::fs::create_dir_all(copies.join(dir)).unwrap();
+        }
+        std::fs::create_dir_all(home.join("projects/a")).unwrap();
+        let hidden = vec![data.clone()];
+        let check = |root: &Path| check_copy_root(root, &copies, &home, &hidden);
+        assert_eq!(check(&copies.join("c")).unwrap(), copies.join("c"));
+        for bad in [copies.clone(), copies.join("c/sub"), copies.join(".dot"), data.clone(), home.clone(), home.join("projects/a")] {
+            assert!(check(&bad).is_err(), "{}", bad.display());
+        }
+        // A link in the copies' folder to the owner's project: judged by its target.
+        std::os::unix::fs::symlink(home.join("projects/a"), copies.join("link")).unwrap();
+        assert!(check(&copies.join("link")).is_err());
+        // The project check still refuses it.
+        assert!(check_root(&copies.join("c"), &home, &hidden).is_err());
+    }
+
+    /// On its own keys: every credential out, whoever set it; its keys in.
+    #[test]
+    fn a_run_on_its_own_keys_gets_only_those() {
+        let env: std::collections::BTreeMap<OsString, OsString> = [
+            ("PATH", "/usr/bin"),
+            ("HOME", "/h"),
+            ("ANTHROPIC_API_KEY", "owner"),
+            ("OPENAI_API_KEY", "owner"),
+            ("PI_AUTH_TOKEN", "owner"),
+            ("PI_CODING_AGENT_DIR", "/h/.pi/agent"),
+            ("ANTHROPIC_ORGANIZATION_ID", "org"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let keys = [("ANTHROPIC_API_KEY".to_string(), "theirs".to_string())].into_iter().collect();
+        let out = only_keys(env, &keys);
+        let names: Vec<_> = out.keys().map(|k| k.to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["ANTHROPIC_API_KEY", "HOME", "PATH", "PI_CODING_AGENT_DIR"]);
+        assert_eq!(out[OsStr::new("ANTHROPIC_API_KEY")], "theirs");
+        assert_eq!(provider_key_var("anthropic"), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(provider_key_var("openai-codex"), None);
+        for provider in ["openai", "google", "openrouter", "xai", "zai", "mistral", "moonshotai"] {
+            let var = provider_key_var(provider).unwrap();
+            assert!(PROVIDER_KEYS.contains(&var), "{provider}: {var}");
+        }
     }
 
     #[test]

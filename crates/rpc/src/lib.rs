@@ -804,6 +804,25 @@ pub mod methods {
     pub const SET_PEER_GRANTS: &str = "SetPeerGrants";
     /// `{peer}` → `{removed}`: forget a paired server; its connections end.
     pub const UNPAIR_PEER: &str = "UnpairPeer";
+    /// `{}` → `{copies: [{chat, peer, project, owner, kind, branch?,
+    /// changes: [{path, status}] | error}]}`: the working copies of
+    /// servers' chats here and what each changed since its base.
+    pub const LIST_PEER_CHANGES: &str = "ListPeerChanges";
+    /// `{chat}` → `{chat, patch}`: what that copy changed, as a patch.
+    pub const SHOW_PEER_CHANGES: &str = "ShowPeerChanges";
+    /// `{chat}` → `{chat, applied: [path]}`: write what that copy changed
+    /// into the project's folder (all or nothing).
+    pub const APPLY_PEER_CHANGES: &str = "ApplyPeerChanges";
+    /// `{chat}` → `{chat, discarded}`: throw that copy away; the chats
+    /// working in it no longer run.
+    pub const DISCARD_PEER_CHANGES: &str = "DiscardPeerChanges";
+    /// `{peer, provider, key}` → `{peer, provider, variable}`: the API key a
+    /// server's confined chats run on for that provider.
+    pub const SET_PEER_KEY: &str = "SetPeerKey";
+    /// `{peer, provider}` → `{peer, provider, removed}`.
+    pub const REMOVE_PEER_KEY: &str = "RemovePeerKey";
+    /// `{}` → `{keys: [{peer, name?, providers: [..]}]}`: names only.
+    pub const LIST_PEER_KEYS: &str = "ListPeerKeys";
     /// A paired server's (`projects.share:<project>`): `{project, path?}` →
     /// `{entries: [{name, kind, size?}]}`, a folder of that project by a
     /// path from its root.
@@ -879,6 +898,14 @@ pub fn local_only(method: &str) -> bool {
             | methods::LIST_PEERS
             | methods::SET_PEER_GRANTS
             | methods::UNPAIR_PEER
+            // Servers' chats' working copies and their API keys: the owner's.
+            | methods::LIST_PEER_CHANGES
+            | methods::SHOW_PEER_CHANGES
+            | methods::APPLY_PEER_CHANGES
+            | methods::DISCARD_PEER_CHANGES
+            | methods::SET_PEER_KEY
+            | methods::REMOVE_PEER_KEY
+            | methods::LIST_PEER_KEYS
     )
 }
 

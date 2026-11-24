@@ -149,10 +149,11 @@ pub enum PeerCommand {
     /// sessions.run.unconfined:<project>, projects.share:<project>,
     /// workers.manage. sessions.run.unconfined is full trust: an agent it
     /// runs works as you on this server and can read Zend's IPC token.
-    /// sessions.run:<project> lets the server's agent write that folder:
-    /// treat it as untrusted for your own tools from then on (its .git, .pi,
-    /// .claude, .codex, .vscode and the like stay read-only to the agent,
-    /// but AGENTS.md, build scripts and the code are writable).
+    /// sessions.run:<project> runs the server's chats sandboxed in a working
+    /// copy of that project in Zend's data (a git worktree on a branch
+    /// zend-peer/<chat>, or a copy), never in your folder, on the server's
+    /// own API key (zend peer key set); what they change reaches your
+    /// folder only through zend peer changes apply.
     Grant {
         /// The server: its key, a key prefix (8+) or its name.
         peer: String,
@@ -163,6 +164,60 @@ pub enum PeerCommand {
         /// The server: its key, a key prefix (8+) or its name.
         peer: String,
     },
+    /// What the chats paired servers run here changed in their working
+    /// copies, and bringing it into your project folder.
+    #[command(subcommand)]
+    Changes(PeerChangesCommand),
+    /// The API keys a paired server's sandboxed chats run on, one per model
+    /// provider. They never get your own logins.
+    #[command(subcommand)]
+    Key(PeerKeyCommand),
+}
+
+#[derive(Subcommand)]
+pub enum PeerChangesCommand {
+    /// Every working copy: its chat, server, project and changed files.
+    List,
+    /// What a working copy changed since it was made (or last applied), as a patch.
+    Show {
+        /// The chat the copy was made for.
+        chat: String,
+    },
+    /// Write what a working copy changed into your project folder: all or
+    /// nothing. Refused for .git and the agents' and tools' settings
+    /// folders (.pi, .claude, .vscode, …), symbolic links, paths through a
+    /// link in your folder, and files you changed since the copy was made.
+    Apply {
+        /// The chat the copy was made for.
+        chat: String,
+    },
+    /// Throw a working copy away (and its branch): its chats stop running.
+    Discard {
+        /// The chat the copy was made for.
+        chat: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PeerKeyCommand {
+    /// Keep the API key (read from stdin) a server's chats use for a
+    /// provider (anthropic, openai, google, openrouter, …). Kept owner-only
+    /// in Zend's data, never synced, never sent anywhere but into those
+    /// chats' sandbox, as the provider's variable (ANTHROPIC_API_KEY, …).
+    Set {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        /// The model provider, as in Pi's model ids (anthropic/claude-…).
+        provider: String,
+    },
+    /// Forget a server's key for a provider: its runs on it stop.
+    Rm {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        provider: String,
+    },
+    /// The providers each server has a key for (names only).
+    List,
 }
 
 #[derive(Subcommand)]

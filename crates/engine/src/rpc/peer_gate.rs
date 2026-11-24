@@ -241,6 +241,7 @@ impl EngineRpc {
         // registered folder (never one from the request); a chat a confined
         // chat makes, its parent's, in its parent's project only, whatever
         // the grant.
+        let mut made_copy = None;
         let root = match calling.as_deref().and_then(|c| self.sessions.chat_sandbox(c)) {
             Some(mark) => {
                 let calling = calling.as_deref().unwrap_or_default();
@@ -257,19 +258,35 @@ impl EngineRpc {
                 }
                 Some(mark.root.ok_or_else(|| refused(format!("createChat: chat {calling}'s sandbox has no project folder")))?)
             }
-            None if !unconfined => Some(
-                std::fs::canonicalize(&space.path)
-                    .map_err(|e| refused(format!("createChat: project {}: its folder: {e}", space.id)))?,
-            ),
+            // A chat of its own: a working copy of the project in Zend's
+            // data, never the owner's folder (step 4d-2).
+            None if !unconfined => {
+                let copies = self
+                    .sessions
+                    .peer_copies()
+                    .ok_or_else(|| refused("createChat: this engine keeps no working copies for servers' chats"))?;
+                let copy = copies
+                    .create(&chat_id, peer, &space.id, std::path::Path::new(&space.path))
+                    .map_err(|e| refused(format!("createChat: project {}: its working copy: {e}", space.id)))?;
+                made_copy = Some(copies);
+                Some(copy)
+            }
             None => None,
+        };
+        let undo_copy = |made: &Option<crate::peer_copies::Copies>| {
+            if let Some(copies) = made
+                && let Err(error) = copies.discard(&chat_id)
+            {
+                tracing::warn!(chat = %chat_id, %error, "peer link: a working copy of a chat not made stays");
+            }
         };
         let confined = root.is_some();
         // None would run with the row's fallback (full access): a confined
         // chat gets this device's default harness under this side's pins.
         let config = match config {
-            Some(config) if confined => Some(self.peer_confined_config(config).await?),
-            None if confined => Some(
-                self.peer_confined_config(ChatConfig {
+            Some(config) if confined => self.peer_confined_config(config).await.map(Some),
+            None if confined => self
+                .peer_confined_config(ChatConfig {
                     harness: self.doc_host.harness_for(&chat_id),
                     model: None,
                     reasoning: None,
@@ -278,19 +295,30 @@ impl EngineRpc {
                     access: AccessMode::Supervised,
                     plan: false,
                 })
-                .await?,
-            ),
-            other => other,
+                .await
+                .map(Some),
+            other => Ok(other),
+        };
+        let config = match config {
+            Ok(config) => config,
+            Err(error) => {
+                undo_copy(&made_copy);
+                return Err(error);
+            }
         };
         // Kept as the server's, and confined, before it exists: it never
         // runs unmarked.
         let chats = self.sessions.peer_chats();
-        chats.note(&chat_id, peer).map_err(|e| RpcError::Failed(format!("createChat: {e}")))?;
+        if let Err(e) = chats.note(&chat_id, peer) {
+            undo_copy(&made_copy);
+            return Err(RpcError::Failed(format!("createChat: {e}")));
+        }
         if let Some(root) = &root
             && let Err(error) = self.sessions.sandbox_chat(&chat_id, root).await
         {
             // Marked all the same, with no folder: it never runs.
             chats.forget(&chat_id);
+            undo_copy(&made_copy);
             return Err(refused(format!("createChat: it can't run sandboxed in project {}: {error}", space.id)));
         }
         let created = self.mutate(MutateParams::CreateChat {
@@ -307,6 +335,7 @@ impl EngineRpc {
         });
         if let Err(error) = created {
             chats.forget(&chat_id);
+            undo_copy(&made_copy);
             return Err(error);
         }
         tracing::info!(chat = %chat_id, space = %space.id, confined, "peer link: a paired server created a chat");

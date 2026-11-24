@@ -1279,7 +1279,8 @@ impl SessionsEngine {
         // all, decided before anything of the turn is recorded or routed.
         // A chat a server made: only while that server may still run it.
         self.inner.peer_may_run(chat_id)?;
-        let sandbox = self.inner.run_sandbox(chat_id, harness_id, &request.cwd)?;
+        request.cwd = self.inner.copy_cwd(chat_id, &request.cwd);
+        let sandbox = self.inner.run_sandbox(chat_id, harness_id, &request.cwd, request.model.as_deref())?;
         // What this host's plugins tell the chat's agent
         // (`session.instructions`), never what a sender put here. Stamped
         // before routing, so a live runtime is compared with what holds now:
@@ -2361,7 +2362,12 @@ impl SessionsEngine {
         root: &std::path::Path,
     ) -> Result<std::path::PathBuf, EngineError> {
         let host = self.inner.sandbox_host();
-        let checked = zend_harness::sandbox::check_root(root, &host.home, &host.hidden);
+        // A working copy in Zend's data (a server's chat's, step 4d-2) is
+        // checked as one; any other root as a project folder.
+        let checked = match self.inner.copies().filter(|copies| copies.holds(root)) {
+            Some(copies) => zend_harness::sandbox::check_copy_root(root, copies.dir(), &host.home, &host.hidden),
+            None => zend_harness::sandbox::check_root(root, &host.home, &host.hidden),
+        };
         let marked = checked.as_ref().ok().map(std::path::PathBuf::as_path);
         // The mark first: a dispatch from here on reads it.
         self.inner
@@ -2387,6 +2393,17 @@ impl SessionsEngine {
     /// The sandbox [`Self::sandbox_chat`] marked `chat_id` with, if any.
     pub fn chat_sandbox(&self, chat_id: &str) -> Option<crate::run_journal::SandboxMark> {
         self.inner.journal.sandbox(chat_id)
+    }
+
+    /// The working copies of servers' chats ([`crate::peer_copies`]), once
+    /// the data dir is wired.
+    pub fn peer_copies(&self) -> Option<crate::peer_copies::Copies> {
+        self.inner.copies()
+    }
+
+    /// The servers' API keys ([`crate::peer_keys`]), once the data dir is wired.
+    pub fn peer_keys(&self) -> Option<crate::peer_keys::PeerKeys> {
+        self.inner.peer_keys().ok()
     }
 
     /// [`Self::terminate`], of the run `run_id` only when given.
@@ -3347,7 +3364,29 @@ impl Inner {
             .doc_host()
             .and_then(|host| host.workspace().and_then(|w| w.chat(chat_id).ok().flatten()))
             .and_then(|chat| chat.space_id);
-        let marked = self.journal.sandbox(chat_id).is_some();
+        let mark = self.journal.sandbox(chat_id);
+        let marked = mark.is_some();
+        // Confined: in a working copy that is still there, on a key its
+        // server still has (step 4d-2, 4d-3). Checked here too so a copy
+        // thrown away or a key taken away ends its live runs.
+        if let Some(mark) = &mark {
+            let root = mark.root.as_deref();
+            if !root.is_some_and(|root| self.copies().is_some_and(|c| c.holds(root)) && root.is_dir()) {
+                return Err(EngineError::Other(format!(
+                    "chat {chat_id}: a paired server's chat, and its working copy is gone (or it was started before chats of servers got one): it doesn't run"
+                )));
+            }
+            let config = self
+                .doc_host()
+                .and_then(|host| host.workspace().and_then(|w| w.chat(chat_id).ok().flatten()))
+                .and_then(|chat| chat.config);
+            if let Some(config) = config {
+                let provider = crate::peer_keys::provider_of(config.harness, config.model.as_deref());
+                if let Err(why) = self.peer_keys().and_then(|keys| keys.for_run(&peer, provider.as_deref()).map(drop)) {
+                    return Err(EngineError::Other(format!("chat {chat_id}: a paired server's chat: {why}: it doesn't run")));
+                }
+            }
+        }
         let why = match project.as_deref().and_then(|p| grants.runs_in(p)) {
             Some(true) => return Ok(()),
             Some(false) if marked => return Ok(()),
@@ -3368,6 +3407,7 @@ impl Inner {
         chat_id: &str,
         harness_id: HarnessId,
         cwd: &str,
+        model: Option<&str>,
     ) -> Result<Option<zend_harness::sandbox::Sandbox>, EngineError> {
         let Some(mark) = self.journal.sandbox(chat_id) else {
             return Ok(None);
@@ -3397,9 +3437,63 @@ impl Inner {
                 harness_id.as_str()
             )));
         }
-        let sandbox = zend_harness::sandbox::Sandbox::project(&root, self.sandbox_host())?
-            .with_state(&self.journal.sandbox_state_dir(chat_id))?;
+        // A server's chat: in its working copy (never the owner's folder),
+        // on its server's own key for the model's provider, none of this
+        // device's logins (steps 4d-2, 4d-3).
+        let peer = crate::peer_chats::PeerChats::new(self.journal.dir()).peer(chat_id);
+        let copies = self.copies().filter(|copies| copies.holds(&root));
+        let sandbox = match (&peer, copies) {
+            (Some(peer), Some(copies)) => {
+                let provider = crate::peer_keys::provider_of(harness_id, model);
+                let keys = self.peer_keys().map_err(&refuse)?;
+                let (var, key) = keys.for_run(peer, provider.as_deref()).map_err(&refuse)?;
+                zend_harness::sandbox::Sandbox::working_copy(&root, copies.dir(), self.sandbox_host())?
+                    .with_keys([(var, key)].into_iter().collect())?
+            }
+            (Some(_), None) => {
+                return Err(refuse(
+                    "a paired server's chat runs only in a working copy of its own, and it has none (it was started before they had one)".into(),
+                ));
+            }
+            (None, Some(copies)) => zend_harness::sandbox::Sandbox::working_copy(&root, copies.dir(), self.sandbox_host())?,
+            (None, None) => zend_harness::sandbox::Sandbox::project(&root, self.sandbox_host())?,
+        };
+        let sandbox = sandbox.with_state(&self.journal.sandbox_state_dir(chat_id))?;
         Ok(Some(sandbox))
+    }
+
+    /// The working copies of servers' chats, once the data dir is wired.
+    fn copies(&self) -> Option<crate::peer_copies::Copies> {
+        self.peers_data_dir.get().map(|dir| crate::peer_copies::Copies::new(dir))
+    }
+
+    /// The servers' API keys, once the data dir is wired.
+    fn peer_keys(&self) -> Result<crate::peer_keys::PeerKeys, String> {
+        self.peers_data_dir
+            .get()
+            .map(|dir| crate::peer_keys::PeerKeys::new(dir))
+            .ok_or_else(|| "this engine keeps no servers' API keys".to_string())
+    }
+
+    /// `cwd` of a run of `chat_id` in its working copy: a folder of the
+    /// owner's project the copy was made of is taken to the same folder in
+    /// the copy. Any other `cwd` as given.
+    fn copy_cwd(&self, chat_id: &str, cwd: &str) -> String {
+        let Some(root) = self.journal.sandbox(chat_id).and_then(|mark| mark.root) else {
+            return cwd.to_string();
+        };
+        let Some(copies) = self.copies().filter(|copies| copies.holds(&root)) else {
+            return cwd.to_string();
+        };
+        let Some(meta) = root.file_name().and_then(|name| copies.meta(&name.to_string_lossy()).ok()) else {
+            return cwd.to_string();
+        };
+        let path = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+        match path.strip_prefix(&meta.owner) {
+            Ok(rest) if rest.as_os_str().is_empty() => root.to_string_lossy().into_owned(),
+            Ok(rest) => root.join(rest).to_string_lossy().into_owned(),
+            Err(_) => cwd.to_string(),
+        }
     }
 
     /// This host, for a sandbox: its home, and this engine's data
@@ -3408,6 +3502,7 @@ impl Inner {
         let mut host = zend_harness::sandbox::Host::current();
         host.hidden.extend(self.journal.dir().parent().map(std::path::Path::to_path_buf));
         host.hidden.extend(self.scratch_root.get().cloned());
+        host.hidden.extend(self.peers_data_dir.get().cloned());
         host
     }
 
