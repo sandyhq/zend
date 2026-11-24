@@ -398,6 +398,11 @@ async fn a_confined_chat_takes_this_sides_access_not_the_peers() {
     let reply = a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "odd", "spaceId": "p", "config": odd })).await;
     assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("modelOptions")), "{reply:?}");
     assert!(a.core.workspace.chat("odd").unwrap().is_none());
+    // No config at all: this device's default harness, under the same pins
+    // (the row's fallback would run it with full access).
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "bare", "spaceId": "p" })).await.expect("create bare");
+    let kept = a.core.workspace.chat("bare").unwrap().unwrap().config.expect("a config of this side's");
+    assert_eq!((kept.harness, kept.sandbox, kept.access, kept.plan), (HarnessId::Mock, SandboxLevel::WorkspaceWrite, zend_proto::AccessMode::Supervised, false));
 }
 
 /// One run of [`ShellAgent`]: its folder, its sandbox's root (None:
@@ -579,4 +584,242 @@ async fn a_peer_chat_runs_in_bubblewrap_in_its_project_and_so_do_its_children() 
     assert!(outside.as_ref().is_err_and(|e| e.to_string().contains("outside its project")), "{outside:?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(runs.lock().unwrap().len(), 2, "{:?}", runs.lock().unwrap());
+}
+
+/// An agent that records each prompt it gets and completes the turn, except
+/// one that starts with "block": that streams and then holds until it's
+/// stopped (an event's prompt may quote one, and completes).
+/// Steerable, its mailbox kept open while it holds.
+struct Holder {
+    prompts: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl zend_harness::Harness for Holder {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Holder"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> zend_proto::SteeringMode {
+        zend_proto::SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[zend_proto::ReasoningLevel] {
+        &[]
+    }
+    async fn models(&self) -> Result<Vec<zend_proto::Model>, zend_harness::HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: zend_harness::RunControls,
+    ) -> Result<futures::stream::BoxStream<'static, Result<zend_proto::AgentEvent, zend_harness::HarnessError>>, zend_harness::HarnessError>
+    {
+        use futures::StreamExt as _;
+        use zend_proto::AgentEvent;
+        let n = {
+            let mut prompts = self.prompts.lock().unwrap();
+            prompts.push(request.prompt.clone());
+            prompts.len()
+        };
+        let hold = request.prompt.starts_with("block");
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: vec![],
+                cwd: request.cwd.clone(),
+                session_id: format!("hs-{n}"),
+                assistant_message_id: format!("a-{n}"),
+            }));
+            let _ = tx.send(Ok(AgentEvent::TextDelta { text: "working…".into() }));
+            if hold {
+                let _steering = controls.steering;
+                controls.interrupt.cancelled().await;
+                return;
+            }
+            let _ = tx.send(Ok(AgentEvent::Done {
+                status: zend_proto::DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: Some(format!("hs-{n}")),
+            }));
+        });
+        Ok(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed())
+    }
+}
+
+async fn until(mut done: impl FnMut() -> bool, what: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !done() {
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn working(core: &EngineCore, chat: &str) -> bool {
+    core.sessions.has_run(chat)
+        && core.sessions.session_status(chat).is_some_and(|s| s.status == zend_proto::SessionStatus::Working)
+}
+
+fn holding() -> (HarnessRegistry, Arc<Mutex<Vec<String>>>) {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Holder { prompts: prompts.clone() }));
+    (registry, prompts)
+}
+
+fn prompted(prompts: &Arc<Mutex<Vec<String>>>, needle: &str) -> usize {
+    prompts.lock().unwrap().iter().filter(|p| p.contains(needle)).count()
+}
+
+/// B's chat (unconfined, then confined) and its own run's prompt.
+async fn queue(a: &Paired, chat: &str, prompt: &str) {
+    let mut queued = run(chat, &a.root.join("p").to_string_lossy());
+    queued["command"]["request"]["prompt"] = prompt.into();
+    queued["command"]["messageId"] = format!("m-{chat}-{prompt}").replace(' ', "-").into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("queued");
+}
+
+/// Unpairing a server ends the live runs of its chats here, and what would
+/// start a turn in one afterwards doesn't: a child's event to its parent
+/// (checked against the same child stopped by a Stop while still paired,
+/// which does start one).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unpairing_ends_a_servers_runs_and_no_child_event_starts_one() {
+    let (registry, prompts) = holding();
+    let a = paired_with(&["sessions.run.unconfined:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "workspace-write" });
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "parent", "spaceId": "p", "config": config })).await.expect("parent");
+    queue(&a, "parent", "hello parent").await;
+    until(|| prompted(&prompts, "hello parent") == 1 && !working(&a.core, "parent"), "the parent's turn").await;
+    let rpc = a.core.rpc_service();
+    with_caller(Caller::Agent { chat: Some("parent".into()) }, rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "kid", "spaceId": "p", "deviceId": a.core.device_id,
+        "parentChatId": "parent", "childKind": "subagent", "config": config,
+    }))).await.expect("the parent's agent makes a child");
+
+    // Control: paired, the child stopped: its parent hears in a turn.
+    queue(&a, "kid", "block one").await;
+    until(|| working(&a.core, "kid"), "the child's held turn").await;
+    a.core.sessions.interrupt("kid").await.unwrap();
+    until(|| prompted(&prompts, "[Zend event: ") == 1, "the parent's event turn (control)").await;
+    until(|| !working(&a.core, "parent"), "the event turn to end").await;
+
+    // Unpaired mid-turn: the run ends, and its parent hears in no turn.
+    queue(&a, "kid", "block two").await;
+    until(|| working(&a.core, "kid"), "the child's second held turn").await;
+    a.link.unpair(&a.b_key).unwrap();
+    until(|| !a.core.sessions.has_run("kid"), "unpairing to end the child's run").await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(prompted(&prompts, "[Zend event: "), 1, "{:#?}", prompts.lock().unwrap());
+    assert!(!a.core.sessions.has_run("parent"));
+    let started = a.core.sessions.dispatch("parent", HarnessId::Mock, serde_json::from_value(run("parent", &a.root.join("p").to_string_lossy())["command"]["request"].clone()).unwrap(), None).await;
+    assert!(started.as_ref().is_err_and(|e| e.to_string().contains("may no longer run")), "{started:?}");
+}
+
+/// A grant taken down to sessions.run ends the live run of a chat started
+/// unconfined; a steer into the live run of a server's chat is refused the
+/// moment its grant is gone, before that run is ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_grant_ends_live_runs_and_refuses_steers() {
+    let (registry, _prompts) = holding();
+    let a = paired_with(&["sessions.run.unconfined:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "workspace-write" });
+    for chat in ["free", "steered"] {
+        a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": chat, "spaceId": "p", "config": config })).await.expect("create");
+        queue(&a, chat, "block").await;
+        until(|| working(&a.core, chat), "a held turn").await;
+    }
+    // Steered while granted (control), then with peers.json gone and no
+    // one told yet: refused.
+    let steer = a.core.sessions.steer("steered", "still there?", None).await;
+    assert!(matches!(steer, Ok(zend_engine::SteerOutcome::Accepted)), "{steer:?}");
+    let peers = std::fs::read(a.data.join("peers.json")).unwrap();
+    std::fs::remove_file(a.data.join("peers.json")).unwrap();
+    let steer = a.core.sessions.steer("steered", "and now?", None).await;
+    assert!(steer.as_ref().is_err_and(|e| e.to_string().contains("doesn't run")), "{steer:?}");
+    std::fs::write(a.data.join("peers.json"), peers).unwrap();
+    // Taken down to sessions.run: the unmarked chats' runs end.
+    a.link.set_grants(&a.b_key.clone(), &["sessions.run:p".into()]).unwrap();
+    until(|| !a.core.sessions.has_run("free") && !a.core.sessions.has_run("steered"), "the downgrade to end both runs").await;
+    let request: RunRequest = serde_json::from_value(run("free", &a.root.join("p").to_string_lossy())["command"]["request"].clone()).unwrap();
+    let again = a.core.sessions.dispatch("free", HarnessId::Mock, request, None).await;
+    assert!(again.as_ref().is_err_and(|e| e.to_string().contains("started unconfined")), "{again:?}");
+}
+
+/// A server's chat cut off by a shutdown is picked back up on the next boot
+/// while the server is still paired (control), and not once it's unpaired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unpaired_servers_chat_is_not_picked_back_up_on_boot() {
+    async fn revived(unpair: bool) -> usize {
+        let (registry, _) = holding();
+        let a = paired_with(&["sessions.run.unconfined:p"], registry).await;
+        a.core.sessions.set_no_ipc_port();
+        a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "cut", "spaceId": "p", "config": { "harness": HarnessId::Mock, "sandbox": "workspace-write" } })).await.expect("create");
+        queue(&a, "cut", "block").await;
+        until(|| working(&a.core, "cut"), "the held turn").await;
+        a.core.shutdown().await;
+        if unpair {
+            a.link.unpair(&a.b_key).unwrap();
+        }
+        // The first engine gone (it holds the data folder) before the next.
+        let Paired { _temp, data, core, link, b, .. } = a;
+        drop((b, link, core));
+        let (registry, prompts) = holding();
+        let core = assemble(&data, "device-a", registry);
+        core.sessions.set_no_ipc_port();
+        if !unpair {
+            until(|| prompted(&prompts, "Continue where you left off") == 1, "the cut-off turn picked back up").await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+        let n = prompted(&prompts, "Continue where you left off");
+        core.shutdown().await;
+        drop(_temp);
+        n
+    }
+    assert_eq!(revived(false).await, 1, "control: paired, picked back up");
+    assert_eq!(revived(true).await, 0, "unpaired: not picked back up");
+}
+
+/// A copy (fork) of a server's confined chat is still that server's chat,
+/// confined to the same folder; a copy of the owner's own chat is neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_of_a_servers_chat_stays_its_and_sandboxed_alike() {
+    use zend_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+    let a = paired(&["sessions.run:p"]).await;
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": { "harness": HarnessId::Mock, "sandbox": "workspace-write" } })).await.expect("create");
+    a.core.workspace.create_chat("own", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    for chat in ["theirs", "own"] {
+        a.core.doc_host.open(chat).unwrap().doc().push_message(&SessionMessageEntry {
+            duration_ms: None,
+            id: format!("{chat}-a1"),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Text { id: format!("{chat}-a1-text"), text: "done".into() }],
+            created_at: 1,
+            device_id: a.core.device_id.clone(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        }).unwrap();
+    }
+    let owner = zend_rpc::memory_client(a.core.rpc_service());
+    for (copy, source) in [("theirs-copy", "theirs"), ("own-copy", "own")] {
+        owner.call(methods::FORK_SIDE_CHAT, json!({ "chatId": copy, "sourceChatId": source })).await.expect("fork");
+    }
+    let peers = a.core.sessions.peer_chats();
+    assert_eq!(peers.peer("theirs-copy").as_deref(), Some(a.b_key.as_str()));
+    let root = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("the source is confined");
+    assert_eq!(root, a.root.join("p"));
+    assert_eq!(a.core.sessions.chat_sandbox("theirs-copy").and_then(|m| m.root), Some(root));
+    assert_eq!(peers.peer("own-copy"), None);
+    assert!(a.core.sessions.chat_sandbox("own-copy").is_none());
 }

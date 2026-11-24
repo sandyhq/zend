@@ -360,6 +360,10 @@ struct Inner {
     turn_listener: OnceLock<TurnListener>,
     /// Plugins whose native MCP servers local runs get (absent in bare tests).
     plugins: OnceLock<crate::plugins::Plugins>,
+    /// The data folder whose `peers.json` says what each paired server may
+    /// run here now ([`SessionsEngine::set_peers_data_dir`]). Unset, no
+    /// chat a server made runs ([`Inner::peer_may_run`]).
+    peers_data_dir: OnceLock<std::path::PathBuf>,
     /// Where the chats' visuals are kept: a visual the person closed
     /// without answers is told to its agent as a line on the next prompt
     /// into its chat (live_visuals `with_dismissals`). Absent in bare tests.
@@ -536,6 +540,7 @@ impl SessionsEngine {
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 plugins: OnceLock::new(),
+                peers_data_dir: OnceLock::new(),
                 visuals: OnceLock::new(),
                 warm: Mutex::new(HashMap::new()),
                 warm_leases: Mutex::new(None),
@@ -644,6 +649,42 @@ impl SessionsEngine {
     /// Wire the plugins service: local runs get its native MCP servers.
     pub fn set_plugins(&self, plugins: crate::plugins::Plugins) {
         let _ = self.inner.plugins.set(plugins);
+    }
+
+    /// Wire where paired servers' grants are kept (`{data_dir}/peers.json`):
+    /// a chat a server made runs only while it holds a grant that lets it
+    /// ([`Inner::peer_may_run`]), and when a grant changes or a server is
+    /// unpaired, the runs it lost end ([`Self::end_ungranted_peer_runs`]).
+    pub fn set_peers_data_dir(&self, data_dir: &std::path::Path) {
+        if self.inner.peers_data_dir.set(data_dir.to_path_buf()).is_err() {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        crate::peer_link::on_grants_changed(data_dir, move || {
+            let Some(inner) = weak.upgrade() else { return false };
+            let sessions = SessionsEngine { inner };
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move { sessions.end_ungranted_peer_runs().await });
+            }
+            true
+        });
+    }
+
+    /// End (as a Stop does: the runtime and all it runs) every live run of a
+    /// chat a server made that its server may no longer run
+    /// ([`Inner::peer_may_run`]). The chats this ended.
+    pub async fn end_ungranted_peer_runs(&self) -> Vec<String> {
+        let live: Vec<String> = lock(&self.inner.runs).keys().cloned().collect();
+        let mut ended = Vec::new();
+        for chat_id in live {
+            if let Err(why) = self.inner.peer_may_run(&chat_id) {
+                tracing::info!(chat = %chat_id, %why, "peer link: a server lost the grant its chat ran under: its run ends");
+                if self.interrupt(&chat_id).await.is_ok() {
+                    ended.push(chat_id);
+                }
+            }
+        }
+        ended
     }
 
     /// Wire where visuals are kept: the next prompt into a chat carries a
@@ -1236,6 +1277,8 @@ impl SessionsEngine {
         // A chat this host must confine (`ChatSandbox`, marked by
         // [`SessionsEngine::sandbox_chat`]): its confinement, or no run at
         // all, decided before anything of the turn is recorded or routed.
+        // A chat a server made: only while that server may still run it.
+        self.inner.peer_may_run(chat_id)?;
         let sandbox = self.inner.run_sandbox(chat_id, harness_id, &request.cwd)?;
         // What this host's plugins tell the chat's agent
         // (`session.instructions`), never what a sender put here. Stamped
@@ -1900,6 +1943,8 @@ impl SessionsEngine {
         };
         zend_proto::invocation::validate_harness_invocations(prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // Into a live run of a server's chat: only while it may still run it.
+        self.inner.peer_may_run(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
         // Checked under the ledger lock below, as it is handed over.
         let gate = self.stop_gate(chat_id, &user_id);
@@ -3281,6 +3326,35 @@ impl Inner {
         self.doc_host()
             .and_then(|host| host.open(chat_id).ok())
             .is_some_and(|handle| handle.continues_with_sent_message())
+    }
+
+    /// Whether a turn of `chat_id` may start or be fed now: always for a
+    /// chat no server made ([`crate::peer_chats`]); for one a server made,
+    /// only while that server holds, now, `sessions.run.unconfined` for the
+    /// chat's project, or `sessions.run` for it and the chat is sandboxed
+    /// (marked). Unpaired, ungranted, a chat moved out of the project or
+    /// grants not wired: refused.
+    fn peer_may_run(&self, chat_id: &str) -> Result<(), EngineError> {
+        let Some(peer) = crate::peer_chats::PeerChats::new(self.journal.dir()).peer(chat_id) else {
+            return Ok(());
+        };
+        let grants = self
+            .peers_data_dir
+            .get()
+            .and_then(|dir| crate::peer_link::kept_grants(dir, &peer))
+            .unwrap_or_default();
+        let project = self
+            .doc_host()
+            .and_then(|host| host.workspace().and_then(|w| w.chat(chat_id).ok().flatten()))
+            .and_then(|chat| chat.space_id);
+        let marked = self.journal.sandbox(chat_id).is_some();
+        let why = match project.as_deref().and_then(|p| grants.runs_in(p)) {
+            Some(true) => return Ok(()),
+            Some(false) if marked => return Ok(()),
+            Some(false) => "it started unconfined, and its server may now run sessions in its project only sandboxed",
+            None => "its server may no longer run sessions in its project here",
+        };
+        Err(EngineError::Other(format!("chat {chat_id}: a paired server's chat, and {why}: it doesn't run")))
     }
 
     /// The confinement a run of `chat_id` in `cwd` gets: `None` for a chat

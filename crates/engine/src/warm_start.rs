@@ -187,6 +187,7 @@ impl SessionsEngine {
         if self.inner.chat_known(chat_id)
             || request.worktree.is_some()
             || self.chat_sandbox(chat_id).is_some()
+            || self.peer_chats().peer(chat_id).is_some()
             || crate::confined::holds(std::path::Path::new(&request.cwd))
         {
             self.warm_stop(chat_id).await;

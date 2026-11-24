@@ -496,6 +496,7 @@ impl PeerLink {
                 Ok(peer.clone())
             })
             .map_err(RpcError::Failed)?;
+        grants_changed(&self.data_dir);
         Ok(json!({ "peer": peer }))
     }
 
@@ -508,6 +509,7 @@ impl PeerLink {
                 Ok(())
             })
             .map_err(RpcError::Failed)?;
+        grants_changed(&self.data_dir);
         Ok(json!({ "removed": key }))
     }
 
@@ -623,6 +625,30 @@ impl PeerLinkRpc {
         }
         Ok(())
     }
+}
+
+/// What runs when the grants kept in a data folder change (or a server is
+/// unpaired), by that folder: each returns false once its owner is gone
+/// (and is dropped then).
+type GrantsWatcher = (PathBuf, Box<dyn Fn() -> bool + Send + Sync>);
+static GRANTS_WATCHERS: Mutex<Vec<GrantsWatcher>> = Mutex::new(Vec::new());
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b || std::fs::canonicalize(a).ok().is_some_and(|a| std::fs::canonicalize(b).ok() == Some(a))
+}
+
+/// Call `watcher` whenever the grants kept in `data_dir` change or a
+/// server is unpaired there (the sessions engine ends the runs a server
+/// lost: [`crate::sessions::SessionsEngine::end_ungranted_peer_runs`]).
+pub fn on_grants_changed(data_dir: &Path, watcher: impl Fn() -> bool + Send + Sync + 'static) {
+    GRANTS_WATCHERS.lock().unwrap_or_else(|e| e.into_inner()).push((data_dir.to_path_buf(), Box::new(watcher)));
+}
+
+fn grants_changed(data_dir: &Path) {
+    GRANTS_WATCHERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(dir, watcher)| !same_dir(dir, data_dir) || watcher());
 }
 
 /// The grants kept in `data_dir` for the server holding `key`, as they are

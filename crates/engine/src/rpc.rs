@@ -4134,6 +4134,28 @@ impl RpcService for EngineRpc {
                         })
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                 }
+                // A copy of a paired server's chat stays that server's, under
+                // the same grant check, and confined to the same folder, before
+                // its row is published: it never runs as the owner's own.
+                let peers = self.sessions.peer_chats();
+                if let Some(peer) = peers.peer(&source.id) {
+                    peers
+                        .note(&chat.id, &peer)
+                        .map_err(|e| RpcError::Failed(format!("fork: {e}")))?;
+                }
+                if let Some(mark) = self.sessions.chat_sandbox(&source.id) {
+                    let marked = match mark.root {
+                        Some(root) => self.sessions.sandbox_chat(&chat.id, &root).await.map(drop),
+                        None => Err(crate::EngineError::Other(
+                            "the source's sandbox has no folder".into(),
+                        )),
+                    };
+                    if let Err(error) = marked {
+                        return Err(RpcError::Failed(format!(
+                            "fork: the copy can't run sandboxed as its source does: {error}"
+                        )));
+                    }
+                }
                 self.doc_host.persist_fork(&target).map_err(failed)?;
                 self.workspace.import_chat_row(&chat).map_err(failed)?;
                 match draft {

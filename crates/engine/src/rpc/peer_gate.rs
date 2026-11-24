@@ -264,8 +264,22 @@ impl EngineRpc {
             None => None,
         };
         let confined = root.is_some();
+        // None would run with the row's fallback (full access): a confined
+        // chat gets this device's default harness under this side's pins.
         let config = match config {
             Some(config) if confined => Some(self.peer_confined_config(config).await?),
+            None if confined => Some(
+                self.peer_confined_config(ChatConfig {
+                    harness: self.doc_host.harness_for(&chat_id),
+                    model: None,
+                    reasoning: None,
+                    model_options: Default::default(),
+                    sandbox: SandboxLevel::WorkspaceWrite,
+                    access: AccessMode::Supervised,
+                    plan: false,
+                })
+                .await?,
+            ),
             other => other,
         };
         // Kept as the server's, and confined, before it exists: it never

@@ -382,6 +382,7 @@ impl EngineCore {
             )));
         }
         sessions.set_plugins(plugins.clone());
+        sessions.set_peers_data_dir(data_dir);
         sessions.set_doc_host(doc_host.clone());
         // A new version on trial may yet be undone, and recovering clears the
         // journals' marks of what to resume, which a rollback doesn't restore.
