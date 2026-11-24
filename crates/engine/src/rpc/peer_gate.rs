@@ -7,8 +7,9 @@
 //!   (`sessions.run:<p>` or `sessions.run.unconfined:<p>`), at the project's
 //!   folder: no cwd, host, parent, branch or Cloud of its own. The chat is
 //!   kept as that server's (`crate::peer_chats`) and, without `.unconfined`,
-//!   marked `sandbox: "project"` before it exists: it runs confined or not
-//!   at all (`SessionsEngine::sandbox_chat`).
+//!   sandboxed to the project's registered folder before it exists
+//!   (`SessionsEngine::sandbox_chat`): its agent runs under bubblewrap in
+//!   that folder, or not at all.
 //!   A confined chat's sandbox, access and plan mode are this side's
 //!   (workspace-write, supervised, no plan), whatever the server sends; its
 //!   model options must be ones its model lists.
@@ -30,7 +31,8 @@
 //! An agent running in a chat a server started (or in a chat that chat
 //! made) calls as that server, with its grants as they are now
 //! ([`EngineRpc::peer_agent`]): its token is no way past them. Its own
-//! children are kept as that server's too, and confined if it is.
+//! children are kept as that server's too and, if it is confined, confined
+//! to its folder, in its project only.
 //!
 //! Nothing is forwarded to another device for it (`targetDeviceId`).
 
@@ -169,12 +171,6 @@ impl EngineRpc {
                 chat.id
             )));
         }
-        if runs && let Some(sandbox) = marked {
-            return Err(refused(format!(
-                "This session must run sandboxed (sandbox: {}) and was not started: this build of Zend can't run sessions sandboxed yet",
-                sandbox.as_str()
-            )));
-        }
         let command = match p.command {
             SessionCommandPayload::Run { request, message_id } => {
                 // The chat's own: its folder, harness and model as its row
@@ -241,8 +237,33 @@ impl EngineRpc {
         if self.workspace.chat(&chat_id).map_err(|e| RpcError::Failed(e.to_string()))?.is_some() {
             return Err(refused(format!("createChat: chat {chat_id} exists")));
         }
-        // A child of a confined chat is confined, whatever the grant.
-        let confined = !unconfined || calling.as_deref().is_some_and(|c| self.sessions.chat_sandbox(c).is_some());
+        // The folder it runs confined to: a confined chat's, its project's
+        // registered folder (never one from the request); a chat a confined
+        // chat makes, its parent's, in its parent's project only, whatever
+        // the grant.
+        let root = match calling.as_deref().and_then(|c| self.sessions.chat_sandbox(c)) {
+            Some(mark) => {
+                let calling = calling.as_deref().unwrap_or_default();
+                let parent_space = self
+                    .workspace
+                    .chat(calling)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .and_then(|chat| chat.space_id);
+                if parent_space.as_deref() != Some(space.id.as_str()) {
+                    return Err(refused(format!(
+                        "createChat: a chat that sandboxed chat {calling} starts stays in its project ({})",
+                        parent_space.as_deref().unwrap_or("none")
+                    )));
+                }
+                Some(mark.root.ok_or_else(|| refused(format!("createChat: chat {calling}'s sandbox has no project folder")))?)
+            }
+            None if !unconfined => Some(
+                std::fs::canonicalize(&space.path)
+                    .map_err(|e| refused(format!("createChat: project {}: its folder: {e}", space.id)))?,
+            ),
+            None => None,
+        };
+        let confined = root.is_some();
         let config = match config {
             Some(config) if confined => Some(self.peer_confined_config(config).await?),
             other => other,
@@ -251,11 +272,12 @@ impl EngineRpc {
         // runs unmarked.
         let chats = self.sessions.peer_chats();
         chats.note(&chat_id, peer).map_err(|e| RpcError::Failed(format!("createChat: {e}")))?;
-        if confined
-            && let Err(error) = self.sessions.sandbox_chat(&chat_id, zend_proto::ChatSandbox::Project).await
+        if let Some(root) = &root
+            && let Err(error) = self.sessions.sandbox_chat(&chat_id, root).await
         {
+            // Marked all the same, with no folder: it never runs.
             chats.forget(&chat_id);
-            return Err(RpcError::Failed(format!("createChat: couldn't mark it sandboxed: {error}")));
+            return Err(refused(format!("createChat: it can't run sandboxed in project {}: {error}", space.id)));
         }
         let created = self.mutate(MutateParams::CreateChat {
             chat_id: chat_id.clone(),

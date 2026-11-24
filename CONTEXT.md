@@ -32,7 +32,7 @@
 - **Standalone chat** — A chat with no parent. Kind `chat`.
 - **Paired server** — Another Zend server of the owner's, paired with this one by a one-time code (`zend peer pair` / `join`) and known by its node key. Reaches this server over the peer link (tailnet only, no relay) with only the grants this side gave it (`Caller::PeerServer`). Not the same as a relay peer (`Caller::Peer`, another device in the device room).
 - **Grant** — One thing this server lets a paired server do here: `sessions.read`, `sessions.run:<project>`, `sessions.run.unconfined:<project>`, `projects.share:<project>`, `workers.manage`. Each side keeps its own; none at first.
-- **Sandbox marker** — `sandbox: "project"` on a chat a paired server created under `sessions.run`: kept on its host only, and its runs must be confined to the project's folder (refused until sandboxed runs land).
+- **Sandbox marker** — `sandbox: "project"` on a chat a paired server created under `sessions.run`: kept on its host only, and its runs are confined to the project's folder, the mark's `root` (bubblewrap), or don't start.
 - **Child event** — The `[Zend event: …]` message the engine puts into a parent when a child settles a turn (completed, errored, interrupted, waiting for input). Zend's line, not an agent's.
 - **Settle** — A chat's turn ending in one of those four ways.
 - **Lead** — An agent that plans with the owner and gives groups of work to child sessions. A working convention, not a kind of chat.

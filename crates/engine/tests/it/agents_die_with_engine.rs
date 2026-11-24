@@ -127,6 +127,7 @@ fn controls() -> RunControls {
         interrupt: CancellationToken::new(),
         request_input: Box::new(|_| tokio::sync::oneshot::channel().1),
         turn: Default::default(),
+        sandbox: None,
     }
 }
 

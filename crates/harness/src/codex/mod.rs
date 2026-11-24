@@ -1546,6 +1546,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn,
+        sandbox: _,
     } = controls;
     let request_input = Arc::new(request_input);
 

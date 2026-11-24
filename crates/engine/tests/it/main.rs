@@ -52,6 +52,7 @@ mod rich_composer_delivery;
 mod run_recovery;
 mod runtime_survival;
 mod runtime_survival_live;
+mod sandboxed_chats;
 mod self_continued_quiesce;
 mod session_publication;
 mod side_chats;

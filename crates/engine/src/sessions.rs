@@ -1234,15 +1234,9 @@ impl SessionsEngine {
         zend_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
         // A chat this host must confine (`ChatSandbox`, marked by
-        // [`SessionsEngine::sandbox_chat`]): this build can't confine a run
-        // yet (step 4d), so it doesn't run at all, before anything of the
-        // turn is recorded or routed. Never unconfined.
-        if let Some(sandbox) = self.inner.journal.sandbox(chat_id) {
-            return Err(EngineError::Other(format!(
-                "This session must run sandboxed (sandbox: {}) and was not started: this build of Zend can't run sessions sandboxed yet",
-                sandbox.as_str()
-            )));
-        }
+        // [`SessionsEngine::sandbox_chat`]): its confinement, or no run at
+        // all, decided before anything of the turn is recorded or routed.
+        let sandbox = self.inner.run_sandbox(chat_id, harness_id, &request.cwd)?;
         // What this host's plugins tell the chat's agent
         // (`session.instructions`), never what a sender put here. Stamped
         // before routing, so a live runtime is compared with what holds now:
@@ -1579,6 +1573,7 @@ impl SessionsEngine {
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
             turn: turn.clone(),
+            sandbox: sandbox.clone(),
         };
 
         // A revival whose message is no longer the transcript's latest: the
@@ -1700,7 +1695,9 @@ impl SessionsEngine {
         // skips titled chats; the Done-time call below stays as the retry
         // for a failed generation). Not before the agent's first output:
         // the titling agent's own startup competed with this one's.
-        let title = (!idle)
+        // Never for a sandboxed chat: the titling run isn't confined, and its
+        // prompt came from whoever started the chat.
+        let title = (!idle && sandbox.is_none())
             .then(|| self.inner.titles.get().cloned())
             .flatten()
             .map(|titles| {
@@ -2298,25 +2295,52 @@ impl SessionsEngine {
         self.terminate_run(chat_id, None).await
     }
 
-    /// Confine every run of `chat_id` on this host from now on: its agent
-    /// under bubblewrap, in its project folder only ([`zend_proto::ChatSandbox`],
-    /// [`zend_harness::sandbox`]). For a chat another server starts here
-    /// (step 4d, piece A sets it before the chat's first message). Kept on
-    /// this host only and never taken off; a live runtime started before is
-    /// torn down, so the next message starts confined. Off unless called:
+    /// Confine every run of `chat_id` on this host from now on to `root`,
+    /// the project folder it was granted: its agent under bubblewrap, in
+    /// that folder only ([`zend_proto::ChatSandbox`], [`zend_harness::sandbox`]),
+    /// each turn's folder inside it, and no host git in it
+    /// ([`crate::confined`]). For a chat another server starts here (step
+    /// 4d, piece A calls it with the registered project's root before the
+    /// chat's first message). Returns the root, canonical.
+    ///
+    /// A root [`zend_harness::sandbox::check_root`] refuses (outside the
+    /// home, the home itself, in a hidden folder, Zend's data) is an error,
+    /// and the chat is marked all the same, with no root: none of its runs
+    /// starts. Kept on this host only and never taken off. Holds the chat's
+    /// gate, so a dispatch already on its way finishes first, then ends a
+    /// live runtime: the next message starts confined. Off unless called:
     /// every other chat runs as before.
     pub async fn sandbox_chat(
         &self,
         chat_id: &str,
-        sandbox: zend_proto::ChatSandbox,
-    ) -> Result<(), EngineError> {
-        self.inner.journal.note_sandbox(chat_id, sandbox)?;
+        root: &std::path::Path,
+    ) -> Result<std::path::PathBuf, EngineError> {
+        let host = self.inner.sandbox_host();
+        let checked = zend_harness::sandbox::check_root(root, &host.home, &host.hidden);
+        let marked = checked.as_ref().ok().map(std::path::PathBuf::as_path);
+        // The mark first: a dispatch from here on reads it.
+        self.inner
+            .journal
+            .note_sandbox(chat_id, zend_proto::ChatSandbox::Project, marked)?;
+        if let Some(root) = marked {
+            crate::confined::add(root);
+        }
+        // Then alone with the chat: one that read no mark yet finishes, and
+        // its runtime goes.
+        let gate = self.inner.chat_gate(chat_id);
+        let _alone = tokio::time::timeout(std::time::Duration::from_secs(30), gate.write())
+            .await
+            .map_err(|_| {
+                EngineError::Other(
+                    "A message is still on its way to this chat; it is marked sandboxed, stop its turn".into(),
+                )
+            })?;
         self.terminate(chat_id).await?;
-        Ok(())
+        Ok(checked?)
     }
 
     /// The sandbox [`Self::sandbox_chat`] marked `chat_id` with, if any.
-    pub fn chat_sandbox(&self, chat_id: &str) -> Option<zend_proto::ChatSandbox> {
+    pub fn chat_sandbox(&self, chat_id: &str) -> Option<crate::run_journal::SandboxMark> {
         self.inner.journal.sandbox(chat_id)
     }
 
@@ -3257,6 +3281,60 @@ impl Inner {
         self.doc_host()
             .and_then(|host| host.open(chat_id).ok())
             .is_some_and(|handle| handle.continues_with_sent_message())
+    }
+
+    /// The confinement a run of `chat_id` in `cwd` gets: `None` for a chat
+    /// that isn't sandboxed (every chat unless [`SessionsEngine::sandbox_chat`]
+    /// marked it), else its sandbox: its marked root, with its own state
+    /// folder. Or an error that refuses the run: a mark with no valid root,
+    /// a folder outside that root, an agent whose driver can't run
+    /// sandboxed, no bubblewrap or pasta. Never `None` for a marked chat.
+    fn run_sandbox(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        cwd: &str,
+    ) -> Result<Option<zend_harness::sandbox::Sandbox>, EngineError> {
+        let Some(mark) = self.journal.sandbox(chat_id) else {
+            return Ok(None);
+        };
+        let refuse = |why: String| -> EngineError {
+            zend_harness::HarnessError::Sandbox(format!(
+                "This session must run sandboxed and was not started: {why}"
+            ))
+            .into()
+        };
+        let Some(root) = mark.root else {
+            return Err(refuse("its sandbox has no valid project folder".into()));
+        };
+        let folder = std::fs::canonicalize(cwd)
+            .map_err(|e| refuse(format!("its folder {cwd}: {e}")))?;
+        if !folder.starts_with(&root) {
+            return Err(refuse(format!(
+                "its folder {} is outside its project {}",
+                folder.display(),
+                root.display()
+            )));
+        }
+        let harness = self.registry.resolve(harness_id)?;
+        if !harness.runs_sandboxed() {
+            return Err(refuse(format!(
+                "{} can't run sandboxed yet",
+                harness_id.as_str()
+            )));
+        }
+        let sandbox = zend_harness::sandbox::Sandbox::project(&root, self.sandbox_host())?
+            .with_state(&self.journal.sandbox_state_dir(chat_id))?;
+        Ok(Some(sandbox))
+    }
+
+    /// This host, for a sandbox: its home, and this engine's data
+    /// (`~/.zend-dev` and the like, beyond `~/.zend`) hidden too.
+    fn sandbox_host(&self) -> zend_harness::sandbox::Host {
+        let mut host = zend_harness::sandbox::Host::current();
+        host.hidden.extend(self.journal.dir().parent().map(std::path::Path::to_path_buf));
+        host.hidden.extend(self.scratch_root.get().cloned());
+        host
     }
 
     /// Whether a run of `chat_id` launches without its provider's own
@@ -6686,6 +6764,7 @@ async fn drive_run(
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
             if *status == DoneStatus::Completed
+                && inner.journal.sandbox(&chat_id).is_none()
                 && let Some(titles) = inner.titles.get()
             {
                 titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);

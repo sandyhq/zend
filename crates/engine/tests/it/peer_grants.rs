@@ -1,11 +1,11 @@
 //! A paired server (Caller::PeerServer, over the real peer listener) reaches
 //! only what this side granted it: nothing with no grants; with
-//! sessions.run:<p> its own chats in <p>, marked sandboxed and refused to
-//! run until the sandbox lands; files only in a projects.share project, by
-//! a path from its root, checked after symlinks; never a key or token.
+//! sessions.run:<p> its own chats in <p>, run under bubblewrap in p's folder;
+//! files only in a projects.share project, by a path from its root, checked
+//! after symlinks; never a key or token.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -15,10 +15,10 @@ use zend_engine::{EngineCore, HarnessRegistry};
 use zend_proto::{HarnessId, RunRequest, SandboxLevel};
 use zend_rpc::{Caller, RpcClient, RpcError, RpcService, methods, with_caller};
 
-fn assemble(data_dir: &Path, device_id: &str) -> EngineCore {
+fn assemble(data_dir: &Path, device_id: &str, registry: HarnessRegistry) -> EngineCore {
     std::fs::create_dir_all(data_dir).expect("data dir");
     std::fs::write(data_dir.join("device-id"), device_id).expect("device id");
-    EngineCore::assemble(data_dir, Arc::new(HarnessRegistry::new()), HarnessId::Mock, None).expect("engine assembles")
+    EngineCore::assemble(data_dir, Arc::new(registry), HarnessId::Mock, None).expect("engine assembles")
 }
 
 fn loopback() -> Seams {
@@ -58,10 +58,17 @@ impl Paired {
 }
 
 async fn paired(grants: &[&str]) -> Paired {
-    let temp = tempfile::tempdir().unwrap();
+    paired_with(grants, HarnessRegistry::new()).await
+}
+
+/// [`paired`], with A's harnesses. Its projects are in the home, as a
+/// sandboxed root must be.
+async fn paired_with(grants: &[&str], registry: HarnessRegistry) -> Paired {
+    let home = std::fs::canonicalize(std::env::var_os("HOME").expect("HOME")).unwrap();
+    let temp = tempfile::Builder::new().prefix("zend-peer-test-").tempdir_in(home).unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
     let data = root.join("a-data");
-    let core = assemble(&data, "device-a");
+    let core = assemble(&data, "device-a", registry);
     for project in ["p", "q"] {
         let dir = root.join(project);
         std::fs::create_dir_all(&dir).unwrap();
@@ -159,9 +166,9 @@ async fn with_no_grants_a_server_reaches_nothing() {
     assert!(a.link.peers()[0].grants.is_empty());
 }
 
-/// sessions.run:p: B creates a chat in p (marked sandbox "project") and
-/// reads its messages; in q, and the owner's own chat in p, are refused;
-/// running the marked chat is refused, not run unconfined.
+/// sessions.run:p: B creates a chat in p (sandboxed to p's folder) and
+/// reads its messages and queues its runs; in q, and the owner's own chat in
+/// p, are refused; a run of the marked chat outside p doesn't start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sessions_run_reaches_its_own_chats_in_that_project_only() {
     let a = paired(&["sessions.run:p"]).await;
@@ -170,7 +177,8 @@ async fn sessions_run_reaches_its_own_chats_in_that_project_only() {
     let created = a.b.call(methods::MUTATE, create("peer-chat", "p")).await.expect("create in p");
     assert_eq!(created["sandbox"], "project", "{created}");
     assert_eq!(a.core.workspace.chat("peer-chat").unwrap().unwrap().space_id.as_deref(), Some("p"));
-    assert_eq!(a.core.sessions.chat_sandbox("peer-chat"), Some(zend_proto::ChatSandbox::Project));
+    let mark = a.core.sessions.chat_sandbox("peer-chat").expect("marked");
+    assert_eq!((mark.sandbox, mark.root), (zend_proto::ChatSandbox::Project, Some(a.root.join("p"))));
 
     let mut watch = a.b
         .subscribe_scoped(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "peer-chat" }))
@@ -184,17 +192,14 @@ async fn sessions_run_reaches_its_own_chats_in_that_project_only() {
         ("create with a cwd", a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "cwd-chat", "spaceId": "p", "cwd": "/" })).await),
         ("another mutate", a.b.call(methods::MUTATE, json!({ "op": "deleteChat", "chatId": "owner-chat" })).await),
         ("run the owner's chat", a.b.call(methods::QUEUE_COMMAND, run("owner-chat", "/")).await),
-        ("run its own, sandboxed", a.b.call(methods::QUEUE_COMMAND, run("peer-chat", "/")).await),
     ] {
         assert!(refused(&reply), "{what}: {reply:?}");
-        if what == "run its own, sandboxed" {
-            assert!(reply.unwrap_err().to_string().contains("sandboxed"));
-        }
     }
-    // Not from this device's own side either: the marked chat doesn't run.
+    a.b.call(methods::QUEUE_COMMAND, run("peer-chat", "/")).await.expect("its own run queued");
+    // Not outside p, even from this device's own side.
     let request: RunRequest = serde_json::from_value(run("peer-chat", "/")["command"]["request"].clone()).unwrap();
     let own = a.core.sessions.start_idle("peer-chat", request).await;
-    assert!(own.as_ref().is_err_and(|e| e.to_string().contains("sandboxed")), "{own:?}");
+    assert!(own.as_ref().is_err_and(|e| e.to_string().contains("must run sandboxed")), "{own:?}");
     let owner = a.b.subscribe_checked(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "owner-chat" })).await;
     assert!(owner.is_err(), "the owner's chat watched");
     assert!(a.core.workspace.chat("q-chat").unwrap().is_none());
@@ -318,7 +323,7 @@ async fn an_agent_in_a_peer_chat_reaches_only_what_the_peer_may() {
         "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
     }))).await.expect("its own child in p");
     assert_eq!(a.core.sessions.peer_chats().peer("p-child").as_deref(), Some(a.b_key.as_str()));
-    assert_eq!(a.core.sessions.chat_sandbox("p-child"), Some(zend_proto::ChatSandbox::Project));
+    assert_eq!(a.core.sessions.chat_sandbox("p-child").and_then(|m| m.root), Some(a.root.join("p")));
     let child = a.core.workspace.chat("p-child").unwrap().unwrap();
     assert_eq!(child.parent_chat_id.as_deref(), Some("peer-chat"));
     assert_eq!(child.config.unwrap().access, zend_proto::AccessMode::Supervised);
@@ -390,4 +395,185 @@ async fn a_confined_chat_takes_this_sides_access_not_the_peers() {
     let reply = a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "odd", "spaceId": "p", "config": odd })).await;
     assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("modelOptions")), "{reply:?}");
     assert!(a.core.workspace.chat("odd").unwrap().is_none());
+}
+
+/// One run of [`ShellAgent`]: its folder, its sandbox's root (None:
+/// unconfined) and what the shell printed.
+#[derive(Clone, Debug)]
+struct ShellRun {
+    cwd: String,
+    root: Option<PathBuf>,
+    out: String,
+}
+
+/// An agent that is /bin/sh, started as a sandboxed Pi is
+/// (`zend_harness::sandbox::Launch`, bubblewrap and pasta, in the run's
+/// sandbox), running the prompt as its script.
+struct ShellAgent {
+    runs: Arc<Mutex<Vec<ShellRun>>>,
+}
+
+#[async_trait::async_trait]
+impl zend_harness::Harness for ShellAgent {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Shell"
+    }
+    fn supports_steering(&self) -> bool {
+        false
+    }
+    fn steering_mode(&self) -> zend_proto::SteeringMode {
+        zend_proto::SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[zend_proto::ReasoningLevel] {
+        &[]
+    }
+    fn access_modes(&self) -> &[zend_proto::AccessMode] {
+        &zend_proto::AccessMode::ALL
+    }
+    fn runs_sandboxed(&self) -> bool {
+        true
+    }
+    async fn models(&self) -> Result<Vec<zend_proto::Model>, zend_harness::HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: zend_harness::RunControls,
+    ) -> Result<futures::stream::BoxStream<'static, Result<zend_proto::AgentEvent, zend_harness::HarnessError>>, zend_harness::HarnessError>
+    {
+        use futures::StreamExt as _;
+        let failed = |e: String| zend_harness::HarnessError::Sandbox(e);
+        let root = controls.sandbox.as_ref().map(|s| s.root().to_path_buf());
+        let out = match &controls.sandbox {
+            None => "UNCONFINED".to_string(),
+            Some(sandbox) => {
+                let cwd = Path::new(&request.cwd);
+                let launch = zend_harness::sandbox::Launch::new(sandbox, HarnessId::Pi, Path::new("/bin/sh"), cwd, &[])?;
+                let mut command = launch.command("/bin/sh");
+                command
+                    .arg("-c")
+                    .arg(&request.prompt)
+                    .env("PATH", "/usr/bin:/bin")
+                    .current_dir(cwd)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                let child = launch.spawn(&mut command).map_err(|e| failed(e.to_string()))?;
+                let output = child.wait_with_output().await.map_err(|e| failed(e.to_string()))?;
+                format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
+            }
+        };
+        self.runs.lock().unwrap().push(ShellRun { cwd: request.cwd.clone(), root, out });
+        Ok(futures::stream::iter(vec![Ok(zend_proto::AgentEvent::Done {
+            status: zend_proto::DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        })])
+        .boxed())
+    }
+}
+
+fn sandbox_tools_present() -> bool {
+    let present = ["/usr/bin/bwrap", "/usr/bin/pasta"].iter().all(|p| Path::new(p).is_file());
+    if !present {
+        eprintln!("bwrap or pasta not installed: skipped");
+    }
+    present
+}
+
+async fn shell_run(runs: &Arc<Mutex<Vec<ShellRun>>>, n: usize) -> ShellRun {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(run) = runs.lock().unwrap().get(n - 1).cloned() {
+            return run;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "run {n} didn't start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// End to end: B, granted sessions.run:p (and q unconfined), creates a chat
+/// in p over the peer link and queues a run; its agent starts under
+/// bubblewrap with p's folder as root and can read and write p only, not q,
+/// Zend's data or the rest of the home. A child its agent starts is
+/// confined to p too: not in q (though B may run q unconfined), its run in
+/// bubblewrap at p, and no run of it outside p.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_chat_runs_in_bubblewrap_in_its_project_and_so_do_its_children() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
+    let a = paired_with(&["sessions.run:p", "sessions.run.unconfined:q"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    let p = a.root.join("p");
+    let q = a.root.join("q");
+    let script = format!(
+        r#"for f in {q}/readme.md {data}/ipc-token {base}/outside.txt; do
+            if cat "$f" >/dev/null 2>&1; then echo "READABLE $f"; fi
+        done
+        (echo x > {q}/written.txt) 2>/dev/null && echo "WROTE Q"
+        cat ./readme.md
+        echo made > ./made-in-p.txt && echo "wrote p"
+        echo "in $(pwd)""#,
+        q = q.display(),
+        data = a.data.display(),
+        base = a.root.display(),
+    );
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" });
+    let created = a
+        .b
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "peer-chat", "spaceId": "p", "config": config }))
+        .await
+        .expect("create in p");
+    assert_eq!(created["sandbox"], "project");
+    assert_eq!(a.core.sessions.chat_sandbox("peer-chat").and_then(|m| m.root), Some(p.clone()));
+
+    let mut queued = run("peer-chat", "/");
+    queued["command"]["request"]["prompt"] = script.clone().into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("queued");
+    let first = shell_run(&runs, 1).await;
+    println!("peer chat: {first:?}");
+    assert_eq!((Path::new(&first.cwd), first.root.as_ref()), (p.as_path(), Some(&p)), "{first:?}");
+    assert!(first.out.contains("project p") && first.out.contains("wrote p"), "{}", first.out);
+    assert!(first.out.contains(&format!("in {}", p.display())), "{}", first.out);
+    assert!(!first.out.contains("READABLE") && !first.out.contains("WROTE Q"), "{}", first.out);
+    assert_eq!(std::fs::read_to_string(p.join("made-in-p.txt")).unwrap(), "made\n");
+    assert!(!q.join("written.txt").exists());
+
+    // Its agent's children.
+    let rpc = a.core.rpc_service();
+    let agent = Caller::Agent { chat: Some("peer-chat".into()) };
+    let child = |id: &str, space: &str| {
+        json!({
+            "op": "createChat", "chatId": id, "spaceId": space, "deviceId": a.core.device_id,
+            "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
+        })
+    };
+    let in_q = with_caller(agent.clone(), rpc.handle(methods::MUTATE, child("q-child", "q"))).await;
+    assert!(in_q.as_ref().is_err_and(|e| e.to_string().contains("stays in its project")), "{:?}", in_q.map(|_| ()));
+    assert!(a.core.workspace.chat("q-child").unwrap().is_none());
+    with_caller(agent, rpc.handle(methods::MUTATE, child("p-child", "p"))).await.expect("a child in p");
+    assert_eq!(a.core.sessions.chat_sandbox("p-child").and_then(|m| m.root), Some(p.clone()));
+    let mut queued = run("p-child", "/");
+    queued["command"]["request"]["prompt"] = script.into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("the child's run queued");
+    let second = shell_run(&runs, 2).await;
+    println!("child: {second:?}");
+    assert_eq!(second.root.as_ref(), Some(&p), "{second:?}");
+    assert!(second.out.contains("project p") && !second.out.contains("READABLE") && !second.out.contains("WROTE Q"), "{}", second.out);
+    // A run of the child in q doesn't start.
+    let mut request: RunRequest = serde_json::from_value(run("p-child", "/")["command"]["request"].clone()).unwrap();
+    request.cwd = q.display().to_string();
+    let outside = a.core.sessions.start_idle("p-child", request).await;
+    assert!(outside.as_ref().is_err_and(|e| e.to_string().contains("outside its project")), "{outside:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(runs.lock().unwrap().len(), 2, "{:?}", runs.lock().unwrap());
 }
