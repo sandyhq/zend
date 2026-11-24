@@ -33,6 +33,9 @@ const HEARTBEAT: Duration = Duration::from_secs(20);
 const SCAN: Duration = Duration::from_secs(10);
 const RETRY_MIN: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+/// How soon a server that granted this side nothing is asked again (it
+/// may grant something any time; it doesn't say so).
+const REFUSED_RETRY: Duration = SCAN;
 
 /// What an error from a paired server starts with: its words follow, for
 /// the window to show (`apps/zgx` sessions.create).
@@ -224,7 +227,7 @@ impl PeerView {
                 Err(Quiet::Refused(why)) => {
                     tracing::debug!(peer = %key, %why, "peer view: the server shows nothing to this side");
                     self.forget(&key);
-                    wait = RETRY_MAX;
+                    wait = REFUSED_RETRY;
                 }
                 Err(Quiet::Unreachable(why)) => {
                     tracing::debug!(peer = %key, %why, "peer view: the server isn't reached");

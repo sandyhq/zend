@@ -85,13 +85,13 @@ impl Watched {
         Self { sub, rows: Vec::new(), key }
     }
 
-    /// Frames until `pred` holds of the rows (10 s at most).
+    /// Frames until `pred` holds of the rows (20 s at most).
     async fn until(&mut self, what: &str, pred: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         while !pred(&self.rows) {
             let frame = tokio::time::timeout_at(deadline, self.sub.recv())
                 .await
-                .unwrap_or_else(|_| panic!("{what}: not in 10 s; rows {:?}", self.rows))
+                .unwrap_or_else(|_| panic!("{what}: not in 20 s; rows {:?}", self.rows))
                 .expect("watch alive");
             self.apply(frame);
         }
@@ -192,6 +192,22 @@ async fn a_paired_server_shows_as_a_device_and_a_chat_starts_there() {
     tokio::time::timeout(Duration::from_secs(10), transcript.recv()).await.expect("in time").expect("alive");
     chats.until("the chat made there", |rows| has(rows, "id", "laptop-made")).await;
     drop(t.server_link);
+}
+
+/// Granted only after this side first dialled (and was refused), as
+/// pairing goes (join, then grant): the server shows within a scan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grants_given_after_the_first_dial_show_soon() {
+    let t = pair(&[]).await;
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    devices.until("the laptop's own list", |rows| !rows.is_empty()).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!has(&devices.rows, "id", "device-server"), "nothing granted, nothing shown: {:?}", devices.rows);
+    let laptop_key = t.laptop_link.node_key().unwrap().public().to_string();
+    t.server_link.set_grants(&laptop_key, &["sessions.read".into()]).unwrap();
+    devices.until("the server, granted since", |rows| has(rows, "id", "device-server")).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("its chat", |rows| has(rows, "id", "srv-chat")).await;
 }
 
 /// Without sessions.read the server's chats don't show (its device does,

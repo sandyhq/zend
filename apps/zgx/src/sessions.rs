@@ -846,7 +846,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             if args.field("cloud").is_some_and(Value::truthy) {
                 a.create_on_cloud(args).await
             } else {
-                a.create(args).await.map_err(String::from)
+                a.create(args).await
             }
         }
     });
@@ -1497,21 +1497,28 @@ impl Sessions {
             .map_err(|error| fail(&error))
     }
 
-    async fn create(&self, args: Value) -> Result<Value, Outcome> {
+    async fn create(&self, args: Value) -> Result<Value, String> {
         let field = |key: &str| args.field(key).map(text).filter(|s| !s.is_empty());
         // The caller's id, where it made one first (a side chat's tab, open
         // before its first message makes it), else a new one.
         let id = field("id").filter(|id| plain_id(id)).unwrap_or_else(new_id);
+        // Made with the composer's pick (`pick`: its request) where it names
+        // an agent: a paired server builds the chat's runs from the config it
+        // was made with, and takes no config set after.
         let config = args
             .field("config")
             .filter(|c| !matches!(c, Value::Nil))
-            .and_then(|c| serde_json::from_str::<Json>(&c.to_json()).ok());
+            .and_then(|c| serde_json::from_str::<Json>(&c.to_json()).ok())
+            .or_else(|| {
+                let pick = args.field("pick").filter(|p| !matches!(p, Value::Nil))?;
+                Some(crate::chat::merged_config(&Json::Null, &pick)).filter(|c| c["harness"].is_string())
+            });
         let mut params = json!({ "op": "createChat", "chatId": id });
         // A side chat: under its parent, where the parent is (its device,
         // project, config, branch and folder), as the shipping app's
         // `create_child_chat` copies them, unless the call says otherwise.
         if let Some(parent) = field("parent") {
-            let Some(at) = where_parent_is(&self.chats.borrow(), &parent) else { return Err("missing") };
+            let Some(at) = where_parent_is(&self.chats.borrow(), &parent) else { return Err("missing".into()) };
             for (k, v) in at.as_object().into_iter().flatten() {
                 params[k] = v.clone();
             }
@@ -1539,10 +1546,10 @@ impl Sessions {
         if field("project").is_none() && params["spaceId"].is_null() {
             match device {
                 Some(device) => params["deviceId"] = Json::from(device),
-                None => return Err("offline"),
+                None => return Err("offline".into()),
             }
         }
-        self.mutate(params.clone()).await?;
+        engine::get().call("Mutate", params.clone()).await.map_err(|error| peer_words(&error).unwrap_or_else(|| fail(&error).into()))?;
         // Known to the chat's sender at once (a side chat's first message
         // follows straight away, before the engine's list has it).
         crate::chat::made(&params);
@@ -1761,6 +1768,21 @@ pub(crate) fn cloud_words(error: &str) -> String {
         && words.chars().next().is_some_and(char::is_uppercase)
         && !words.contains('{');
     if readable { words.to_string() } else { "Cloud couldn't start this chat. Try again.".into() }
+}
+
+/// Why a paired server refused a chat, in its words (the engine marks them
+/// `peer_refused:`, crates/engine peer_view), for the composer to say; None
+/// for any other error.
+pub(crate) fn peer_words(error: &str) -> Option<String> {
+    let (_, words) = error.split_once("peer_refused:")?;
+    let words = words.trim();
+    let readable = !words.is_empty() && words.len() <= 240 && !words.contains('{');
+    Some(if readable {
+        let mut chars = words.chars();
+        chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    } else {
+        "The paired server refused this chat.".into()
+    })
 }
 
 /// An id a caller may give a chat: letters, digits and dashes, 8 to 64.
@@ -2268,6 +2290,16 @@ pub(crate) fn unix_seconds(stamp: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    /// A paired server's refusal reaches the composer in its words; any
+    /// other error stays an outcome word.
+    #[test]
+    fn a_peer_refusal_is_said_in_its_words() {
+        let error = "failed: peer_refused: ai-server: project p: may not run sessions in project p";
+        assert_eq!(super::peer_words(error).as_deref(), Some("Ai-server: project p: may not run sessions in project p"));
+        assert_eq!(super::peer_words("failed: no such chat"), None);
+        assert_eq!(super::peer_words("peer_refused: {\"x\":1}").as_deref(), Some("The paired server refused this chat."));
+    }
+
     /// "Delete session?" counts what the engine's `deleteChat` takes: its
     /// children on computers and theirs, archived ones too (the lists show
     /// none of those); a Cloud chat's Cloud children; never a computer's
