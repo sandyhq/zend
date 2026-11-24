@@ -420,9 +420,18 @@ impl Harness for PiHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let mut request = request;
-        let store = sessions::Store::new(self.session_store.clone(), self.agent_dir.clone());
+        let sandbox = controls.sandbox.clone();
+        let mut store = sessions::Store::new(self.session_store.clone(), self.agent_dir.clone());
+        if let Some(state) = sandbox.as_ref().and_then(|s| s.state()) {
+            // A sandboxed chat's sessions live in its own state folder, the
+            // only one it can write that outlives its process.
+            store = store.confined(state);
+        }
+        if let Some(sandbox) = &sandbox {
+            request.attachments = readable(Some(sandbox), &request.attachments);
+        }
         let mut lost_context = None;
-        let args = match &request.resume {
+        let mut args = match &request.resume {
             Some(id) => match store.resume_args(id, Path::new(&request.cwd)) {
                 Ok(args) => args,
                 // Like every other harness, a session that can no longer be
@@ -440,6 +449,12 @@ impl Harness for PiHarness {
         if lost_context.is_some() {
             request.resume = None;
         }
+        if let Some(dir) = store.session_dir()
+            && !args.iter().any(|a| a == "--session" || a == "--session-dir")
+        {
+            std::fs::create_dir_all(&dir)?;
+            args.extend(["--session-dir".into(), dir.display().to_string()]);
+        }
         let process = self.spawn(
             Path::new(&request.cwd),
             &args,
@@ -455,6 +470,7 @@ impl Harness for PiHarness {
         let idle_queue_timeout = self.idle_queue_timeout;
         tokio::spawn(async move {
             let mut runner = Runner {
+                sandbox,
                 store,
                 interrupted: false,
                 extension_commands: HashSet::new(),
@@ -539,6 +555,8 @@ struct Delivery {
     opens_turn: bool,
 }
 struct Runner {
+    /// A sandboxed run's confinement: attachments it may inline.
+    sandbox: Option<crate::sandbox::Sandbox>,
     extension_commands: HashSet<String>,
     auto_compaction: bool,
     interrupted: bool,
@@ -847,7 +865,8 @@ impl Runner {
                         self.active = true;
                         // Atomic Pi operation: queue at a step boundary if busy, start if idle.
                         // A separate get_state + steer pair would strand an input on the idle race.
-                        let images = load_images(&steer.attachments).await;
+                        let images =
+                            load_images(&readable(self.sandbox.as_ref(), &steer.attachments)).await;
                         self.submit(steer.prompt.clone(), images, true)?;
                         self.deliveries.push_back(Delivery {
                             epoch: self.epoch,
@@ -1198,6 +1217,26 @@ impl Runner {
         Ok(())
     }
 }
+/// The attachments the host may read for a run: all of them, or for a
+/// sandboxed run only files inside its project (symlinks resolved). Zend
+/// inlines images itself, outside the sandbox: a path elsewhere would hand
+/// the agent a file it can't see.
+fn readable(sandbox: Option<&crate::sandbox::Sandbox>, paths: &[String]) -> Vec<String> {
+    match sandbox {
+        None => paths.to_vec(),
+        Some(sandbox) => paths
+            .iter()
+            .filter(|path| {
+                let ok = sandbox.may_read(Path::new(path));
+                if !ok {
+                    tracing::warn!(%path, "attachment outside a sandboxed chat's project; dropped");
+                }
+                ok
+            })
+            .cloned()
+            .collect(),
+    }
+}
 /// Inline attachments as native image blocks, best-effort like the Claude
 /// driver: the path refs already ride the prompt text, so an unreadable,
 /// oversized or non-inlinable file (SVG, HEIC, TIFF, ...) must not fail the turn.
@@ -1257,6 +1296,39 @@ pub(crate) async fn load_images_capped(paths: &[String], each: u64, total: u64) 
 #[cfg(test)]
 mod tests {
     use super::{load_images, load_images_capped};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_run_inlines_only_attachments_inside_its_project() {
+        use std::path::{Path, PathBuf};
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("p");
+        std::fs::create_dir_all(project.join("img")).unwrap();
+        std::fs::create_dir_all(home.path().join(".ssh")).unwrap();
+        let inside = project.join("img/a.png");
+        let secret = home.path().join(".ssh/id.png");
+        let elsewhere = home.path().join("b.png");
+        for file in [&inside, &secret, &elsewhere] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        // A link in the project to a file outside it: judged by its target.
+        let link = project.join("img/link.png");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let host = crate::sandbox::Host {
+            home: home.path().into(),
+            bwrap: Some(PathBuf::from("/bin/sh")),
+            pasta: Some(PathBuf::from("/bin/sh")),
+            hidden: vec![],
+        };
+        let sandbox = crate::sandbox::Sandbox::project(&project, host).unwrap();
+        let paths: Vec<String> = [&inside, &secret, &elsewhere, &link]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        assert_eq!(super::readable(Some(&sandbox), &paths), [inside.display().to_string()]);
+        assert_eq!(super::readable(None, &paths), paths);
+        assert!(!sandbox.may_read(Path::new("/etc/passwd")));
+    }
 
     #[tokio::test]
     async fn unsupported_or_missing_attachments_do_not_fail_the_turn() {

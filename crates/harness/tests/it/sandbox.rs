@@ -1,5 +1,6 @@
 //! The bubblewrap sandbox, for real: what a confined process can see, write
-//! and inherit. Needs `bwrap` (skipped, with a note, where it is missing).
+//! and inherit, and where it can connect. Needs `bwrap` and `pasta` (skipped,
+//! with a note, where one is missing).
 #![cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -8,11 +9,20 @@ use zend_proto::HarnessId;
 
 fn bwrap() -> Option<PathBuf> {
     let path = PathBuf::from("/usr/bin/bwrap");
-    if path.is_file() {
+    if path.is_file() && Path::new("/usr/bin/pasta").is_file() {
         return Some(path);
     }
-    eprintln!("bwrap not installed: skipped");
+    eprintln!("bwrap or pasta not installed: skipped");
     None
+}
+
+fn host(fake: &FakeHome, bwrap: PathBuf) -> Host {
+    Host {
+        home: fake.home.clone(),
+        bwrap: Some(bwrap),
+        pasta: None,
+        hidden: Vec::new(),
+    }
 }
 
 /// A home with what must stay hidden, two projects and a Pi login.
@@ -50,21 +60,14 @@ fn fake_home() -> FakeHome {
 /// Run `script` with sh in a sandbox of the fake home's project a, with
 /// Pi's logins; return (exit code, stdout, stderr).
 async fn run_in(fake: &FakeHome, bwrap: PathBuf, script: &str) -> (i32, String, String) {
-    let host = Host {
-        home: fake.home.clone(),
-        bwrap: Some(bwrap),
-        hidden: Vec::new(),
-    };
-    let sandbox = Sandbox::project(&fake.project, host).unwrap();
+    run_as(fake, bwrap, Path::new("/bin/sh"), script).await
+}
+
+/// [`run_in`] with `exe` as the agent the launch is made for.
+async fn run_as(fake: &FakeHome, bwrap: PathBuf, exe: &Path, script: &str) -> (i32, String, String) {
+    let sandbox = Sandbox::project(&fake.project, host(fake, bwrap)).unwrap();
     let pi_logins = logins(HarnessId::Pi, &fake.home, &|_| None);
-    let launch = Launch::new(
-        &sandbox,
-        HarnessId::Pi,
-        Path::new("/bin/sh"),
-        &fake.project,
-        &pi_logins,
-    )
-    .unwrap();
+    let launch = Launch::new(&sandbox, HarnessId::Pi, exe, &fake.project, &pi_logins).unwrap();
     let mut command = launch.command("/bin/sh");
     command
         .arg("-c")
@@ -168,19 +171,17 @@ async fn a_sandboxed_agent_runs_in_a_pid_namespace_of_its_own() {
 
 #[test]
 fn a_bubblewrap_that_cannot_start_refuses_the_run() {
+    if bwrap().is_none() {
+        return;
+    }
     let fake = fake_home();
     // Stands in for a bwrap that can't make its namespaces: exits non-zero.
-    let host = Host {
-        home: fake.home.clone(),
-        bwrap: Some(PathBuf::from("/bin/false")),
-        hidden: Vec::new(),
-    };
-    let sandbox = Sandbox::project(&fake.project, host).unwrap();
+    let sandbox = Sandbox::project(&fake.project, host(&fake, PathBuf::from("/bin/false"))).unwrap();
     let error = Launch::new(&sandbox, HarnessId::Pi, Path::new("/bin/sh"), &fake.project, &[])
         .unwrap_err()
         .to_string();
     assert!(error.contains("must run sandboxed and was not started"), "{error}");
-    assert!(error.contains("bubblewrap failed"), "{error}");
+    assert!(error.contains("the sandbox failed to start"), "{error}");
     // A folder outside the project is refused before bubblewrap runs.
     let error = Launch::new(&sandbox, HarnessId::Pi, Path::new("/bin/sh"), &fake.sibling, &[])
         .unwrap_err()
@@ -198,11 +199,15 @@ async fn real_pi_lists_its_models_in_the_sandbox() {
     let exe = zend_harness::PiHarness::new()
         .resolve_executable()
         .expect("Pi installed");
-    let project = tempfile::tempdir().unwrap();
     let host = Host {
         bwrap: Some(bwrap),
         ..Host::current()
     };
+    // A project inside the home, as every sandboxed root must be.
+    let project = tempfile::Builder::new()
+        .prefix("zend-sandbox-test-")
+        .tempdir_in(&host.home)
+        .unwrap();
     let sandbox = Sandbox::project(project.path(), host).unwrap();
     let home = sandbox.host().home.clone();
     let pi_logins = logins(HarnessId::Pi, &home, &|key| std::env::var_os(key));
@@ -246,4 +251,139 @@ async fn real_pi_lists_its_models_in_the_sandbox() {
     println!("$ network\nexit {}\n{out}{}", output.status, String::from_utf8_lossy(&output.stderr));
     assert!(output.status.success());
     assert!(out.contains("https "), "{out}");
+}
+
+/// What the host would reach from outside: a TCP listener on every address
+/// and an abstract unix socket (the kind X11 and D-Bus listen on).
+struct Listeners {
+    port: u16,
+    abstract_name: String,
+    _tcp: std::net::TcpListener,
+    _unix: std::os::unix::net::UnixListener,
+}
+
+fn listeners() -> Listeners {
+    use std::os::linux::net::SocketAddrExt;
+    let tcp = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = tcp.local_addr().unwrap().port();
+    let abstract_name = format!("zend-sandbox-test-{}-{port}", std::process::id());
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(&abstract_name).unwrap();
+    let unix = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
+    Listeners { port, abstract_name, _tcp: tcp, _unix: unix }
+}
+
+/// A shell script that prints "REACHED <what>" for each of `targets` (host
+/// and port) it can connect to, and for the abstract socket `name`.
+fn probe_script(targets: &[(String, u16)], name: &str) -> String {
+    let mut script = String::new();
+    for (host, port) in targets {
+        script.push_str(&format!(
+            "nc -z -w 2 {host} {port} 2>/dev/null && echo 'REACHED {host}:{port}'\n"
+        ));
+    }
+    script.push_str(&format!(
+        "python3 -c \"import socket; socket.socket(socket.AF_UNIX).connect('\\0{name}')\" 2>/dev/null && echo 'REACHED @{name}'\n"
+    ));
+    script
+}
+
+#[tokio::test]
+async fn a_sandboxed_agent_cannot_reach_the_host_its_networks_or_its_sockets() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let listen = listeners();
+    let mut targets = vec![("127.0.0.1".to_string(), listen.port)];
+    // The host's own addresses (its public one, the tailnet's, docker's).
+    for net in zend_harness::sandbox::host_networks() {
+        if let Some(addr) = net.strip_suffix("/32") {
+            targets.push((addr.to_string(), listen.port));
+        }
+    }
+    // Tailscale's resolver, a cloud's metadata service.
+    targets.push(("100.100.100.100".into(), 53));
+    targets.push(("169.254.169.254".into(), 80));
+    let script = probe_script(&targets, &listen.abstract_name);
+    // From outside, the host's listeners answer: the probe itself works.
+    let outside = std::process::Command::new("/bin/sh").arg("-c").arg(&script).output().unwrap();
+    let outside = String::from_utf8_lossy(&outside.stdout).into_owned();
+    println!("--- outside\n{outside}");
+    assert!(outside.contains(&format!("REACHED 127.0.0.1:{}", listen.port)), "{outside}");
+    assert!(outside.contains(&format!("REACHED @{}", listen.abstract_name)), "{outside}");
+    let inside = format!(
+        "{script}ip -4 route del unreachable 10.0.0.0/8 2>/dev/null && echo 'ROUTE CHANGED'\nip -4 route\n"
+    );
+    let (code, out, err) = run_in(&fake, bwrap, &inside).await;
+    println!("exit {code}\n--- inside\n{out}--- stderr\n{err}");
+    assert_eq!(code, 0, "{err}");
+    assert!(!out.contains("REACHED"), "{out}");
+    assert!(!out.contains("ROUTE CHANGED"), "{out}");
+    assert!(out.contains("unreachable 100.64.0.0/10"), "{out}");
+}
+
+/// Outbound internet still works in the sandbox, by name: DNS through
+/// pasta's forwarder, then HTTPS.
+#[tokio::test]
+#[ignore = "needs the internet, bwrap and pasta"]
+async fn a_sandboxed_agent_reaches_the_internet_by_name() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let (code, out, err) = run_in(
+        &fake,
+        bwrap,
+        "cat /etc/resolv.conf; getent hosts api.anthropic.com && curl -sS -o /dev/null -w 'https %{http_code}\\n' https://api.anthropic.com/",
+    )
+    .await;
+    println!("exit {code}\n{out}--- stderr\n{err}");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("nameserver 169.254.2.1"), "{out}");
+    assert!(out.contains("https "), "{out}");
+}
+
+#[tokio::test]
+async fn an_agent_in_the_shared_bin_folder_brings_only_its_own_file() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let write = |path: &Path, text: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let bin = fake.home.join(".local/bin");
+    write(&bin.join("owner-script"), "#!/bin/sh\necho OWNER SECRET\n");
+    // An agent linked from ~/.local/bin to its install, and one that lives there.
+    write(&fake.home.join("tools/agent/agent"), "#!/bin/sh\necho agent ok\n");
+    std::os::unix::fs::symlink(fake.home.join("tools/agent/agent"), bin.join("agent")).unwrap();
+    write(&bin.join("direct"), "#!/bin/sh\necho direct ok\n");
+    let script = format!(
+        "ls {b}; {b}/agent; cat {b}/owner-script 2>/dev/null && echo 'OWNER READABLE'; true",
+        b = bin.display()
+    );
+    let (code, out, err) = run_as(&fake, bwrap.clone(), &bin.join("agent"), &script).await;
+    println!("exit {code}\n{out}--- stderr\n{err}");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("agent ok"), "{out}");
+    assert!(!out.contains("owner-script") && !out.contains("OWNER"), "{out}");
+    let (code, out, err) = run_as(&fake, bwrap, &bin.join("direct"), &format!("ls {}; {}/direct", bin.display(), bin.display())).await;
+    println!("exit {code}\n{out}--- stderr\n{err}");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("direct ok"), "{out}");
+    assert!(!out.contains("owner-script"), "{out}");
+}
+
+#[test]
+fn a_tool_folder_that_would_show_the_home_or_a_hidden_folder_is_refused() {
+    let Some(bwrap) = bwrap() else { return };
+    for (dir, target) in [(".cargo/bin", ""), (".rustup", ".ssh"), (".volta", "projects")] {
+        let fake = fake_home();
+        let link = fake.home.join(dir);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(fake.home.join(target), &link).unwrap();
+        let sandbox = Sandbox::project(&fake.project, host(&fake, bwrap.clone())).unwrap();
+        let error = Launch::new(&sandbox, HarnessId::Pi, Path::new("/bin/sh"), &fake.project, &[])
+            .unwrap_err()
+            .to_string();
+        println!("{dir} -> ~/{target}: {error}");
+        assert!(error.contains("would show"), "{dir}: {error}");
+    }
 }

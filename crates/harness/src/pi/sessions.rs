@@ -12,6 +12,10 @@ pub(super) struct Store {
     root: PathBuf,
     agent: PathBuf,
     legacy: PathBuf,
+    /// A sandboxed chat's state folder ([`crate::sandbox::Sandbox::state`]):
+    /// its sessions are kept there and found only there, never in Pi's
+    /// own folders or one a project's settings name.
+    confine: Option<PathBuf>,
 }
 /// Pi's settings directory: an explicit override, else `PI_CODING_AGENT_DIR`,
 /// else `~/.pi/agent`.
@@ -31,7 +35,31 @@ impl Store {
             root: root.unwrap_or_else(|| agent.join("zend-sessions")),
             agent,
             legacy: home.join(".pi/pi-acp/session-map.json"),
+            confine: None,
         }
+    }
+    /// The store of a sandboxed chat whose state folder is `state`
+    /// (canonical): its index and Pi's session files both in there.
+    pub fn confined(self, state: &Path) -> Self {
+        Self {
+            root: state.join("zend-sessions"),
+            confine: Some(state.to_path_buf()),
+            ..self
+        }
+    }
+    /// Where a confined store's Pi keeps its sessions (`--session-dir`).
+    pub fn session_dir(&self) -> Option<PathBuf> {
+        self.confine.as_ref().map(|state| state.join("sessions"))
+    }
+    /// Whether `file` may be a session of this store: anywhere unconfined,
+    /// else inside the state folder (no `..`).
+    fn admits(&self, file: &Path) -> bool {
+        self.confine.as_ref().is_none_or(|state| {
+            file.starts_with(state)
+                && !file
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+        })
     }
     /// Whether a steering mode is already set in the settings Pi loads for
     /// `cwd` (global, then project).
@@ -52,6 +80,12 @@ impl Store {
             return Err(HarnessError::Protocol(
                 "Pi returned a non-absolute session file".into(),
             ));
+        }
+        if !self.admits(file) {
+            return Err(HarnessError::Protocol(format!(
+                "Pi kept its session at {}, outside the sandbox's state folder",
+                file.display()
+            )));
         }
         self.write(id, &json!({"sessionId":id,"sessionFile":file}))
     }
@@ -134,6 +168,10 @@ impl Store {
         if let Some(file) = json_file(&self.key(id))["sessionFile"].as_str() {
             candidates.push(PathBuf::from(file));
         }
+        if let Some(dir) = self.session_dir() {
+            candidates.retain(|file| self.admits(file));
+            return self.search(id, candidates, vec![dir]);
+        }
         if let Some(file) = json_file(&self.legacy)["sessions"][id]["sessionFile"].as_str() {
             candidates.push(PathBuf::from(file));
         }
@@ -151,9 +189,20 @@ impl Store {
                 roots.push(path);
             }
         }
+        self.search(id, candidates, roots)
+    }
+    fn search(
+        &self,
+        id: &str,
+        candidates: Vec<PathBuf>,
+        roots: Vec<PathBuf>,
+    ) -> Result<PathBuf, HarnessError> {
         for file in candidates {
             if matches_id(&file, id) {
-                return Ok(canonical(&file)?);
+                let file = canonical(&file)?;
+                if self.admits(&file) {
+                    return Ok(file);
+                }
             }
         }
         for root in roots {
@@ -245,6 +294,35 @@ mod tests {
             plain(PathBuf::from("/home/me/s.jsonl")),
             PathBuf::from("/home/me/s.jsonl")
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_sandboxed_chats_store_keeps_and_finds_sessions_only_in_its_state_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path().join("agent");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(agent.join("sessions/p")).unwrap();
+        std::fs::create_dir_all(state.join("sessions/p")).unwrap();
+        let line = |id: &str| format!("{{\"type\":\"session\",\"id\":\"{id}\"}}\n");
+        // A session of the owner's, in Pi's own folder, and a link to it.
+        let host = agent.join("sessions/p/host.jsonl");
+        std::fs::write(&host, line("host")).unwrap();
+        std::os::unix::fs::symlink(&host, state.join("sessions/p/link.jsonl")).unwrap();
+        let mine = state.join("sessions/p/mine.jsonl");
+        std::fs::write(&mine, line("mine")).unwrap();
+        let open = Store::new(Some(dir.path().join("index")), Some(agent.clone()));
+        assert_eq!(open.resolve("host", dir.path()).unwrap(), host.canonicalize().unwrap());
+        let store = Store::new(None, Some(agent.clone())).confined(&state);
+        assert_eq!(store.session_dir(), Some(state.join("sessions")));
+        assert!(store.remember("host", &host).is_err());
+        assert!(store.remember("x", &state.join("sessions/../../agent/x.jsonl")).is_err());
+        assert!(store.resolve("host", dir.path()).is_err());
+        store.remember("mine", &mine).unwrap();
+        assert!(state.join("zend-sessions").is_dir());
+        assert_eq!(store.resolve("mine", dir.path()).unwrap(), mine.canonicalize().unwrap());
+        // An index entry naming the link is refused: it resolves outside.
+        store.remember("host", &state.join("sessions/p/link.jsonl")).unwrap();
+        assert!(store.resolve("host", dir.path()).is_err());
     }
     #[test]
     fn only_proven_empty_local_sessions_can_be_recreated_and_submission_revokes_it() {
