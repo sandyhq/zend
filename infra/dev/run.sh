@@ -40,7 +40,12 @@ export KACHE_PRESERVE_INCREMENTAL="${KACHE_PRESERVE_INCREMENTAL:-1}"
 for v in $(compgen -e | grep '^KACHE_' || true); do env+=(-e "$v"); done
 
 tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-it)
-exec docker run --rm "${tty[@]}" --init \
+# ZEND_DEV_SANDBOX=1: let bubblewrap and pasta run inside (the harness sandbox
+# tests). Off by default: it drops Docker's seccomp and AppArmor profiles and
+# its /proc masks.
+sbx=()
+[ "${ZEND_DEV_SANDBOX:-}" = 1 ] && sbx=(--security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --device /dev/net/tun)
+exec docker run --rm "${tty[@]}" "${sbx[@]}" --init \
   -v "$ROOT:/src" \
   -v "$target:/opt/target" \
   -v zend-dev-registry:/opt/cargo/registry \
