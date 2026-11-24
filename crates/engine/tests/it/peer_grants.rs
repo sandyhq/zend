@@ -615,6 +615,15 @@ fn owner(a: &Paired) -> RpcClient {
     zend_rpc::memory_client(Arc::new(zend_engine::peer_link::PeerLinkRpc { inner: a.core.rpc_service(), link: a.link.clone() }))
 }
 
+/// Show the copy's changes, then apply exactly what was shown (its tree).
+async fn apply_shown(owner: &RpcClient, chat: &str) -> Result<Value, String> {
+    let shown = owner.call(methods::SHOW_PEER_CHANGES, json!({ "chat": chat })).await.map_err(|e| e.to_string())?;
+    owner
+        .call(methods::APPLY_PEER_CHANGES, json!({ "chat": chat, "tree": shown["tree"] }))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -645,7 +654,8 @@ async fn a_servers_changes_reach_the_owners_folder_only_as_a_patch_the_owner_app
     let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
     assert_eq!(copy, a.data.join("peer-copies/theirs"));
     assert!(copy.join(".git").is_file(), "a worktree");
-    assert!(git(&p, &["branch", "--list", "zend-peer/theirs"]).contains("zend-peer/theirs"));
+    // Detached: no branch of it in the owner's repository.
+    assert_eq!(git(&p, &["for-each-ref", "--format=%(refname)"]).trim(), "refs/heads/main");
     // The worktree's git folder is the owner's, outside the copy.
     let pointer = std::fs::read_to_string(copy.join(".git")).unwrap();
     assert!(pointer.contains(&p.join(".git/worktrees").display().to_string()), "{pointer}");
@@ -683,27 +693,39 @@ async fn a_servers_changes_reach_the_owners_folder_only_as_a_patch_the_owner_app
         assert!(a.b.call(method, json!({ "chat": "theirs" })).await.is_err(), "{method} for B");
     }
 
+    // Review item 1: what is applied is what was shown; written since, refused.
+    let shown = owner.call(methods::SHOW_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
+    std::fs::write(copy.join("unread.txt"), "written after the owner read it
+").unwrap();
+    let moved = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs", "tree": shown["tree"] })).await.unwrap_err().to_string();
+    assert!(moved.contains("changed since you were shown"), "{moved}");
+    assert!(!p.join("unread.txt").exists());
+    std::fs::remove_file(copy.join("unread.txt")).unwrap();
+    // Without the tree: not a request.
+    assert!(owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.is_err());
+
+
     // A protected folder: nothing applied.
-    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    let refused = apply_shown(&owner, "theirs").await.unwrap_err();
     assert!(refused.contains("nothing applied") && refused.contains(".pi"), "{refused}");
     assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "project p\n");
     assert!(p.join("gone.txt").exists() && !p.join("src").exists() && !p.join(".pi").exists());
     std::fs::remove_dir_all(copy.join(".pi")).unwrap();
     // A link in the copy: nothing applied.
     std::os::unix::fs::symlink("/etc/passwd", copy.join("link")).unwrap();
-    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    let refused = apply_shown(&owner, "theirs").await.unwrap_err();
     assert!(refused.contains("symbolic link"), "{refused}");
     std::fs::remove_file(copy.join("link")).unwrap();
     // A folder in the owner's p that is a link out: nothing applied there.
     let elsewhere = a.root.join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, p.join("src")).unwrap();
-    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    let refused = apply_shown(&owner, "theirs").await.unwrap_err();
     assert!(refused.contains("is a link"), "{refused}");
     assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none());
     std::fs::remove_file(p.join("src")).unwrap();
 
-    let applied = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
+    let applied = apply_shown(&owner, "theirs").await.unwrap();
     assert_eq!(applied["applied"].as_array().unwrap().len(), 3, "{applied}");
     assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "project p, changed\n");
     assert_eq!(std::fs::read_to_string(p.join("src/new.rs")).unwrap(), "fn main() {}\n");
@@ -714,13 +736,13 @@ async fn a_servers_changes_reach_the_owners_folder_only_as_a_patch_the_owner_app
     // The owner changed it since: refused.
     std::fs::write(p.join("readme.md"), "the owner's\n").unwrap();
     std::fs::write(copy.join("readme.md"), "theirs again\n").unwrap();
-    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    let refused = apply_shown(&owner, "theirs").await.unwrap_err();
     assert!(refused.contains("changed in your folder"), "{refused}");
     assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "the owner's\n");
     // The owner's folder has its git back: it isn't confined.
     assert!(git(&p, &["status", "--porcelain"]).contains("readme.md"));
 
-    // Thrown away: the copy and its branch go, the owner's folder stays, the chat doesn't run.
+    // Thrown away: the copy goes, the owner's folder stays, the chat doesn't run.
     owner.call(methods::DISCARD_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
     assert!(!copy.exists());
     assert!(!git(&p, &["branch", "--list"]).contains("zend-peer/theirs"));
@@ -793,15 +815,15 @@ async fn the_copys_git_runs_nothing_its_agent_planted() {
     // A repository in the copy: not opened, the owner told.
     let listed = owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap();
     assert!(listed["copies"][0]["error"].as_str().unwrap_or_default().contains("git repository of its own"), "{listed}");
-    assert!(owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.is_err());
+    assert!(apply_shown(&owner, "theirs").await.is_err());
     std::fs::remove_dir_all(copy.join("sub")).unwrap();
     let patch = owner.call(methods::SHOW_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap()["patch"].as_str().unwrap().to_string();
     assert!(patch.contains("+changed"), "{patch}");
     // The planted attributes would make the owner's git run its drivers.
-    let refused = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    let refused = apply_shown(&owner, "theirs").await.unwrap_err();
     assert!(refused.contains(".gitattributes") && refused.contains("nothing applied"), "{refused}");
     std::fs::remove_file(copy.join(".gitattributes")).unwrap();
-    let applied = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap();
+    let applied = apply_shown(&owner, "theirs").await.unwrap();
     assert_eq!(applied["applied"], json!(["readme.md"]), "{applied}");
     assert_eq!(std::fs::read_to_string(p.join("readme.md")).unwrap(), "changed\n");
     assert!(!marker.exists(), "a planted driver or fsmonitor ran");
@@ -809,6 +831,67 @@ async fn the_copys_git_runs_nothing_its_agent_planted() {
     git(&p, &["status"]);
     git(&p, &["diff"]);
     assert!(!marker.exists(), "a planted driver ran in the owner's folder");
+}
+
+/// Review item 1: while a run of a chat in the copy is live, the owner
+/// can't list, read or apply it (what it shows could change under them);
+/// once the run has ended (its sandbox gone), they can.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_is_read_and_applied_only_while_nothing_runs_in_it() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
+    let a = paired_with(&["sessions.run:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
+    let mut queued = run("theirs", "/");
+    queued["command"]["request"]["prompt"] = "echo early > readme.md; touch started; sleep 3; echo late > readme.md; rm started; echo done".into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("queued");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !copy.join("started").exists() {
+        assert!(tokio::time::Instant::now() < deadline, "the run didn't start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let owner = owner(&a);
+    let listed = owner.call(methods::LIST_PEER_CHANGES, json!({})).await.unwrap();
+    let error = listed["copies"][0]["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.contains("chat theirs has a live run") && error.contains("stop it, or wait"), "{listed}");
+    let shown = owner.call(methods::SHOW_PEER_CHANGES, json!({ "chat": "theirs" })).await.unwrap_err().to_string();
+    assert!(shown.contains("live run"), "{shown}");
+    let applied = owner.call(methods::APPLY_PEER_CHANGES, json!({ "chat": "theirs", "tree": "x" })).await.unwrap_err().to_string();
+    assert!(applied.contains("live run"), "{applied}");
+    assert_eq!(std::fs::read_to_string(a.root.join("p/readme.md")).unwrap(), "project p\n");
+    let ran = shell_run(&runs, 1).await;
+    assert!(ran.out.contains("done"), "{}", ran.out);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let applied = loop {
+        match apply_shown(&owner, "theirs").await {
+            Ok(applied) => break applied,
+            Err(e) if e.contains("live run") || e.contains("still runs") => {
+                assert!(tokio::time::Instant::now() < deadline, "{e}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert_eq!(applied["applied"], json!(["readme.md"]), "{applied}");
+    assert_eq!(std::fs::read_to_string(a.root.join("p/readme.md")).unwrap(), "late\n");
+
+    // Review item 6: a chat that isn't the server's, confined to its copy,
+    // doesn't run there.
+    owner.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "not-theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    a.core.sessions.sandbox_chat("not-theirs", &copy).await.expect("marked");
+    let mut request: RunRequest = serde_json::from_value(run("not-theirs", "/")["command"]["request"].clone()).unwrap();
+    request.cwd = copy.display().to_string();
+    request.model = Some("anthropic/claude-test".into());
+    let other = a.core.sessions.dispatch("not-theirs", HarnessId::Mock, request, None).await;
+    assert!(other.as_ref().is_err_and(|e| e.to_string().contains("isn't that server's chat")), "{other:?}");
+    assert_eq!(runs.lock().unwrap().len(), 1, "it never ran");
 }
 
 /// 4d-3: a chat of B's runs only on a key the owner kept for B and its

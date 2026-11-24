@@ -659,6 +659,18 @@ impl SessionsEngine {
         if self.inner.peers_data_dir.set(data_dir.to_path_buf()).is_err() {
             return;
         }
+        // A working copy isn't read or applied while a run of a chat in it
+        // is live (crate::peer_copies).
+        let held = Arc::downgrade(&self.inner);
+        crate::peer_copies::on_held(data_dir, move |root| {
+            let inner = held.upgrade()?;
+            let live: Vec<String> = lock(&inner.runs).keys().cloned().collect();
+            live.into_iter().find(|chat| {
+                inner.journal.sandbox(chat).and_then(|mark| mark.root).is_some_and(|r| {
+                    r == root || std::fs::canonicalize(&r).is_ok_and(|r| r == root)
+                })
+            })
+        });
         let weak = Arc::downgrade(&self.inner);
         crate::peer_link::on_grants_changed(data_dir, move || {
             let Some(inner) = weak.upgrade() else { return false };
@@ -1636,6 +1648,7 @@ impl SessionsEngine {
         // registered (a Stop acting now notes what it claims first, then
         // looks for the run under the run lock). Revivals come here too.
         let gate = (!idle).then(|| self.stop_gate(chat_id, &user_id));
+        let confined_root = self.inner.journal.sandbox(chat_id).and_then(|mark| mark.root);
         // Under the run lock, where a Stop looks for the run to stop and a
         // message sent meanwhile registers its own: a retry the user stopped
         // (or the shutdown overtook) while no run was live, and a revival a
@@ -1662,6 +1675,15 @@ impl SessionsEngine {
         // run lock: a delete after this finds the run below and ends it, see
         // `follow_chat_deletions`.)
         let deleted = self.inner.workspace().is_some_and(|ws| ws.chat_deleted(chat_id));
+        // A working copy its owner is reading or applying now: no run of a
+        // chat in it starts meanwhile (under the run lock, where that read
+        // looks for live runs after marking the copy: crate::peer_copies).
+        if confined_root.as_deref().is_some_and(crate::peer_copies::reviewing) {
+            drop(runs);
+            return Err(EngineError::Other(format!(
+                "chat {chat_id}: its working copy is being read or applied by its owner now: try again in a moment"
+            )));
+        }
         if deleted {
             drop(runs);
             tracing::info!(chat = %chat_id, "run not started: the chat was deleted");
@@ -3455,7 +3477,11 @@ impl Inner {
                     "a paired server's chat runs only in a working copy of its own, and it has none (it was started before they had one)".into(),
                 ));
             }
-            (None, Some(copies)) => zend_harness::sandbox::Sandbox::working_copy(&root, copies.dir(), self.sandbox_host())?,
+            // Only a server's chats work in a copy: any other chat there
+            // would run on this device's logins in a server's folder.
+            (None, Some(_)) => {
+                return Err(refuse("its folder is a paired server's working copy, and it isn't that server's chat".into()));
+            }
             (None, None) => zend_harness::sandbox::Sandbox::project(&root, self.sandbox_host())?,
         };
         let sandbox = sandbox.with_state(&self.journal.sandbox_state_dir(chat_id))?;

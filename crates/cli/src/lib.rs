@@ -150,10 +150,13 @@ pub enum PeerCommand {
     /// workers.manage. sessions.run.unconfined is full trust: an agent it
     /// runs works as you on this server and can read Zend's IPC token.
     /// sessions.run:<project> runs the server's chats sandboxed in a working
-    /// copy of that project in Zend's data (a git worktree on a branch
-    /// zend-peer/<chat>, or a copy), never in your folder, on the server's
-    /// own API key (zend peer key set); what they change reaches your
-    /// folder only through zend peer changes apply.
+    /// copy of that project in Zend's data (a detached git worktree, or a
+    /// copy), never in your folder, on the server's own API key (zend peer
+    /// key set); what they change reaches your folder only through zend
+    /// peer changes apply. In the copy the server's agent can write
+    /// AGENTS.md, build scripts and code: applying is a review step, not a
+    /// filter. Read the patch before you apply it, and what you apply as if
+    /// you had written it yourself.
     Grant {
         /// The server: its key, a key prefix (8+) or its name.
         peer: String,
@@ -183,19 +186,49 @@ pub enum PeerChangesCommand {
         /// The chat the copy was made for.
         chat: String,
     },
-    /// Write what a working copy changed into your project folder: all or
-    /// nothing. Refused for .git and the agents' and tools' settings
-    /// folders (.pi, .claude, .vscode, …), symbolic links, paths through a
+    /// Write exactly the changes you were shown (by their tree, from show or
+    /// list) into your project folder: all or nothing, refused when the
+    /// copy changed since, or a chat in it runs. Applying is a review step,
+    /// not a filter: AGENTS.md, build scripts and code are applied as you
+    /// read them, so read the patch first. Always refused: .git and the
+    /// agents' and tools' settings folders (.pi, .claude, .vscode, …), files
+    /// your tools run on their own (.gitattributes, .gitmodules, hook
+    /// managers, flake.nix, shell.nix, .mcp.json, opencode.json, .zed,
+    /// .devcontainer, .github/workflows), symbolic links, paths through a
     /// link in your folder, and files you changed since the copy was made.
+    /// Files that instruct your agents (AGENTS.md, CLAUDE.md, GEMINI.md,
+    /// .cursorrules, .windsurfrules) only with --allow <path>.
     Apply {
         /// The chat the copy was made for.
         chat: String,
+        /// The tree you were shown (zend peer changes show prints it).
+        tree: String,
+        /// A flagged path (AGENTS.md and the like) to apply too; repeat it.
+        #[arg(long = "allow", value_name = "PATH")]
+        allow: Vec<String>,
     },
-    /// Throw a working copy away (and its branch): its chats stop running.
+    /// Throw a working copy away: its chats stop running.
     Discard {
         /// The chat the copy was made for.
         chat: String,
     },
+}
+
+/// `text` safe to print to a terminal: control characters (escape
+/// sequences, carriage returns, …) and the characters that reorder text
+/// (bidirectional overrides and isolates) shown as `\u{…}`; newlines and
+/// tabs kept when `lines` is true.
+pub fn terminal_safe(text: &str, lines: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let reorders = matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+        if (lines && (c == '\n' || c == '\t')) || !(c.is_control() || reorders) {
+            out.push(c);
+        } else {
+            out.push_str(&format!("\\u{{{:04x}}}", c as u32));
+        }
+    }
+    out
 }
 
 #[derive(Subcommand)]
@@ -562,6 +595,21 @@ pub fn help_for(version: &'static str, path: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_in_a_servers_changes_cant_drive_the_terminal() {
+        // A file name an agent chose: an escape sequence that clears the
+        // screen and retitles the window, a carriage return that hides the
+        // start of the line, and a right-to-left override that shows
+        // "evil.sh" as something else.
+        let name = "a\u{1b}[2J\u{1b}]0;owned\u{7}\rb\u{202e}hs.live\u{2066}x\u{200f}.txt";
+        let shown = terminal_safe(name, false);
+        assert!(!shown.chars().any(|c| c.is_control() || ('\u{2066}'..='\u{2069}').contains(&c) || ('\u{202a}'..='\u{202e}').contains(&c) || c == '\u{200f}'), "{shown}");
+        assert_eq!(shown, "a\\u{001b}[2J\\u{001b}]0;owned\\u{0007}\\u{000d}b\\u{202e}hs.live\\u{2066}x\\u{200f}.txt");
+        // A patch keeps its lines and tabs, nothing else.
+        assert_eq!(terminal_safe("+x\t1\n+\u{1b}[31my\n", true), "+x\t1\n+\\u{001b}[31my\n");
+        assert_eq!(terminal_safe("a\nb", false), "a\\u{000a}b");
+    }
 
     #[test]
     fn the_command_line_is_well_formed() {

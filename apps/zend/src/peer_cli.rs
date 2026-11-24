@@ -3,7 +3,7 @@
 //! this device's own: [`zend_engine::peer_link`]).
 
 use serde_json::{Value, json};
-use zend_cli::{PeerChangesCommand, PeerCommand, PeerKeyCommand};
+use zend_cli::{PeerChangesCommand, PeerCommand, PeerKeyCommand, terminal_safe};
 use zend_rpc::methods;
 
 pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path) -> anyhow::Result<()> {
@@ -53,39 +53,56 @@ pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path
             let reply = call(methods::UNPAIR_PEER, json!({ "peer": peer })).await?;
             println!("Unpaired {}.", reply["removed"].as_str().unwrap_or_default());
         }
+        // What a server's agent wrote (paths, contents, errors naming them)
+        // reaches the terminal escaped: terminal_safe.
         PeerCommand::Changes(PeerChangesCommand::List) => {
-            let reply = call(methods::LIST_PEER_CHANGES, json!({})).await?;
+            let reply = safe(call(methods::LIST_PEER_CHANGES, json!({})).await)?;
             let copies = reply["copies"].as_array().cloned().unwrap_or_default();
             if copies.is_empty() {
                 println!("No working copies of servers' chats.");
             }
+            let s = |v: &Value| terminal_safe(v.as_str().unwrap_or_default(), false);
             for copy in copies {
-                let server = who(&json!({ "key": copy["peer"], "name": copy["name"] }));
-                let place = copy["branch"].as_str().map(|b| format!("branch {b}")).unwrap_or_else(|| "copy".into());
-                println!(
-                    "{}  server {server}  project {}  {place}  of {}",
-                    copy["chat"].as_str().unwrap_or_default(),
-                    copy["project"].as_str().unwrap_or_default(),
-                    copy["owner"].as_str().unwrap_or_default()
-                );
+                let server = terminal_safe(&who(&json!({ "key": copy["peer"], "name": copy["name"] })), false);
+                println!("{}  server {server}  project {}  of {}", s(&copy["chat"]), s(&copy["project"]), s(&copy["owner"]));
                 match copy["changes"].as_array() {
                     Some(changes) if changes.is_empty() => println!("  no changes"),
                     Some(changes) => {
                         for change in changes {
-                            println!("  {} {}", change["status"].as_str().unwrap_or("?"), change["path"].as_str().unwrap_or_default());
+                            print_change(change);
                         }
+                        println!("  tree {}", s(&copy["tree"]));
                     }
-                    None => println!("  can't read it: {}", copy["error"].as_str().unwrap_or_default()),
+                    None => println!("  can't read it: {}", s(&copy["error"])),
                 }
             }
         }
         PeerCommand::Changes(PeerChangesCommand::Show { chat }) => {
-            let reply = call(methods::SHOW_PEER_CHANGES, json!({ "chat": chat })).await?;
-            print!("{}", reply["patch"].as_str().unwrap_or_default());
+            let reply = safe(call(methods::SHOW_PEER_CHANGES, json!({ "chat": chat })).await)?;
+            print!("{}", terminal_safe(reply["patch"].as_str().unwrap_or_default(), true));
+            // The summary on stderr: the patch on stdout stays a patch.
+            let changes = reply["changes"].as_array().cloned().unwrap_or_default();
+            let tree = terminal_safe(reply["tree"].as_str().unwrap_or_default(), false);
+            if changes.is_empty() {
+                eprintln!("No changes (tree {tree}).");
+            } else {
+                eprintln!("{} change(s), tree {tree}:", changes.len());
+                for change in &changes {
+                    print_change_to(change, true);
+                }
+                let allow: String = changes
+                    .iter()
+                    .filter(|c| c["flag"].is_string() && !c["refused"].is_string())
+                    .filter_map(|c| c["path"].as_str())
+                    .map(|p| format!(" --allow '{}'", terminal_safe(p, false)))
+                    .collect();
+                eprintln!("Apply exactly this: zend peer changes apply {} {tree}{allow}", terminal_safe(&chat, false));
+            }
         }
-        PeerCommand::Changes(PeerChangesCommand::Apply { chat }) => {
-            let reply = call(methods::APPLY_PEER_CHANGES, json!({ "chat": chat })).await?;
-            let applied: Vec<&str> = reply["applied"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        PeerCommand::Changes(PeerChangesCommand::Apply { chat, tree, allow }) => {
+            let reply = safe(call(methods::APPLY_PEER_CHANGES, json!({ "chat": chat, "tree": tree, "allow": allow })).await)?;
+            let applied: Vec<String> =
+                reply["applied"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|p| terminal_safe(p, false)).collect();
             if applied.is_empty() {
                 println!("Nothing to apply.");
             } else {
@@ -131,6 +148,30 @@ pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path
         }
     }
     Ok(())
+}
+
+/// A reply's error, escaped for the terminal (it can name the copy's files).
+fn safe(reply: anyhow::Result<Value>) -> anyhow::Result<Value> {
+    reply.map_err(|e| anyhow::anyhow!(terminal_safe(&format!("{e:#}"), true)))
+}
+
+fn print_change(change: &Value) {
+    print_change_to(change, false);
+}
+
+/// One changed path, with why it is refused or needs --allow.
+fn print_change_to(change: &Value, stderr: bool) {
+    let path = terminal_safe(change["path"].as_str().unwrap_or_default(), false);
+    let mut line = format!("  {} {path}", change["status"].as_str().unwrap_or("?"));
+    if change["modeOnly"].as_bool() == Some(true) {
+        line.push_str("  (mode only)");
+    }
+    if let Some(why) = change["refused"].as_str() {
+        line.push_str(&format!("  [refused: {}]", terminal_safe(why, false)));
+    } else if change["flag"].is_string() {
+        line.push_str(&format!("  [{}: --allow {path}]", "instructs or configures your tools"));
+    }
+    if stderr { eprintln!("{line}") } else { println!("{line}") }
 }
 
 fn who(peer: &Value) -> String {

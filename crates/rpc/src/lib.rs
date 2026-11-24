@@ -804,14 +804,17 @@ pub mod methods {
     pub const SET_PEER_GRANTS: &str = "SetPeerGrants";
     /// `{peer}` → `{removed}`: forget a paired server; its connections end.
     pub const UNPAIR_PEER: &str = "UnpairPeer";
-    /// `{}` → `{copies: [{chat, peer, project, owner, kind, branch?,
-    /// changes: [{path, status}] | error}]}`: the working copies of
+    /// `{}` → `{copies: [{chat, peer, project, owner, kind, tree,
+    /// changes: [{path, status, flag?, refused?, modeOnly?}] | error}]}`: the working copies of
     /// servers' chats here and what each changed since its base.
     pub const LIST_PEER_CHANGES: &str = "ListPeerChanges";
-    /// `{chat}` → `{chat, patch}`: what that copy changed, as a patch.
+    /// `{chat}` → `{chat, tree, changes, patch}`: what that copy changed,
+    /// as a patch, and the tree it is (what ApplyPeerChanges takes).
     pub const SHOW_PEER_CHANGES: &str = "ShowPeerChanges";
-    /// `{chat}` → `{chat, applied: [path]}`: write what that copy changed
-    /// into the project's folder (all or nothing).
+    /// `{chat, tree, allow?: [path]}` → `{chat, applied: [path]}`: write
+    /// exactly the tree the owner was shown into the project's folder (all
+    /// or nothing; refused if the copy moved since). `allow` lets flagged
+    /// paths (AGENTS.md and the like) through.
     pub const APPLY_PEER_CHANGES: &str = "ApplyPeerChanges";
     /// `{chat}` → `{chat, discarded}`: throw that copy away; the chats
     /// working in it no longer run.

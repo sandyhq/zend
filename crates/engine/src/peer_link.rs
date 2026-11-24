@@ -547,7 +547,10 @@ impl PeerLink {
                     "createdAt": meta.created_at,
                 });
                 match changes {
-                    Ok(changes) => row["changes"] = json!(changes),
+                    Ok((tree, changes)) => {
+                        row["tree"] = json!(tree);
+                        row["changes"] = json!(changes);
+                    }
                     Err(error) => row["error"] = json!(error),
                 }
                 row
@@ -582,6 +585,16 @@ struct PeerParams {
 #[derive(Deserialize)]
 struct ChatParams {
     chat: String,
+}
+
+#[derive(Deserialize)]
+struct ApplyParams {
+    chat: String,
+    /// The tree the owner was shown (ListPeerChanges, ShowPeerChanges).
+    tree: String,
+    /// Flagged paths (they instruct the owner's agents) the owner lets through.
+    #[serde(default)]
+    allow: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -625,18 +638,31 @@ impl RpcService for PeerLinkRpc {
             {
                 Err(RpcError::Failed(format!("{method} is this device's own")))
             }
-            methods::LIST_PEER_CHANGES => Ok(RpcReply::Value(self.link.list_changes())),
+            methods::LIST_PEER_CHANGES => {
+                let link = self.link.clone();
+                let listed = tokio::task::spawn_blocking(move || link.list_changes())
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                Ok(RpcReply::Value(listed))
+            }
             methods::SHOW_PEER_CHANGES => {
                 let p: ChatParams = zend_rpc::parse_params(given())?;
-                let patch = self.link.copies().patch(&p.chat).map_err(RpcError::Failed)?;
-                Ok(RpcReply::Value(json!({ "chat": p.chat, "patch": patch })))
+                let copies = self.link.copies();
+                let (tree, changes, patch) = tokio::task::spawn_blocking({
+                    let chat = p.chat.clone();
+                    move || copies.patch(&chat)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(RpcError::Failed)?;
+                Ok(RpcReply::Value(json!({ "chat": p.chat, "tree": tree, "changes": changes, "patch": patch })))
             }
             methods::APPLY_PEER_CHANGES => {
-                let p: ChatParams = zend_rpc::parse_params(given())?;
+                let p: ApplyParams = zend_rpc::parse_params(given())?;
                 let copies = self.link.copies();
                 let applied = tokio::task::spawn_blocking({
-                    let chat = p.chat.clone();
-                    move || copies.apply(&chat)
+                    let (chat, tree, allow) = (p.chat.clone(), p.tree.clone(), p.allow.clone());
+                    move || copies.apply(&chat, &tree, &allow)
                 })
                 .await
                 .map_err(|e| RpcError::Failed(e.to_string()))?
