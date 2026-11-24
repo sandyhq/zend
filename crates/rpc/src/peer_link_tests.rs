@@ -156,7 +156,7 @@ impl PeerBook for Book {
         };
         codes.remove(i).1
     }
-    fn joined(&self, key: &str, info: JoinInfo) -> Result<JoinInfo, String> {
+    fn joined(&self, key: &str, info: JoinInfo, _node: Option<String>) -> Result<JoinInfo, String> {
         self.peers.lock().unwrap().insert(key.into(), (Grants::default(), info));
         self.tick.send_modify(|t| *t += 1);
         Ok(self.me.clone())
@@ -168,6 +168,10 @@ impl PeerBook for Book {
 
 fn anyone(_: std::net::IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
     Box::pin(std::future::ready(true))
+}
+
+fn some_node(_: std::net::IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+    Box::pin(std::future::ready(Some("node-test".to_string())))
 }
 
 struct Server {
@@ -190,7 +194,7 @@ async fn server() -> Server {
     let key = Arc::new(NodeKey::generate().unwrap());
     let book = Book::new("callee");
     let echo = Arc::new(Echo::default());
-    let task = tokio::spawn(serve_peer_listener(listener, echo.clone(), key.clone(), book.clone(), anyone));
+    let task = tokio::spawn(serve_peer_listener(listener, echo.clone(), key.clone(), book.clone(), anyone, some_node));
     Server { url, key, book, echo, task }
 }
 

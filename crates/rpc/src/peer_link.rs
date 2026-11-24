@@ -377,9 +377,14 @@ pub trait PeerBook: Send + Sync {
     /// A joiner's [`join_proof`]: takes the code it proves (once: it's gone
     /// whatever happens next) when one is still good.
     fn take_code(&self, proof: &str, caller_nonce: &str, caller_key: &str) -> bool;
-    /// The joiner, proved, kept as a peer (grants empty); what this side
-    /// says of itself back.
-    fn joined(&self, key: &str, info: JoinInfo) -> Result<JoinInfo, String>;
+    /// The joiner, proved, kept as a peer (grants empty) and pinned to the
+    /// tailnet node it came from (`node`); what this side says of itself back.
+    fn joined(&self, key: &str, info: JoinInfo, node: Option<String>) -> Result<JoinInfo, String>;
+    /// The tailnet node (Tailscale's stable node id) the server holding
+    /// `key` was paired from: it is only ever let in from that node.
+    fn node(&self, _key: &str) -> Option<String> {
+        None
+    }
     /// Ticks on every change to the book (grants, unpairing).
     fn changes(&self) -> watch::Receiver<u64>;
 }
@@ -416,12 +421,17 @@ fn short(key: &str) -> &str {
 /// `key`: only peers `admits` lets in, only keys in `book` (or a joiner
 /// with a good code), only what their grants open. Every connection lives
 /// in this future: dropping it ends them all.
+/// Which tailnet node holds an address: Tailscale's stable node id
+/// (`tailscale whois`), `None` when it can't say.
+pub type NodeOf = fn(std::net::IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>;
+
 pub async fn serve_peer_listener(
     listener: TcpListener,
     service: Arc<dyn RpcService>,
     key: Arc<NodeKey>,
     book: Arc<dyn PeerBook>,
     admits: crate::remote::Admits,
+    node_of: NodeOf,
 ) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -434,8 +444,9 @@ pub async fn serve_peer_listener(
                         tracing::warn!(%peer, "rpc: peer link: refused a peer outside the tailnet");
                         return;
                     }
+                    let node = node_of(peer.ip()).await;
                     let _ = stream.set_nodelay(true);
-                    serve_peer_socket(stream, service, key, book).await;
+                    serve_peer_socket(stream, service, key, book, node).await;
                 });
             }
             Err(err) => {
@@ -462,8 +473,13 @@ struct CallerFrame {
     join: Option<JoinInfo>,
 }
 
-async fn serve_peer_socket<S>(stream: S, service: Arc<dyn RpcService>, key: Arc<NodeKey>, book: Arc<dyn PeerBook>)
-where
+async fn serve_peer_socket<S>(
+    stream: S,
+    service: Arc<dyn RpcService>,
+    key: Arc<NodeKey>,
+    book: Arc<dyn PeerBook>,
+    node: Option<String>,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     use futures::{SinkExt as _, StreamExt as _};
@@ -489,13 +505,23 @@ where
             return Err(refuse(StatusCode::UNAUTHORIZED, "a server sends its challenge"));
         };
         let joining = match header(JOIN_HEADER) {
+            Some(_) if node.is_none() => {
+                return Err(refuse(StatusCode::UNAUTHORIZED, "can't tell which tailnet node this is: no pairing"));
+            }
             Some(proof) => {
                 if !book.take_code(proof, caller_nonce, caller) {
                     return Err(refuse(StatusCode::UNAUTHORIZED, "no pairing code matches: wrong, expired or used"));
                 }
                 true
             }
-            None if book.grants(caller).is_some() => false,
+            None if book.grants(caller).is_some() => {
+                if let Some(pinned) = book.node(caller)
+                    && node.as_deref() != Some(pinned.as_str())
+                {
+                    return Err(refuse(StatusCode::UNAUTHORIZED, "this key comes from another tailnet node than the one it was paired from"));
+                }
+                false
+            }
             None => return Err(refuse(StatusCode::UNAUTHORIZED, "unknown key: pair the servers first")),
         };
         let Ok(callee_nonce) = crate::link_proof::nonce() else {
@@ -543,7 +569,7 @@ where
         return;
     };
     if expected.joining {
-        let reply = match book.joined(&expected.caller, frame.join.unwrap_or_default()) {
+        let reply = match book.joined(&expected.caller, frame.join.unwrap_or_default(), node.clone()) {
             Ok(me) => serde_json::json!({ "paired": me }),
             Err(error) => serde_json::json!({ "error": error }),
         };
