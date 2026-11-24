@@ -68,6 +68,12 @@ sysinfo = { version = "0.31.4", default-features = false, features = ["system", 
 # The pinned luau-lsp release a plugin check fetches (plugins/check/fetch.rs).
 zip.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# A shared project's files opened beneath its folder's fd (openat2 on
+# Linux), never by a path checked first (peer_files.rs). Already in the
+# tree (portable-pty, tempfile).
+rustix = { version = "1.1.4", features = ["fs"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # The battery's IOKit power-source dictionary (device_stats.rs); already in the tree.
 core-foundation = "0.10"

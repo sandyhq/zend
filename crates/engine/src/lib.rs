@@ -77,6 +77,7 @@ pub mod live_visuals;
 mod model_catalogs;
 mod plugin_agents;
 pub mod peer_chats;
+pub(crate) mod peer_files;
 pub mod peer_link;
 pub mod phone_link;
 mod phone_reads;

@@ -68,6 +68,10 @@ pub struct Peer {
     pub grants: Grants,
     #[serde(default)]
     pub paired_at: i64,
+    /// The tailnet node it was paired from (Tailscale's stable node id): it is
+    /// let in, and dialled, only there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -129,6 +133,7 @@ pub struct Seams {
     pub discover: fn() -> Found,
     pub bind: fn(SocketAddr) -> Bound,
     pub admits: zend_rpc::remote::Admits,
+    pub node_of: zend_rpc::peer_link::NodeOf,
 }
 
 impl Seams {
@@ -137,6 +142,7 @@ impl Seams {
             discover: || Box::pin(crate::phone_link::discover()),
             bind: |addr| Box::pin(zend_rpc::bind_remote(addr)),
             admits: crate::phone_link::tailnet_peer,
+            node_of: crate::phone_link::tailnet_node,
         }
     }
 }
@@ -221,8 +227,13 @@ impl PeerBook for Book {
         Instant::now() < expires
     }
 
-    fn joined(&self, key: &str, info: JoinInfo) -> Result<JoinInfo, String> {
+    fn node(&self, key: &str) -> Option<String> {
+        self.peers.lock().unwrap().iter().find(|p| p.key == key).and_then(|p| p.node.clone())
+    }
+
+    fn joined(&self, key: &str, info: JoinInfo, node: Option<String>) -> Result<JoinInfo, String> {
         let peer = Peer {
+            node,
             key: key.to_string(),
             name: info.name.filter(|n| !n.trim().is_empty()).map(|n| n.chars().take(80).collect()),
             host: info.host.filter(|h| h.len() <= 253),
@@ -348,6 +359,7 @@ impl PeerLink {
                         key.clone(),
                         self.book.clone(),
                         self.seams.admits,
+                        self.seams.node_of,
                     )));
                 }
                 Err(err) => failed.push(format!("{addr}: {err}")),
@@ -406,8 +418,12 @@ impl PeerLink {
         let _ = self.ensure_listening().await;
         let me = self.book.me.lock().unwrap().clone();
         let me = JoinInfo { name: Some(self.name()), ..me };
+        let node = self.node_at(&code.host).await.ok_or_else(|| {
+            RpcError::Failed(format!("can't tell which tailnet node {} is (tailscale whois): not paired", code.host))
+        })?;
         let them = zend_rpc::peer_link::join_peer(&code.url(), &key, &code.key, &code.secret, me).await?;
         let peer = Peer {
+            node: Some(node),
             key: code.key.clone(),
             name: them.name,
             host: Some(code.host.clone()),
@@ -423,6 +439,32 @@ impl PeerLink {
             })
             .map_err(RpcError::Failed)?;
         Ok(json!({ "peer": peer }))
+    }
+
+    /// The tailnet node at `host` (an address).
+    async fn node_at(&self, host: &str) -> Option<String> {
+        let ip = host.parse::<std::net::IpAddr>().ok()?;
+        (self.seams.node_of)(ip).await
+    }
+
+    /// Dial the paired server `peer` names, where it said it listens, only
+    /// when that address is still the tailnet node it was paired from.
+    pub async fn connect(&self, peer: &str) -> Result<zend_rpc::RpcClient, RpcError> {
+        let key = self.find(peer)?;
+        let peer = self.book.list().into_iter().find(|p| p.key == key).ok_or_else(|| RpcError::Failed("unpaired".into()))?;
+        let (Some(host), Some(port)) = (peer.host.clone(), peer.port) else {
+            return Err(RpcError::Failed("that server said nowhere to dial it".into()));
+        };
+        let here = self.node_at(&host).await;
+        if peer.node.is_none() || here != peer.node {
+            return Err(RpcError::Failed(format!(
+                "{host} is another tailnet node than the one {} was paired from: not dialled",
+                peer.name.as_deref().unwrap_or("that server")
+            )));
+        }
+        let code = Code { key: key.clone(), host, port, secret: String::new() };
+        let own = self.node_key().map_err(RpcError::Failed)?;
+        zend_rpc::connect_peer(&code.url(), &own, &key).await
     }
 
     /// The one paired server `name` names (key, key prefix of 8+, or name).
@@ -522,6 +564,7 @@ impl RpcService for PeerLinkRpc {
             methods::LIST_PEERS => self.link.status().await.map(RpcReply::Value),
             methods::SET_PEER_GRANTS => {
                 let p: GrantsParams = zend_rpc::parse_params(given())?;
+                self.check_shares(&p.grants).await?;
                 self.link.set_grants(&p.peer, &p.grants).map(RpcReply::Value)
             }
             methods::UNPAIR_PEER => {
@@ -531,6 +574,45 @@ impl RpcService for PeerLinkRpc {
             _ => self.inner.handle(method, params).await,
         }
     }
+}
+
+impl PeerLinkRpc {
+    /// Refuse sharing a project whose folder is, holds or sits in Zend's
+    /// data folder, holds the home folder or sits in a hidden folder of it
+    /// ([`crate::peer_files::unshareable`]; checked again at every read).
+    async fn check_shares(&self, grants: &[String]) -> Result<(), RpcError> {
+        use futures::StreamExt as _;
+        let shared: Vec<String> = grants
+            .iter()
+            .filter_map(|g| match g.parse::<Grant>() {
+                Ok(Grant::ProjectsShare(project)) => Some(project),
+                _ => None,
+            })
+            .collect();
+        if shared.is_empty() {
+            return Ok(());
+        }
+        let spaces = match self.inner.handle(methods::WATCH_SPACES, json!({})).await {
+            Ok(RpcReply::Stream(mut rows)) => tokio::time::timeout(Duration::from_secs(5), rows.next()).await.ok().flatten(),
+            Ok(RpcReply::Value(rows)) => Some(rows),
+            Err(_) => None,
+        };
+        let spaces: Vec<zend_proto::Space> = spaces.and_then(|rows| serde_json::from_value(rows).ok()).unwrap_or_default();
+        let home = crate::peer_files::home();
+        for project in shared {
+            let Some(space) = spaces.iter().find(|s| s.id == project) else { continue };
+            if let Some(why) = crate::peer_files::unshareable(Path::new(&space.path), &self.link.data_dir, home.as_deref()) {
+                return Err(RpcError::BadParams(format!("projects.share:{project}: never shared: {why}")));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The grants kept in `data_dir` for the server holding `key`, as they are
+/// now (read from peers.json), if it's paired.
+pub fn kept_grants(data_dir: &Path, key: &str) -> Option<Grants> {
+    Book::load(data_dir).grants(key)
 }
 
 /// The peer port of an engine on IPC port `ipc_port`.

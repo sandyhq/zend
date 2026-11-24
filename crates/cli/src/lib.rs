@@ -147,7 +147,8 @@ pub enum PeerCommand {
     /// Set what a paired server may do here, replacing what it had: none
     /// takes everything away. Grants: sessions.read, sessions.run:<project>,
     /// sessions.run.unconfined:<project>, projects.share:<project>,
-    /// workers.manage.
+    /// workers.manage. sessions.run.unconfined is full trust: an agent it
+    /// runs works as you on this server and can read Zend's IPC token.
     Grant {
         /// The server: its key, a key prefix (8+) or its name.
         peer: String,

@@ -3546,6 +3546,11 @@ impl crate::remote_terminals::Relay for EngineRpc {
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        // An agent in a chat a paired server started calls as that server
+        // (rpc/peer_gate.rs), never with its token's reach.
+        if let Some(as_peer) = self.peer_agent(method) {
+            return self.as_peer_agent(as_peer, method, params).await;
+        }
         // A paired server's calls: held to its grants, chat by chat and
         // project by project (rpc/peer_gate.rs). Before anything else.
         let params = match self.peer_gate(method, params).await? {

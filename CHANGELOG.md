@@ -5,7 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-24
 
 ### Added
-- Paired servers (peer link, steps 4a–4c): `zend peer pair|join|list|grant|unpair`, an Ed25519 node key per engine, `peers.json`, a tailnet-only peer listener on the IPC port + 1 with mutual key proof, per-peer grants mapped to a method list of their own (everything else refused with a reason), project file reads by relative path only, and chats a server starts under `sessions.run` marked `sandbox: "project"` and refused to run until sandboxed runs land (`crates/rpc/src/peer_link.rs`, `crates/engine/src/peer_link.rs`, `crates/engine/src/rpc/peer_gate.rs`).
+- Paired servers (peer link, steps 4a–4c): `zend peer pair|join|list|grant|unpair`, an Ed25519 node key per engine, `peers.json`, a tailnet-only peer listener on the IPC port + 1 with mutual key proof, per-peer grants mapped to a method list of their own (everything else refused with a reason), project file reads by relative path only, and chats a server starts under `sessions.run` marked `sandbox: "project"` and refused to run until sandboxed runs land (`crates/rpc/src/peer_link.rs`, `crates/engine/src/peer_link.rs`, `crates/engine/src/rpc/peer_gate.rs`). After review: shared files open beneath the project with openat2 and no symlinks (`crates/engine/src/peer_files.rs`), no share of Zend's data, home or a home dot-folder and no secret files by name, an agent in a peer's chat calls as that peer, `sessions.read` shows this device's own chats without absolute paths, a confined chat takes this side's access, the Tailscale node is pinned at pairing.
 
 ## 2026-11-22
 

@@ -22,6 +22,7 @@ fn loopback() -> Seams {
         },
         bind: |addr| Box::pin(tokio::net::TcpListener::bind(addr)),
         admits: |_| Box::pin(std::future::ready(true)),
+        node_of: |_| Box::pin(std::future::ready(Some("node-test".to_string()))),
     }
 }
 
@@ -33,9 +34,13 @@ struct Side {
 }
 
 fn side() -> Side {
+    side_with(loopback())
+}
+
+fn side_with(seams: Seams) -> Side {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
-    let link = PeerLink::new(&data, 0, Arc::new(Echo), loopback());
+    let link = PeerLink::new(&data, 0, Arc::new(Echo), seams);
     let rpc = zend_rpc::memory_client(Arc::new(PeerLinkRpc { inner: Arc::new(Echo), link: link.clone() }));
     Side { _dir: dir, data, link, rpc }
 }
@@ -200,4 +205,66 @@ async fn changing_grants_is_local_only() {
     // And from this device's own window it works.
     a.rpc.call(methods::SET_PEER_GRANTS, json!({ "peer": kb, "grants": [] })).await.unwrap();
     assert!(a.link.peers()[0].grants.is_empty());
+}
+
+
+/// Which node the seam below says holds every address: the paired one, or
+/// another once switched.
+static MOVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn moving_node(_: std::net::IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+    let moved = MOVED.load(std::sync::atomic::Ordering::SeqCst);
+    Box::pin(std::future::ready(Some(if moved { "node-other" } else { "node-paired" }.to_string())))
+}
+
+/// Pairing pins the tailnet node each side came from; a server whose key
+/// arrives from, or whose address now is, another node is refused, on
+/// accept and on dial.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_is_reached_only_on_the_node_it_paired_from() {
+    let seams = Seams { node_of: moving_node, ..loopback() };
+    let (a, b) = (side_with(seams), side_with(seams));
+    pair(&a, &b).await;
+    assert_eq!(a.link.peers()[0].node.as_deref(), Some("node-paired"));
+    assert_eq!(b.link.peers()[0].node.as_deref(), Some("node-paired"));
+    let (a_key, b_key) = (a.link.node_key().unwrap(), b.link.node_key().unwrap());
+    let port = a.link.status().await.unwrap()["port"].as_u64().unwrap();
+    let url = format!("ws://127.0.0.1:{port}");
+
+    b.link.connect(a_key.public()).await.expect("dialled on the paired node");
+    zend_rpc::connect_peer(&url, &b_key, a_key.public()).await.expect("let in from the paired node");
+
+    MOVED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let dial = b.link.connect(a_key.public()).await.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(dial.contains("another tailnet node"), "dial: {dial}");
+    let accept = zend_rpc::connect_peer(&url, &b_key, a_key.public()).await;
+    assert!(accept.is_err(), "let in from another node");
+
+    MOVED.store(false, std::sync::atomic::Ordering::SeqCst);
+    zend_rpc::connect_peer(&url, &b_key, a_key.public()).await.expect("the paired node again");
+}
+
+/// No pairing where Tailscale can't say which node the other side is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_pairing_without_a_tailnet_node() {
+    let nowhere = Seams { node_of: |_| Box::pin(std::future::ready(None)), ..loopback() };
+    // The joiner can't tell the callee's node.
+    let (a, b) = (side(), side_with(nowhere));
+    let code = a.rpc.call(methods::PEER_PAIR, json!({})).await.unwrap();
+    let joined = b.rpc.call(methods::PEER_JOIN, json!({ "code": code["code"] })).await;
+    assert!(joined.is_err_and(|e| e.to_string().contains("tailnet node")));
+    // The callee can't tell the joiner's.
+    let (a, b) = (side_with(nowhere), side());
+    let code = a.rpc.call(methods::PEER_PAIR, json!({})).await.unwrap();
+    assert!(b.rpc.call(methods::PEER_JOIN, json!({ "code": code["code"] })).await.is_err());
+    assert!(a.link.peers().is_empty() && b.link.peers().is_empty());
+}
+
+#[test]
+fn whois_names_the_stable_node_id() {
+    let ip: std::net::IpAddr = "100.115.228.74".parse().unwrap();
+    let out = r#"{"Node":{"StableID":"nXKkkAUYL111CNTRL","Addresses":["100.115.228.74/32","fd7a:115c:a1e0::7f32:e44b/128"]}}"#;
+    assert_eq!(crate::phone_link::whois_node(out, ip).as_deref(), Some("nXKkkAUYL111CNTRL"));
+    assert_eq!(crate::phone_link::whois_node(out, "100.1.2.3".parse().unwrap()), None);
+    assert_eq!(crate::phone_link::whois_node(r#"{"Node":{"Addresses":["100.115.228.74/32"]}}"#, ip), None);
 }

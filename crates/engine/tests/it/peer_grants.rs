@@ -13,7 +13,7 @@ use zend_doc::commands::SessionCommandPayload;
 use zend_engine::peer_link::{PeerLink, Seams};
 use zend_engine::{EngineCore, HarnessRegistry};
 use zend_proto::{HarnessId, RunRequest, SandboxLevel};
-use zend_rpc::{RpcClient, RpcError, methods};
+use zend_rpc::{Caller, RpcClient, RpcError, RpcService, methods, with_caller};
 
 fn assemble(data_dir: &Path, device_id: &str) -> EngineCore {
     std::fs::create_dir_all(data_dir).expect("data dir");
@@ -31,6 +31,7 @@ fn loopback() -> Seams {
         },
         bind: |addr| Box::pin(tokio::net::TcpListener::bind(addr)),
         admits: |_| Box::pin(std::future::ready(true)),
+        node_of: |_| Box::pin(std::future::ready(Some("node-test".to_string()))),
     }
 }
 
@@ -44,6 +45,16 @@ struct Paired {
     link: Arc<PeerLink>,
     b_key: String,
     b: RpcClient,
+    b_node: Arc<zend_rpc::peer_link::NodeKey>,
+    a_public: String,
+    url: String,
+}
+
+impl Paired {
+    /// B dialled in again (a grant change cut its connection).
+    async fn redial(&mut self) {
+        self.b = zend_rpc::connect_peer(&self.url, &self.b_node, &self.a_public).await.expect("B dials in again");
+    }
 }
 
 async fn paired(grants: &[&str]) -> Paired {
@@ -68,15 +79,27 @@ async fn paired(grants: &[&str]) -> Paired {
     let a_key = link.node_key().unwrap();
     link.set_grants(b_key.public(), &grants.iter().map(|g| g.to_string()).collect::<Vec<_>>()).expect("grants");
     let port = link.status().await.unwrap()["port"].as_u64().unwrap();
+    let url = format!("ws://127.0.0.1:{port}");
     let b = tokio::time::timeout(
         Duration::from_secs(5),
-        zend_rpc::connect_peer(&format!("ws://127.0.0.1:{port}"), &b_key, a_key.public()),
+        zend_rpc::connect_peer(&url, &b_key, a_key.public()),
     )
     .await
     .expect("dial timed out")
     .expect("B dials in");
     std::mem::forget(other);
-    Paired { _temp: temp, root, data, core, link, b_key: b_key.public().to_string(), b }
+    Paired {
+        _temp: temp,
+        root,
+        data,
+        core,
+        link,
+        b_key: b_key.public().to_string(),
+        b,
+        b_node: b_key,
+        a_public: a_key.public().to_string(),
+        url,
+    }
 }
 
 fn create(chat: &str, project: &str) -> Value {
@@ -229,4 +252,142 @@ async fn shared_files_stay_inside_their_project() {
         replies.push_str(&format!("{:?}", a.b.call(method, params).await));
     }
     assert!(!replies.contains("SECRET") && !replies.contains(&node_hex[..32]), "{replies}");
+}
+
+/// A project at or around Zend's data folder is never shared: SetPeerGrants
+/// refuses it, and a grant kept from before is refused at every read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_holding_zend_data_is_never_shared() {
+    let a = paired(&[]).await;
+    std::fs::create_dir_all(a.data.join("inner")).unwrap();
+    a.core.workspace.create_space("data", &a.core.device_id, &a.data.to_string_lossy(), None, false).unwrap();
+    a.core.workspace.create_space("around", &a.core.device_id, &a.root.to_string_lossy(), None, false).unwrap();
+    a.core.workspace.create_space("inner", &a.core.device_id, &a.data.join("inner").to_string_lossy(), None, false).unwrap();
+    let local = zend_rpc::memory_client(Arc::new(zend_engine::peer_link::PeerLinkRpc { inner: a.core.rpc_service(), link: a.link.clone() }));
+    for project in ["data", "around", "inner"] {
+        let set = local.call(methods::SET_PEER_GRANTS, json!({ "peer": a.b_key, "grants": [format!("projects.share:{project}")] })).await;
+        assert!(set.as_ref().is_err_and(|e| e.to_string().contains("never shared")), "{project}: {set:?}");
+    }
+    local.call(methods::SET_PEER_GRANTS, json!({ "peer": a.b_key, "grants": ["projects.share:p"] })).await.expect("p shares");
+    // Kept from before the check (or the folder moved since): refused at read.
+    let mut a = a;
+    a.link.set_grants(&a.b_key.clone(), &["projects.share:data".into(), "projects.share:around".into()]).unwrap();
+    a.redial().await;
+    for (project, path) in [("data", "ipc-token"), ("around", "a-data/ipc-token"), ("around", "outside.txt")] {
+        let reply = a.b.call(methods::PEER_READ_PROJECT_FILE, json!({ "project": project, "path": path })).await;
+        assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("data folder")), "{project}/{path}: {reply:?}");
+        let listed = a.b.call(methods::PEER_LIST_PROJECT_FILES, json!({ "project": project })).await;
+        assert!(listed.is_err(), "{project}: {listed:?}");
+    }
+}
+
+/// An agent in a chat B started calls as B: reading another chat and making
+/// one in a project B may not run in are refused, though the agent token
+/// would reach them; its own child is B's and confined.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_in_a_peer_chat_reaches_only_what_the_peer_may() {
+    let a = paired(&["sessions.run:p"]).await;
+    a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    a.b.call(methods::MUTATE, create("peer-chat", "p")).await.expect("create in p");
+    let rpc = a.core.rpc_service();
+    let agent = |chat: &str| Caller::Agent { chat: Some(chat.to_string()) };
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" });
+    let device = a.core.device_id.clone();
+
+    let read = with_caller(agent("peer-chat"), rpc.handle(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "owner-chat" }))).await;
+    assert!(read.is_err(), "read the owner's chat");
+    let elsewhere = with_caller(agent("peer-chat"), rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "q-child", "spaceId": "q", "deviceId": device,
+        "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
+    }))).await;
+    assert!(elsewhere.is_err(), "created in q: {:?}", elsewhere.map(|_| ()));
+    let loose = with_caller(agent("peer-chat"), rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "loose-child", "deviceId": device, "config": config,
+    }))).await;
+    assert!(loose.is_err(), "created outside a project");
+    let other_parent = with_caller(agent("peer-chat"), rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "adopted", "spaceId": "p", "deviceId": device,
+        "parentChatId": "owner-chat", "childKind": "subagent", "config": config,
+    }))).await;
+    assert!(other_parent.is_err(), "made a child of the owner's chat");
+    assert!(a.core.workspace.chat("q-child").unwrap().is_none());
+
+    // Its own child, in p: B's, confined, this side's access.
+    with_caller(agent("peer-chat"), rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "p-child", "spaceId": "p", "deviceId": device,
+        "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
+    }))).await.expect("its own child in p");
+    assert_eq!(a.core.sessions.peer_chats().peer("p-child").as_deref(), Some(a.b_key.as_str()));
+    assert_eq!(a.core.sessions.chat_sandbox("p-child"), Some(zend_proto::ChatSandbox::Project));
+    let child = a.core.workspace.chat("p-child").unwrap().unwrap();
+    assert_eq!(child.parent_chat_id.as_deref(), Some("peer-chat"));
+    assert_eq!(child.config.unwrap().access, zend_proto::AccessMode::Supervised);
+    // Its child's agent is B too.
+    let read = with_caller(agent("p-child"), rpc.handle(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "owner-chat" }))).await;
+    assert!(read.is_err(), "the child read the owner's chat");
+
+    // The same calls from the owner's own chat's agent pass this gate.
+    with_caller(agent("owner-chat"), rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "owner-child", "spaceId": "q", "deviceId": device,
+        "parentChatId": "owner-chat", "childKind": "subagent", "config": config,
+    }))).await.expect("the owner's agent creates in q");
+
+    // Unpaired: its agent reaches nothing.
+    a.link.unpair(&a.b_key).unwrap();
+    let after = with_caller(agent("peer-chat"), rpc.handle(methods::ENGINE_INFO, json!({}))).await;
+    assert!(after.is_err(), "unpaired, still reached the engine");
+}
+
+/// A chat B started unconfined doesn't run once B's grant for its project
+/// is only sessions.run (it has no sandbox mark).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_confined_grant_stops_a_chat_started_unconfined() {
+    let mut a = paired(&["sessions.run.unconfined:p"]).await;
+    a.b.call(methods::MUTATE, create("free-chat", "p")).await.expect("create");
+    assert_eq!(a.core.sessions.chat_sandbox("free-chat"), None);
+    a.link.set_grants(&a.b_key.clone(), &["sessions.run:p".into()]).unwrap();
+    a.redial().await;
+    let reply = a.b.call(methods::QUEUE_COMMAND, run("free-chat", "/")).await;
+    assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("started unconfined")), "{reply:?}");
+}
+
+/// sessions.read: this device's chats and sessions only, and no chat's
+/// folder as an absolute path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reading_sessions_shows_this_devices_own_chats_without_paths() {
+    let a = paired(&["sessions.read"]).await;
+    let src = a.root.join("p").join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    a.core.workspace.create_chat("mine", Some("p"), Some(&a.core.device_id), None, Some(src.to_string_lossy().into_owned())).unwrap();
+    let elsewhere = a.root.join("r");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    a.core.workspace.create_space("r", "device-other", &elsewhere.to_string_lossy(), None, false).unwrap();
+    a.core.workspace.create_chat("theirs", Some("r"), Some("device-other"), None, None).unwrap();
+    assert_eq!(a.core.workspace.chat("theirs").unwrap().unwrap().device_id, "device-other");
+    let mut chats = a.b.subscribe_scoped(methods::WATCH_CHATS, json!({})).await.expect("watch chats");
+    let rows = tokio::time::timeout(Duration::from_secs(5), chats.recv()).await.unwrap().unwrap();
+    let rows = rows.as_array().cloned().unwrap_or_default();
+    let mine = rows.iter().find(|c| c["id"] == "mine").expect("its own chat listed");
+    assert_eq!(mine["cwd"], "src", "{mine}");
+    assert!(!rows.iter().any(|c| c["id"] == "theirs"), "another device's chat: {rows:?}");
+    let shown = serde_json::to_string(&rows).unwrap();
+    assert!(!shown.contains(&*a.root.to_string_lossy()), "an absolute path: {shown}");
+    let mut sessions = a.b.subscribe_scoped(methods::WATCH_SESSIONS, json!({ "changes": true })).await.expect("watch sessions");
+    let rows = tokio::time::timeout(Duration::from_secs(5), sessions.recv()).await.unwrap().unwrap();
+    assert!(rows.as_array().is_some_and(|rows| rows.iter().all(|s| s["deviceId"] == a.core.device_id.as_str())), "{rows}");
+}
+
+/// A confined chat runs with this side's sandbox, access and plan mode, and
+/// model options its model doesn't list are refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_confined_chat_takes_this_sides_access_not_the_peers() {
+    let a = paired(&["sessions.run:p"]).await;
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access", "plan": true });
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "c", "spaceId": "p", "config": config })).await.expect("create");
+    let kept = a.core.workspace.chat("c").unwrap().unwrap().config.unwrap();
+    assert_eq!((kept.sandbox, kept.access, kept.plan), (SandboxLevel::WorkspaceWrite, zend_proto::AccessMode::Supervised, false));
+    let odd = json!({ "harness": HarnessId::Mock, "sandbox": "read-only", "modelOptions": { "bogus": "x" } });
+    let reply = a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "odd", "spaceId": "p", "config": odd })).await;
+    assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("modelOptions")), "{reply:?}");
+    assert!(a.core.workspace.chat("odd").unwrap().is_none());
 }
