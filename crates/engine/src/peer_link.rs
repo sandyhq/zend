@@ -592,15 +592,31 @@ impl PeerLinkRpc {
         if shared.is_empty() {
             return Ok(());
         }
+        // The published project list lags a project made a moment ago: wait
+        // (5 s at most) until each named one shows, and refuse one that
+        // doesn't (unchecked is never shared).
+        let parse = |rows: Value| serde_json::from_value::<Vec<zend_proto::Space>>(rows).unwrap_or_default();
+        let has_all = |spaces: &[zend_proto::Space]| shared.iter().all(|p| spaces.iter().any(|s| &s.id == p));
         let spaces = match self.inner.handle(methods::WATCH_SPACES, json!({})).await {
-            Ok(RpcReply::Stream(mut rows)) => tokio::time::timeout(Duration::from_secs(5), rows.next()).await.ok().flatten(),
-            Ok(RpcReply::Value(rows)) => Some(rows),
-            Err(_) => None,
+            Ok(RpcReply::Stream(mut rows)) => {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                let mut last = Vec::new();
+                while !has_all(&last) {
+                    match tokio::time::timeout_at(deadline, rows.next()).await {
+                        Ok(Some(next)) => last = parse(next),
+                        _ => break,
+                    }
+                }
+                last
+            }
+            Ok(RpcReply::Value(rows)) => parse(rows),
+            Err(_) => Vec::new(),
         };
-        let spaces: Vec<zend_proto::Space> = spaces.and_then(|rows| serde_json::from_value(rows).ok()).unwrap_or_default();
         let home = crate::peer_files::home();
         for project in shared {
-            let Some(space) = spaces.iter().find(|s| s.id == project) else { continue };
+            let Some(space) = spaces.iter().find(|s| s.id == project) else {
+                return Err(RpcError::BadParams(format!("projects.share:{project}: never shared: no such project on this device")));
+            };
             if let Some(why) = crate::peer_files::unshareable(Path::new(&space.path), &self.link.data_dir, home.as_deref()) {
                 return Err(RpcError::BadParams(format!("projects.share:{project}: never shared: {why}")));
             }

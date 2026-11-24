@@ -273,6 +273,9 @@ async fn a_project_holding_zend_data_is_never_shared() {
         let set = local.call(methods::SET_PEER_GRANTS, json!({ "peer": a.b_key, "grants": [format!("projects.share:{project}")] })).await;
         assert!(set.as_ref().is_err_and(|e| e.to_string().contains("never shared")), "{project}: {set:?}");
     }
+    // A project this device doesn't (yet) list can't be checked: refused.
+    let unknown = local.call(methods::SET_PEER_GRANTS, json!({ "peer": a.b_key, "grants": ["projects.share:nope"] })).await;
+    assert!(unknown.as_ref().is_err_and(|e| e.to_string().contains("no such project")), "{unknown:?}");
     local.call(methods::SET_PEER_GRANTS, json!({ "peer": a.b_key, "grants": ["projects.share:p"] })).await.expect("p shares");
     // Kept from before the check (or the folder moved since): refused at read.
     let mut a = a;
