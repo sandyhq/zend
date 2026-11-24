@@ -63,6 +63,7 @@ pub mod desktop_notify;
 pub mod device_stats;
 pub mod diff_sync;
 pub mod doc_host;
+mod confined;
 mod fs_watch;
 mod git_tree;
 pub mod harness_updates;
@@ -312,6 +313,8 @@ impl EngineCore {
         }
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);
+        // Sandboxed chats' projects: no host git in them, from the start.
+        confined::load(&journal);
         let sessions = SessionsEngine::new(device_id.clone(), journal, registry.clone());
         let doc_host = DocHost::new(
             store.clone(),

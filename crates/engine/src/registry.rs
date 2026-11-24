@@ -263,6 +263,12 @@ impl HarnessRegistry {
         id: HarnessId,
         cwd: &Path,
     ) -> Result<Vec<zend_proto::SlashCommand>, HarnessError> {
+        // A sandboxed chat's project: discovery starts the agent unconfined,
+        // and it would load what the confined agent wrote there (Pi's
+        // project extensions and settings). None there.
+        if crate::confined::holds(cwd) {
+            return Ok(Vec::new());
+        }
         let cwd = cwd.to_owned();
         let lease = self.execution_lease(id).await;
         let harness = self.resolve(id)?;
@@ -281,6 +287,10 @@ impl HarnessRegistry {
         id: HarnessId,
         cwd: &Path,
     ) -> Result<Option<Vec<zend_proto::invocation::Skill>>, HarnessError> {
+        // As discover_commands: nothing is started in a confined folder.
+        if crate::confined::holds(cwd) {
+            return Ok(Some(Vec::new()));
+        }
         let cwd = cwd.to_owned();
         let lease = self.execution_lease(id).await;
         let harness = self.resolve(id)?;

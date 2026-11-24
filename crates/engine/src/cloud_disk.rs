@@ -344,6 +344,10 @@ fn is_cargo_target(path: &Path) -> bool {
 
 /// When in doubt (no repository, git failing): yes.
 fn git_tracks_anything_in(checkout: &Path, dir: &Path) -> bool {
+    // A sandboxed chat's project: no git there (crate::confined); in doubt.
+    if crate::confined::holds(checkout) {
+        return true;
+    }
     let listed = std::process::Command::new("git")
         .arg("-C")
         .arg(checkout)

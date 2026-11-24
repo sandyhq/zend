@@ -318,8 +318,9 @@ impl RunJournal {
         self.dir.join(format!("{}.sandbox", sanitize_id(chat_id)))
     }
 
-    /// Mark `chat_id` as one whose agent runs confined
-    /// ([`zend_proto::ChatSandbox`]). Kept on this host only, beside its
+    /// Mark `chat_id` as one whose agent runs confined to `root`
+    /// ([`zend_proto::ChatSandbox`]), `None` for a root that was refused (no
+    /// run of the chat starts then). Kept on this host only, beside its
     /// journal: never in the synced chat row, which another device could
     /// rewrite. There is no way to take the mark off here: a chat that was
     /// sandboxed stays so. An error means it isn't marked: the caller must
@@ -328,21 +329,47 @@ impl RunJournal {
         &self,
         chat_id: &str,
         sandbox: zend_proto::ChatSandbox,
+        root: Option<&Path>,
     ) -> Result<(), JournalError> {
         std::fs::create_dir_all(&self.dir)?;
-        std::fs::write(self.sandbox_path(chat_id), sandbox.as_str())?;
+        let mark = serde_json::json!({ "sandbox": sandbox.as_str(), "root": root });
+        let path = self.sandbox_path(chat_id);
+        let temp = path.with_extension("sandbox.tmp");
+        std::fs::write(&temp, serde_json::to_vec(&mark).unwrap())?;
+        std::fs::rename(&temp, &path)?;
         Ok(())
     }
 
     /// The sandbox [`Self::note_sandbox`] marked `chat_id` with. A mark
     /// that can't be read, or says what this build doesn't know, is the
-    /// strictest sandbox, never none.
-    pub fn sandbox(&self, chat_id: &str) -> Option<zend_proto::ChatSandbox> {
+    /// strictest sandbox with no root (every run refused), never none.
+    pub fn sandbox(&self, chat_id: &str) -> Option<SandboxMark> {
         let path = self.sandbox_path(chat_id);
         match std::fs::symlink_metadata(&path) {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            _ => Some(zend_proto::ChatSandbox::Project),
+            _ => Some(SandboxMark::read(&path)),
         }
+    }
+
+    /// Every marked chat's root ([`Self::note_sandbox`]): the folders whose
+    /// agent runs confined, on this host.
+    pub fn sandbox_roots(&self) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "sandbox"))
+            .filter_map(|path| SandboxMark::read(&path).root)
+            .collect()
+    }
+
+    /// The folder a sandboxed chat's agent keeps its own state in between
+    /// its processes (its sessions, to resume), the only one outside its
+    /// project it may write.
+    pub fn sandbox_state_dir(&self, chat_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.sandbox-state", sanitize_id(chat_id)))
     }
 
     /// Auto-resume revival budget (zend `resumeAttempt`/`MAX_AUTO_RESUME`):
@@ -655,6 +682,29 @@ impl RunJournal {
             std::fs::remove_file(path)?;
         }
         Ok(())
+    }
+}
+
+/// A chat's sandbox mark ([`RunJournal::note_sandbox`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxMark {
+    pub sandbox: zend_proto::ChatSandbox,
+    /// The canonical project folder its runs are confined to; `None` when
+    /// the mark has none or can't be read: no run of the chat starts.
+    pub root: Option<PathBuf>,
+}
+
+impl SandboxMark {
+    fn read(path: &Path) -> Self {
+        let root = std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|mark| mark["root"].as_str().map(PathBuf::from))
+            .filter(|root| root.is_absolute());
+        Self {
+            sandbox: zend_proto::ChatSandbox::Project,
+            root,
+        }
     }
 }
 
