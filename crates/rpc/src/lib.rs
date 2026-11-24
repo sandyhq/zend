@@ -23,6 +23,7 @@ mod client;
 pub mod device_room;
 pub mod ipc_auth;
 pub mod link_proof;
+pub mod peer_link;
 pub mod remote;
 mod server;
 mod ws;
@@ -35,6 +36,7 @@ pub use device_room::{
     NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenError, TokenSource,
     decode_device_frame, device_room_ws_url, encode_device_frame, is_liveness_probe,
 };
+pub use peer_link::{Grant, Grants, NodeKey, connect_peer, peer_server_allowed};
 pub use remote::{bind_remote, in_tailnet, remote_allowed, serve_remote_listener};
 pub use server::{
     agent_service, serve_connection, serve_ws_listener, serve_ws_listener_scoped, serve_ws_streams,
@@ -787,6 +789,29 @@ pub mod methods {
     /// `{}` → as `PhoneLinkStatus`: a new key; phones holding the old one
     /// are cut and refused.
     pub const NEW_PHONE_LINK_KEY: &str = "NewPhoneLinkKey";
+    /// Server to server ([`crate::peer_link`]): `{}` → `{code, expiresAt}`,
+    /// a pairing code (this engine's key, tailnet address, peer port and a
+    /// one-time secret) good for 10 minutes, once. Starts the peer listener.
+    pub const PEER_PAIR: &str = "PeerPair";
+    /// `{code, name?}` → `{peer}`: pair with the server that showed `code`;
+    /// both sides then hold each other's key (no grants yet).
+    pub const PEER_JOIN: &str = "PeerJoin";
+    /// `{}` → `{key, port, listening, peers: [{key, name?, host?, port?,
+    /// grants, pairedAt}]}`: this engine's key and its paired servers.
+    pub const LIST_PEERS: &str = "ListPeers";
+    /// `{peer, grants: [..]}` → the peer: what this side lets that server
+    /// do here (replaced whole). Its open connections end.
+    pub const SET_PEER_GRANTS: &str = "SetPeerGrants";
+    /// `{peer}` → `{removed}`: forget a paired server; its connections end.
+    pub const UNPAIR_PEER: &str = "UnpairPeer";
+    /// A paired server's (`projects.share:<project>`): `{project, path?}` →
+    /// `{entries: [{name, kind, size?}]}`, a folder of that project by a
+    /// path from its root.
+    pub const PEER_LIST_PROJECT_FILES: &str = "PeerListProjectFiles";
+    /// A paired server's (`projects.share:<project>`): `{project, path}` →
+    /// `{path, size, text?}` (`text` for UTF-8 files up to 1 MiB), a file of
+    /// that project by a path from its root.
+    pub const PEER_READ_PROJECT_FILE: &str = "PeerReadProjectFile";
 }
 
 /// Methods answered only over this device's own local IPC, never to a peer
@@ -848,6 +873,12 @@ pub fn local_only(method: &str) -> bool {
             | methods::PHONE_LINK_STATUS
             | methods::SET_PHONE_LINK
             | methods::NEW_PHONE_LINK_KEY
+            // Pairing servers and what each may do here: this device's own.
+            | methods::PEER_PAIR
+            | methods::PEER_JOIN
+            | methods::LIST_PEERS
+            | methods::SET_PEER_GRANTS
+            | methods::UNPAIR_PEER
     )
 }
 

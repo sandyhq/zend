@@ -501,7 +501,7 @@ async fn dial(url: &str, token: Option<&str>) -> Result<RpcClient, DialError> {
 }
 
 /// A client on an open socket: its pump runs in a task of its own.
-fn client_on<S>(ws: tokio_tungstenite::WebSocketStream<S>, url: &str) -> RpcClient
+pub(crate) fn client_on<S>(ws: tokio_tungstenite::WebSocketStream<S>, url: &str) -> RpcClient
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 pub(crate) fn fenced() -> bool {
     matches!(
         zend_rpc::caller(),
-        zend_rpc::Caller::Remote | zend_rpc::Caller::Peer { .. }
+        zend_rpc::Caller::Remote | zend_rpc::Caller::Peer { .. } | zend_rpc::Caller::PeerServer { .. }
     )
 }
 
