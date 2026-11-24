@@ -93,6 +93,12 @@ enum Command {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+    /// Pair this Zend with your other Zend servers and say what each may do
+    /// here (through the running Zend, this device only).
+    Peer {
+        #[command(subcommand)]
+        command: PeerCommand,
+    },
     /// Manage `zend headless` as a background service (launchd / systemd --user).
     Daemon {
         #[command(subcommand)]
@@ -124,6 +130,34 @@ enum DaemonCommand {
     Restart,
     /// Show the service manager's view of the daemon.
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum PeerCommand {
+    /// Print a one-time pairing code (good for 10 minutes) for the other
+    /// server's `zend peer join`.
+    Pair,
+    /// Pair with the server whose `zend peer pair` printed this code.
+    Join {
+        /// The code (zend-peer:1:…).
+        code: String,
+    },
+    /// This server's key and the servers paired with it, with their grants.
+    List,
+    /// Set what a paired server may do here, replacing what it had: none
+    /// takes everything away. Grants: sessions.read, sessions.run:<project>,
+    /// sessions.run.unconfined:<project>, projects.share:<project>,
+    /// workers.manage.
+    Grant {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        grants: Vec<String>,
+    },
+    /// Forget a paired server: its connections end, it can't dial in again.
+    Unpair {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -251,6 +285,7 @@ pub enum EngineCommand {
     Mcp,
     Plugin(PluginCommand),
     Template(TemplateCommand),
+    Peer(PeerCommand),
 }
 
 /// Where this binary runs [`EngineCommand`]s.
@@ -337,7 +372,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         init_logging(
             long_running,
             mode,
-            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. })),
+            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. } | Command::Peer { .. })),
         );
     }
     if long_running {
@@ -360,6 +395,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         Some(Command::Mcp) => engine(EngineCommand::Mcp),
         Some(Command::Plugin { command }) => engine(EngineCommand::Plugin(command)),
         Some(Command::Template { command }) => engine(EngineCommand::Template(command)),
+        Some(Command::Peer { command }) => engine(EngineCommand::Peer(command)),
         #[cfg(target_os = "linux")]
         Some(Command::Appshot) => Launch::Appshot,
         Some(Command::Update { check }) => Launch::Done(
@@ -396,7 +432,8 @@ impl Command {
             | Self::Quiesce
             | Self::Mcp
             | Self::Plugin { .. }
-            | Self::Template { .. } => true,
+            | Self::Template { .. }
+            | Self::Peer { .. } => true,
             #[cfg(target_os = "linux")]
             Self::Appshot => false,
             Self::Update { .. } | Self::UpdateWatchdog | Self::Daemon { .. } => false,
