@@ -309,6 +309,42 @@ impl RunJournal {
         self.dir.join(format!("{}.stopped", sanitize_id(chat_id)))
     }
 
+    /// The folder the journal keeps its files in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn sandbox_path(&self, chat_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.sandbox", sanitize_id(chat_id)))
+    }
+
+    /// Mark `chat_id` as one whose agent runs confined
+    /// ([`zend_proto::ChatSandbox`]). Kept on this host only, beside its
+    /// journal: never in the synced chat row, which another device could
+    /// rewrite. There is no way to take the mark off here: a chat that was
+    /// sandboxed stays so. An error means it isn't marked: the caller must
+    /// not run the chat then.
+    pub fn note_sandbox(
+        &self,
+        chat_id: &str,
+        sandbox: zend_proto::ChatSandbox,
+    ) -> Result<(), JournalError> {
+        std::fs::create_dir_all(&self.dir)?;
+        std::fs::write(self.sandbox_path(chat_id), sandbox.as_str())?;
+        Ok(())
+    }
+
+    /// The sandbox [`Self::note_sandbox`] marked `chat_id` with. A mark
+    /// that can't be read, or says what this build doesn't know, is the
+    /// strictest sandbox, never none.
+    pub fn sandbox(&self, chat_id: &str) -> Option<zend_proto::ChatSandbox> {
+        let path = self.sandbox_path(chat_id);
+        match std::fs::symlink_metadata(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            _ => Some(zend_proto::ChatSandbox::Project),
+        }
+    }
+
     /// Auto-resume revival budget (zend `resumeAttempt`/`MAX_AUTO_RESUME`):
     /// persisted beside the journal so a run that CRASHES THE ENGINE cannot
     /// revive itself in an infinite boot loop. Stored as `{count} {last_ms}`;

@@ -1057,6 +1057,12 @@ impl SessionsEngine {
         Ok((replay, rx))
     }
 
+    /// Which chats here a paired server created ([`crate::peer_chats`]),
+    /// kept beside the run journal.
+    pub fn peer_chats(&self) -> crate::peer_chats::PeerChats {
+        crate::peer_chats::PeerChats::new(self.inner.journal.dir())
+    }
+
     /// Local experimental bootstrap. No Submit, empty user entry or title request.
     pub async fn start_idle(
         &self,
@@ -1227,6 +1233,16 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zend_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // A chat this host must confine (`ChatSandbox`, marked by
+        // [`SessionsEngine::sandbox_chat`]): this build can't confine a run
+        // yet (step 4d), so it doesn't run at all, before anything of the
+        // turn is recorded or routed. Never unconfined.
+        if let Some(sandbox) = self.inner.journal.sandbox(chat_id) {
+            return Err(EngineError::Other(format!(
+                "This session must run sandboxed (sandbox: {}) and was not started: this build of Zend can't run sessions sandboxed yet",
+                sandbox.as_str()
+            )));
+        }
         // What this host's plugins tell the chat's agent
         // (`session.instructions`), never what a sender put here. Stamped
         // before routing, so a live runtime is compared with what holds now:
@@ -2280,6 +2296,28 @@ impl SessionsEngine {
     /// settlement. Background work the runtime held dies with it.
     pub async fn terminate(&self, chat_id: &str) -> Result<bool, EngineError> {
         self.terminate_run(chat_id, None).await
+    }
+
+    /// Confine every run of `chat_id` on this host from now on: its agent
+    /// under bubblewrap, in its project folder only ([`zend_proto::ChatSandbox`],
+    /// [`zend_harness::sandbox`]). For a chat another server starts here
+    /// (step 4d, piece A sets it before the chat's first message). Kept on
+    /// this host only and never taken off; a live runtime started before is
+    /// torn down, so the next message starts confined. Off unless called:
+    /// every other chat runs as before.
+    pub async fn sandbox_chat(
+        &self,
+        chat_id: &str,
+        sandbox: zend_proto::ChatSandbox,
+    ) -> Result<(), EngineError> {
+        self.inner.journal.note_sandbox(chat_id, sandbox)?;
+        self.terminate(chat_id).await?;
+        Ok(())
+    }
+
+    /// The sandbox [`Self::sandbox_chat`] marked `chat_id` with, if any.
+    pub fn chat_sandbox(&self, chat_id: &str) -> Option<zend_proto::ChatSandbox> {
+        self.inner.journal.sandbox(chat_id)
     }
 
     /// [`Self::terminate`], of the run `run_id` only when given.

@@ -61,6 +61,7 @@
 
 mod agent_gate;
 mod device_stats;
+mod peer_gate;
 mod remote_plugins;
 mod voice_chat;
 mod voice_remote;
@@ -3545,6 +3546,12 @@ impl crate::remote_terminals::Relay for EngineRpc {
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        // A paired server's calls: held to its grants, chat by chat and
+        // project by project (rpc/peer_gate.rs). Before anything else.
+        let params = match self.peer_gate(method, params).await? {
+            peer_gate::PeerGate::Pass(params) => params,
+            peer_gate::PeerGate::Reply(reply) => return Ok(reply),
+        };
         // An agent's chats: capped at its own access, runs as the chat is
         // set, attributed by Zend (rpc/agent_gate.rs). Before forwarding.
         let params = self.agent_gate(method, params)?;

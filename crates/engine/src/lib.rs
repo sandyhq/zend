@@ -76,6 +76,8 @@ mod hosted_models;
 pub mod live_visuals;
 mod model_catalogs;
 mod plugin_agents;
+pub mod peer_chats;
+pub mod peer_link;
 pub mod phone_link;
 mod phone_reads;
 pub mod plugins;
@@ -1639,6 +1641,9 @@ pub async fn serve_ipc(
     tracing::info!(port, "IPC server listening");
     // The phone link (off until the person turns it on) serves the same
     // port on the tailnet addresses, once this port is ours.
+    // Paired servers (peer_link): their own tailnet listener, on the next
+    // port, while any is paired.
+    let service = peer_link::wrap(service, data_dir, peer_link::peer_port(port));
     let service = phone_link::wrap(service, data_dir, port);
     Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(
         listener, service, tokens,
@@ -1882,7 +1887,7 @@ async fn run_org_onboarding(auth: Auth) {
 }
 
 /// Best-effort human name for this device's registry row.
-fn local_device_name(device_id: &str) -> String {
+pub(crate) fn local_device_name(device_id: &str) -> String {
     select_local_device_name(
         [
             std::env::var("ZEND_DEVICE_NAME").ok(),
