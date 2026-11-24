@@ -75,3 +75,4 @@ mod agent_lifecycle;
 mod launch_agents;
 mod warm_start;
 mod agents_die_with_engine;
+mod worker;

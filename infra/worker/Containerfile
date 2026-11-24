@@ -1,0 +1,21 @@
+# A Zend worker: this branch's engine on the engine image (Debian trixie,
+# node, pi, git, tini), run by `zend worker create` (crates/engine/src/workers.rs).
+# No download: the base image is already on the server, the binary is the
+# build's. Build it with infra/worker/build.sh.
+ARG BASE=localhost/zend-engine:latest
+FROM ${BASE}
+COPY zend-engine /usr/local/bin/zend-engine
+# /work and /data become the worker's named volumes; Podman fills an empty
+# volume from these folders, so they start owned by the engine's uid (1000).
+RUN mkdir -p /work /data /run/zend-worker /etc/zend-worker \
+ && chown 1000:1000 /work /data \
+ && chmod 0755 /usr/local/bin/zend-engine
+ENV ZEND_DATA_DIR=/data \
+    PI_CODING_AGENT_DIR=/data/pi \
+    HOME=/home/node \
+    ZEND_WORKER_DIR=/etc/zend-worker
+USER 1000:1000
+WORKDIR /work
+# No bwrap and no pi sandbox extension: the container is the sandbox.
+ENTRYPOINT ["tini", "--", "/usr/local/bin/zend-engine"]
+CMD ["headless"]

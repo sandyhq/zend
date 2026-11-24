@@ -626,6 +626,24 @@ type ClientWs = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsSt
 /// Dial `url` as `key`, expecting the server holding `peer_key`; the frame
 /// to send once it proved that, signed.
 async fn dial(url: &str, key: &NodeKey, peer_key: &str, secret: Option<&str>) -> Result<(ClientWs, String), RpcError> {
+    let (request, caller_nonce) = caller_request(url, key, secret)?;
+    let (ws, response) = tokio::time::timeout(
+        DIAL_TIMEOUT,
+        tokio_tungstenite::connect_async_with_config(request, Some(crate::ws::config()), true),
+    )
+    .await
+    .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
+    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    callee_proved(ws, &response, url, key, peer_key, &caller_nonce, secret.is_some()).await
+}
+
+/// The caller's handshake request to `url`: its key, a fresh nonce (also
+/// returned) and, joining, its proof of the code's secret.
+fn caller_request(
+    url: &str,
+    key: &NodeKey,
+    secret: Option<&str>,
+) -> Result<(tokio_tungstenite::tungstenite::handshake::client::Request, String), RpcError> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::HeaderValue;
 
@@ -639,15 +657,25 @@ async fn dial(url: &str, key: &NodeKey, peer_key: &str, secret: Option<&str>) ->
     for (name, value) in headers {
         request.headers_mut().insert(name, HeaderValue::from_str(&value).map_err(|e| transport(&e))?);
     }
-    let (mut ws, response) = tokio::time::timeout(
-        DIAL_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(request, Some(crate::ws::config()), true),
-    )
-    .await
-    .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
-    .map_err(|e| transport(&e))?;
+    Ok((request, caller_nonce))
+}
+
+/// `ws` once the callee's handshake `response` proved `peer_key`, and the
+/// caller's signature for its first frame; closed (nothing sent) if not.
+async fn callee_proved<S>(
+    mut ws: tokio_tungstenite::WebSocketStream<S>,
+    response: &tokio_tungstenite::tungstenite::handshake::client::Response,
+    url: &str,
+    key: &NodeKey,
+    peer_key: &str,
+    caller_nonce: &str,
+    joining: bool,
+) -> Result<(tokio_tungstenite::WebSocketStream<S>, String), RpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let caller_nonce = caller_nonce.to_string();
     let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let joining = secret.is_some();
     let proved = match (header(KEY_HEADER), header(NONCE_HEADER), header(SIG_HEADER)) {
         (Some(callee), Some(callee_nonce), Some(sig))
             if callee == peer_key && crate::link_proof::valid_nonce(&callee_nonce) =>
@@ -707,6 +735,68 @@ pub async fn join_peer(url: &str, key: &NodeKey, peer_key: &str, secret: &str, m
         ))),
         None => Err(RpcError::Transport("the server ended the pairing without keeping this side".into())),
     }
+}
+
+// ---- a worker's socket -------------------------------------------------------
+
+/// The URL a worker's socket is dialled as (the socket is the address; the
+/// name only fills the handshake's Host).
+pub const WORKER_URL: &str = "ws://zend-worker/";
+
+/// Serve a worker's one server on `listener`, a unix socket only that
+/// server's user reaches (a folder of its data dir, bound into the
+/// worker's container): the same handshake as over the tailnet, only keys
+/// in `book`, only what their grants open. No pairing here (no tailnet
+/// node to pin a joiner to: refused), the worker's book is written by its
+/// server when it makes the worker. Every connection lives in this future.
+#[cfg(unix)]
+pub async fn serve_peer_unix(
+    listener: tokio::net::UnixListener,
+    service: Arc<dyn RpcService>,
+    key: Arc<NodeKey>,
+    book: Arc<dyn PeerBook>,
+) {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        while connections.try_join_next().is_some() {}
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                connections.spawn(serve_peer_socket(stream, service.clone(), key.clone(), book.clone(), None));
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "rpc: worker socket: accept failed");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// Dial the worker whose socket is `path` as `key`, expecting it to prove
+/// `worker_key` (pinned when the worker was made) first: one that can't is
+/// an error, and nothing was sent to it.
+#[cfg(unix)]
+pub async fn connect_peer_unix(path: &std::path::Path, key: &NodeKey, worker_key: &str) -> Result<RpcClient, RpcError> {
+    use futures::SinkExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (request, caller_nonce) = caller_request(WORKER_URL, key, None)?;
+    let dialled = tokio::time::timeout(DIAL_TIMEOUT, async {
+        let stream = tokio::net::UnixStream::connect(path)
+            .await
+            .map_err(|e| RpcError::Transport(format!("{}: {e}", path.display())))?;
+        tokio_tungstenite::client_async_with_config(request, stream, Some(crate::ws::config()))
+            .await
+            .map_err(|e| RpcError::Transport(e.to_string()))
+    })
+    .await
+    .map_err(|_| RpcError::Transport(format!("timed out dialing {}", path.display())))??;
+    let (ws, response) = dialled;
+    let url = format!("unix:{}", path.display());
+    let (mut ws, sig) = callee_proved(ws, &response, &url, key, worker_key, &caller_nonce, false).await?;
+    ws.send(Message::text(serde_json::json!({ SIG_FIELD: sig }).to_string()))
+        .await
+        .map_err(|e| RpcError::Transport(e.to_string()))?;
+    Ok(crate::client::client_on(ws, &url))
 }
 
 #[cfg(test)]

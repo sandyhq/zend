@@ -99,6 +99,12 @@ enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
+    /// Podman containers this server runs agents in, each answering it alone
+    /// (through the running Zend, this device only).
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommand,
+    },
     /// Manage `zend headless` as a background service (launchd / systemd --user).
     Daemon {
         #[command(subcommand)]
@@ -175,6 +181,37 @@ pub enum PeerCommand {
     /// provider. They never get your own logins.
     #[command(subcommand)]
     Key(PeerKeyCommand),
+}
+
+#[derive(Subcommand)]
+pub enum WorkerCommand {
+    /// Make a worker: a rootless Podman container running Zend's engine with
+    /// one project, /work (a volume of its own), answering only this server
+    /// over a socket in Zend's data. It reaches the internet, never this
+    /// host, its LAN, docker or Podman networks or the tailnet.
+    Create {
+        /// Its name: lowercase letters, digits and -.
+        name: String,
+        /// The image (default localhost/zend-worker:latest, infra/worker/build.sh).
+        #[arg(long)]
+        image: Option<String>,
+        /// A model provider whose API key (read from stdin) its agents run on
+        /// (anthropic, openai, …); kept as a Podman secret, given as the
+        /// provider's variable. No login of yours goes in.
+        #[arg(long = "key", value_name = "PROVIDER")]
+        key: Option<String>,
+    },
+    /// This server's workers and their containers' state.
+    List,
+    /// Start a stopped worker (its networks blocked again before it runs).
+    Start { name: String },
+    /// Remove a worker: its container, key secrets and folders, and its
+    /// volumes (/work's files with them) unless --keep-volumes.
+    Rm {
+        name: String,
+        #[arg(long)]
+        keep_volumes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -379,6 +416,7 @@ pub enum EngineCommand {
     Plugin(PluginCommand),
     Template(TemplateCommand),
     Peer(PeerCommand),
+    Worker(WorkerCommand),
 }
 
 /// Where this binary runs [`EngineCommand`]s.
@@ -465,7 +503,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         init_logging(
             long_running,
             mode,
-            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. } | Command::Peer { .. })),
+            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. } | Command::Peer { .. } | Command::Worker { .. })),
         );
     }
     if long_running {
@@ -489,6 +527,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         Some(Command::Plugin { command }) => engine(EngineCommand::Plugin(command)),
         Some(Command::Template { command }) => engine(EngineCommand::Template(command)),
         Some(Command::Peer { command }) => engine(EngineCommand::Peer(command)),
+        Some(Command::Worker { command }) => engine(EngineCommand::Worker(command)),
         #[cfg(target_os = "linux")]
         Some(Command::Appshot) => Launch::Appshot,
         Some(Command::Update { check }) => Launch::Done(
@@ -526,7 +565,8 @@ impl Command {
             | Self::Mcp
             | Self::Plugin { .. }
             | Self::Template { .. }
-            | Self::Peer { .. } => true,
+            | Self::Peer { .. }
+            | Self::Worker { .. } => true,
             #[cfg(target_os = "linux")]
             Self::Appshot => false,
             Self::Update { .. } | Self::UpdateWatchdog | Self::Daemon { .. } => false,

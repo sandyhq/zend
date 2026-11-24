@@ -834,6 +834,18 @@ pub mod methods {
     /// `{path, size, text?}` (`text` for UTF-8 files up to 1 MiB), a file of
     /// that project by a path from its root.
     pub const PEER_READ_PROJECT_FILE: &str = "PeerReadProjectFile";
+    /// Workers (`zend worker`): `{name, image?, keys?: {provider: key}}` →
+    /// the worker `{name, key, image, container, providers, createdAt}`,
+    /// a Podman container this server made, started and answering it alone.
+    pub const CREATE_WORKER: &str = "CreateWorker";
+    /// `{}` → `{workers: [{name, key, image, container, providers, createdAt, state}]}`.
+    pub const LIST_WORKERS: &str = "ListWorkers";
+    /// `{name}` → `{name, state}`: start a stopped worker (its networks
+    /// blocked again first).
+    pub const START_WORKER: &str = "StartWorker";
+    /// `{name, keepVolumes?}` → `{name, removed}`: its container, secrets
+    /// and folders, and its volumes unless kept.
+    pub const REMOVE_WORKER: &str = "RemoveWorker";
 }
 
 /// Methods answered only over this device's own local IPC, never to a peer
@@ -909,6 +921,11 @@ pub fn local_only(method: &str) -> bool {
             | methods::SET_PEER_KEY
             | methods::REMOVE_PEER_KEY
             | methods::LIST_PEER_KEYS
+            // Workers: this server's containers.
+            | methods::CREATE_WORKER
+            | methods::LIST_WORKERS
+            | methods::START_WORKER
+            | methods::REMOVE_WORKER
     )
 }
 
