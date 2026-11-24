@@ -310,6 +310,56 @@ impl Sandbox {
     }
 }
 
+/// Names in a project folder the owner's own tools run or load from,
+/// unconfined, once the sandboxed run is over: a confined agent gets them
+/// read-only ([`protected_in`]). Git's folder (hooks, `core.fsmonitor`),
+/// the agents' project settings and extensions, editor tasks, direnv and
+/// hook managers.
+pub const PROTECTED: &[&str] = &[
+    ".git", ".pi", ".claude", ".codex", ".opencode", ".cursor", ".vscode", ".idea", ".envrc",
+    ".githooks", ".husky",
+];
+
+/// The [`PROTECTED`] entries that exist in `root` and in each folder
+/// from it down to `cwd` (where a tool started in `cwd` looks), each
+/// resolved and inside `root`; a `.git` file (a worktree's or a
+/// submodule's) adds the git folder it names, when that is inside `root`
+/// too. Nothing is created: a missing name stays missing (and writable).
+pub fn protected_in(root: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![root.to_path_buf()];
+    if let Ok(rest) = cwd.strip_prefix(root) {
+        let mut dir = root.to_path_buf();
+        for part in rest.components() {
+            dir.push(part);
+            dirs.push(dir.clone());
+        }
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    let add = |path: PathBuf, out: &mut Vec<PathBuf>| {
+        if path.starts_with(root) && !out.contains(&path) {
+            out.push(path);
+        }
+    };
+    for dir in &dirs {
+        for name in PROTECTED {
+            let Ok(path) = std::fs::canonicalize(dir.join(name)) else { continue };
+            if *name == ".git" && path.is_file() {
+                let named = std::fs::read_to_string(&path).ok().and_then(|text| {
+                    let line = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim().to_string();
+                    let target = Path::new(&line);
+                    let target = if target.is_absolute() { target.to_path_buf() } else { dir.join(target) };
+                    std::fs::canonicalize(target).ok()
+                });
+                if let Some(git_dir) = named {
+                    add(git_dir, &mut out);
+                }
+            }
+            add(path, &mut out);
+        }
+    }
+    out
+}
+
 fn tool(explicit: &Option<PathBuf>, name: &str, what: &str) -> Result<PathBuf, HarnessError> {
     match explicit {
         Some(path) if path.is_file() => Ok(path.clone()),
@@ -707,6 +757,11 @@ impl Launch {
         }
         let root = sandbox.root.as_os_str();
         push(&["--bind".as_ref(), root, root]);
+        // What the owner's own tools run or load from this folder later,
+        // unconfined (git hooks and config, agent extensions): read-only.
+        for path in protected_in(&sandbox.root, &cwd) {
+            push(&["--ro-bind".as_ref(), path.as_os_str(), path.as_os_str()]);
+        }
         if let Some(state) = &sandbox.state {
             push(&["--bind".as_ref(), state.as_os_str(), state.as_os_str()]);
         }
@@ -981,5 +1036,31 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("bubblewrap (bwrap) was not found"), "{error}");
+    }
+
+    #[test]
+    fn protected_names_are_found_down_to_the_cwd_and_none_are_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for d in [".git/worktrees/w", ".pi", "sub/deeper", "sub/.claude", "other/.vscode"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("sub/.envrc"), "x").unwrap();
+        // A worktree's .git file inside the root, and one naming a git
+        // folder outside it (never bound: not the sandbox's to show).
+        std::fs::write(root.join("sub/.git"), format!("gitdir: {}\n", root.join(".git/worktrees/w").display())).unwrap();
+        std::fs::write(root.join("sub/deeper/.git"), format!("gitdir: {}\n", outside.path().display())).unwrap();
+        let found = protected_in(&root, &root.join("sub/deeper"));
+        let rel: Vec<String> = found.iter().map(|p| p.strip_prefix(&root).unwrap().display().to_string()).collect();
+        for want in [".git", ".pi", "sub/.git", ".git/worktrees/w", "sub/.claude", "sub/.envrc"] {
+            assert!(rel.iter().any(|r| r == want), "{want} missing: {rel:?}");
+        }
+        // Not on the way to the cwd, and the outside git folder: left out.
+        assert!(!rel.iter().any(|r| r.starts_with("other")), "{rel:?}");
+        assert!(found.iter().all(|p| p.starts_with(&root)), "{found:?}");
+        assert!(rel.iter().any(|r| r == "sub/deeper/.git"), "{rel:?}");
+        // Nothing made for names that aren't there.
+        assert!(!root.join(".codex").exists() && !root.join("sub/.pi").exists());
     }
 }

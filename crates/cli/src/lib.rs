@@ -149,6 +149,10 @@ pub enum PeerCommand {
     /// sessions.run.unconfined:<project>, projects.share:<project>,
     /// workers.manage. sessions.run.unconfined is full trust: an agent it
     /// runs works as you on this server and can read Zend's IPC token.
+    /// sessions.run:<project> lets the server's agent write that folder:
+    /// treat it as untrusted for your own tools from then on (its .git, .pi,
+    /// .claude, .codex, .vscode and the like stay read-only to the agent,
+    /// but AGENTS.md, build scripts and the code are writable).
     Grant {
         /// The server: its key, a key prefix (8+) or its name.
         peer: String,

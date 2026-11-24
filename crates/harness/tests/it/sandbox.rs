@@ -158,6 +158,54 @@ async fn a_sandboxed_agent_inherits_no_zend_or_ssh_variables() {
     assert!(out.lines().any(|line| line.starts_with("PATH=")), "{out}");
 }
 
+/// What the owner's own tools run or load from the project afterwards
+/// (git's folder, agents' extensions, editor tasks) the agent can't change;
+/// the rest of the project it can.
+#[tokio::test]
+async fn a_sandboxed_agent_cannot_change_git_or_agent_settings_in_its_project() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let p = &fake.project;
+    let write = |path: &str, text: &str| {
+        let path = p.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(".git/config", "[core]\n");
+    write(".git/hooks/README", "hooks");
+    write(".git/worktrees/w/HEAD", "ref: refs/heads/w\n");
+    write(".pi/extensions/keep.ts", "// owner's");
+    write(".vscode/tasks.json", "{}");
+    write(".envrc", "use nix");
+    // A worktree inside the project: its .git file names its git folder.
+    write("w/.git", &format!("gitdir: {}\n", p.join(".git/worktrees/w").display()));
+    write("AGENTS.md", "owner's");
+    let script = r#"
+        try() { if (eval "$1") 2>/dev/null; then echo "CHANGED $1"; fi; }
+        try 'printf "[core]\n fsmonitor = evil\n" >> .git/config'
+        try 'echo x > .git/hooks/pre-commit'
+        try 'echo x > .git/worktrees/w/HEAD'
+        try 'echo x > .pi/extensions/evil.ts'
+        try 'rm .pi/extensions/keep.ts'
+        try 'echo x > .vscode/tasks.json'
+        try 'echo x >> .envrc'
+        try 'mv .git .git-moved'
+        try 'mv .pi .pi-moved'
+        echo agent > AGENTS.md && echo "wrote AGENTS.md"
+        echo code > src.rs && echo "wrote src.rs"
+        cat .git/config >/dev/null && echo "git readable"
+    "#;
+    let (code, out, err) = run_in(&fake, bwrap, script).await;
+    println!("exit {code}\n--- stdout\n{out}--- stderr\n{err}");
+    assert_eq!(code, 0, "{err}");
+    assert!(!out.contains("CHANGED"), "{out}");
+    assert!(out.contains("wrote AGENTS.md") && out.contains("wrote src.rs") && out.contains("git readable"), "{out}");
+    assert_eq!(std::fs::read_to_string(p.join(".git/config")).unwrap(), "[core]\n");
+    assert!(!p.join(".pi/extensions/evil.ts").exists());
+    assert!(p.join(".pi/extensions/keep.ts").exists());
+    assert_eq!(std::fs::read_to_string(p.join("src.rs")).unwrap(), "code\n");
+}
+
 #[tokio::test]
 async fn a_sandboxed_agent_runs_in_a_pid_namespace_of_its_own() {
     let Some(bwrap) = bwrap() else { return };
