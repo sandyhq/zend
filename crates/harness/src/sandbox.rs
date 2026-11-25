@@ -159,6 +159,8 @@ pub struct Sandbox {
     keys: Option<std::collections::BTreeMap<String, String>>,
     /// The agent's own config folder ([`Self::with_agent_dir`]).
     agent_dir: Option<PathBuf>,
+    /// Pi's folders on the host, never bound ([`pi_agent_dirs`]).
+    agent_dirs: Vec<PathBuf>,
     /// A host file it sees read-only in that folder
     /// ([`Self::with_agent_file`]): the file, and where it shows.
     agent_file: Option<(std::sync::Arc<LentFile>, PathBuf)>,
@@ -219,6 +221,19 @@ fn hidden_dirs(home: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
         .map(|dir| canonical_or(&home.join(dir)))
         .chain(extra.iter().map(|dir| canonical_or(dir)))
         .collect()
+}
+
+/// Pi's folders on the host, canonical where they exist: `~/.pi/agent` and
+/// `PI_CODING_AGENT_DIR` (when absolute), its logins and sessions.
+fn pi_agent_dirs(home: &Path, env: &dyn Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let mut dirs = vec![canonical_or(&home.join(".pi/agent"))];
+    if let Some(dir) = env("PI_CODING_AGENT_DIR").map(PathBuf::from).filter(|dir| dir.is_absolute()) {
+        let dir = canonical_or(&dir);
+        if !dirs.contains(&dir) && !home.starts_with(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 /// Whether `rel` (a path below the home) passes through a hidden
@@ -340,7 +355,9 @@ impl Sandbox {
     fn new(root: PathBuf, host: Host, (bwrap, pasta, ip): (PathBuf, PathBuf, PathBuf)) -> Self {
         let home = canonical_or(&host.home);
         let hidden = hidden_dirs(&home, &host.hidden);
+        let agent_dirs = pi_agent_dirs(&home, &|name| std::env::var_os(name));
         Self {
+            agent_dirs,
             root,
             host,
             home,
@@ -458,19 +475,18 @@ impl Sandbox {
         std::fs::canonicalize(path).is_ok_and(|path| path.starts_with(&self.root))
     }
 
-    /// A folder to bind read-only, canonical, or why not: it may not be or
-    /// hold the home, be a whole hidden folder of the home (`~/.pi`) unless
-    /// it is one [`TOOL_DIRS`] lists, as it is (`~/.nvm`, not a link to
-    /// `~/.pi`), or be, hold or lie in a hidden folder or the project.
+    /// A folder (or file) to bind read-only, canonical, or why not: it may
+    /// not be or hold the home; below the home, pass through a hidden (dot)
+    /// folder unless it lies in one [`TOOL_DIRS`] lists, as it is (`~/.nvm`,
+    /// not a link to `~/.pi`), or is a file right in a [`SHARED_BIN_DIRS`]
+    /// folder (`~/.local/bin/<agent>`); be, hold or lie in Pi's folder
+    /// (`~/.pi/agent`, `PI_CODING_AGENT_DIR`: its logins and sessions) but
+    /// for a [`TOOL_DIRS`] one in it; or be, hold or lie in a hidden folder
+    /// or the project.
     fn bindable(&self, dir: &Path) -> Result<PathBuf, HarnessError> {
         let canonical = std::fs::canonicalize(dir)
             .map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
-        let listed = TOOL_DIRS.iter().any(|tool| self.home.join(tool) == canonical);
-        let whole_dot = !listed
-            && canonical
-                .strip_prefix(&self.home)
-                .is_ok_and(|rel| rel.components().count() == 1 && has_dot_component(rel));
-        if self.home.starts_with(&canonical) || whole_dot {
+        if self.home.starts_with(&canonical) {
             return Err(refuse(format!(
                 "{} would show the home folder",
                 dir.display()
@@ -484,6 +500,23 @@ impl Sandbox {
                     hidden.display()
                 )));
             }
+        }
+        let in_tool = TOOL_DIRS.iter().any(|tool| canonical.starts_with(self.home.join(tool)));
+        if let Some(agent) = self.agent_dirs.iter().find(|agent| overlaps(&canonical, agent)).filter(|_| !in_tool) {
+            return Err(refuse(format!(
+                "{} would show {}",
+                dir.display(),
+                agent.display()
+            )));
+        }
+        let shared_file = canonical.is_file()
+            && SHARED_BIN_DIRS.iter().any(|d| canonical.parent() == Some(self.home.join(d).as_path()));
+        let dotted = canonical.strip_prefix(&self.home).is_ok_and(has_dot_component);
+        if dotted && !in_tool && !shared_file {
+            return Err(refuse(format!(
+                "{} would show a hidden folder of the home",
+                dir.display()
+            )));
         }
         Ok(canonical)
     }
@@ -994,15 +1027,21 @@ impl Launch {
         };
         let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
         let node_entry = match entry {
-            crate::node_entry::Entry::Node { node, script } => {
+            crate::node_entry::Entry::Node { node, script, roots } => {
                 if !in_system(&node) && !covered(&binds, &node) {
                     let file = sandbox.bindable(&node)?;
                     binds.push((file.clone(), file));
                 }
-                let closure = crate::node_entry::closure(&script).map_err(|why| {
+                let closure = crate::node_entry::closure(&script, &roots, &sandbox.home).map_err(|why| {
                     tracing::warn!(exe = %exe.display(), %why, "sandbox: launcher refused");
                     refuse(why)
                 })?;
+                for file in closure.files {
+                    if !in_system(&file) && !covered(&binds, &file) {
+                        let file = sandbox.bindable(&file)?;
+                        binds.push((file.clone(), file));
+                    }
+                }
                 for dir in closure.dirs {
                     if !in_system(&dir) && !covered(&binds, &dir) {
                         let dir = sandbox.bindable(&dir)?;
@@ -1253,6 +1292,37 @@ pub fn spawn(launch: Option<&Launch>, command: &mut Command) -> std::io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pi's folders (~/.pi/agent, PI_CODING_AGENT_DIR wherever it is) are
+    /// never bound, nor anything that holds them, but for a TOOL_DIRS one in
+    /// them (~/.pi/agent/install); a relative PI_CODING_AGENT_DIR is not one.
+    #[test]
+    fn pis_folders_are_never_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let home = root.join("home");
+        for path in [".pi/agent/install/bin", ".pi/agent/sessions", "projects/a"] {
+            std::fs::create_dir_all(home.join(path)).unwrap();
+        }
+        for path in ["pi-agent/bin", "tools/pi-agent", "other"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        let env = |at: &'static str| move |name: &str| (name == "PI_CODING_AGENT_DIR").then(|| OsString::from(at));
+        let moved = root.join("pi-agent");
+        let moved_env = |name: &str| (name == "PI_CODING_AGENT_DIR").then(|| moved.clone().into_os_string());
+        assert_eq!(pi_agent_dirs(&home, &moved_env), vec![home.join(".pi/agent"), moved.clone()]);
+        assert_eq!(pi_agent_dirs(&home, &env("rel/agent")), vec![home.join(".pi/agent")]);
+        assert_eq!(pi_agent_dirs(&home, &env("/")), vec![home.join(".pi/agent")]);
+        let host = Host { home: home.clone(), bwrap: None, pasta: None, hidden: Vec::new() };
+        let mut sandbox = Sandbox::new(home.join("projects/a"), host, (PathBuf::new(), PathBuf::new(), PathBuf::new()));
+        sandbox.agent_dirs = pi_agent_dirs(&home, &moved_env);
+        for refused in [moved.join("bin"), moved.clone(), home.join(".pi/agent/sessions"), home.join(".pi/agent")] {
+            let error = sandbox.bindable(&refused).unwrap_err().to_string();
+            assert!(error.contains("would show"), "{}: {error}", refused.display());
+        }
+        assert_eq!(sandbox.bindable(&home.join(".pi/agent/install/bin")).unwrap(), home.join(".pi/agent/install/bin"));
+        assert_eq!(sandbox.bindable(&root.join("other")).unwrap(), root.join("other"));
+    }
 
     #[test]
     fn the_environment_keeps_only_what_the_agent_needs() {

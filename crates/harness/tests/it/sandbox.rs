@@ -737,6 +737,114 @@ async fn a_plain_binary_agent_runs_as_it_is_with_its_folder() {
     assert_eq!(mounts_in(&args, &tools), vec![("--ro-bind".to_string(), t.clone(), t)]);
 }
 
+/// pnpm's layout outside the home, as in
+/// [`a_cli_installed_by_pnpm_runs_with_only_its_node_and_its_packages`],
+/// with its one dependency linked out of its install: into ~/.pi/agent,
+/// into another project, into a folder elsewhere. Refused, none bound.
+#[test]
+fn a_dependency_linked_out_of_its_install_is_refused() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let outside = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(outside.path()).unwrap();
+    let pnpm = base.join("pnpm");
+    let links = pnpm.join("store/v11/links");
+    write_exe(&pnpm.join("bin/node"), "#!/bin/sh\n");
+    let agent = links.join("@s/agent/1.0.0/ha/node_modules/@s/agent");
+    write_exe(&agent.join("package.json"), r#"{"name":"@s/agent","dependencies":{"dep-a":"1"}}"#);
+    write_exe(&agent.join("dist/cli.js"), AGENT_JS);
+    link("../../../../../store/v11/links/@s/agent/1.0.0/ha/node_modules/@s/agent", &pnpm.join("global/v11/g1/node_modules/@s/agent"));
+    let rel = "../global/v11/g1/node_modules/@s/agent/dist/cli.js";
+    write_exe(&pnpm.join("bin/pi"), &pnpm_shim(rel, &pnpm.join("global/v11/g1/node_modules/@s/agent/dist/cli.js")));
+    write_exe(&base.join("elsewhere/dep-a/index.js"), "");
+    let dep = links.join("@s/agent/1.0.0/ha/node_modules/dep-a");
+    for target in [fake.home.join(".pi/agent"), fake.sibling.clone(), base.join("elsewhere/dep-a")] {
+        let _ = std::fs::remove_file(&dep);
+        link(&target, &dep);
+        let sandbox = Sandbox::project(&fake.project, host(&fake, bwrap.clone())).unwrap();
+        let error = Launch::new(&sandbox, HarnessId::Pi, &pnpm.join("bin/pi"), &fake.project, &[])
+            .unwrap_err()
+            .to_string();
+        println!("{}: {error}", target.display());
+        assert!(error.contains("outside its install"), "{}: {error}", target.display());
+    }
+    // npm: a dependency linked out of <prefix>/lib/node_modules.
+    let prefix = base.join("npm-global");
+    let npm = prefix.join("lib/node_modules/@s/agent");
+    write_exe(&npm.join("package.json"), r#"{"name":"@s/agent","dependencies":{"dep-a":"1"}}"#);
+    write_exe(&npm.join("dist/cli.js"), AGENT_JS);
+    link(fake.home.join(".pi/agent"), &npm.join("node_modules/dep-a"));
+    link("../lib/node_modules/@s/agent/dist/cli.js", &prefix.join("bin/agent"));
+    let sandbox = Sandbox::project(&fake.project, host(&fake, bwrap)).unwrap();
+    let error = Launch::new(&sandbox, HarnessId::Pi, &prefix.join("bin/agent"), &fake.project, &[])
+        .unwrap_err()
+        .to_string();
+    println!("npm: {error}");
+    assert!(error.contains("outside its install"), "npm: {error}");
+}
+
+/// An agent in a hidden folder of the home that no TOOL_DIRS entry lists,
+/// or in Pi's folder, is refused, not bound; one in a TOOL_DIRS entry
+/// inside Pi's folder (~/.pi/agent/install) runs.
+#[tokio::test]
+async fn an_agent_in_a_hidden_folder_of_the_home_is_refused() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    for dir in [".tools/bin", ".pi/agent/bin", ".config/agent"] {
+        let exe = fake.home.join(dir).join("agent");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::copy("/bin/echo", &exe).unwrap();
+        let sandbox = Sandbox::project(&fake.project, host(&fake, bwrap.clone())).unwrap();
+        let error = Launch::new(&sandbox, HarnessId::Pi, &exe, &fake.project, &[])
+            .unwrap_err()
+            .to_string();
+        println!("{dir}: {error}");
+        assert!(error.contains("would show"), "{dir}: {error}");
+    }
+    let exe = fake.home.join(".pi/agent/install/bin/agent");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::copy("/bin/echo", &exe).unwrap();
+    let (code, out, err, _) = run_agent(&fake, bwrap, &exe, &[PathBuf::from("tool ok")]).await;
+    assert_eq!((code, out.trim()), (0, "tool ok"), "{err}");
+}
+
+/// A node script in no package: in the owner's ~/bin (even with a
+/// package.json there), or in a folder outside the home. It runs with its
+/// file alone bound; the files beside it stay unseen.
+#[tokio::test]
+async fn a_node_script_outside_a_package_runs_with_its_file_alone() {
+    let Some(bwrap) = bwrap() else { return };
+    if !node_installed() {
+        return;
+    }
+    const LONE_JS: &str = "#!/usr/bin/env node\nconst fs = require('fs');\nfor (const a of process.argv.slice(2)) if (fs.existsSync(a)) console.log('VISIBLE ' + a);\nconsole.log('lone ok');\n";
+    let outside = tempfile::tempdir().unwrap();
+    let tools = std::fs::canonicalize(outside.path()).unwrap().join("tools");
+    for with_package in [false, true] {
+        let fake = fake_home();
+        for exe in [fake.home.join("bin/agent"), fake.home.join(".local/bin/agent"), tools.join("agent.js")] {
+            // A package of its own outside the home is a package: bound.
+            if exe.starts_with(&tools) && with_package {
+                continue;
+            }
+            let dir = exe.parent().unwrap();
+            write_exe(&exe, LONE_JS);
+            write_exe(&dir.join("secret"), "secret");
+            if with_package {
+                write_exe(&dir.join("package.json"), "{}");
+            }
+            let (code, out, err, args) = run_agent(&fake, bwrap.clone(), &exe, &[dir.join("secret")]).await;
+            let mounts = mounts_in(&args, dir);
+            println!("{} (package.json {with_package}): exit {code}\n{out}{err}{mounts:?}", exe.display());
+            assert_eq!(code, 0, "{err}");
+            assert!(out.contains("lone ok") && !out.contains("VISIBLE"), "{out}");
+            let e = exe.display().to_string();
+            assert_eq!(mounts, vec![("--ro-bind".to_string(), e.clone(), e)]);
+            std::fs::remove_file(dir.join("package.json")).ok();
+        }
+    }
+}
+
 /// A pnpm shim that sets up more than node and its target is refused, not
 /// run with more bound.
 #[test]

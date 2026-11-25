@@ -29,7 +29,9 @@ pub enum Entry {
     /// Not a Node launcher (a native binary, another script): run as it is.
     Other,
     /// Run `node` on `script` (both real paths) in place of the launcher.
-    Node { node: PathBuf, script: PathBuf },
+    /// `roots`: the install it belongs to (real paths), which every package
+    /// it loads must lie in ([`closure`]); empty: found from the script.
+    Node { node: PathBuf, script: PathBuf, roots: Vec<PathBuf> },
 }
 
 /// What `exe` runs: [`Entry::Node`] for a pnpm shim or a node script,
@@ -63,7 +65,7 @@ pub fn resolve(exe: &Path, node_on_path: &dyn Fn() -> Option<PathBuf>) -> Result
         return Ok(Entry::Other);
     };
     let node = std::fs::canonicalize(&node).map_err(|e| format!("its node {}: {e}", node.display()))?;
-    Ok(Entry::Node { node, script: real })
+    Ok(Entry::Node { node, script: real, roots: Vec::new() })
 }
 
 /// The text of `path` when it is a script (`#!`), at most 64 KiB of it.
@@ -91,6 +93,7 @@ fn shim(real: &Path, text: &str, node_on_path: &dyn Fn() -> Option<PathBuf>) -> 
     if !target.is_absolute() {
         return refuse(format!("names a relative target {}", target.display()));
     }
+    let named = target.to_path_buf();
     let target = std::fs::canonicalize(target).map_err(|e| format!("the pnpm shim {}'s target {}: {e}", real.display(), target.display()))?;
     let dir = real.parent().unwrap_or(Path::new("/"));
     let mut runs = 0;
@@ -137,7 +140,37 @@ fn shim(real: &Path, text: &str, node_on_path: &dyn Fn() -> Option<PathBuf>) -> 
         node_on_path().ok_or_else(|| format!("the pnpm shim {} has no node beside it or on the PATH", real.display()))?
     };
     let node = std::fs::canonicalize(&node).map_err(|e| format!("its node {}: {e}", node.display()))?;
-    Ok(Entry::Node { node, script: target })
+    let roots = pnpm_roots(&named, &target);
+    Ok(Entry::Node { node, script: target, roots })
+}
+
+/// The install a pnpm shim's target belongs to, real paths: the global
+/// install it is named in (`<pnpm>/global/v11/<hash>`, the folder above its
+/// first `node_modules`) and the store it really lies in (`<store>/v<N>`,
+/// above `links/`). Not the shim's folder: a shim may sit in `~/.local/bin`.
+fn pnpm_roots(named: &Path, target: &Path) -> Vec<PathBuf> {
+    let mut global = PathBuf::new();
+    let mut in_modules = false;
+    for part in named.components() {
+        if part.as_os_str() == "node_modules" {
+            in_modules = true;
+            break;
+        }
+        global.push(part);
+    }
+    let store = target.ancestors().find(|a| {
+        let version = a.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.len() > 1 && n.starts_with('v') && n[1..].bytes().all(|b| b.is_ascii_digit())
+        });
+        version && target.starts_with(a.join("links"))
+    });
+    let mut roots: Vec<PathBuf> = [in_modules.then_some(global), store.map(Path::to_path_buf)]
+        .into_iter()
+        .flatten()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect();
+    roots.dedup();
+    roots
 }
 
 /// `line` split into shell words, quotes kept; `None` for anything beyond
@@ -197,24 +230,56 @@ pub fn node_on_path() -> Option<PathBuf> {
 /// What `script` loads, to bind read-only: its package's folder and every
 /// dependency's (`dependencies`, `optionalDependencies`, `peerDependencies`
 /// that are installed), each its real path; and the links Node finds them
-/// through (pnpm's `<hash>/node_modules/<dep>`), as (target, link).
+/// through (pnpm's `<hash>/node_modules/<dep>`), as (target, link). A
+/// script in no package (or whose package would be the home or a folder of
+/// the owner's scripts, [`crate::sandbox::SHARED_BIN_DIRS`]): that file
+/// alone, in `files`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Closure {
     pub dirs: Vec<PathBuf>,
+    pub files: Vec<PathBuf>,
     pub links: Vec<(PathBuf, PathBuf)>,
 }
 
-pub fn closure(script: &Path) -> Result<Closure, String> {
+/// [`Closure`] of `script`. Every package and link must lie in `roots`
+/// (its install, [`Entry::Node`]; none that is `home` or above it); with
+/// none given, in the `node_modules` its package is in (npm's
+/// `<prefix>/lib/node_modules`), else in its package. A package or link
+/// outside is refused, never bound.
+pub fn closure(script: &Path, roots: &[PathBuf], home: &Path) -> Result<Closure, String> {
     let script = std::fs::canonicalize(script).map_err(|e| format!("{}: {e}", script.display()))?;
     let start = script.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let shared = |dir: &Path| {
+        dir == home || crate::sandbox::SHARED_BIN_DIRS.iter().any(|d| home.join(d) == dir)
+    };
     // Its package: the nearest folder up with a package.json, not past a
-    // node_modules (a lone script outside any package: its folder).
-    let root = start
+    // node_modules, the home or above.
+    let package = start
         .ancestors()
-        .take_while(|dir| dir.file_name().is_some_and(|n| n != "node_modules"))
+        .take_while(|dir| dir.file_name().is_some_and(|n| n != "node_modules") && !home.starts_with(dir))
         .find(|dir| dir.join("package.json").is_file())
-        .unwrap_or(start.as_path())
-        .to_path_buf();
+        .filter(|dir| !shared(dir))
+        .map(Path::to_path_buf);
+    let Some(package) = package else {
+        return Ok(Closure { files: vec![script], ..Closure::default() });
+    };
+    let roots: Vec<PathBuf> = roots.iter().filter(|root| !home.starts_with(root)).cloned().collect();
+    let roots: Vec<PathBuf> = if roots.is_empty() {
+        let modules = package.ancestors().find(|dir| dir.file_name().is_some_and(|n| n == "node_modules"));
+        vec![modules.unwrap_or(&package).to_path_buf()]
+    } else {
+        roots.iter().map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone())).collect()
+    };
+    let inside = |path: &Path| roots.iter().any(|root| path.starts_with(root));
+    let outside = |path: &Path| {
+        let roots: Vec<String> = roots.iter().map(|root| root.display().to_string()).collect();
+        format!("{} lies outside its install ({})", path.display(), roots.join(", "))
+    };
+    if !inside(&package) {
+        return Err(outside(&package));
+    }
+    let root = package;
     let mut out = Closure::default();
     let mut seen = BTreeSet::from([root.clone()]);
     let mut linked = BTreeSet::new();
@@ -227,6 +292,12 @@ pub fn closure(script: &Path) -> Result<Closure, String> {
             let parent = found.parent().unwrap_or(Path::new("/"));
             if std::fs::canonicalize(parent).ok().as_deref() != Some(parent) {
                 return Err(format!("{} lies behind a link Zend doesn't follow", found.display()));
+            }
+            if !inside(&found) {
+                return Err(outside(&found));
+            }
+            if !inside(&real) {
+                return Err(format!("{name}, which {} loads, is {}: {}", dir.display(), real.display(), outside(&real)));
             }
             if std::fs::symlink_metadata(&found).is_ok_and(|m| m.file_type().is_symlink()) && linked.insert(found.clone()) {
                 let target = std::fs::read_link(&found).map_err(|e| format!("{}: {e}", found.display()))?;
@@ -355,7 +426,10 @@ fi
     fn a_pnpm_shim_resolves_to_its_node_and_its_target() {
         let dir = tempfile::tempdir().unwrap();
         let (shim, node, script) = pnpm_layout(dir.path());
-        assert_eq!(resolve(&shim, &|| None).unwrap(), Entry::Node { node, script });
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        // Its install: the global install it is named in, the store it is in.
+        let roots = vec![root.join("global/v11/g1"), root.join("store/v11")];
+        assert_eq!(resolve(&shim, &|| None).unwrap(), Entry::Node { node, script, roots });
     }
 
     #[test]
@@ -365,8 +439,8 @@ fi
         std::fs::remove_file(dir.path().join("bin/node")).unwrap();
         let elsewhere = dir.path().join("other/node");
         write(&elsewhere, "#!/bin/sh\n");
-        let found = resolve(&shim, &|| Some(elsewhere.clone())).unwrap();
-        assert_eq!(found, Entry::Node { node: std::fs::canonicalize(&elsewhere).unwrap(), script });
+        let Entry::Node { node, script: found, .. } = resolve(&shim, &|| Some(elsewhere.clone())).unwrap() else { panic!("not node") };
+        assert_eq!((node, found), (std::fs::canonicalize(&elsewhere).unwrap(), script));
         assert!(resolve(&shim, &|| None).unwrap_err().contains("no node beside it or on the PATH"));
     }
 
@@ -404,9 +478,9 @@ fi
         symlink("../lib/node_modules/a/cli.js", dir.path().join("bin/a")).unwrap();
         let script = std::fs::canonicalize(&cli).unwrap();
         let node = std::fs::canonicalize(&node).unwrap();
-        assert_eq!(resolve(&dir.path().join("bin/a"), &|| Some(node.clone())).unwrap(), Entry::Node { node: node.clone(), script: script.clone() });
+        assert_eq!(resolve(&dir.path().join("bin/a"), &|| Some(node.clone())).unwrap(), Entry::Node { node: node.clone(), script: script.clone(), roots: vec![] });
         write(&cli, &format!("#!{}\n", node.display()));
-        assert_eq!(resolve(&cli, &|| None).unwrap(), Entry::Node { node, script });
+        assert_eq!(resolve(&cli, &|| None).unwrap(), Entry::Node { node, script, roots: vec![] });
         write(&cli, "#!/usr/bin/env -S node --flag\n");
         assert!(resolve(&cli, &|| None).unwrap_err().contains("not run sandboxed"));
         // Another script or a binary: as it is.
@@ -439,7 +513,8 @@ fi
         let la = link(&agent, &a, "dep-a");
         let lb = link(&a, &b, "dep-b");
         let lc = link(&a, &agent, "agent");
-        let mut found = closure(&agent.join("index.js")).unwrap();
+        let nowhere = Path::new("/nonexistent-home");
+        let mut found = closure(&agent.join("index.js"), &[root.join("store/v11")], nowhere).unwrap();
         assert_eq!(found.dirs[0], agent);
         found.dirs.sort();
         found.links.sort();
@@ -455,9 +530,71 @@ fi
         write(&npm.join("dist/cli.js"), "");
         write(&npm.join("node_modules/x/package.json"), "{}");
         write(&root.join("lib/node_modules/other/package.json"), "{}");
-        let found = closure(&npm.join("dist/cli.js")).unwrap();
+        let found = closure(&npm.join("dist/cli.js"), &[], nowhere).unwrap();
         assert_eq!(found.dirs, vec![npm.clone(), npm.join("node_modules/x")]);
-        assert!(found.links.is_empty());
+        assert!(found.links.is_empty() && found.files.is_empty());
+    }
+
+    /// A package it loads whose link or real path lies outside its install
+    /// (pnpm's global install and store; npm's lib/node_modules) is refused:
+    /// a link into ~/.pi/agent or another project is never bound.
+    #[test]
+    fn a_package_outside_its_install_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let home = root.join("home");
+        write(&home.join(".pi/agent/auth.json"), "{}");
+        write(&home.join("projects/b/index.js"), "");
+        write(&root.join("elsewhere/dep/index.js"), "");
+        let store = root.join("pnpm/store/v11");
+        let agent = store.join("links/@/agent/1.0.0/h/node_modules/agent");
+        write(&agent.join("package.json"), "{\"dependencies\":{\"dep\":\"1\"}}");
+        write(&agent.join("cli.js"), "");
+        let roots = [root.join("pnpm/global/v11/g1"), store.clone()];
+        for outside in [home.join(".pi/agent"), home.join("projects/b"), root.join("elsewhere/dep")] {
+            let link = agent.parent().unwrap().join("dep");
+            let _ = std::fs::remove_file(&link);
+            symlink(&outside, &link).unwrap();
+            let error = closure(&agent.join("cli.js"), &roots, &home).unwrap_err();
+            assert!(error.contains("outside its install"), "{}: {error}", outside.display());
+        }
+        // A root that is the home or above it bounds nothing: not used.
+        std::fs::remove_file(agent.parent().unwrap().join("dep")).unwrap();
+        write(&agent.parent().unwrap().join("dep/index.js"), "");
+        let found = closure(&agent.join("cli.js"), &[root.clone()], &home).unwrap();
+        assert_eq!(found.dirs, vec![agent.clone(), agent.parent().unwrap().join("dep")]);
+        // npm: a dependency linked out of lib/node_modules.
+        let npm = root.join("npm/lib/node_modules/cli");
+        write(&npm.join("package.json"), "{\"dependencies\":{\"dep\":\"1\"}}");
+        write(&npm.join("cli.js"), "");
+        std::fs::create_dir_all(npm.join("node_modules")).unwrap();
+        symlink(home.join("projects/b"), npm.join("node_modules/dep")).unwrap();
+        let error = closure(&npm.join("cli.js"), &[], &home).unwrap_err();
+        assert!(error.contains("outside its install"), "{error}");
+    }
+
+    /// A script in no package, or whose package.json is the home's or in a
+    /// folder of the owner's scripts (~/bin, ~/.local/bin): that file alone.
+    #[test]
+    fn a_script_outside_a_package_is_bound_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let home = root.join("home");
+        for (script, package) in [
+            (root.join("tools/agent.js"), None),
+            (home.join("bin/agent"), Some(home.join("bin/package.json"))),
+            (home.join(".local/bin/agent"), Some(home.join(".local/bin/package.json"))),
+            (home.join("agent.js"), Some(home.join("package.json"))),
+            (home.join("scripts/agent.js"), Some(home.join("package.json"))),
+        ] {
+            write(&script, "#!/usr/bin/env node\n");
+            write(&script.with_file_name("secret"), "");
+            if let Some(package) = &package {
+                write(package, "{\"dependencies\":{\"x\":\"1\"}}");
+            }
+            let found = closure(&script, &[], &home).unwrap();
+            assert_eq!(found, Closure { files: vec![script.clone()], ..Closure::default() }, "{}", script.display());
+        }
     }
 
     #[test]

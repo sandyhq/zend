@@ -573,7 +573,9 @@ fn node_version_manager_bins_with(
         // pnpm's global bin: PNPM_HOME, where pnpm before 11 links CLIs and
         // pnpm 11 in its bin/; by default in XDG_DATA_HOME or the home. An
         // engine started by systemd or a GUI has none of it on its PATH.
-        if let Some(dir) = env_path(env, "PNPM_HOME") {
+        // Absolute only: a relative one would be looked up in the engine's
+        // working folder.
+        if let Some(dir) = env_path(env, "PNPM_HOME").filter(|dir| dir.is_absolute()) {
             dirs.push(dir.clone());
             dirs.push(dir.join("bin"));
         }
@@ -1542,6 +1544,22 @@ mod tests {
             );
             std::fs::remove_file(&pi).unwrap();
         }
+    }
+
+    /// A relative PNPM_HOME (or XDG_DATA_HOME) is not looked in: it would
+    /// be the engine's working folder.
+    #[test]
+    fn unix_discovery_ignores_a_relative_pnpm_home() {
+        let lookup = env(&[
+            ("HOME", OsString::from("/home/u")),
+            ("PNPM_HOME", OsString::from("rel/pnpm")),
+            ("XDG_DATA_HOME", OsString::from("rel/data")),
+        ]);
+        let bins = node_version_manager_bins_with(&lookup, Platform::Unix);
+        assert!(bins.iter().all(|dir| dir.is_absolute()), "{bins:?}");
+        let lookup = env(&[("HOME", OsString::from("/home/u")), ("PNPM_HOME", OsString::from("/opt/pnpm"))]);
+        let bins = node_version_manager_bins_with(&lookup, Platform::Unix);
+        assert!(bins.contains(&PathBuf::from("/opt/pnpm")) && bins.contains(&PathBuf::from("/opt/pnpm/bin")), "{bins:?}");
     }
 
     #[test]
