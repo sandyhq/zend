@@ -5,6 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-25
 
 ### Added
+- Paired servers, lent login review fixes (step 4d-4): the lent `auth.json` is kept in `peer-login-tokens/` in Zend's data (700) and mounted read-only into the sandbox (`Sandbox::with_agent_file`), so a link the sandbox puts in its state folder can no longer have Zend delete or overwrite the owner's pi login; Zend acts by no path in the state folder. The file goes with its run, on chat delete and at engine start. A server hears only "no credential for <provider> on this device". A failed refresh waits 60 s.
 - Paired servers, subscription login per server (step 4d-4): `zend peer login allow|rm|list <server> <provider>` (anthropic, openai-codex) lets a server's sandboxed Pi chats run on this device's pi login. Each turn gets an `auth.json` of its own (that provider's access token, `refresh` empty) in its `PI_CODING_AGENT_DIR`. The host's pi refreshes a token with less than 10 minutes left first (`pi auth print-bearer-token`). A key wins over a login. `rm` and unpair take the file out and end live runs (`crates/engine/src/peer_logins.rs`, `crates/harness/src/sandbox.rs` `with_agent_dir`).
 
 ### Fixed

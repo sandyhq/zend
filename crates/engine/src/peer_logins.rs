@@ -5,16 +5,28 @@
 //! owner-only 0600), never synced, never answered over a connection.
 //!
 //! The host keeps its login (pi's `auth.json`) and refreshes it itself:
-//! before each turn the chat's sandbox gets an `auth.json` of its own in its
-//! agent folder ([`AGENT_DIR`] in its state folder, its `PI_CODING_AGENT_DIR`)
-//! with only that provider's access token and expiry, `refresh` empty, no other
-//! provider. A host token with less than [`MIN_VALIDITY`] left is first
-//! refreshed by the host's own pi, outside the sandbox
-//! (`pi auth print-bearer-token --provider <p> --min-expiry 10m`: pi's own refresh,
-//! under its own lock on its file; what it prints is dropped). A key kept
-//! for the server and provider ([`crate::peer_keys`]) wins over the login.
+//! each run of the chat gets an `auth.json` of its own with only that
+//! provider's access token and expiry, `refresh` empty, no other provider.
+//! It is kept where no sandbox reaches, [`TOKENS_DIR`] in Zend's data (0700,
+//! the file 0600, one per run), and shown to the run read-only as
+//! `auth.json` in its agent folder ([`AGENT_DIR`] in its state folder, its
+//! `PI_CODING_AGENT_DIR`; `zend_harness::sandbox::Sandbox::with_agent_file`).
+//! The host never acts by a path inside the state folder: that folder is
+//! the sandbox's to write, links included. The file goes when its run is
+//! over (its [`LentFile`] dropped), when the login is taken back or the
+//! server unpaired ([`take_back`]), when the chat is deleted, and at boot
+//! ([`sweep`]).
+//!
+//! A host token with less than [`MIN_VALIDITY`] left is first refreshed by
+//! the host's own pi, outside the sandbox (`pi auth print-bearer-token
+//! --provider <p> --min-expiry 10m`: pi's own refresh, under its own lock on
+//! its file; what it prints is dropped); a refresh that failed isn't tried
+//! again for [`REFRESH_BACKOFF`]. A key kept for the server and provider
+//! ([`crate::peer_keys`]) wins over the login.
 //!
 //! No token is ever in an error, a log line or a `Debug` of these types.
+//! What a server is told when its chat has neither is only that there is
+//! no credential for the provider here; the why is logged on this device.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -37,6 +49,18 @@ pub const MIN_VALIDITY: Duration = Duration::from_secs(10 * 60);
 
 /// How long the host's pi may take to refresh its login.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// How long a failed refresh is not tried again (a run in that time is
+/// refused at once).
+pub const REFRESH_BACKOFF: Duration = Duration::from_secs(60);
+
+/// The folder in Zend's data the lent logins are kept in while their runs
+/// last: no sandbox sees it.
+pub const TOKENS_DIR: &str = "peer-login-tokens";
+
+/// When a refresh last failed, by pi folder, pi and provider.
+type Tried = (PathBuf, Option<PathBuf>, String);
+static FAILED_REFRESH: Mutex<BTreeMap<Tried, std::time::Instant>> = Mutex::new(BTreeMap::new());
 
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -192,13 +216,38 @@ impl HostLogin {
             entry.get("expires").and_then(Value::as_i64).is_some_and(|expires| expires - now_ms() >= MIN_VALIDITY.as_millis() as i64)
         };
         if !fresh(&entry) {
-            blocking(|| self.refresh(provider))?;
-            entry = self.entry(provider).ok_or_else(no_login)?;
-            if !fresh(&entry) {
+            let tried: Tried = (self.agent_dir.clone(), self.pi.clone(), provider.to_string());
+            let failed_lately = FAILED_REFRESH
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&tried)
+                .is_some_and(|at| at.elapsed() < REFRESH_BACKOFF);
+            if failed_lately {
                 return Err(format!(
-                    "this device's {provider} login has less than {} minutes left and pi didn't refresh it: sign in again on this device (pi, /login)",
-                    MIN_VALIDITY.as_secs() / 60
+                    "this device's {provider} login is about to expire and pi couldn't refresh it less than {}s ago: sign in again on this device (pi, /login)",
+                    REFRESH_BACKOFF.as_secs()
                 ));
+            }
+            let refreshed = blocking(|| self.refresh(provider)).and_then(|()| {
+                let entry = self.entry(provider).ok_or_else(no_login)?;
+                if !fresh(&entry) {
+                    return Err(format!(
+                        "this device's {provider} login has less than {} minutes left and pi didn't refresh it: sign in again on this device (pi, /login)",
+                        MIN_VALIDITY.as_secs() / 60
+                    ));
+                }
+                Ok(entry)
+            });
+            let mut failed = FAILED_REFRESH.lock().unwrap_or_else(|e| e.into_inner());
+            match refreshed {
+                Ok(fresh_entry) => {
+                    failed.remove(&tried);
+                    entry = fresh_entry;
+                }
+                Err(why) => {
+                    failed.insert(tried, std::time::Instant::now());
+                    return Err(why);
+                }
             }
         }
         let mut lent = json!({
@@ -267,23 +316,87 @@ fn blocking<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-/// The sandbox's login file in its agent folder `dir`.
-pub fn auth_file(dir: &Path) -> PathBuf {
-    dir.join("auth.json")
+/// The name the lent login has in its run's agent folder (pi's).
+pub const AUTH_FILE: &str = "auth.json";
+
+/// The folder the lent logins are kept in: made owner-only (0700) if
+/// missing; refused if it is anything but a folder of this user's.
+fn tokens_dir(data_dir: &Path) -> Result<PathBuf, String> {
+    let dir = data_dir.join(TOKENS_DIR);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("its login's folder could not be made: {e}")),
+        }
+        let meta = std::fs::symlink_metadata(&dir).map_err(|e| format!("its login's folder: {e}"))?;
+        // SAFETY: getuid can't fail.
+        let me = unsafe { libc::getuid() };
+        if !meta.file_type().is_dir() || meta.uid() != me {
+            return Err("its login's folder is not a folder of this user's".into());
+        }
+        if meta.permissions().mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("its login's folder: {e}"))?;
+        }
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&dir).map_err(|e| format!("its login's folder could not be made: {e}"))?;
+    Ok(dir)
 }
 
-/// Put `auth` in the agent folder `dir` (owner-only, replacing one there).
-pub fn write(dir: &Path, auth: &SandboxAuth) -> Result<(), String> {
-    crate::runner::write_private_atomic(&auth_file(dir), auth.bytes())
-        .map_err(|e| format!("its login could not be put in its sandbox: {e}"))
+/// The chat a kept login's file belongs to: `<chat>.<run>.json`.
+fn chat_of(name: &str) -> Option<&str> {
+    name.strip_suffix(".json")?.rsplit_once('.').map(|(chat, _)| chat)
 }
 
-/// Take the login out of the agent folder `dir` (and what pi made beside it).
-/// Whether one was there.
-pub fn remove(dir: &Path) -> bool {
-    let file = auth_file(dir);
-    let _ = std::fs::remove_dir_all(dir.join("auth.json.lock"));
-    std::fs::remove_file(&file).is_ok()
+/// Keep `auth` for one run of `chat_id` in [`TOKENS_DIR`] (owner-only), to
+/// be shown read-only in its sandbox; removed when the returned file is
+/// dropped (its run is over).
+pub fn lend(data_dir: &Path, chat_id: &str, auth: &SandboxAuth) -> Result<zend_harness::sandbox::LentFile, String> {
+    if !crate::peer_chats::valid_chat_id(chat_id) {
+        return Err("its chat id can't name a file".into());
+    }
+    let path = tokens_dir(data_dir)?.join(format!("{chat_id}.{}.json", uuid::Uuid::new_v4().simple()));
+    crate::runner::write_private_atomic(&path, auth.bytes()).map_err(|e| format!("its login could not be kept for it: {e}"))?;
+    Ok(zend_harness::sandbox::LentFile::new(path))
+}
+
+/// Take the logins kept for `chat_id`'s runs away (taken back, its server
+/// unpaired, the chat deleted). How many there were. A run still live keeps
+/// what its sandbox mounted until it ends (taking back ends it).
+pub fn take_back(data_dir: &Path, chat_id: &str) -> usize {
+    kept(data_dir).into_iter().filter(|(chat, _)| chat == chat_id).filter(|(_, path)| std::fs::remove_file(path).is_ok()).count()
+}
+
+/// Every login kept for a run: its chat and its file.
+fn kept(data_dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join(TOKENS_DIR)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            Some((chat_of(&name)?.to_string(), entry.path()))
+        })
+        .collect()
+}
+
+/// The chats a login is kept for now.
+pub fn lent_chats(data_dir: &Path) -> BTreeSet<String> {
+    kept(data_dir).into_iter().map(|(chat, _)| chat).collect()
+}
+
+/// At boot: no run is live, so every kept login (one a crash left, and
+/// what a write left half-done) goes. How many.
+pub fn sweep(data_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(data_dir.join(TOKENS_DIR)) else {
+        return 0;
+    };
+    entries.flatten().filter(|entry| std::fs::remove_file(entry.path()).is_ok()).count()
 }
 
 #[cfg(test)]
@@ -386,19 +499,66 @@ mod tests {
         assert!(host.sandbox_auth("anthropic").unwrap_err().contains("no anthropic login"));
     }
 
+    /// A run's login is kept owner-only in a folder of its own (0700) and
+    /// goes with its run; taking back and the boot sweep take what is left.
     #[test]
-    fn the_sandbox_file_is_written_owner_only_and_removed() {
+    fn a_lent_login_is_kept_owner_only_and_goes_with_its_run() {
         let dir = tempfile::tempdir().unwrap();
         let host = host(dir.path(), 300);
-        let agent = dir.path().join("state").join(AGENT_DIR);
-        write(&agent, &host.sandbox_auth("anthropic").unwrap()).unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let auth = host.sandbox_auth("anthropic").unwrap();
+        let file = lend(&data, "chat-1", &auth).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(std::fs::metadata(auth_file(&agent)).unwrap().permissions().mode() & 0o777, 0o600);
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(file.path()), 0o600);
+            assert_eq!(mode(&data.join(TOKENS_DIR)), 0o700);
         }
-        assert!(remove(&agent));
-        assert!(!auth_file(&agent).exists());
-        assert!(!remove(&agent));
+        assert_eq!(std::fs::read(file.path()).unwrap(), auth.bytes());
+        let path = file.path().to_path_buf();
+        drop(file);
+        assert!(!path.exists(), "gone with its run");
+
+        let a = lend(&data, "chat-1", &auth).unwrap();
+        let b = lend(&data, "chat-2", &auth).unwrap();
+        assert_ne!(a.path(), lend(&data, "chat-1", &auth).unwrap().path(), "one file per run");
+        assert_eq!(lent_chats(&data), BTreeSet::from(["chat-1".to_string(), "chat-2".to_string()]));
+        assert_eq!(take_back(&data, "chat-1"), 1);
+        assert!(!a.path().exists() && b.path().exists());
+        std::mem::forget(b);
+        assert_eq!(sweep(&data), 1);
+        assert!(lent_chats(&data).is_empty());
+        assert!(lend(&data, "../x", &auth).is_err());
+    }
+
+    /// A refresh that failed isn't tried again for a minute: the next run is
+    /// refused at once, without starting the host's pi.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_refresh_is_not_tried_again_for_a_minute() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let pi = dir.path().join("pi");
+        let count = dir.path().join("pi.count");
+        std::fs::write(&pi, format!("#!/bin/sh
+echo x >> '{}'
+exit 3
+", count.display())).unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = HostLogin { pi: Some(pi), ..host(dir.path(), 5) };
+        let first = host.sandbox_auth("anthropic").unwrap_err();
+        assert!(first.contains("could not refresh"), "{first}");
+        let second = host.sandbox_auth("anthropic").unwrap_err();
+        assert!(!second.contains(ACCESS) && !second.contains(REFRESH), "{second}");
+        let started = std::fs::read_to_string(&count).unwrap().lines().count();
+        assert_eq!(started, 1, "pi was started again within the minute");
+        // Another provider's, or another pi folder's, is its own.
+        let other = HostLogin { agent_dir: dir.path().join("elsewhere"), ..host.clone() };
+        std::fs::create_dir_all(&other.agent_dir).unwrap();
+        std::fs::copy(dir.path().join("auth.json"), other.agent_dir.join("auth.json")).unwrap();
+        assert!(other.sandbox_auth("anthropic").is_err());
+        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2);
     }
 }

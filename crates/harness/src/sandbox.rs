@@ -27,8 +27,10 @@
 //! started) gets none of the owner's login files and, of every credential
 //! in its environment, only the keys it was given ([`only_keys`]). It may
 //! have an agent folder of its own in its state folder
-//! ([`Sandbox::with_agent_dir`], Pi's `PI_CODING_AGENT_DIR`): where the
-//! engine puts the one short-lived login it may use (plan step 4d-4).
+//! ([`Sandbox::with_agent_dir`], Pi's `PI_CODING_AGENT_DIR`), and in it,
+//! read-only, the one short-lived login it may use (plan step 4d-4,
+//! [`Sandbox::with_agent_file`]): a host file kept out of its reach, removed
+//! when its run is over.
 //!
 //! Its root is a project folder ([`check_root`]) or a working copy Zend
 //! made for it in its own data ([`check_copy_root`]): a chat another server
@@ -154,6 +156,42 @@ pub struct Sandbox {
     keys: Option<std::collections::BTreeMap<String, String>>,
     /// The agent's own config folder ([`Self::with_agent_dir`]).
     agent_dir: Option<PathBuf>,
+    /// A host file it sees read-only in that folder
+    /// ([`Self::with_agent_file`]): the file, and where it shows.
+    agent_file: Option<(std::sync::Arc<LentFile>, PathBuf)>,
+}
+
+/// A file of the host's a sandbox sees read-only ([`Sandbox::with_agent_file`]):
+/// kept where no sandbox can reach it (Zend's data), mounted read-only
+/// into the run, and removed from the host when the last sandbox and launch
+/// holding it are dropped (its run is over). Its `Debug` shows its path only.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LentFile {
+    path: PathBuf,
+}
+
+impl LentFile {
+    /// Take charge of `path`, a file the caller made where no sandbox can
+    /// write: it is removed when this is dropped.
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for LentFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// One normal path component: no separator, `.` or `..`.
+fn plain_name(name: &str) -> bool {
+    let mut parts = Path::new(name).components();
+    matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None)) && !name.contains('/')
 }
 
 fn refuse(why: impl std::fmt::Display) -> HarnessError {
@@ -310,6 +348,7 @@ impl Sandbox {
             state: None,
             keys: None,
             agent_dir: None,
+            agent_file: None,
         }
     }
 
@@ -362,27 +401,46 @@ impl Sandbox {
         self.state.as_deref()
     }
 
-    /// Give the agent `dir` as its own config folder (Pi:
-    /// `PI_CODING_AGENT_DIR`), in place of the host's: a folder inside its
-    /// state folder ([`Self::with_state`], set first), made if missing.
-    /// Only for a run on its own keys ([`Self::with_keys`]), which gets
-    /// none of the owner's login files: what is in it is what the engine
-    /// put there.
-    pub fn with_agent_dir(mut self, dir: &Path) -> Result<Self, HarnessError> {
+    /// Give the agent its own config folder (Pi: `PI_CODING_AGENT_DIR`), in
+    /// place of the host's: `name` in its state folder ([`Self::with_state`],
+    /// set first). Only for a run on its own keys ([`Self::with_keys`]),
+    /// which gets none of the owner's login files.
+    ///
+    /// Nothing is done there from the host: the folder is the sandbox's to
+    /// write (and to replace, with a link anywhere), so the host never acts
+    /// by its path. Bubblewrap makes it inside the sandbox if missing.
+    pub fn with_agent_dir(mut self, name: &str) -> Result<Self, HarnessError> {
         let Some(state) = self.state.clone() else {
             return Err(refuse("its agent folder needs a state folder"));
         };
         if self.keys.is_none() {
             return Err(refuse("an agent folder of its own is only for a run on its own keys"));
         }
-        std::fs::create_dir_all(dir)
-            .map_err(|e| refuse(format!("its agent folder {}: {e}", dir.display())))?;
-        let dir = std::fs::canonicalize(dir)
-            .map_err(|e| refuse(format!("its agent folder {}: {e}", dir.display())))?;
-        if dir == state || !dir.starts_with(&state) {
-            return Err(refuse(format!("its agent folder {} is not inside its state folder", dir.display())));
+        if !plain_name(name) {
+            return Err(refuse(format!("its agent folder {name:?} is not a plain name")));
         }
-        self.agent_dir = Some(dir);
+        self.agent_dir = Some(state.join(name));
+        Ok(self)
+    }
+
+    /// Show `file` (a host file in a folder no sandbox can reach) read-only
+    /// as `name` in its agent folder ([`Self::with_agent_dir`], set first):
+    /// bubblewrap binds it there inside the sandbox, which can read it but
+    /// neither change, replace nor remove it, and refuses to start when the
+    /// sandbox put a link on the way. The host file goes when `file` is
+    /// dropped (with this sandbox and its launches: the run is over).
+    pub fn with_agent_file(mut self, name: &str, file: LentFile) -> Result<Self, HarnessError> {
+        let Some(dir) = self.agent_dir.clone() else {
+            return Err(refuse("a file in its agent folder needs an agent folder"));
+        };
+        if !plain_name(name) {
+            return Err(refuse(format!("its agent file {name:?} is not a plain name")));
+        }
+        let writable = [Some(&self.root), self.state.as_ref()];
+        if writable.into_iter().flatten().any(|dir| file.path().starts_with(dir)) || !file.path().is_absolute() {
+            return Err(refuse("its agent file must be kept outside its sandbox"));
+        }
+        self.agent_file = Some((std::sync::Arc::new(file), dir.join(name)));
         Ok(self)
     }
 
@@ -830,6 +888,8 @@ pub struct Launch {
     keys: Option<std::collections::BTreeMap<String, String>>,
     /// Its agent folder ([`Sandbox::with_agent_dir`]): its PI_CODING_AGENT_DIR.
     agent_dir: Option<PathBuf>,
+    /// The file it sees read-only there, kept until its launches are gone.
+    _agent_file: Option<std::sync::Arc<LentFile>>,
 }
 
 impl Launch {
@@ -958,6 +1018,11 @@ impl Launch {
         if let Some(state) = &sandbox.state {
             push(&["--bind".as_ref(), state.as_os_str(), state.as_os_str()]);
         }
+        // After the state folder it lies in: bubblewrap resolves the target
+        // inside the new root and refuses a link on its way.
+        if let Some((file, target)) = &sandbox.agent_file {
+            push(&["--ro-bind".as_ref(), file.path().as_os_str(), target.as_os_str()]);
+        }
         push(&["--chdir".as_ref(), cwd.as_os_str()]);
         push(&["--".as_ref()]);
         let bwrap_args = args;
@@ -1016,6 +1081,7 @@ impl Launch {
             home,
             keys: sandbox.keys.clone(),
             agent_dir: sandbox.agent_dir.clone(),
+            _agent_file: sandbox.agent_file.as_ref().map(|(file, _)| file.clone()),
         };
         launch.preflight()?;
         Ok(launch)
