@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-25
 
+### Added
+- Worker sessions from the server: each running worker shows in its server's window as a device with its `work` project, and a chat made there runs in its `/work` over the worker's socket (harnesses, models, createChat/setChatConfig, QueueCommand, WatchDocMessages only); a worker's rows are hostile input (its device id checked, chats only in its project, no folders, this device's ids win) and shown to this device's own callers alone; `zend worker run <name> "<prompt>"` prints the reply (`crates/engine/src/peer_view.rs`, `crates/engine/src/workers.rs`, `apps/zend/src/worker_cli.rs`).
+
 ### Fixed
 - Paired servers, live-test fixes: a run a server's chat won't take (no key kept for that server and provider, a harness that can't run sandboxed) is refused to the sender at once with the reason, logged, and shown under the prompt in the window; a run refused as it starts leaves an error turn in the chat instead of only the user's message. A server that unpaired this side (its handshake's 401) drops out of the window at once; one not reached shows offline from the first failed redial and its rows go after 10 minutes.
 

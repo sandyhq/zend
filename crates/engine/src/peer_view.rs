@@ -30,6 +30,24 @@
 //!   chat or file of this device's.
 //! - Its messages are capped at 4 MiB (`zend_rpc::connect_peer`), each list
 //!   at [`MAX_ROWS`] rows: a frame over that is dropped.
+//!
+//! This engine's workers ([`crate::workers`], step 5) show the same way,
+//! each as a device of its own (capabilities [`PAIRED_SERVER`] and
+//! [`WORKER`], named as the worker), followed under the key
+//! `worker:<name>`: dialled over its socket
+//! ([`crate::workers::Workers::connect`], 16 MiB cap), with one project,
+//! the one this server gave it ([`crate::workers::Worker::project`],
+//! named `work`; what it says of its projects is never read). A worker is
+//! as trusted as the agent in it, so on top of the above:
+//! - its device id is a plain id (letters, digits, `-_.:`, at most 128),
+//!   and loses to a paired server's of that id;
+//! - only its chats in that project show; any other is dropped;
+//! - of the calls naming it only [`forwarded_to_worker`] go (harnesses,
+//!   models, making a chat (always in its project) and setting its config,
+//!   `QueueCommand`, `WatchDocMessages`); a made chat's reply says its
+//!   device, not the worker's words.
+//! Its rows merge only for this device's own callers, as a server's do: a
+//! paired server and the phone link never see a worker.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
@@ -63,6 +81,10 @@ pub const MAX_ROWS: usize = 5000;
 /// window reads a device's capabilities to offer what isn't open over the
 /// peer link, agent updates, or to take it for Cloud's).
 pub const PAIRED_SERVER: &str = "paired-server";
+/// What a worker's device row carries besides [`PAIRED_SERVER`].
+pub const WORKER: &str = "worker";
+/// How a worker's key in the view starts (`worker:<name>`).
+const WORKER_PREFIX: &str = "worker:";
 
 /// What an error from a paired server starts with: its words follow, for
 /// the window to show (`apps/zgx` sessions.create).
@@ -87,6 +109,8 @@ struct Seen {
     /// The config each chat made from here was made with, once its list
     /// has it (see [`PeerView::made`]).
     configs: HashMap<String, Value>,
+    /// A worker's: its one project's id.
+    worker_project: Option<String>,
 }
 
 impl Seen {
@@ -310,12 +334,16 @@ impl PeerView {
         let Some(link) = self.link.upgrade() else {
             return false;
         };
-        let dialable: HashSet<String> = link
+        let mut dialable: HashSet<String> = link
             .peers()
             .into_iter()
             .filter(|p| p.host.is_some() && p.port.is_some() && p.node.is_some())
             .map(|p| p.key)
             .collect();
+        // (A worker has none of its own.)
+        if crate::worker::role().is_none() {
+            dialable.extend(crate::workers::Workers::new(link.data_dir()).list().into_iter().map(|w| format!("{WORKER_PREFIX}{}", w.name)));
+        }
         let mut tasks = self.tasks.lock().unwrap();
         tasks.retain(|key, task| {
             let keep = dialable.contains(key) && !task.is_finished();
@@ -369,14 +397,14 @@ impl PeerView {
 
     /// Server `key`'s `rows` of `what`, as this side shows them (see
     /// [`clean`]); `None` over [`MAX_ROWS`].
-    fn admit(&self, key: &str, device_id: &str, what: Kind, rows: &Value) -> Option<Vec<Value>> {
+    fn admit(&self, key: &str, device_id: &str, what: Kind, rows: &Value, only_in: Option<&str>) -> Option<Vec<Value>> {
         let rows = rows.as_array().map(Vec::as_slice).unwrap_or_default();
         if rows.len() > MAX_ROWS {
             tracing::warn!(peer = %key, ?what, rows = rows.len(), "peer view: a paired server's list is over the cap; frame dropped");
             return None;
         }
         let mut dropped = Vec::new();
-        let kept = clean(what, rows, device_id, &self.taken(key), &mut dropped);
+        let kept = clean(what, rows, device_id, &self.taken(key), only_in, &mut dropped);
         for d in dropped {
             self.note(key, &d);
         }
@@ -386,6 +414,11 @@ impl PeerView {
     /// Why server `key` (paired at `paired_at`) may not show as
     /// `device_id`, else the servers it takes that id from.
     fn claim(&self, seen: &BTreeMap<String, Seen>, key: &str, device_id: &str, paired_at: i64) -> Result<Vec<String>, String> {
+        // Paired servers first, then workers, each by when it came.
+        let rank = |key: &str| key.starts_with(WORKER_PREFIX);
+        if rank(key) && !plain_id(device_id) {
+            return Err(format!("it says it is {:?}, not a device id", device_id.chars().take(40).collect::<String>()));
+        }
         if zend_proto::is_cloud_device(device_id, "") {
             return Err(format!("it says it is {device_id}, a Cloud device's id"));
         }
@@ -394,8 +427,8 @@ impl PeerView {
         }
         let mut losers = Vec::new();
         for (other, s) in seen.iter().filter(|(k, s)| k.as_str() != key && s.device_id == device_id) {
-            if (s.paired_at, other.as_str()) <= (paired_at, key) {
-                return Err(format!("it says it is {device_id}, as a server paired before it does"));
+            if (rank(other), s.paired_at, other.as_str()) <= (rank(key), paired_at, key) {
+                return Err(format!("it says it is {device_id}, as a server paired (or a worker made) before it does"));
             }
             losers.push(other.clone());
         }
@@ -450,13 +483,28 @@ impl PeerView {
         // This device's own ids first: nothing of a server's before them.
         let _ = self.locals.subscribe().wait_for(Locals::ready).await;
         let link = self.link.upgrade().ok_or(Quiet::Gone)?;
-        let peer = link.peers().into_iter().find(|p| p.key == key).ok_or(Quiet::Gone)?;
-        // Not reached, or refused (unpaired there: its handshake's 401).
-        let client = Arc::new(link.connect(key).await.map_err(|e| match e {
+        let quiet = |e: RpcError| match e {
             RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),
             other => Quiet::Refused(other.to_string()),
-        })?);
-        drop(link);
+        };
+        // Not reached, or refused (unpaired there: its handshake's 401; a
+        // worker answering with another key).
+        let (client, name, paired_at, worker_project) = match key.strip_prefix(WORKER_PREFIX) {
+            Some(worker) => {
+                let workers = crate::workers::Workers::new(link.data_dir());
+                let worker = workers.get(worker).map_err(|_| Quiet::Gone)?;
+                drop(link);
+                let client = workers.connect(&worker.name).await.map_err(quiet)?;
+                (client, worker.name.clone(), worker.created_at, Some(worker.project().to_string()))
+            }
+            None => {
+                let peer = link.peers().into_iter().find(|p| p.key == key).ok_or(Quiet::Gone)?;
+                let client = link.connect(key).await.map_err(quiet)?;
+                drop(link);
+                (client, peer.name.clone().unwrap_or_else(|| "Paired server".into()), peer.paired_at, None)
+            }
+        };
+        let client = Arc::new(client);
         let info = client.call(methods::ENGINE_INFO, json!({})).await.map_err(|e| match e {
             RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),
             other => Quiet::Refused(other.to_string()),
@@ -465,25 +513,33 @@ impl PeerView {
         let Some(device_id) = device_id else {
             return Err(Quiet::Refused("it said no device id".into()));
         };
-        let projects = self.admit(key, &device_id, Kind::Projects, &info["peer"]["projects"]).unwrap_or_default();
+        // A worker's one project is the one its server gave it; what it
+        // says of its projects isn't read.
+        let projects = match &worker_project {
+            Some(project) => json!([{ "id": project, "name": crate::worker::PROJECT }]),
+            None => info["peer"]["projects"].clone(),
+        };
+        let projects = self.admit(key, &device_id, Kind::Projects, &projects, None).unwrap_or_default();
         let since = chrono::Utc::now().to_rfc3339();
-        let paired_at = chrono::DateTime::from_timestamp_millis(peer.paired_at).map(|t| t.to_rfc3339());
+        let created_at = chrono::DateTime::from_timestamp_millis(paired_at).map(|t| t.to_rfc3339());
+        let capabilities = if worker_project.is_some() { json!([PAIRED_SERVER, WORKER]) } else { json!([PAIRED_SERVER]) };
         let device = |seen_at: &str| {
             json!({
                 "id": device_id,
-                "name": peer.name.clone().unwrap_or_else(|| "Paired server".into()),
+                "name": name,
                 // (A server: the window draws it as one.)
                 "platform": "linux",
                 "lastSeenAt": seen_at,
-                "createdAt": paired_at,
-                "capabilities": [PAIRED_SERVER],
+                "createdAt": created_at,
+                "capabilities": capabilities,
             })
         };
+        let only_in = worker_project.as_deref();
         let mut chats = client.subscribe_checked(methods::WATCH_CHATS, json!({})).await.ok();
         let mut sessions = client.subscribe_checked(methods::WATCH_SESSIONS, json!({})).await.ok();
         let mut claimed = Ok(Vec::new());
         self.seen.send_modify(|seen| {
-            claimed = self.claim(seen, key, &device_id, peer.paired_at);
+            claimed = self.claim(seen, key, &device_id, paired_at);
             let Ok(losers) = &claimed else { return };
             for loser in losers {
                 seen.remove(loser);
@@ -494,7 +550,8 @@ impl PeerView {
                 device: device(&since),
                 projects,
                 since: was.as_ref().map_or_else(|| since.clone(), |w| w.since.clone()),
-                paired_at: peer.paired_at,
+                paired_at,
+                worker_project: worker_project.clone(),
                 // Unreadable now: none shown.
                 chats: if chats.is_some() { was.as_ref().map(|w| w.chats.clone()).unwrap_or_default() } else { Vec::new() },
                 sessions: if sessions.is_some() { was.as_ref().map(|w| w.sessions.clone()).unwrap_or_default() } else { Vec::new() },
@@ -524,7 +581,7 @@ impl PeerView {
             tokio::select! {
                 rows = next(&mut chats) => {
                     let Some(rows) = rows else { break };
-                    let Some(rows) = self.admit(key, &device_id, Kind::Chats, &rows) else { continue };
+                    let Some(rows) = self.admit(key, &device_id, Kind::Chats, &rows, only_in) else { continue };
                     let ids: HashSet<&str> = rows.iter().filter_map(|c| c["id"].as_str()).collect();
                     // Made from here and listed now: only its config is kept.
                     let listed: Vec<(String, Value)> = {
@@ -544,7 +601,7 @@ impl PeerView {
                 }
                 rows = next(&mut sessions) => {
                     let Some(rows) = rows else { break };
-                    let Some(rows) = self.admit(key, &device_id, Kind::Sessions, &rows) else { continue };
+                    let Some(rows) = self.admit(key, &device_id, Kind::Sessions, &rows, only_in) else { continue };
                     if !self.update(key, |s| s.sessions = rows) {
                         break;
                     }
@@ -643,15 +700,13 @@ impl PeerView {
         }
         let target = self.target(method, params);
         if let Some(key) = &target
-            && !forwarded(method, params)
+            && !(if key.starts_with(WORKER_PREFIX) { forwarded_to_worker(method, params) } else { forwarded(method, params) })
         {
             // Names a server, but isn't one a server takes from here: said
             // no to here, and nothing of it leaves this device.
             tracing::warn!(method, server = %key.get(..12).unwrap_or(key), "peer view: refused a call naming a paired server that no server takes");
-            return Some(Err(RpcError::Failed(format!(
-                "{REFUSED_PREFIX} {}: {method} isn't sent to a paired server: do it on that server",
-                self.name(key)
-            ))));
+            let what = if key.starts_with(WORKER_PREFIX) { "a worker: do it in its chat" } else { "a paired server: do it on that server" };
+            return Some(Err(RpcError::Failed(format!("{REFUSED_PREFIX} {}: {method} isn't sent to {what}", self.name(key)))));
         }
         let Some(key) = target else {
             if method == methods::MUTATE
@@ -676,6 +731,11 @@ impl PeerView {
         };
         let op = (method == methods::MUTATE).then(|| params["op"].as_str().unwrap_or_default().to_string());
         let chat = params["chatId"].as_str().unwrap_or_default().to_string();
+        let (device_id, worker_project) = {
+            let seen = self.seen.borrow();
+            let s = seen.get(key);
+            (s.map(|s| s.device_id.clone()).unwrap_or_default(), s.and_then(|s| s.worker_project.clone()))
+        };
         match op.as_deref() {
             Some("createChat") => {
                 // Made at its project's folder, there: none of this side's
@@ -685,6 +745,10 @@ impl PeerView {
                     map.remove("deviceId");
                     if map.get("branch").and_then(Value::as_str).is_none_or(str::is_empty) {
                         map.remove("branch");
+                    }
+                    // A worker's chat is in its one project, whatever named it.
+                    if let Some(project) = &worker_project {
+                        map.insert("spaceId".into(), json!(project));
                     }
                 }
                 self.made.lock().unwrap().insert(chat.clone(), (key.to_string(), params["config"].clone()));
@@ -699,6 +763,9 @@ impl PeerView {
         }
         if method == methods::QUEUE_COMMAND {
             only_what_a_server_runs(&mut params);
+            if worker_project.is_some() {
+                worker_turn(key, &mut params);
+            }
         }
         let said = |e: RpcError| match e {
             RpcError::Transport(_) | RpcError::Closed => RpcError::Failed(format!("{name} is unreachable: {e}")),
@@ -712,7 +779,16 @@ impl PeerView {
         if reply.is_err() && op.as_deref() == Some("createChat") {
             self.made.lock().unwrap().remove(&chat);
         }
-        reply.map_err(said)
+        let mut reply = reply.map_err(said)?;
+        // A worker's chat is on the device this side shows it as.
+        if worker_project.is_some()
+            && op.as_deref() == Some("createChat")
+            && let RpcReply::Value(Value::Object(map)) = &mut reply
+            && map.contains_key("deviceId")
+        {
+            map.insert("deviceId".into(), json!(device_id));
+        }
+        Ok(reply)
     }
 
     /// The config chat `chat` was made with from here, on server `key`.
@@ -724,6 +800,9 @@ impl PeerView {
     }
 
     fn name(&self, key: &str) -> String {
+        if let Some(worker) = key.strip_prefix(WORKER_PREFIX) {
+            return format!("Worker {worker}");
+        }
         self.link
             .upgrade()
             .and_then(|link| link.peers().into_iter().find(|p| p.key == key))
@@ -832,6 +911,32 @@ fn forwarded(method: &str, params: &Value) -> bool {
     }
 }
 
+/// Whether a call of this device's own that names one of its workers is
+/// sent to it: what its server's window needs to run a chat there (its
+/// harnesses and models, making a chat and setting its config, a run, its
+/// transcript), nothing else, files and engine info among it.
+fn forwarded_to_worker(method: &str, params: &Value) -> bool {
+    match method {
+        methods::LIST_HARNESSES | methods::LIST_MODELS | methods::QUEUE_COMMAND | methods::WATCH_DOC_MESSAGES => true,
+        methods::MUTATE => matches!(params["op"].as_str(), Some("createChat" | "setChatConfig")),
+        _ => false,
+    }
+}
+
+/// A run queued for worker `key`'s chat, as it leaves. The hook for a
+/// per-turn model token (plan step 4d-4): a real model turn in a worker
+/// needs one minted for that turn and put into the run here; until then a
+/// worker's agent runs on the API keys it was made with (or none: a
+/// scripted agent).
+fn worker_turn(key: &str, params: &mut Value) {
+    let _ = (key, params);
+}
+
+/// A plain device id: letters, digits and `-_.:`, 1 to 128 of them.
+fn plain_id(id: &str) -> bool {
+    (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+}
+
 /// A `QueueCommand` for a server's chat as it leaves: a run only with
 /// what the server runs it with (the words, the agent and model picked),
 /// none of this device's folder, files, worktree, MCP servers or a resume;
@@ -884,8 +989,9 @@ async fn follow_locals(view: Weak<PeerView>, inner: Arc<dyn RpcService>) {
 /// id none of `taken` has (each dropped one said in `dropped`), each
 /// stamped with `device`, a chat with none of the server's folders (its
 /// `cwd` only relative to its project, as the server says it) and a parent
-/// only among these, a project only its id and name.
-fn clean(what: Kind, rows: &[Value], device: &str, taken: &Taken, dropped: &mut Vec<String>) -> Vec<Value> {
+/// only among these, a project only its id and name; with `only_in`, a chat
+/// only in that project.
+fn clean(what: Kind, rows: &[Value], device: &str, taken: &Taken, only_in: Option<&str>, dropped: &mut Vec<String>) -> Vec<Value> {
     let mut ids = HashSet::new();
     let mut kept = Vec::new();
     for row in rows {
@@ -915,6 +1021,13 @@ fn clean(what: Kind, rows: &[Value], device: &str, taken: &Taken, dropped: &mut 
                     && taken.spaces.contains(space)
                 {
                     dropped.push(format!("Chats {id}: in project {space}, this device's or another server's"));
+                    ids.remove(id);
+                    continue;
+                }
+                if let Some(only) = only_in
+                    && obj.get("spaceId").and_then(Value::as_str) != Some(only)
+                {
+                    dropped.push(format!("Chats {id}: not in its project {only}"));
                     ids.remove(id);
                     continue;
                 }

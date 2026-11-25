@@ -77,3 +77,4 @@ mod launch_agents;
 mod warm_start;
 mod agents_die_with_engine;
 mod worker;
+mod worker_window;

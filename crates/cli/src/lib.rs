@@ -214,6 +214,22 @@ pub enum WorkerCommand {
     List,
     /// Start a stopped worker (its networks blocked again before it runs).
     Start { name: String },
+    /// Start a chat in a running worker's /work with `prompt`, and print its
+    /// reply (or, past --timeout, the chat's id and where to read it). The
+    /// chat shows in this server's window under the worker's device.
+    Run {
+        name: String,
+        prompt: String,
+        /// The agent (default pi; mock for a scripted run).
+        #[arg(long)]
+        harness: Option<String>,
+        /// Its model (default: the agent's).
+        #[arg(long)]
+        model: Option<String>,
+        /// How long to wait for the reply, in seconds.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
     /// Remove a worker: its container, key secrets and folders, and its
     /// volumes (/work's files with them) unless --keep-volumes.
     Rm {

@@ -10,18 +10,22 @@
 //!   sandbox's [`zend_harness::sandbox::BLOCKED_NETWORKS`] and the host's
 //!   own addresses and subnets); its server added an unreachable route for
 //!   each before this engine started;
+//! - `project` (optional): the id of its one project (`work-<its key's
+//!   first 12 hex>`, written by its server on every start, so two workers'
+//!   projects never share an id in the server's window); `work` without it;
 //! - `work`, `socket` (optional): the project folder (`/work`) and the
 //!   socket path (`/run/zend-worker/worker.sock`), for tests.
 //!
 //! On start it keeps the key in its data dir, writes `peers.json` with that
-//! one server granted `sessions.run.unconfined:work` (whatever was there),
-//! checks every blocked network is a reject route (else it won't start),
-//! makes the project `work` at `/work`, and listens on the socket only: no
+//! one server granted [`grants`] (`sessions.read`, and
+//! `sessions.run.unconfined:<project>`; whatever was there), checks every
+//! blocked network is a reject route (else it won't start), makes the
+//! project (named `work`) at `/work`, and listens on the socket only: no
 //! tailnet or phone listener, no edge, no release checks. What the server
-//! may call is the peer link's ([`zend_rpc::peer_server_allowed`] for that
-//! grant: engine info, harnesses, models, `Mutate` createChat, `QueueCommand`,
-//! `WatchDocMessages`) and the peer gate's (only in project `work`, only
-//! its own chats there).
+//! may call is the peer link's ([`zend_rpc::peer_server_allowed`] for those
+//! grants: engine info, harnesses, models, its chats and sessions, `Mutate`
+//! createChat, `QueueCommand`, `WatchDocMessages`) and the peer gate's
+//! (runs only in its project, chats and sessions only its own).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,11 +33,17 @@ use std::time::Duration;
 /// The environment variable naming the worker's configuration folder; set,
 /// this engine is a worker.
 pub const DIR_ENV: &str = "ZEND_WORKER_DIR";
-/// The worker's one project.
+/// The worker's one project: its name, and its id without a `project` file.
 pub const PROJECT: &str = "work";
-/// Its grant: run sessions in [`PROJECT`], unsandboxed (the container is the
+/// The file naming the project's id.
+pub const PROJECT_FILE: &str = "project";
+
+/// Its server's grants: read its chats and sessions (all of them are its
+/// server's), run sessions in `project`, unsandboxed (the container is the
 /// sandbox).
-pub const GRANT: &str = "sessions.run.unconfined:work";
+pub fn grants(project: &str) -> Vec<String> {
+    vec!["sessions.read".to_string(), format!("sessions.run.unconfined:{project}")]
+}
 /// Where the project folder is (a named volume).
 pub const DEFAULT_WORK: &str = "/work";
 /// Where the socket is (a folder of the server's, bound in).
@@ -51,6 +61,8 @@ pub struct Conf {
     pub dir: PathBuf,
     pub server_key: String,
     pub blocked: Vec<String>,
+    /// Its project's id.
+    pub project: String,
     pub work: PathBuf,
     pub socket: PathBuf,
 }
@@ -90,10 +102,15 @@ impl Conf {
         for net in &blocked {
             parse_net(net).ok_or_else(|| format!("worker: {BLOCKED_FILE}: not an IPv4 network: {net}"))?;
         }
+        let project = optional(PROJECT_FILE, PROJECT);
+        if !crate::peer_chats::valid_chat_id(&project) || project.len() > 64 {
+            return Err(format!("worker: {PROJECT_FILE}: not a project id: {project}"));
+        }
         Ok(Self {
             dir: dir.to_path_buf(),
             server_key,
             blocked,
+            project,
             work: PathBuf::from(optional("work", DEFAULT_WORK)),
             socket: PathBuf::from(optional("socket", DEFAULT_SOCKET)),
         })
@@ -109,7 +126,7 @@ impl Conf {
         let peers = serde_json::json!({ "peers": [{
             "key": self.server_key,
             "name": "server",
-            "grants": [GRANT],
+            "grants": grants(&self.project),
             "pairedAt": crate::now_ms(),
         }]});
         let bytes = serde_json::to_vec_pretty(&peers).map_err(|e| e.to_string())?;
@@ -202,6 +219,10 @@ mod tests {
         assert!(Conf::load(dir.path()).unwrap_err().contains("bogus"));
         std::fs::write(dir.path().join(BLOCKED_FILE), "10.0.0.0/8\n100.64.0.0/10\n").unwrap();
         let conf = Conf::load(dir.path()).unwrap();
-        assert_eq!((conf.work.as_path(), conf.blocked.len()), (Path::new(DEFAULT_WORK), 2));
+        assert_eq!((conf.work.as_path(), conf.blocked.len(), conf.project.as_str()), (Path::new(DEFAULT_WORK), 2, PROJECT));
+        std::fs::write(dir.path().join(PROJECT_FILE), "work-0123abcd\n").unwrap();
+        assert_eq!(Conf::load(dir.path()).unwrap().project, "work-0123abcd");
+        std::fs::write(dir.path().join(PROJECT_FILE), "../x").unwrap();
+        assert!(Conf::load(dir.path()).unwrap_err().contains("not a project id"));
     }
 }

@@ -159,8 +159,9 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
 
     // 1. Its server, and only its server.
     let client = workers.connect(&name).await.expect("its server dials in");
-    client.call(methods::ENGINE_INFO, json!({})).await.expect("engine info for its server");
-    for method in [methods::WATCH_CHATS, methods::LIST_PEERS, methods::PEER_PAIR, methods::CREATE_WORKER] {
+    let info = client.call(methods::ENGINE_INFO, json!({})).await.expect("engine info for its server");
+    let worker_device = info["deviceId"].as_str().expect("its device id").to_string();
+    for method in [methods::LIST_PEERS, methods::PEER_PAIR, methods::CREATE_WORKER, methods::SET_PEER_KEY, methods::PEER_LIST_PROJECT_FILES] {
         assert!(client.call(method, json!({})).await.is_err(), "{method} answered its server");
     }
     let stranger = NodeKey::generate().unwrap();
@@ -272,7 +273,7 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     let created = client
         .call(
             methods::MUTATE,
-            json!({ "op": "createChat", "chatId": "w-chat", "spaceId": "work", "config": { "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" } }),
+            json!({ "op": "createChat", "chatId": "w-chat", "spaceId": worker.project(), "config": { "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" } }),
         )
         .await
         .expect("chat in work");
@@ -299,6 +300,53 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+
+    // 4. The same from its server's window: the worker shows as a device
+    //    with its project, a chat made there by its device runs in /work,
+    //    and its reply reads back through the window.
+    let (ok, out) = exec(&worker.container, &["rm", "/work/.zend-mock-ran"]);
+    assert!(ok, "{out}");
+    std::fs::write(data.join("device-id"), "device-the-server").unwrap();
+    let server_core = zend_engine::EngineCore::assemble(
+        &data,
+        std::sync::Arc::new(zend_engine::HarnessRegistry::new()),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("the server's engine");
+    let link = zend_engine::peer_link::PeerLink::new(&data, 0, server_core.rpc_service(), zend_engine::peer_link::Seams::real());
+    let window = zend_rpc::memory_client(std::sync::Arc::new(zend_engine::peer_link::PeerLinkRpc {
+        inner: server_core.rpc_service(),
+        link: link.clone(),
+    }));
+    let mut spaces = window.subscribe_checked(methods::WATCH_SPACES, json!({})).await.expect("spaces");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let rows = tokio::time::timeout_at(deadline, spaces.recv()).await.expect("its project in the window in 30 s").expect("watch");
+        if let Some(p) = rows.as_array().into_iter().flatten().find(|p| p["id"].as_str() == Some(worker.project())) {
+            assert_eq!((p["deviceId"].as_str(), p["path"].as_str()), (Some(worker_device.as_str()), Some("")), "{p}");
+            break;
+        }
+    }
+    window
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": "win-chat", "deviceId": worker_device, "cwd": data.display().to_string(), "config": { "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" } }),
+        )
+        .await
+        .expect("made from the window");
+    window.call(methods::QUEUE_COMMAND, run("win-chat", "/pwd")).await.expect("queued from the window");
+    let mut said = window.subscribe_checked(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "win-chat" })).await.expect("its transcript");
+    let mut all = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !all.contains("wrote .zend-mock-ran") {
+        let frame = tokio::time::timeout_at(deadline, said.recv()).await.unwrap_or_else(|_| panic!("no reply in 30 s: {all}")).expect("transcript");
+        all.push_str(&frame.to_string());
+    }
+    assert!(all.contains("cwd /work"), "{all}");
+    let (ok, out) = exec(&worker.container, &["cat", "/work/.zend-mock-ran"]);
+    assert!(ok && out.contains("the mock ran here"), "{out}");
+    drop((said, spaces, window, link, server_core));
 
     // A start blocks the host's networks as they are then: a blocked list
     // gone stale (here: only 10/8 left) is written afresh, and the host's

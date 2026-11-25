@@ -1480,7 +1480,7 @@ impl Engine {
         if let Some(Ok(conf)) = worker::conf() {
             let core = runtime.core();
             core.workspace.create_space(
-                worker::PROJECT,
+                &conf.project,
                 &core.device_id,
                 &conf.work.to_string_lossy(),
                 Some(worker::PROJECT.to_string()),

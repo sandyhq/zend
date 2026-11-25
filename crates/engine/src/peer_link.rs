@@ -290,6 +290,11 @@ impl PeerLink {
         })
     }
 
+    /// Its engine's data folder.
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     /// The service it serves paired servers: this engine's own.
     pub(crate) fn service(&self) -> Arc<dyn RpcService> {
         self.service.clone()
@@ -725,6 +730,16 @@ impl RpcService for PeerLinkRpc {
                 joined
             }
             methods::LIST_PEERS => self.link.status().await.map(RpcReply::Value),
+            // A worker made, started or gone: its window shows it (or not)
+            // now. (Routed first: one naming a paired server is refused.)
+            methods::CREATE_WORKER | methods::START_WORKER | methods::REMOVE_WORKER if zend_rpc::caller().is_local() => {
+                if let Some(refused) = self.link.view().route(&self.inner, method, &params).await {
+                    return refused;
+                }
+                let reply = self.inner.handle(method, params).await;
+                self.link.view().refresh();
+                reply
+            }
             methods::SET_PEER_GRANTS => {
                 let p: GrantsParams = zend_rpc::parse_params(given())?;
                 self.check_shares(&p.grants).await?;

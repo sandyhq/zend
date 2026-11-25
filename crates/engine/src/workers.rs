@@ -4,7 +4,7 @@
 //! and opens no connection to Zend or to this server: the server dials it.
 //!
 //! ```text
-//! {data}/workers.json                 [{name, key, image, container, providers, createdAt}]
+//! {data}/workers.json                 [{name, key, project, image, container, providers, createdAt, limits}]
 //! {data}/workers/<name>/             0700, the server's user's
 //! {data}/workers/<name>/conf/         ro at /etc/zend-worker: node-key, server-key, blocked
 //! {data}/workers/<name>/run/          0711, the worker's: at /run/zend-worker: worker.sock
@@ -27,7 +27,8 @@
 //!   public key (`server-key`) and pins the worker's (`key` in
 //!   workers.json). Both prove their keys on every dial, as on the peer
 //!   link ([`zend_rpc::peer_link::connect_peer_unix`]); the worker's book
-//!   holds only this server, granted `sessions.run.unconfined:work`.
+//!   holds only this server, granted `sessions.read` and
+//!   `sessions.run.unconfined:<its project>` ([`project_of`]).
 //! - Where. A unix socket in a folder of this server's data dir, bound into
 //!   the container: no port, on loopback or the tailnet, that another
 //!   local user or a tailnet node could reach.
@@ -45,6 +46,10 @@
 //!   engine checks the routes are there before it serves. A running worker
 //!   keeps the routes it started with: an address the host gains later is
 //!   blocked from its next start on (stop and start it).
+//! - Its sessions. Its project's id is its own (`work-<its key's first 12
+//!   hex>`, `conf/project`; `work` for a worker made before), so its
+//!   server's window ([`crate::peer_view`]) shows each running worker as a
+//!   device with one project, `work`, and sends a chat made there to it.
 //! - Keys. API keys for its agents are Podman secrets (`zend-worker-<name>-<provider>`),
 //!   given as the provider's variable (`ANTHROPIC_API_KEY`, …); no login
 //!   file of the owner's goes in.
@@ -137,6 +142,22 @@ pub struct Worker {
     pub created_at: i64,
     #[serde(default)]
     pub limits: Limits,
+    /// Its project's id on the worker (empty: made before ids were its
+    /// own, [`crate::worker::PROJECT`]); see [`Worker::project`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
+}
+
+impl Worker {
+    /// Its one project's id on the worker.
+    pub fn project(&self) -> &str {
+        if self.project.is_empty() { crate::worker::PROJECT } else { &self.project }
+    }
+}
+
+/// The project id a worker with public key `key` gets.
+pub fn project_of(key: &str) -> String {
+    format!("{}-{}", crate::worker::PROJECT, key.get(..12).unwrap_or(key))
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -324,6 +345,8 @@ impl Workers {
         self.write_conf(name, crate::worker::KEY_FILE, &der)?;
         self.write_conf(name, crate::worker::SERVER_KEY_FILE, server.public().as_bytes())?;
         self.write_conf(name, crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())?;
+        let project = project_of(key.public());
+        self.write_conf(name, crate::worker::PROJECT_FILE, project.as_bytes())?;
 
         let mut secrets = Vec::new();
         for (provider, variable, value) in variables {
@@ -373,6 +396,7 @@ impl Workers {
             providers: variables.iter().map(|(p, _, _)| p.clone()).collect(),
             created_at: crate::now_ms(),
             limits: limits.clone(),
+            project,
         };
         let mut all = self.list();
         all.push(worker.clone());
@@ -436,6 +460,8 @@ impl Workers {
         let worker = self.get(name)?;
         if self.state(name).await != "running" {
             self.write_conf(name, crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())
+                .map_err(|e| format!("worker {name}: {e}"))?;
+            self.write_conf(name, crate::worker::PROJECT_FILE, worker.project().as_bytes())
                 .map_err(|e| format!("worker {name}: {e}"))?;
             self.podman(&["init", &worker.container], None).await?;
             let pid = self.podman(&["inspect", "--format", "{{.State.Pid}}", &worker.container], None).await?;
@@ -568,6 +594,7 @@ impl zend_rpc::RpcService for WorkersRpc {
                     let state = self.workers.state(&worker.name).await;
                     let mut value = serde_json::to_value(&worker).map_err(|e| RpcError::Failed(e.to_string()))?;
                     value["state"] = state.into();
+                    value["project"] = worker.project().into();
                     listed.push(value);
                 }
                 Ok(RpcReply::Value(json!({ "workers": listed })))
