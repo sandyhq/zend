@@ -219,6 +219,13 @@ pub enum WorkerCommand {
     List,
     /// Start a stopped worker (its networks blocked again before it runs).
     Start { name: String },
+    /// Stop a running worker (the logins lent to it taken away first).
+    Stop { name: String },
+    /// Let a worker's Pi turns use this server's own pi login
+    /// (subscription) for a provider: each turn gets only its access token,
+    /// never the refresh token, which stays here.
+    #[command(subcommand)]
+    Login(WorkerLoginCommand),
     /// Start a chat in a running worker's /work with `prompt`, and print its
     /// reply (or, past --timeout, the chat's id and where to read it). The
     /// chat shows in this server's window under the worker's device.
@@ -242,6 +249,26 @@ pub enum WorkerCommand {
         #[arg(long)]
         keep_volumes: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum WorkerLoginCommand {
+    /// Allow a worker's Pi turns on a provider's models (anthropic,
+    /// openai-codex) this server's pi login for it. Before each turn the
+    /// worker gets that provider's access token alone, read-only; this
+    /// server refreshes the login itself. The agent can read the token
+    /// while it runs. An API key the worker was made with wins.
+    Allow {
+        /// The worker's name.
+        name: String,
+        /// anthropic or openai-codex, as in Pi's model ids.
+        provider: String,
+    },
+    /// Take the login back: its file leaves the worker at once, its next
+    /// turn on that provider is refused.
+    Rm { name: String, provider: String },
+    /// The providers each worker may use this server's login for.
+    List,
 }
 
 #[derive(Subcommand)]

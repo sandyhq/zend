@@ -774,7 +774,7 @@ impl RpcService for PeerLinkRpc {
             methods::LIST_PEERS => self.link.status().await.map(RpcReply::Value),
             // A worker made, started or gone: its window shows it (or not)
             // now. (Routed first: one naming a paired server is refused.)
-            methods::CREATE_WORKER | methods::START_WORKER | methods::REMOVE_WORKER if zend_rpc::caller().is_local() => {
+            methods::CREATE_WORKER | methods::START_WORKER | methods::STOP_WORKER | methods::REMOVE_WORKER if zend_rpc::caller().is_local() => {
                 if let Some(refused) = self.link.view().route(&self.inner, method, &params).await {
                     return refused;
                 }

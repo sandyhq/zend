@@ -114,6 +114,7 @@ pub mod workspace_host;
 pub mod workspace_search;
 pub mod worker;
 pub mod workers;
+pub mod worker_logins;
 mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
@@ -1679,8 +1680,19 @@ pub async fn serve_ipc(
     // A worker: its server's socket only, no tailnet or phone listener.
     #[cfg(unix)]
     if let Some(Ok(conf)) = worker::conf() {
-        let _worker = peer_link::serve_worker(service.clone(), data_dir, &conf.socket)?;
+        let answers: std::sync::Arc<dyn zend_rpc::RpcService> = std::sync::Arc::new(worker::WorkerRpc {
+            inner: service.clone(),
+            conf_dir: conf.dir.clone(),
+            agent_dir: worker::agent_dir(),
+        });
+        let _worker = peer_link::serve_worker(answers, data_dir, &conf.socket)?;
+        let _logins = worker::follow_logins(conf.dir.clone(), worker::agent_dir());
         return Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(listener, service, tokens)));
+    }
+    // No turn of a worker's is live yet: the logins lent to them go now.
+    let swept = worker_logins::sweep(data_dir);
+    if swept > 0 {
+        tracing::info!(files = swept, "workers: logins lent before this start removed");
     }
     let service: std::sync::Arc<dyn zend_rpc::RpcService> =
         std::sync::Arc::new(workers::WorkersRpc { inner: service, workers: workers::Workers::new(data_dir) });

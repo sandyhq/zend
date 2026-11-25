@@ -803,7 +803,7 @@ impl PeerView {
         if method == methods::QUEUE_COMMAND {
             only_what_a_server_runs(&mut params);
             if worker_project.is_some() {
-                worker_turn(key, &mut params);
+                self.worker_turn(key, &chat, &params)?;
             }
         }
         let said = |e: RpcError| match e {
@@ -831,6 +831,38 @@ impl PeerView {
     }
 
     /// The config chat `chat` was made with from here, on server `key`.
+    /// A run queued for worker `key`'s chat, as it leaves (plan step 4d-4):
+    /// on the API key it was made with for its model's provider, which wins,
+    /// else on this device's login when the owner allowed it that worker
+    /// and provider, its access token written to the worker's read-only
+    /// `conf` for this turn ([`crate::worker_logins`]); else refused, the
+    /// chat told "no credential for <provider> on this device" and the
+    /// reason logged here. The run itself is not changed: no token, key or
+    /// path of this device's goes into it.
+    fn worker_turn(&self, key: &str, chat: &str, params: &Value) -> Result<(), RpcError> {
+        let (Some(name), Some(link)) = (key.strip_prefix(WORKER_PREFIX), self.link.upgrade()) else {
+            return Ok(());
+        };
+        let config = self.made_with(key, chat).unwrap_or(Value::Null);
+        let Some((harness, model)) = crate::worker_logins::run_of(params, &config) else {
+            return Ok(());
+        };
+        let data_dir = link.data_dir();
+        let worker = crate::workers::Workers::new(data_dir).get(name).map_err(RpcError::Failed)?;
+        let host = crate::peer_logins::HostLogin::current();
+        match crate::worker_logins::prepare_turn(data_dir, &worker, harness, model.as_deref(), &host) {
+            Ok(crate::worker_logins::Credential::Login(provider)) => {
+                tracing::info!(worker = %name, chat = %chat, %provider, "worker: a turn runs on this device's login (its access token only)");
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(refused) => {
+                tracing::warn!(worker = %name, chat = %chat, provider = refused.provider.as_deref().unwrap_or("?"), why = %refused.why, "worker: a turn has no credential to run on");
+                Err(RpcError::Failed(format!("{REFUSED_PREFIX} {name}: {}", refused.told())))
+            }
+        }
+    }
+
     fn made_with(&self, key: &str, chat: &str) -> Option<Value> {
         if let Some((k, config)) = self.made.lock().unwrap().get(chat) {
             return (k == key).then(|| config.clone());
@@ -962,17 +994,6 @@ fn forwarded_to_worker(method: &str, params: &Value) -> bool {
     }
 }
 
-/// A run queued for worker `key`'s chat, as it leaves. The hook for a
-/// per-turn model token (plan step 4d-4): a real model turn in a worker
-/// needs one minted for that turn and put into the run here; until then a
-/// worker's agent runs on the API keys it was made with (or none: a
-/// scripted agent). What it may add is that token alone: short-lived,
-/// scoped to this turn and its model's provider; never a key of this
-/// device's, a path or anything else of its (the run reached here already
-/// cut to its words and agent, [`only_what_a_server_runs`]).
-fn worker_turn(key: &str, params: &mut Value) {
-    let _ = (key, params);
-}
 
 /// A plain device id: letters, digits and `-_.:`, 1 to 128 of them.
 fn plain_id(id: &str) -> bool {

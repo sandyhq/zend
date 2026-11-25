@@ -89,6 +89,10 @@ fn each_grant_opens_only_its_methods() {
         methods::LIST_WORKERS,
         methods::START_WORKER,
         methods::REMOVE_WORKER,
+        methods::STOP_WORKER,
+        methods::ALLOW_WORKER_LOGIN,
+        methods::REMOVE_WORKER_LOGIN,
+        methods::LIST_WORKER_LOGINS,
     ] {
         assert!(crate::local_only(m) && !crate::agent_allowed(m) && !crate::remote_allowed(m, &serde_json::Value::Null), "{m}");
     }

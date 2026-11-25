@@ -82,6 +82,12 @@ impl PeerLogins {
         Self { path: data_dir.join(FILE) }
     }
 
+    /// A book of the same shape at `path` (a worker's logins,
+    /// [`crate::worker_logins::FILE`], keyed by worker name).
+    pub fn at(path: PathBuf) -> Self {
+        Self { path }
+    }
+
     fn load(&self) -> Book {
         std::fs::read(&self.path)
             .ok()

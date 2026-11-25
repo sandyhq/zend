@@ -854,6 +854,18 @@ pub mod methods {
     /// `{name, keepVolumes?}` → `{name, removed}`: its container, secrets
     /// and folders, and its volumes unless kept.
     pub const REMOVE_WORKER: &str = "RemoveWorker";
+    /// `{name}` → `{name, state}`: stop a running worker (the logins lent
+    /// to it taken away first).
+    pub const STOP_WORKER: &str = "StopWorker";
+    /// `{name, provider}` → `{name, provider, keyWins, hostSignedIn}`: a
+    /// worker's Pi turns on that provider's models may run on this device's
+    /// pi login for it (its access token only, put in the worker's
+    /// read-only `conf` before each turn).
+    pub const ALLOW_WORKER_LOGIN: &str = "AllowWorkerLogin";
+    /// `{name, provider}` → `{name, provider, removed}`: its file goes at once.
+    pub const REMOVE_WORKER_LOGIN: &str = "RemoveWorkerLogin";
+    /// `{}` → `{logins: [{name, providers: [..]}]}`.
+    pub const LIST_WORKER_LOGINS: &str = "ListWorkerLogins";
 }
 
 /// Methods answered only over this device's own local IPC, never to a peer
@@ -937,6 +949,10 @@ pub fn local_only(method: &str) -> bool {
             | methods::LIST_WORKERS
             | methods::START_WORKER
             | methods::REMOVE_WORKER
+            | methods::STOP_WORKER
+            | methods::ALLOW_WORKER_LOGIN
+            | methods::REMOVE_WORKER_LOGIN
+            | methods::LIST_WORKER_LOGINS
     )
 }
 

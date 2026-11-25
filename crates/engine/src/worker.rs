@@ -14,7 +14,15 @@
 //!   first 12 hex>`, written by its server on every start, so two workers'
 //!   projects never share an id in the server's window); `work` without it;
 //! - `work`, `socket` (optional): the project folder (`/work`) and the
-//!   socket path (`/run/zend-worker/worker.sock`), for tests.
+//!   socket path (`/run/zend-worker/worker.sock`), for tests;
+//! - `login/<provider>.json` (when its server's owner allowed it,
+//!   [`crate::worker_logins`]): that provider's entry of the server's pi
+//!   login, access token only (`refresh` empty), written by the server
+//!   before each turn on it and taken away when the allow ends.
+//!
+//! Before each run its server queues, the engine copies the lent logins
+//! into its pi's `auth.json` ([`sync_logins`]): read-only (0444), one
+//! entry per lent provider and nothing else, gone when none is lent.
 //!
 //! On start it keeps the key in its data dir, writes `peers.json` with that
 //! one server granted [`grants`] (`sessions.read`, and
@@ -52,6 +60,8 @@ pub const DEFAULT_SOCKET: &str = "/run/zend-worker/worker.sock";
 pub const KEY_FILE: &str = "node-key";
 pub const SERVER_KEY_FILE: &str = "server-key";
 pub const BLOCKED_FILE: &str = "blocked";
+/// The folder in the configuration folder holding the lent logins.
+pub const LOGIN_DIR: &str = "login";
 /// How long the engine waits for its blocked routes before it gives up.
 const ROUTES_WAIT: Duration = Duration::from_secs(60);
 
@@ -186,6 +196,148 @@ pub fn missing_routes(blocked: &[String], table: &str) -> Vec<String> {
         .collect()
 }
 
+/// Copy the logins its server lent (`conf/login/<provider>.json`) into
+/// pi's `auth.json` in `agent_dir`: one entry per lent provider, only its
+/// type, access token, expiry and account id, `refresh` empty; written
+/// beside and renamed in, read-only (0444: pi reads it and has nothing to
+/// refresh). None lent: an `auth.json` of Zend's (every entry with an empty
+/// refresh token) goes. The providers copied.
+pub fn sync_logins(conf_dir: &Path, agent_dir: &Path) -> Result<Vec<String>, String> {
+    use serde_json::{Map, Value};
+    let mut merged = Map::new();
+    if let Ok(entries) = std::fs::read_dir(conf_dir.join(LOGIN_DIR)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(provider) = name.to_str().and_then(|n| n.strip_suffix(".json")) else { continue };
+            if !crate::peer_logins::lendable(provider) {
+                continue;
+            }
+            let Some(lent) = std::fs::read(entry.path())
+                .ok()
+                .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                .and_then(|file| file.get(provider).and_then(Value::as_object).cloned())
+            else {
+                continue;
+            };
+            if lent.get("type").and_then(Value::as_str) != Some("oauth") || !lent.get("access").is_some_and(Value::is_string) {
+                continue;
+            }
+            let mut kept: Map<String, Value> =
+                lent.into_iter().filter(|(k, _)| matches!(k.as_str(), "type" | "access" | "expires" | "accountId")).collect();
+            kept.insert("refresh".into(), Value::String(String::new()));
+            merged.insert(provider.to_string(), Value::Object(kept));
+        }
+    }
+    let path = agent_dir.join(crate::peer_logins::AUTH_FILE);
+    if merged.is_empty() {
+        let ours = std::fs::read(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .and_then(|file| file.as_object().cloned())
+            .is_some_and(|file| file.values().all(|e| e.get("refresh").and_then(Value::as_str) == Some("")));
+        if ours {
+            std::fs::remove_file(&path).map_err(|e| format!("worker: its pi's auth.json: {e}"))?;
+        }
+        return Ok(Vec::new());
+    }
+    let providers: Vec<String> = merged.keys().cloned().collect();
+    let bytes = serde_json::to_vec_pretty(&Value::Object(merged)).map_err(|e| e.to_string())?;
+    write_read_only(agent_dir, &path, &bytes).map_err(|e| format!("worker: its pi's auth.json: {e}"))?;
+    Ok(providers)
+}
+
+#[cfg(unix)]
+fn write_read_only(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    let temp = dir.join(format!(".auth.json.{}", uuid::Uuid::new_v4().simple()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o444))?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+#[cfg(not(unix))]
+fn write_read_only(_: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+/// How often the worker looks whether its server lent or took back a login.
+pub const LOGIN_POLL: Duration = Duration::from_secs(2);
+
+/// What the login folder holds now: each file's name, size and change time.
+fn logins_seen(conf_dir: &Path) -> Vec<(std::ffi::OsString, u64, Option<std::time::SystemTime>)> {
+    let mut seen: Vec<_> = std::fs::read_dir(conf_dir.join(LOGIN_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok().map(|m| (e.file_name(), m.len(), m.modified().ok())))
+        .collect();
+    seen.sort();
+    seen
+}
+
+/// Keep pi's `auth.json` in step with what the server lent: copied now (a
+/// copy left from before a stop goes when nothing is lent), and again
+/// within [`LOGIN_POLL`] of each change, so a login taken back leaves pi's
+/// folder too, not only at the next run.
+pub fn follow_logins(conf_dir: PathBuf, agent_dir: PathBuf) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last = None;
+        loop {
+            let now = logins_seen(&conf_dir);
+            if last.as_ref() != Some(&now) {
+                match sync_logins(&conf_dir, &agent_dir) {
+                    Ok(providers) => tracing::info!(providers = %providers.join(","), "worker: lent logins in step with its server's"),
+                    Err(why) => tracing::warn!(%why, "worker: the lent logins could not be copied for pi"),
+                }
+                last = Some(now);
+            }
+            tokio::time::sleep(LOGIN_POLL).await;
+        }
+    })
+}
+
+/// pi's folder in this worker (its `PI_CODING_AGENT_DIR`, as its pi reads it).
+pub fn agent_dir() -> PathBuf {
+    std::env::var_os("PI_CODING_AGENT_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zend_harness::sandbox::Host::current().home.join(".pi/agent"))
+}
+
+/// What a worker answers its server with: the engine's methods, the lent
+/// logins copied for pi ([`sync_logins`]) before each run is queued.
+pub struct WorkerRpc {
+    pub inner: std::sync::Arc<dyn zend_rpc::RpcService>,
+    pub conf_dir: PathBuf,
+    pub agent_dir: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl zend_rpc::RpcService for WorkerRpc {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<zend_rpc::RpcReply, zend_rpc::RpcError> {
+        if method == zend_rpc::methods::QUEUE_COMMAND && params["command"]["kind"].as_str() == Some("run") {
+            match sync_logins(&self.conf_dir, &self.agent_dir) {
+                Ok(providers) if !providers.is_empty() => {
+                    tracing::info!(providers = %providers.join(","), "worker: its server's lent logins copied for pi (access tokens only)");
+                }
+                Ok(_) => {}
+                Err(why) => tracing::warn!(%why, "worker: the lent logins could not be copied for pi"),
+            }
+        }
+        self.inner.handle(method, params).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +376,67 @@ mod tests {
         assert_eq!(Conf::load(dir.path()).unwrap().project, "work-0123abcd");
         std::fs::write(dir.path().join(PROJECT_FILE), "../x").unwrap();
         assert!(Conf::load(dir.path()).unwrap_err().contains("not a project id"));
+    }
+
+    /// (2, worker side) What its server lent reaches pi's auth.json: each
+    /// lent provider's access token alone, refresh empty, read-only; a stray
+    /// refresh token, other fields or files not of a lendable provider are
+    /// dropped; none lent, Zend's copy goes (a file of the worker's own
+    /// stays).
+    #[cfg(unix)]
+    #[test]
+    fn the_lent_logins_reach_pis_auth_json_read_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (conf, agent) = (dir.path().join("conf"), dir.path().join("pi"));
+        std::fs::create_dir_all(conf.join(LOGIN_DIR)).unwrap();
+        let lent = serde_json::json!({ "anthropic": { "type": "oauth", "access": "A", "refresh": "LEAKED", "expires": 1, "other": "x" } });
+        std::fs::write(conf.join(LOGIN_DIR).join("anthropic.json"), lent.to_string()).unwrap();
+        std::fs::write(conf.join(LOGIN_DIR).join("openai.json"), r#"{"openai":{"type":"oauth","access":"B"}}"#).unwrap();
+        std::fs::write(conf.join(LOGIN_DIR).join("openai-codex.json"), r#"{"anthropic":{"type":"oauth","access":"C"}}"#).unwrap();
+        assert_eq!(sync_logins(&conf, &agent).unwrap(), ["anthropic"]);
+        let path = agent.join("auth.json");
+        let auth: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(auth, serde_json::json!({ "anthropic": { "type": "oauth", "access": "A", "refresh": "", "expires": 1 } }));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444);
+        // Again, replaced (it is read-only, its folder isn't).
+        assert_eq!(sync_logins(&conf, &agent).unwrap(), ["anthropic"]);
+        assert_eq!(std::fs::read_dir(&agent).unwrap().count(), 1, "a temporary file left behind");
+        std::fs::remove_file(conf.join(LOGIN_DIR).join("anthropic.json")).unwrap();
+        assert!(sync_logins(&conf, &agent).unwrap().is_empty());
+        assert!(!path.exists());
+        std::fs::write(&path, r#"{"anthropic":{"type":"oauth","access":"OWN","refresh":"OWN-R"}}"#).unwrap();
+        assert!(sync_logins(&conf, &agent).unwrap().is_empty());
+        assert!(path.exists(), "the worker's own login removed");
+    }
+
+    /// (4, worker side) A login taken back leaves pi's folder within a poll,
+    /// with no run needed; one lent shows up the same way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_login_taken_back_leaves_pis_folder_without_a_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conf, agent) = (dir.path().join("conf"), dir.path().join("pi"));
+        std::fs::create_dir_all(conf.join(LOGIN_DIR)).unwrap();
+        let lent = conf.join(LOGIN_DIR).join("openai-codex.json");
+        std::fs::write(&lent, r#"{"openai-codex":{"type":"oauth","access":"A","refresh":"","expires":1,"accountId":"x"}}"#).unwrap();
+        let follow = follow_logins(conf.clone(), agent.clone());
+        let auth = agent.join("auth.json");
+        let until = |want: bool| {
+            let auth = auth.clone();
+            async move {
+                for _ in 0..50 {
+                    if auth.exists() == want {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                false
+            }
+        };
+        assert!(until(true).await, "the lent login didn't reach pi");
+        std::fs::remove_file(&lent).unwrap();
+        assert!(until(false).await, "the login taken back stayed in pi's folder");
+        follow.abort();
     }
 }

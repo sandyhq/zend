@@ -380,14 +380,7 @@ impl Workers {
                 made.volumes.push(volume);
             }
         }
-        // U: Podman chowns these to the container's uid 1000, whichever
-        // subordinate ids its namespace got (--userns=auto).
-        let mounts = [
-            format!("type=volume,src={},dst=/work,U=true", volume_of(name, "work")),
-            format!("type=volume,src={},dst=/data,U=true", volume_of(name, "data")),
-            format!("type=bind,src={},dst=/etc/zend-worker,ro", conf.display()),
-            format!("type=bind,src={},dst=/run/zend-worker,U=true", run.display()),
-        ];
+        let mounts = mounts(name, &conf, &run);
         let container = container_of(name);
         let label = format!("zend.worker={name}");
         let pids = limits.pids.to_string();
@@ -530,10 +523,22 @@ impl Workers {
         zend_rpc::peer_link::connect_peer_unix(&self.socket(&worker.name), key, &worker.key).await
     }
 
+    /// Stop a running worker; the logins lent to it go first
+    /// ([`crate::worker_logins`]), its allows stay for its next start.
+    pub async fn stop(&self, name: &str) -> Result<(), String> {
+        let worker = self.get(name)?;
+        crate::worker_logins::take_back(&self.data_dir, name, None);
+        self.podman(&["stop", "--time", "5", "--ignore", &worker.container], None).await?;
+        Ok(())
+    }
+
     /// Remove a worker: its container, its secrets, its folders and (unless
-    /// `keep_volumes`) its volumes, /work among them.
+    /// `keep_volumes`) its volumes, /work among them. The logins lent to it
+    /// go first, and its allows with it.
     pub async fn remove(&self, name: &str, keep_volumes: bool) -> Result<Worker, String> {
         let worker = self.get(name)?;
+        crate::worker_logins::take_back(&self.data_dir, name, None);
+        crate::worker_logins::book(&self.data_dir).forget(name)?;
         self.podman(&["rm", "--force", "--time", "5", "--ignore", &worker.container], None).await?;
         for provider in &worker.providers {
             let _ = self.podman(&["secret", "rm", &secret_of(name, provider)], None).await;
@@ -547,6 +552,19 @@ impl Workers {
         self.save(self.list().into_iter().filter(|w| w.name != name).collect())?;
         Ok(worker)
     }
+}
+
+/// A worker's mounts: its volumes (U: Podman chowns them to the container's
+/// uid 1000, whichever subordinate ids its namespace got, --userns=auto),
+/// its `conf` read-only (its lent logins in it, [`crate::worker_logins`]),
+/// its `run` (the socket).
+pub fn mounts(name: &str, conf: &Path, run: &Path) -> [String; 4] {
+    [
+        format!("type=volume,src={},dst=/work,U=true", volume_of(name, "work")),
+        format!("type=volume,src={},dst=/data,U=true", volume_of(name, "data")),
+        format!("type=bind,src={},dst=/etc/zend-worker,ro", conf.display()),
+        format!("type=bind,src={},dst=/run/zend-worker,U=true", run.display()),
+    ]
 }
 
 /// `inner` with the workers' methods answered (this device's own only).
@@ -579,6 +597,12 @@ struct NameParams {
     keep_volumes: bool,
 }
 
+#[derive(Deserialize)]
+struct LoginParams {
+    name: String,
+    provider: String,
+}
+
 #[async_trait::async_trait]
 impl zend_rpc::RpcService for WorkersRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<zend_rpc::RpcReply, RpcError> {
@@ -586,7 +610,14 @@ impl zend_rpc::RpcService for WorkersRpc {
         use zend_rpc::{RpcReply, methods};
         let given = || if params.is_null() { json!({}) } else { params.clone() };
         match method {
-            methods::CREATE_WORKER | methods::LIST_WORKERS | methods::START_WORKER | methods::REMOVE_WORKER
+            methods::CREATE_WORKER
+            | methods::LIST_WORKERS
+            | methods::START_WORKER
+            | methods::STOP_WORKER
+            | methods::REMOVE_WORKER
+            | methods::ALLOW_WORKER_LOGIN
+            | methods::REMOVE_WORKER_LOGIN
+            | methods::LIST_WORKER_LOGINS
                 if !zend_rpc::caller().is_local() =>
             {
                 Err(RpcError::Failed(format!("{method} is this device's own")))
@@ -624,6 +655,37 @@ impl zend_rpc::RpcService for WorkersRpc {
                 let p: NameParams = zend_rpc::parse_params(given())?;
                 self.workers.start(&p.name).await.map_err(RpcError::Failed)?;
                 Ok(RpcReply::Value(json!({ "name": p.name, "state": self.workers.state(&p.name).await })))
+            }
+            methods::STOP_WORKER => {
+                let p: NameParams = zend_rpc::parse_params(given())?;
+                self.workers.stop(&p.name).await.map_err(RpcError::Failed)?;
+                Ok(RpcReply::Value(json!({ "name": p.name, "state": self.workers.state(&p.name).await })))
+            }
+            methods::ALLOW_WORKER_LOGIN => {
+                let p: LoginParams = zend_rpc::parse_params(given())?;
+                let worker = self.workers.get(&p.name).map_err(RpcError::BadParams)?;
+                let book = crate::worker_logins::book(&self.workers.data_dir);
+                book.allow(&worker.name, &p.provider).map_err(RpcError::BadParams)?;
+                // A change of the allow: the next turn writes its file anew.
+                crate::worker_logins::take_back(&self.workers.data_dir, &worker.name, Some(&p.provider));
+                let key = worker.providers.contains(&p.provider);
+                let host = crate::peer_logins::HostLogin::current().has(&p.provider);
+                Ok(RpcReply::Value(json!({ "name": worker.name, "provider": p.provider, "keyWins": key, "hostSignedIn": host })))
+            }
+            methods::REMOVE_WORKER_LOGIN => {
+                let p: LoginParams = zend_rpc::parse_params(given())?;
+                let book = crate::worker_logins::book(&self.workers.data_dir);
+                let removed = book.remove(&p.name, &p.provider).map_err(RpcError::Failed)?;
+                crate::worker_logins::take_back(&self.workers.data_dir, &p.name, Some(&p.provider));
+                Ok(RpcReply::Value(json!({ "name": p.name, "provider": p.provider, "removed": removed })))
+            }
+            methods::LIST_WORKER_LOGINS => {
+                let logins: Vec<serde_json::Value> = crate::worker_logins::book(&self.workers.data_dir)
+                    .list()
+                    .into_iter()
+                    .map(|(name, providers)| json!({ "name": name, "providers": providers }))
+                    .collect();
+                Ok(RpcReply::Value(json!({ "logins": logins })))
             }
             methods::REMOVE_WORKER => {
                 let p: NameParams = zend_rpc::parse_params(given())?;

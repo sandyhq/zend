@@ -3,7 +3,7 @@
 //! [`zend_engine::workers`]).
 
 use serde_json::{Value, json};
-use zend_cli::{WorkerCommand, terminal_safe};
+use zend_cli::{WorkerCommand, WorkerLoginCommand, terminal_safe};
 use zend_rpc::methods;
 
 pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Path) -> anyhow::Result<()> {
@@ -80,6 +80,41 @@ pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Pa
         WorkerCommand::Start { name } => {
             let reply = call(methods::START_WORKER, json!({ "name": name })).await?;
             println!("Worker {name}: {}.", reply["state"].as_str().unwrap_or("?"));
+        }
+        WorkerCommand::Stop { name } => {
+            let reply = call(methods::STOP_WORKER, json!({ "name": name })).await?;
+            println!("Worker {name}: {}.", terminal_safe(reply["state"].as_str().unwrap_or("?"), false));
+        }
+        WorkerCommand::Login(WorkerLoginCommand::Allow { name, provider }) => {
+            let reply = call(methods::ALLOW_WORKER_LOGIN, json!({ "name": name, "provider": provider })).await?;
+            println!(
+                "Allowed. Worker {name}'s Pi turns on {provider} models run on this server's {provider} login: each turn gets its access token only, never the refresh token."
+            );
+            if reply["keyWins"].as_bool() == Some(true) {
+                println!("It was made with a {provider} API key: the key wins over the login.");
+            }
+            if reply["hostSignedIn"].as_bool() == Some(false) {
+                eprintln!("This server's pi has no {provider} login yet: sign in (pi, /login) or its turns are refused.");
+            }
+        }
+        WorkerCommand::Login(WorkerLoginCommand::Rm { name, provider }) => {
+            let reply = call(methods::REMOVE_WORKER_LOGIN, json!({ "name": name, "provider": provider })).await?;
+            if reply["removed"].as_bool() == Some(true) {
+                println!("Taken back: the token left worker {name}, its next turn on {provider} models is refused.");
+            } else {
+                println!("Worker {name} wasn't allowed this server's {provider} login.");
+            }
+        }
+        WorkerCommand::Login(WorkerLoginCommand::List) => {
+            let reply = call(methods::LIST_WORKER_LOGINS, json!({})).await?;
+            let logins = reply["logins"].as_array().cloned().unwrap_or_default();
+            if logins.is_empty() {
+                println!("No worker may use this server's logins.");
+            }
+            for row in logins {
+                let providers: Vec<&str> = row["providers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                println!("{}  {}", terminal_safe(row["name"].as_str().unwrap_or_default(), false), providers.join(" "));
+            }
         }
         WorkerCommand::Rm { name, keep_volumes } => {
             call(methods::REMOVE_WORKER, json!({ "name": name, "keepVolumes": keep_volumes })).await?;
