@@ -205,7 +205,7 @@ pub fn blocked_networks() -> Vec<String> {
     blocked
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 32
         && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -471,6 +471,8 @@ impl Workers {
     pub async fn start(&self, name: &str) -> Result<(), String> {
         let worker = self.get(name)?;
         if self.state(name).await != "running" {
+            // Nothing lent before this start stays (its next turns lend anew).
+            self.release(name).await;
             self.write_conf(name, crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())
                 .map_err(|e| format!("worker {name}: {e}"))?;
             // (A worker made with `work` gets its own id from here on.)
@@ -491,6 +493,7 @@ impl Workers {
                 .collect();
             if let Err(err) = self.podman(&["unshare", "nsenter", "-t", &pid, "-n", "ip", "-4", "-batch", "-"], Some(&batch)).await {
                 let _ = self.podman(&["stop", "-t", "0", &worker.container], None).await;
+                self.release(name).await;
                 return Err(format!("worker {name}: blocking its networks failed, not started: {err}"));
             }
             self.podman(&["start", &worker.container], None).await?;
@@ -527,9 +530,45 @@ impl Workers {
     /// ([`crate::worker_logins`]), its allows stay for its next start.
     pub async fn stop(&self, name: &str) -> Result<(), String> {
         let worker = self.get(name)?;
-        crate::worker_logins::take_back(&self.data_dir, name, None);
-        self.podman(&["stop", "--time", "5", "--ignore", &worker.container], None).await?;
-        Ok(())
+        self.release(name).await;
+        let stopped = self.podman(&["stop", "--time", "5", "--ignore", &worker.container], None).await;
+        // (And again: a turn lent for while it stopped.)
+        self.release(name).await;
+        stopped.map(|_| ())
+    }
+
+    /// Every login lent to worker `name` goes, its turns no longer
+    /// followed ([`crate::worker_logins::release`], under its lock).
+    async fn release(&self, name: &str) {
+        let (data_dir, name) = (self.data_dir.clone(), name.to_string());
+        let _ = tokio::task::spawn_blocking(move || crate::worker_logins::release(&data_dir, &name)).await;
+    }
+
+    /// End worker `name`'s turns in `chats` (their login was taken back):
+    /// an interrupt to each, over its socket. How many it took.
+    pub async fn interrupt(&self, name: &str, chats: &[String]) -> usize {
+        if chats.is_empty() {
+            return 0;
+        }
+        let client = match self.connect(name).await {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::warn!(worker = %name, error = %err, "worker: not reached, its turns on a login taken back aren't interrupted (the login is gone)");
+                return 0;
+            }
+        };
+        let mut ended = 0;
+        for chat in chats {
+            let stop = serde_json::json!({ "chatId": chat, "command": zend_doc::commands::SessionCommandPayload::Interrupt { cancels: None } });
+            match client.call(zend_rpc::methods::QUEUE_COMMAND, stop).await {
+                Ok(_) => {
+                    ended += 1;
+                    tracing::info!(worker = %name, chat = %chat, "worker: a turn on a login taken back interrupted");
+                }
+                Err(err) => tracing::warn!(worker = %name, chat = %chat, error = %err, "worker: a turn on a login taken back couldn't be interrupted"),
+            }
+        }
+        ended
     }
 
     /// Remove a worker: its container, its secrets, its folders and (unless
@@ -537,8 +576,8 @@ impl Workers {
     /// go first, and its allows with it.
     pub async fn remove(&self, name: &str, keep_volumes: bool) -> Result<Worker, String> {
         let worker = self.get(name)?;
-        crate::worker_logins::take_back(&self.data_dir, name, None);
-        crate::worker_logins::book(&self.data_dir).forget(name)?;
+        let (data_dir, named) = (self.data_dir.clone(), name.to_string());
+        tokio::task::spawn_blocking(move || crate::worker_logins::forget(&data_dir, &named)).await.map_err(|e| e.to_string())??;
         self.podman(&["rm", "--force", "--time", "5", "--ignore", &worker.container], None).await?;
         for provider in &worker.providers {
             let _ = self.podman(&["secret", "rm", &secret_of(name, provider)], None).await;
@@ -557,13 +596,15 @@ impl Workers {
 /// A worker's mounts: its volumes (U: Podman chowns them to the container's
 /// uid 1000, whichever subordinate ids its namespace got, --userns=auto),
 /// its `conf` read-only (its lent logins in it, [`crate::worker_logins`]),
-/// its `run` (the socket).
-pub fn mounts(name: &str, conf: &Path, run: &Path) -> [String; 4] {
+/// its `run` (the socket), and a tmpfs of its uid's for its copy of the
+/// lent logins ([`crate::worker::RUN_LOGIN_DIR`]: no token on a volume).
+pub fn mounts(name: &str, conf: &Path, run: &Path) -> [String; 5] {
     [
         format!("type=volume,src={},dst=/work,U=true", volume_of(name, "work")),
         format!("type=volume,src={},dst=/data,U=true", volume_of(name, "data")),
         format!("type=bind,src={},dst=/etc/zend-worker,ro", conf.display()),
         format!("type=bind,src={},dst=/run/zend-worker,U=true", run.display()),
+        format!("type=tmpfs,dst={},tmpfs-mode=0700,tmpfs-size=1m,chown=true", crate::worker::RUN_LOGIN_DIR),
     ]
 }
 
@@ -663,21 +704,33 @@ impl zend_rpc::RpcService for WorkersRpc {
             }
             methods::ALLOW_WORKER_LOGIN => {
                 let p: LoginParams = zend_rpc::parse_params(given())?;
+                if !valid_name(&p.name) {
+                    return Err(RpcError::BadParams(format!("{:?} is not a worker's name", p.name.chars().take(40).collect::<String>())));
+                }
                 let worker = self.workers.get(&p.name).map_err(RpcError::BadParams)?;
-                let book = crate::worker_logins::book(&self.workers.data_dir);
-                book.allow(&worker.name, &p.provider).map_err(RpcError::BadParams)?;
-                // A change of the allow: the next turn writes its file anew.
-                crate::worker_logins::take_back(&self.workers.data_dir, &worker.name, Some(&p.provider));
+                let (data_dir, name, provider) = (self.workers.data_dir.clone(), worker.name.clone(), p.provider.clone());
+                tokio::task::spawn_blocking(move || crate::worker_logins::allow(&data_dir, &name, &provider))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(RpcError::BadParams)?;
                 let key = worker.providers.contains(&p.provider);
                 let host = crate::peer_logins::HostLogin::current().has(&p.provider);
                 Ok(RpcReply::Value(json!({ "name": worker.name, "provider": p.provider, "keyWins": key, "hostSignedIn": host })))
             }
             methods::REMOVE_WORKER_LOGIN => {
                 let p: LoginParams = zend_rpc::parse_params(given())?;
-                let book = crate::worker_logins::book(&self.workers.data_dir);
-                let removed = book.remove(&p.name, &p.provider).map_err(RpcError::Failed)?;
-                crate::worker_logins::take_back(&self.workers.data_dir, &p.name, Some(&p.provider));
-                Ok(RpcReply::Value(json!({ "name": p.name, "provider": p.provider, "removed": removed })))
+                if !valid_name(&p.name) {
+                    return Err(RpcError::BadParams(format!("{:?} is not a worker's name", p.name.chars().take(40).collect::<String>())));
+                }
+                // Its file goes at once (after a refresh for it, held to the
+                // worker's lock), then its live turns on it end.
+                let (data_dir, name, provider) = (self.workers.data_dir.clone(), p.name.clone(), p.provider.clone());
+                let (removed, chats) = tokio::task::spawn_blocking(move || crate::worker_logins::revoke(&data_dir, &name, &provider))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(RpcError::Failed)?;
+                let ended = self.workers.interrupt(&p.name, &chats).await;
+                Ok(RpcReply::Value(json!({ "name": p.name, "provider": p.provider, "removed": removed, "turnsEnded": ended })))
             }
             methods::LIST_WORKER_LOGINS => {
                 let logins: Vec<serde_json::Value> = crate::worker_logins::book(&self.workers.data_dir)

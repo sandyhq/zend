@@ -613,3 +613,74 @@ async fn a_paired_server_saying_it_is_a_worker_doesnt_show() {
     };
     assert!(!has(&rows, "p-chat"), "the server saying it is a worker shows: {rows:?}");
 }
+
+/// A pi folder of this server's signed in to anthropic (hours left): the
+/// login its workers' turns are lent.
+fn host_login(dir: &Path) -> zend_engine::peer_logins::HostLogin {
+    std::fs::create_dir_all(dir).unwrap();
+    let expires = chrono::Utc::now().timestamp_millis() + 5 * 3_600_000;
+    let auth = json!({ "anthropic": { "type": "oauth", "access": "HOST-ACCESS", "refresh": "HOST-REFRESH", "expires": expires } });
+    std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
+    zend_engine::peer_logins::HostLogin { agent_dir: dir.to_path_buf(), pi: None }
+}
+
+/// (Review 2, 3) A login lent for a worker's turn goes once that turn has
+/// settled, by the server's word (its session row), not the worker's; and
+/// `zend worker login rm` during a live turn on it ends that turn: an
+/// interrupt to the worker over its socket, the file gone at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lent_login_goes_when_its_turn_settles_and_rm_ends_a_live_turn_on_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut s = Server::new().await;
+    s.add_worker("w1", "device-w1", honest());
+    let w1 = s.workers[0].device.clone();
+    let data = s.root.join("s");
+    let dir = data.join(zend_engine::workers::DIR).join("w1");
+    for (folder, mode) in [(dir.clone(), 0o700), (dir.join("conf"), 0o755)] {
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let host = host_login(&s.root.join("host-pi"));
+    let workers = zend_engine::workers::Workers::new(&data);
+    let worker = workers.get("w1").unwrap();
+    let file = zend_engine::worker_logins::login_dir(&data, "w1").join("anthropic.json");
+    let mut devices = Watched::open(&s.window, methods::WATCH_DEVICES, "id").await;
+    devices.until("the worker's device", |rows| has(rows, w1.as_str())).await;
+    let mut sessions = Watched::open(&s.window, methods::WATCH_SESSIONS, "chatId").await;
+    let state = |rows: &[Value], chat: &str| rows.iter().find(|r| r["chatId"] == chat).map(|r| r["status"].as_str().unwrap_or("").to_string());
+    zend_engine::worker_logins::allow(&data, "w1", "anthropic").unwrap();
+    let lend = |chat: &str| {
+        let got = zend_engine::worker_logins::prepare_turn(&data, &worker, chat, HarnessId::Pi, Some("anthropic/claude-haiku-4-5"), None, &host);
+        assert_eq!(got.unwrap(), zend_engine::worker_logins::Credential::Login("anthropic".into()));
+        assert!(file.is_file());
+    };
+
+    // A turn that finishes: its login goes after it settles.
+    create(&s.window, "settles", &w1).await.expect("made there");
+    lend("settles");
+    s.window.call(methods::QUEUE_COMMAND, run("settles", "/pwd")).await.expect("runs there");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while file.exists() {
+        assert!(tokio::time::Instant::now() < deadline, "the login stayed 30 s after its turn; sessions {:?}", sessions.rows);
+        let _ = sessions.settle(1).await;
+    }
+
+    // A live turn: rm ends it.
+    create(&s.window, "live", &w1).await.expect("made there");
+    lend("live");
+    s.window.call(methods::QUEUE_COMMAND, run("live", "/stream 60")).await.expect("runs there");
+    sessions.until("the live turn working", |rows| state(rows, "live").as_deref() == Some("working")).await;
+    let local = zend_rpc::memory_client(Arc::new(zend_engine::workers::WorkersRpc { inner: s.core.rpc_service(), workers }));
+    let reply = local.call(methods::REMOVE_WORKER_LOGIN, json!({ "name": "w1", "provider": "anthropic" })).await.expect("rm");
+    assert_eq!((reply["removed"].as_bool(), reply["turnsEnded"].as_u64()), (Some(true), Some(1)), "{reply}");
+    assert!(!file.exists(), "the file stayed after rm");
+    let heard = s.workers[0].heard.lock().unwrap().clone();
+    assert!(
+        heard.iter().any(|(m, p)| m == methods::QUEUE_COMMAND && p["chatId"] == "live" && p["command"]["kind"] == "interrupt"),
+        "no interrupt reached the worker"
+    );
+    // Ended well before its 60 s.
+    sessions.until("the live turn ended", |rows| state(rows, "live").as_deref().is_some_and(|s| s != "working")).await;
+    // Its next turn is refused.
+    assert!(zend_engine::worker_logins::prepare_turn(&data, &worker, "live", HarnessId::Pi, Some("anthropic/claude-haiku-4-5"), None, &host).is_err());
+}

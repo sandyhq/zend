@@ -100,7 +100,11 @@ pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Pa
         WorkerCommand::Login(WorkerLoginCommand::Rm { name, provider }) => {
             let reply = call(methods::REMOVE_WORKER_LOGIN, json!({ "name": name, "provider": provider })).await?;
             if reply["removed"].as_bool() == Some(true) {
+                let ended = reply["turnsEnded"].as_u64().unwrap_or(0);
                 println!("Taken back: the token left worker {name}, its next turn on {provider} models is refused.");
+                if ended > 0 {
+                    println!("{ended} turn(s) running on it there were ended.");
+                }
             } else {
                 println!("Worker {name} wasn't allowed this server's {provider} login.");
             }

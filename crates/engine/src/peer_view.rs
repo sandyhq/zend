@@ -63,6 +63,9 @@ use crate::peer_link::PeerLink;
 /// How often a connected server's device row is stamped seen (the window
 /// shows a device online for 70 s after its last stamp).
 const HEARTBEAT: Duration = Duration::from_secs(20);
+/// How often a worker's turns on lent logins are looked at, settled or not
+/// ([`crate::worker_logins::settle`]).
+const SETTLE_EVERY: Duration = Duration::from_secs(1);
 /// How often the paired servers are looked at again (one paired or
 /// unpaired since; [`PeerView::refresh`] at once).
 const SCAN: Duration = Duration::from_secs(10);
@@ -493,6 +496,7 @@ impl PeerView {
         // This device's own ids first: nothing of a server's before them.
         let _ = self.locals.subscribe().wait_for(Locals::ready).await;
         let link = self.link.upgrade().ok_or(Quiet::Gone)?;
+        let data_dir = link.data_dir().to_path_buf();
         let quiet = |e: RpcError| match e {
             RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),
             other => Quiet::Refused(other.to_string()),
@@ -593,6 +597,13 @@ impl PeerView {
         let worker = worker_project.is_some();
         let mut beat = tokio::time::interval(HEARTBEAT);
         beat.tick().await;
+        // A worker's turns on lent logins, settled: their logins go.
+        let mut settle = tokio::time::interval(SETTLE_EVERY);
+        let settled = |sessions: &[Value]| {
+            for (chat, provider) in crate::worker_logins::settle(&data_dir, &name, sessions, std::time::Instant::now()) {
+                tracing::info!(worker = %name, chat = %chat, %provider, "worker: a turn on this device's login settled, its login taken back");
+            }
+        };
         loop {
             tokio::select! {
                 rows = next(&mut chats) => {
@@ -623,6 +634,7 @@ impl PeerView {
                     let Some(rows) = self.admit(key, &device_id, Kind::Sessions, &rows, only_in) else { continue };
                     let shown = if worker {
                         let shown = self.update(key, |s| s.sessions = of_chats_shown(&rows, &s.chats));
+                        settled(&rows);
                         said_sessions = Some(rows);
                         shown
                     } else {
@@ -638,7 +650,15 @@ impl PeerView {
                         break;
                     }
                 }
+                _ = settle.tick(), if worker => settled(said_sessions.as_deref().unwrap_or_default()),
                 () = client.closed() => break,
+            }
+        }
+        if worker {
+            // Its turns can't be followed any more: what was lent goes.
+            let chats = crate::worker_logins::release(&data_dir, &name);
+            if !chats.is_empty() {
+                tracing::info!(worker = %name, turns = chats.len(), "worker: connection ended, the logins lent to its turns taken back");
             }
         }
         if !self.seen.borrow().contains_key(key) {
@@ -803,7 +823,7 @@ impl PeerView {
         if method == methods::QUEUE_COMMAND {
             only_what_a_server_runs(&mut params);
             if worker_project.is_some() {
-                self.worker_turn(key, &chat, &params)?;
+                self.worker_turn(key, &chat, &params).await?;
             }
         }
         let said = |e: RpcError| match e {
@@ -839,7 +859,7 @@ impl PeerView {
     /// chat told "no credential for <provider> on this device" and the
     /// reason logged here. The run itself is not changed: no token, key or
     /// path of this device's goes into it.
-    fn worker_turn(&self, key: &str, chat: &str, params: &Value) -> Result<(), RpcError> {
+    async fn worker_turn(&self, key: &str, chat: &str, params: &Value) -> Result<(), RpcError> {
         let (Some(name), Some(link)) = (key.strip_prefix(WORKER_PREFIX), self.link.upgrade()) else {
             return Ok(());
         };
@@ -847,10 +867,19 @@ impl PeerView {
         let Some((harness, model)) = crate::worker_logins::run_of(params, &config) else {
             return Ok(());
         };
-        let data_dir = link.data_dir();
-        let worker = crate::workers::Workers::new(data_dir).get(name).map_err(RpcError::Failed)?;
+        let data_dir = link.data_dir().to_path_buf();
+        drop(link);
+        let worker = crate::workers::Workers::new(&data_dir).get(name).map_err(RpcError::Failed)?;
         let host = crate::peer_logins::HostLogin::current();
-        match crate::worker_logins::prepare_turn(data_dir, &worker, harness, model.as_deref(), &host) {
+        let session = self.seen.borrow().get(key).and_then(|s| s.sessions.iter().find(|r| r["chatId"].as_str() == Some(chat)).cloned());
+        let turn_of = chat.to_string();
+        // (Off the runtime: it may wait on the worker's lock and a refresh.)
+        let prepared = tokio::task::spawn_blocking(move || {
+            crate::worker_logins::prepare_turn(&data_dir, &worker, &turn_of, harness, model.as_deref(), session.as_ref(), &host)
+        })
+        .await
+        .map_err(|e| RpcError::Failed(format!("{name}: {e}")))?;
+        match prepared {
             Ok(crate::worker_logins::Credential::Login(provider)) => {
                 tracing::info!(worker = %name, chat = %chat, %provider, "worker: a turn runs on this device's login (its access token only)");
                 Ok(())

@@ -20,9 +20,11 @@
 //!   login, access token only (`refresh` empty), written by the server
 //!   before each turn on it and taken away when the allow ends.
 //!
-//! Before each run its server queues, the engine copies the lent logins
-//! into its pi's `auth.json` ([`sync_logins`]): read-only (0444), one
-//! entry per lent provider and nothing else, gone when none is lent.
+//! Before each run its server queues, and within 2 s of each change, the
+//! engine copies the lent logins for its pi ([`sync_logins`]): to a tmpfs
+//! of its own at [`RUN_LOGIN_DIR`] (never the `/data` volume), read-only
+//! (0444), one entry per lent provider and nothing else, pi's `auth.json`
+//! a link to it; gone when none is lent, at start and on SIGTERM.
 //!
 //! On start it keeps the key in its data dir, writes `peers.json` with that
 //! one server granted [`grants`] (`sessions.read`, and
@@ -196,13 +198,68 @@ pub fn missing_routes(blocked: &[String], table: &str) -> Vec<String> {
         .collect()
 }
 
-/// Copy the logins its server lent (`conf/login/<provider>.json`) into
-/// pi's `auth.json` in `agent_dir`: one entry per lent provider, only its
-/// type, access token, expiry and account id, `refresh` empty; written
-/// beside and renamed in, read-only (0444: pi reads it and has nothing to
-/// refresh). None lent: an `auth.json` of Zend's (every entry with an empty
-/// refresh token) goes. The providers copied.
-pub fn sync_logins(conf_dir: &Path, agent_dir: &Path) -> Result<Vec<String>, String> {
+/// Where the worker keeps its pi's copy of the lent logins: a tmpfs of its
+/// own (0700, its uid's), made by its server at create, so no token is on
+/// a volume and none outlives the container's run. pi's `auth.json` in its
+/// folder (on the `/data` volume) is a link to it.
+pub const RUN_LOGIN_DIR: &str = "/run/zend-login";
+
+/// The tmpfs for the logins' copy (`ZEND_WORKER_LOGIN_DIR`, for tests; else
+/// [`RUN_LOGIN_DIR`]).
+pub fn run_login_dir() -> PathBuf {
+    std::env::var_os("ZEND_WORKER_LOGIN_DIR").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(RUN_LOGIN_DIR))
+}
+
+/// Whether `dir` is a folder of this user's, not a link, on a tmpfs, closed
+/// to others: where a copy of a login may be.
+#[cfg(target_os = "linux")]
+fn private_tmpfs(dir: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e} (a worker made before its logins' tmpfs: make it again)", dir.display()))?;
+    // SAFETY: getuid can't fail.
+    if !meta.file_type().is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.permissions().mode() & 0o077 != 0 {
+        return Err(format!("{} is not a private folder of this user's", dir.display()));
+    }
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: a zeroed statfs is valid, and `path` is a C string.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(path.as_ptr(), &mut fs) } != 0 {
+        return Err(format!("{}: {}", dir.display(), std::io::Error::last_os_error()));
+    }
+    if fs.f_type as i64 != libc::TMPFS_MAGIC as i64 {
+        return Err(format!("{} is not a tmpfs: a login's copy stays off disk", dir.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn private_tmpfs(dir: &Path) -> Result<(), String> {
+    Err(format!("{}: workers run on Linux only", dir.display()))
+}
+
+/// Whether pi's `auth.json` at `path` is Zend's: a link into `run_dir`, or
+/// a file of only lent entries (an empty `refresh`), or of none.
+fn ours(path: &Path, run_dir: &Path) -> bool {
+    use serde_json::Value;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(path).is_ok_and(|to| to.starts_with(run_dir)),
+        Ok(meta) if meta.file_type().is_file() => std::fs::read(path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .and_then(|file| file.as_object().cloned())
+            .is_some_and(|file| file.values().all(|e| e.get("refresh").and_then(Value::as_str) == Some(""))),
+        _ => false,
+    }
+}
+
+/// Copy the logins its server lent (`conf/login/<provider>.json`) for pi:
+/// one entry per lent provider, only its type, access token, expiry and
+/// account id, `refresh` empty, written to `run_dir` (a private tmpfs,
+/// [`RUN_LOGIN_DIR`]) beside and renamed in, read-only (0444: pi reads it
+/// and has nothing to refresh), and pi's `auth.json` in `agent_dir` a link
+/// to it. None lent: the copy goes. The providers copied.
+pub fn sync_logins(conf_dir: &Path, agent_dir: &Path, run_dir: &Path) -> Result<Vec<String>, String> {
     use serde_json::{Map, Value};
     let mut merged = Map::new();
     if let Ok(entries) = std::fs::read_dir(conf_dir.join(LOGIN_DIR)) {
@@ -228,29 +285,71 @@ pub fn sync_logins(conf_dir: &Path, agent_dir: &Path) -> Result<Vec<String>, Str
             merged.insert(provider.to_string(), Value::Object(kept));
         }
     }
-    let path = agent_dir.join(crate::peer_logins::AUTH_FILE);
+    let copy = run_dir.join(crate::peer_logins::AUTH_FILE);
+    let link = agent_dir.join(crate::peer_logins::AUTH_FILE);
     if merged.is_empty() {
-        let ours = std::fs::read(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-            .and_then(|file| file.as_object().cloned())
-            .is_some_and(|file| file.values().all(|e| e.get("refresh").and_then(Value::as_str) == Some("")));
-        if ours {
-            std::fs::remove_file(&path).map_err(|e| format!("worker: its pi's auth.json: {e}"))?;
+        remove(&copy)?;
+        // A copy of round one's (on the volume) goes too; the link stays.
+        if ours(&link, run_dir) && !std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()) {
+            remove(&link)?;
         }
         return Ok(Vec::new());
     }
+    if std::fs::symlink_metadata(&link).is_ok() && !ours(&link, run_dir) {
+        return Err(format!("worker: pi's {} is not Zend's: the lent logins aren't copied over it", link.display()));
+    }
+    private_tmpfs(run_dir).map_err(|why| format!("worker: the lent logins aren't copied: {why}"))?;
     let providers: Vec<String> = merged.keys().cloned().collect();
     let bytes = serde_json::to_vec_pretty(&Value::Object(merged)).map_err(|e| e.to_string())?;
-    write_read_only(agent_dir, &path, &bytes).map_err(|e| format!("worker: its pi's auth.json: {e}"))?;
+    write_read_only(run_dir, &copy, &bytes).map_err(|e| format!("worker: its pi's auth.json: {e}"))?;
+    link_to(agent_dir, &link, &copy).map_err(|e| format!("worker: its pi's auth.json: {e}"))?;
     Ok(providers)
+}
+
+/// The worker stops (SIGTERM) or starts: its copy of the lent logins goes,
+/// and pi's `auth.json` with it when it is Zend's. How many files went.
+pub fn take_back_logins(agent_dir: &Path, run_dir: &Path) -> usize {
+    let copy = run_dir.join(crate::peer_logins::AUTH_FILE);
+    let link = agent_dir.join(crate::peer_logins::AUTH_FILE);
+    let mut gone = usize::from(std::fs::remove_file(&copy).is_ok());
+    if ours(&link, run_dir) && std::fs::remove_file(&link).is_ok() {
+        gone += 1;
+    }
+    gone
+}
+
+fn remove(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("worker: {}: {e}", path.display())),
+    }
+}
+
+/// pi's `auth.json` at `link` made a link to `to` (made beside, renamed in).
+#[cfg(unix)]
+fn link_to(dir: &Path, link: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    if std::fs::read_link(link).is_ok_and(|now| now == to) {
+        return Ok(());
+    }
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    let temp = dir.join(format!(".auth.json.{}", uuid::Uuid::new_v4().simple()));
+    std::os::unix::fs::symlink(to, &temp)?;
+    std::fs::rename(&temp, link).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
+#[cfg(not(unix))]
+fn link_to(_: &Path, _: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("workers run on Linux only"))
 }
 
 #[cfg(unix)]
 fn write_read_only(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
     let temp = dir.join(format!(".auth.json.{}", uuid::Uuid::new_v4().simple()));
     let written = (|| {
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&temp)?;
@@ -289,13 +388,18 @@ fn logins_seen(conf_dir: &Path) -> Vec<(std::ffi::OsString, u64, Option<std::tim
 /// copy left from before a stop goes when nothing is lent), and again
 /// within [`LOGIN_POLL`] of each change, so a login taken back leaves pi's
 /// folder too, not only at the next run.
-pub fn follow_logins(conf_dir: PathBuf, agent_dir: PathBuf) -> tokio::task::JoinHandle<()> {
+pub fn follow_logins(conf_dir: PathBuf, agent_dir: PathBuf, run_dir: PathBuf) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // What a run before left goes first (its server lends anew).
+        let gone = take_back_logins(&agent_dir, &run_dir);
+        if gone > 0 {
+            tracing::info!(files = gone, "worker: logins lent before this start removed");
+        }
         let mut last = None;
         loop {
             let now = logins_seen(&conf_dir);
             if last.as_ref() != Some(&now) {
-                match sync_logins(&conf_dir, &agent_dir) {
+                match sync_logins(&conf_dir, &agent_dir, &run_dir) {
                     Ok(providers) => tracing::info!(providers = %providers.join(","), "worker: lent logins in step with its server's"),
                     Err(why) => tracing::warn!(%why, "worker: the lent logins could not be copied for pi"),
                 }
@@ -320,13 +424,15 @@ pub struct WorkerRpc {
     pub inner: std::sync::Arc<dyn zend_rpc::RpcService>,
     pub conf_dir: PathBuf,
     pub agent_dir: PathBuf,
+    /// Where the logins' copy is ([`run_login_dir`]).
+    pub run_dir: PathBuf,
 }
 
 #[async_trait::async_trait]
 impl zend_rpc::RpcService for WorkerRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<zend_rpc::RpcReply, zend_rpc::RpcError> {
         if method == zend_rpc::methods::QUEUE_COMMAND && params["command"]["kind"].as_str() == Some("run") {
-            match sync_logins(&self.conf_dir, &self.agent_dir) {
+            match sync_logins(&self.conf_dir, &self.agent_dir, &self.run_dir) {
                 Ok(providers) if !providers.is_empty() => {
                     tracing::info!(providers = %providers.join(","), "worker: its server's lent logins copied for pi (access tokens only)");
                 }
@@ -383,44 +489,113 @@ mod tests {
     /// refresh token, other fields or files not of a lendable provider are
     /// dropped; none lent, Zend's copy goes (a file of the worker's own
     /// stays).
-    #[cfg(unix)]
+    /// A private tmpfs for a login's copy, as the container's
+    /// `/run/zend-login` is (`/dev/shm` here).
+    #[cfg(target_os = "linux")]
+    fn tmpfs() -> tempfile::TempDir {
+        let dir = tempfile::tempdir_in("/dev/shm").expect("/dev/shm, a tmpfs");
+        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_lent_logins_reach_pis_auth_json_read_only() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
+        let run = tmpfs();
         let (conf, agent) = (dir.path().join("conf"), dir.path().join("pi"));
         std::fs::create_dir_all(conf.join(LOGIN_DIR)).unwrap();
         let lent = serde_json::json!({ "anthropic": { "type": "oauth", "access": "A", "refresh": "LEAKED", "expires": 1, "other": "x" } });
         std::fs::write(conf.join(LOGIN_DIR).join("anthropic.json"), lent.to_string()).unwrap();
         std::fs::write(conf.join(LOGIN_DIR).join("openai.json"), r#"{"openai":{"type":"oauth","access":"B"}}"#).unwrap();
         std::fs::write(conf.join(LOGIN_DIR).join("openai-codex.json"), r#"{"anthropic":{"type":"oauth","access":"C"}}"#).unwrap();
-        assert_eq!(sync_logins(&conf, &agent).unwrap(), ["anthropic"]);
+        assert_eq!(sync_logins(&conf, &agent, run.path()).unwrap(), ["anthropic"]);
         let path = agent.join("auth.json");
         let auth: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(auth, serde_json::json!({ "anthropic": { "type": "oauth", "access": "A", "refresh": "", "expires": 1 } }));
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444);
         // Again, replaced (it is read-only, its folder isn't).
-        assert_eq!(sync_logins(&conf, &agent).unwrap(), ["anthropic"]);
-        assert_eq!(std::fs::read_dir(&agent).unwrap().count(), 1, "a temporary file left behind");
+        assert_eq!(sync_logins(&conf, &agent, run.path()).unwrap(), ["anthropic"]);
+        assert_eq!(std::fs::read_dir(run.path()).unwrap().count(), 1, "a temporary file left behind");
+        assert_eq!(std::fs::read_dir(&agent).unwrap().count(), 1, "a temporary link left behind");
         std::fs::remove_file(conf.join(LOGIN_DIR).join("anthropic.json")).unwrap();
-        assert!(sync_logins(&conf, &agent).unwrap().is_empty());
+        assert!(sync_logins(&conf, &agent, run.path()).unwrap().is_empty());
         assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(run.path()).unwrap().count(), 0, "the copy stayed");
+        std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, r#"{"anthropic":{"type":"oauth","access":"OWN","refresh":"OWN-R"}}"#).unwrap();
-        assert!(sync_logins(&conf, &agent).unwrap().is_empty());
+        assert!(sync_logins(&conf, &agent, run.path()).unwrap().is_empty());
         assert!(path.exists(), "the worker's own login removed");
+        // Nor is a lent one written over it.
+        std::fs::write(conf.join(LOGIN_DIR).join("anthropic.json"), lent.to_string()).unwrap();
+        assert!(sync_logins(&conf, &agent, run.path()).is_err());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("OWN-R"));
+    }
+
+    /// (Review 4) The worker's copy of a lent login is on a tmpfs of its
+    /// own, never on pi's folder (the `/data` volume): pi's `auth.json`
+    /// there is only a link to it. A folder that isn't a private tmpfs
+    /// gets no copy. At SIGTERM and at start the copy and the link go, and a
+    /// copy an older worker left on the volume with them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_workers_copy_is_on_its_tmpfs_never_the_volume_and_goes_at_stop_and_start() {
+        let volume = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let run = tmpfs();
+        let (conf, agent) = (volume.path().join("conf"), volume.path().join("pi"));
+        std::fs::create_dir_all(conf.join(LOGIN_DIR)).unwrap();
+        std::fs::write(conf.join(LOGIN_DIR).join("openai-codex.json"), r#"{"openai-codex":{"type":"oauth","access":"A","refresh":"","expires":1,"accountId":"x"}}"#)
+            .unwrap();
+        // Not a tmpfs: no copy anywhere.
+        let disk = volume.path().join("run");
+        std::fs::create_dir(&disk).unwrap();
+        std::fs::set_permissions(&disk, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let refused = sync_logins(&conf, &agent, &disk).unwrap_err();
+        assert!(refused.contains("not a tmpfs") || refused.contains("private"), "{refused}");
+        assert!(!agent.join("auth.json").exists() && std::fs::read_dir(&disk).unwrap().count() == 0);
+        // On the tmpfs: the volume holds a link only.
+        assert_eq!(sync_logins(&conf, &agent, run.path()).unwrap(), ["openai-codex"]);
+        let link = agent.join("auth.json");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), run.path().join("auth.json"));
+        let on_volume: Vec<_> = walk(volume.path()).into_iter().filter(|p| std::fs::symlink_metadata(p).unwrap().is_file() && std::fs::read_to_string(p).unwrap().contains("\"access\"")).collect();
+        assert_eq!(on_volume, [conf.join(LOGIN_DIR).join("openai-codex.json")], "a token on the volume");
+        // SIGTERM: both go.
+        assert_eq!(take_back_logins(&agent, run.path()), 2);
+        assert!(std::fs::symlink_metadata(&link).is_err() && std::fs::read_dir(run.path()).unwrap().count() == 0);
+        // A copy an older worker left on its volume goes at start.
+        std::fs::write(&link, r#"{"openai-codex":{"type":"oauth","access":"OLD","refresh":"","expires":1}}"#).unwrap();
+        assert_eq!(take_back_logins(&agent, run.path()), 1);
+        assert!(!link.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut all = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                all.extend(walk(&path));
+            } else {
+                all.push(path);
+            }
+        }
+        all
     }
 
     /// (4, worker side) A login taken back leaves pi's folder within a poll,
     /// with no run needed; one lent shows up the same way.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_login_taken_back_leaves_pis_folder_without_a_run() {
         let dir = tempfile::tempdir().unwrap();
+        let run = tmpfs();
         let (conf, agent) = (dir.path().join("conf"), dir.path().join("pi"));
         std::fs::create_dir_all(conf.join(LOGIN_DIR)).unwrap();
         let lent = conf.join(LOGIN_DIR).join("openai-codex.json");
         std::fs::write(&lent, r#"{"openai-codex":{"type":"oauth","access":"A","refresh":"","expires":1,"accountId":"x"}}"#).unwrap();
-        let follow = follow_logins(conf.clone(), agent.clone());
+        let follow = follow_logins(conf.clone(), agent.clone(), run.path().to_path_buf());
         let auth = agent.join("auth.json");
         let until = |want: bool| {
             let auth = auth.clone();

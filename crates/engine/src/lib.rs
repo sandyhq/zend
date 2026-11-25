@@ -1563,6 +1563,11 @@ impl Engine {
             }
         }
         tracing::info!("shutting down");
+        if let Some(Ok(_)) = worker::conf() {
+            // (A worker: its copy of the lent logins goes before it ends.)
+            let gone = worker::take_back_logins(&worker::agent_dir(), &worker::run_login_dir());
+            tracing::info!(files = gone, "worker: lent logins removed at shutdown");
+        }
         corruption_watch.abort();
         server.abort();
         // No token refresh mid-exchange when the next engine takes over the
@@ -1684,9 +1689,10 @@ pub async fn serve_ipc(
             inner: service.clone(),
             conf_dir: conf.dir.clone(),
             agent_dir: worker::agent_dir(),
+            run_dir: worker::run_login_dir(),
         });
         let _worker = peer_link::serve_worker(answers, data_dir, &conf.socket)?;
-        let _logins = worker::follow_logins(conf.dir.clone(), worker::agent_dir());
+        let _logins = worker::follow_logins(conf.dir.clone(), worker::agent_dir(), worker::run_login_dir());
         return Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(listener, service, tokens)));
     }
     // No turn of a worker's is live yet: the logins lent to them go now.
