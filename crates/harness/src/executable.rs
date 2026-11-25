@@ -569,11 +569,28 @@ fn node_version_manager_bins_with(
             dirs.push(home.join(".local").join("bin"));
             dirs.push(home.join(".bun").join("bin"));
         }
-    } else if let Some(home) = &home {
+    } else {
+        // pnpm's global bin: PNPM_HOME, where pnpm before 11 links CLIs and
+        // pnpm 11 in its bin/; by default in XDG_DATA_HOME or the home. An
+        // engine started by systemd or a GUI has none of it on its PATH.
+        if let Some(dir) = env_path(env, "PNPM_HOME") {
+            dirs.push(dir.clone());
+            dirs.push(dir.join("bin"));
+        }
+        if let Some(data) = env_path(env, "XDG_DATA_HOME").filter(|dir| dir.is_absolute()) {
+            dirs.push(data.join("pnpm"));
+            dirs.push(data.join("pnpm").join("bin"));
+        }
+    }
+    if platform != Platform::Windows
+        && let Some(home) = &home
+    {
         dirs.push(home.join(".volta").join("bin"));
         dirs.push(home.join(".bun").join("bin"));
         dirs.push(home.join("Library").join("pnpm"));
+        dirs.push(home.join("Library").join("pnpm").join("bin"));
         dirs.push(home.join(".local").join("share").join("pnpm"));
+        dirs.push(home.join(".local").join("share").join("pnpm").join("bin"));
 
         let nvm = home.join(".nvm").join("versions").join("node");
         if let Ok(entries) = std::fs::read_dir(&nvm) {
@@ -1484,6 +1501,46 @@ mod tests {
                 "{relative}"
             );
             std::fs::remove_file(bin.join("pi")).unwrap();
+        }
+    }
+
+    /// pnpm 11 links CLIs into `$PNPM_HOME/bin`, older pnpm into
+    /// `$PNPM_HOME`; by default PNPM_HOME is ~/.local/share/pnpm (or
+    /// $XDG_DATA_HOME/pnpm). Found without any of it on the PATH.
+    #[test]
+    fn unix_discovery_finds_pnpms_global_bin_without_it_on_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let custom = dir.path().join("custom pnpm");
+        let data = dir.path().join("data");
+        let lookup = env(&[
+            ("HOME", home.clone().into_os_string()),
+            ("PNPM_HOME", custom.clone().into_os_string()),
+            ("XDG_DATA_HOME", data.clone().into_os_string()),
+        ]);
+        let without_pnpm_home = env(&[("HOME", home.clone().into_os_string())]);
+        for (bin, lookup) in [
+            (custom.clone(), &lookup),
+            (custom.join("bin"), &lookup),
+            (data.join("pnpm/bin"), &lookup),
+            (home.join(".local/share/pnpm/bin"), &without_pnpm_home),
+            (home.join("Library/pnpm/bin"), &without_pnpm_home),
+        ] {
+            std::fs::create_dir_all(&bin).unwrap();
+            let pi = bin.join("pi");
+            std::fs::write(&pi, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            assert_eq!(
+                find_on_paths_with("pi", vec![], lookup, Some(OsString::new()), Platform::Unix),
+                Some(pi.clone()),
+                "{}",
+                bin.display()
+            );
+            std::fs::remove_file(&pi).unwrap();
         }
     }
 

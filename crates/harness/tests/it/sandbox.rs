@@ -495,3 +495,265 @@ fn a_tool_folder_that_would_show_the_home_or_a_hidden_folder_is_refused() {
         assert!(error.contains("would show"), "{dir}: {error}");
     }
 }
+
+
+// ---- Node launchers: pnpm's shim, npm's link, a plain binary ----
+
+fn write_exe(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn link(target: impl AsRef<Path>, at: &Path) {
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, at).unwrap();
+}
+
+/// The shim pnpm 11 writes (as on a real device), for `rel` from its bin.
+fn pnpm_shim(rel: &str, abs: &Path) -> String {
+    let body = r#"#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
+basedir_win="$basedir"
+exe=""
+msys=""
+
+case `uname -a` in
+  *CYGWIN*|*MINGW*|*MSYS*)
+    if command -v cygpath > /dev/null 2>&1; then
+      basedir_win=`cygpath -w "$basedir"`
+    fi
+    exe=".exe"
+    msys="true"
+  ;;
+  *WSL2*)
+    if command -v wslpath > /dev/null 2>&1; then
+      basedir_win="$(wslpath -w "$basedir" 2> /dev/null)"
+      if [ $? -ne 0 ] || [ -z "$basedir_win" ]; then
+        basedir_win="$basedir"
+      else
+        exe=".exe"
+      fi
+    fi
+  ;;
+esac
+
+if [ -n "$exe" ] && [ -x "$basedir/node.exe" ]; then
+  exec "$basedir/node.exe"  "$basedir_win/REL" "$@"
+elif [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/REL" "$@"
+elif command -v node >/dev/null 2>&1; then
+  exec node  "$basedir/REL" "$@"
+elif [ -n "$exe" ] && command -v node.exe >/dev/null 2>&1; then
+  exec node.exe  "$basedir_win/REL" "$@"
+else
+  exec node  "$basedir/REL" "$@"
+fi
+# cmd-shim-target=ABS
+"#;
+    body.replace("REL", rel).replace("ABS", &abs.display().to_string())
+}
+
+/// The agent's script: what it loads, which of `argv` it can see (`w:<path>`:
+/// can write), and a file written in its project.
+const AGENT_JS: &str = r#"#!/usr/bin/env node
+const fs = require('fs');
+console.log('loaded ' + require('dep-a'));
+for (const a of process.argv.slice(2)) {
+  if (a.startsWith('w:')) { try { fs.writeFileSync(a.slice(2), 'x'); console.log('WRITABLE ' + a.slice(2)); } catch {} }
+  else if (fs.existsSync(a)) console.log('VISIBLE ' + a);
+}
+fs.writeFileSync('./from-agent.txt', 'ok');
+"#;
+
+/// `w:<path>` probes for files in each of `dirs`.
+fn write_probes(dirs: &[&Path]) -> Vec<PathBuf> {
+    dirs.iter().map(|dir| PathBuf::from(format!("w:{}", dir.join("written-by-agent").display()))).collect()
+}
+
+/// Run `exe` as the agent of a launch in the fake home's project a, with
+/// `args`; (exit code, stdout, stderr, bubblewrap's arguments).
+async fn run_agent(fake: &FakeHome, bwrap: PathBuf, exe: &Path, args: &[PathBuf]) -> (i32, String, String, Vec<String>) {
+    let sandbox = Sandbox::project(&fake.project, host(fake, bwrap)).unwrap();
+    let launch = Launch::new(&sandbox, HarnessId::Pi, exe, &fake.project, &[]).unwrap();
+    let mut command = launch.command(exe);
+    command
+        .args(args)
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(&fake.project)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = launch.spawn(&mut command).unwrap().wait_with_output().await.unwrap();
+    let bwrap_args = launch.bwrap_args().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        bwrap_args,
+    )
+}
+
+/// Every (flag, source, target) of bubblewrap's arguments whose source or
+/// target lies in `under`.
+fn mounts_in(args: &[String], under: &Path) -> Vec<(String, String, String)> {
+    let under = under.display().to_string();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        if matches!(flag, "--ro-bind" | "--bind" | "--symlink" | "--ro-bind-try" | "--bind-try" | "--dev-bind") && i + 2 < args.len() {
+            if args[i + 1].starts_with(&under) || args[i + 2].starts_with(&under) {
+                out.push((flag.to_string(), args[i + 1].clone(), args[i + 2].clone()));
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn node_installed() -> bool {
+    let found = Path::new("/usr/bin/node").is_file();
+    if !found {
+        eprintln!("no /usr/bin/node: skipped");
+    }
+    found
+}
+
+/// pnpm's layout, outside the sandbox's home (another PNPM_HOME, or an
+/// engine with a home of its own): bin/pi a shim, bin/node a link into the
+/// store, the package a link from global/ into the store, its dependencies
+/// links beside it into the store. It runs: node on its script, with
+/// exactly its packages and node read-only, nothing else of pnpm's.
+#[tokio::test]
+async fn a_cli_installed_by_pnpm_runs_with_only_its_node_and_its_packages() {
+    let Some(bwrap) = bwrap() else { return };
+    if !node_installed() {
+        return;
+    }
+    let fake = fake_home();
+    let outside = tempfile::tempdir().unwrap();
+    let pnpm = std::fs::canonicalize(outside.path()).unwrap().join("pnpm");
+    let links = pnpm.join("store/v11/links");
+    let node = links.join("@/node/26.0.0/h0/node_modules/node/bin/node");
+    write_exe(&node, "#!/bin/sh\nexec /usr/bin/node \"$@\"\n");
+    link(&node, &pnpm.join("bin/node"));
+    let agent = links.join("@s/agent/1.0.0/ha/node_modules/@s/agent");
+    write_exe(&agent.join("package.json"), r#"{"name":"@s/agent","bin":{"pi":"dist/cli.js"},"dependencies":{"dep-a":"1"}}"#);
+    write_exe(&agent.join("dist/cli.js"), AGENT_JS);
+    let dep_a = links.join("@/dep-a/1.0.0/hb/node_modules/dep-a");
+    write_exe(&dep_a.join("package.json"), r#"{"name":"dep-a","dependencies":{"dep-b":"1"}}"#);
+    write_exe(&dep_a.join("index.js"), "module.exports = 'a+' + require('dep-b');\n");
+    let dep_b = links.join("@/dep-b/1.0.0/hc/node_modules/dep-b");
+    write_exe(&dep_b.join("package.json"), r#"{"name":"dep-b"}"#);
+    write_exe(&dep_b.join("index.js"), "module.exports = 'b';\n");
+    link("../../../../../@/dep-a/1.0.0/hb/node_modules/dep-a", &links.join("@s/agent/1.0.0/ha/node_modules/dep-a"));
+    link("../../../../dep-b/1.0.0/hc/node_modules/dep-b", &links.join("@/dep-a/1.0.0/hb/node_modules/dep-b"));
+    let secret = links.join("@/secret/1.0.0/hs/node_modules/secret/index.js");
+    write_exe(&secret, "secret");
+    link("../../../../../store/v11/links/@s/agent/1.0.0/ha/node_modules/@s/agent", &pnpm.join("global/v11/g1/node_modules/@s/agent"));
+    write_exe(&pnpm.join("global/v11/g1/package.json"), "{}");
+    write_exe(&pnpm.join("bin/other"), "#!/bin/sh\n");
+    let rel = "../global/v11/g1/node_modules/@s/agent/dist/cli.js";
+    write_exe(&pnpm.join("bin/pi"), &pnpm_shim(rel, &pnpm.join("global/v11/g1/node_modules/@s/agent/dist/cli.js")));
+    let mut probes = vec![secret.clone(), pnpm.join("bin/other"), pnpm.join("global/v11/g1/package.json"), links.join("@/secret")];
+    // Node's folder is the sandbox's own (only its file is bound): try
+    // the file itself.
+    probes.extend(write_probes(&[&agent, &dep_a, &dep_b]));
+    probes.push(PathBuf::from(format!("w:{}", node.display())));
+    let (code, out, err, args) = run_agent(&fake, bwrap, &pnpm.join("bin/pi"), &probes).await;
+    for dir in [&agent, &dep_a, &dep_b] {
+        assert!(!dir.join("written-by-agent").exists(), "{}", dir.display());
+    }
+    assert!(std::fs::read_to_string(&node).unwrap().contains("/usr/bin/node"));
+    let mounts = mounts_in(&args, &pnpm);
+    println!("exit {code}\n--- stdout\n{out}--- stderr\n{err}--- mounts\n{mounts:#?}");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("loaded a+b"), "{out}");
+    assert!(!out.contains("VISIBLE") && !out.contains("WRITABLE"), "{out}");
+    assert_eq!(std::fs::read_to_string(fake.project.join("from-agent.txt")).unwrap(), "ok");
+    // Read-only: node's real file and the three packages, each at its real
+    // path; the two dependency links as links; nothing writable.
+    let path = |p: &Path| p.display().to_string();
+    let mut binds: Vec<String> = mounts.iter().filter(|m| m.0 == "--ro-bind").map(|m| { assert_eq!(m.1, m.2); m.1.clone() }).collect();
+    binds.sort();
+    let mut expected = vec![path(&node), path(&agent), path(&dep_a), path(&dep_b)];
+    expected.sort();
+    assert_eq!(binds, expected);
+    let symlinks: Vec<&String> = mounts.iter().filter(|m| m.0 == "--symlink").map(|m| &m.2).collect();
+    assert_eq!(symlinks.len(), 2, "{mounts:?}");
+    assert!(mounts.iter().all(|m| m.0 == "--ro-bind" || m.0 == "--symlink"), "{mounts:?}");
+}
+
+/// npm's layout, outside the sandbox's home: bin/agent a link to the
+/// package's `#!/usr/bin/env node` script, its dependencies inside the
+/// package. The package is there whole; npm's other packages are not.
+#[tokio::test]
+async fn a_cli_installed_by_npm_runs_with_its_package_and_not_its_neighbours() {
+    let Some(bwrap) = bwrap() else { return };
+    if !node_installed() {
+        return;
+    }
+    let fake = fake_home();
+    let outside = tempfile::tempdir().unwrap();
+    let prefix = std::fs::canonicalize(outside.path()).unwrap().join("npm-global");
+    let agent = prefix.join("lib/node_modules/@s/agent");
+    write_exe(&agent.join("package.json"), r#"{"name":"@s/agent","dependencies":{"dep-a":"1"}}"#);
+    write_exe(&agent.join("dist/cli.js"), AGENT_JS);
+    write_exe(&agent.join("node_modules/dep-a/index.js"), "module.exports = 'npm-a';\n");
+    let other = prefix.join("lib/node_modules/other/secret.js");
+    write_exe(&other, "secret");
+    link("../lib/node_modules/@s/agent/dist/cli.js", &prefix.join("bin/agent"));
+    write_exe(&prefix.join("bin/other"), "#!/bin/sh\n");
+    let mut probes = vec![other.clone(), prefix.join("bin/other")];
+    probes.extend(write_probes(&[&agent]));
+    let (code, out, err, args) = run_agent(&fake, bwrap, &prefix.join("bin/agent"), &probes).await;
+    let mounts = mounts_in(&args, &prefix);
+    println!("exit {code}\n--- stdout\n{out}--- stderr\n{err}--- mounts\n{mounts:#?}");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("loaded npm-a"), "{out}");
+    assert!(!out.contains("VISIBLE") && !out.contains("WRITABLE"), "{out}");
+    assert_eq!(mounts, vec![("--ro-bind".to_string(), agent.display().to_string(), agent.display().to_string())]);
+}
+
+/// A plain binary outside the home runs as before: itself, its folder
+/// read-only.
+#[tokio::test]
+async fn a_plain_binary_agent_runs_as_it_is_with_its_folder() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let outside = tempfile::tempdir().unwrap();
+    let tools = std::fs::canonicalize(outside.path()).unwrap().join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::copy("/bin/echo", tools.join("agent")).unwrap();
+    let (code, out, err, args) = run_agent(&fake, bwrap, &tools.join("agent"), &[PathBuf::from("plain ok")]).await;
+    println!("exit {code}\n{out}{err}");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "plain ok");
+    let t = tools.display().to_string();
+    assert_eq!(mounts_in(&args, &tools), vec![("--ro-bind".to_string(), t.clone(), t)]);
+}
+
+/// A pnpm shim that sets up more than node and its target is refused, not
+/// run with more bound.
+#[test]
+fn a_pnpm_shim_that_does_more_is_refused() {
+    let Some(bwrap) = bwrap() else { return };
+    let fake = fake_home();
+    let outside = tempfile::tempdir().unwrap();
+    let pnpm = std::fs::canonicalize(outside.path()).unwrap().join("pnpm");
+    write_exe(&pnpm.join("global/a/cli.js"), "#!/usr/bin/env node\n");
+    write_exe(&pnpm.join("bin/node"), "#!/bin/sh\n");
+    let shim = pnpm_shim("../global/a/cli.js", &pnpm.join("global/a/cli.js"))
+        .replacen("exe=\"\"\n", "exe=\"\"\nexport NODE_PATH=\"/home\"\n", 1);
+    write_exe(&pnpm.join("bin/pi"), &shim);
+    let sandbox = Sandbox::project(&fake.project, host(&fake, bwrap)).unwrap();
+    let error = Launch::new(&sandbox, HarnessId::Pi, &pnpm.join("bin/pi"), &fake.project, &[])
+        .unwrap_err()
+        .to_string();
+    println!("{error}");
+    assert!(error.contains("the pnpm shim") && error.contains("not run sandboxed"), "{error}");
+}

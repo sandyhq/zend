@@ -519,6 +519,7 @@ pub(crate) mod jsonl_tail;
 pub(crate) mod jsonrpc;
 pub(crate) mod lossy_lines;
 pub mod mock;
+pub(crate) mod node_entry;
 pub mod muse;
 mod model_context;
 pub mod opencode;

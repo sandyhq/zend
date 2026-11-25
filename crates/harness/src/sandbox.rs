@@ -10,8 +10,11 @@
 //! - the system (`/usr`, `/etc`, the `/bin` and `/lib*` links) read-only;
 //! - an empty tmpfs as `$HOME` and `/tmp`, its own `/proc` and `/dev`;
 //! - read-only in it: the agent's own install ([`TOOL_DIRS`], the
-//!   executable and its folder) and its login files ([`logins`]), each
-//!   checked so none shows the home, a hidden folder or Zend's data;
+//!   executable and its folder; for a Node launcher those binds don't show,
+//!   pnpm's shim or npm's link, node's real file and the script's package
+//!   and dependencies, run as node on the script: [`crate::node_entry`])
+//!   and its login files ([`logins`]), each checked so none shows the
+//!   home, a hidden folder or Zend's data;
 //! - the project root read-write, and the chat's own state folder
 //!   ([`Sandbox::with_state`]);
 //! - a new user, PID, IPC and UTS namespace, a new session (no terminal
@@ -890,6 +893,9 @@ pub struct Launch {
     agent_dir: Option<PathBuf>,
     /// The file it sees read-only there, kept until its launches are gone.
     _agent_file: Option<std::sync::Arc<LentFile>>,
+    /// A Node launcher's (launcher, node, script), real paths: started as
+    /// node on the script ([`Launch::command`]).
+    node_entry: Option<(PathBuf, PathBuf, PathBuf)>,
 }
 
 impl Launch {
@@ -972,7 +978,43 @@ impl Launch {
         let covered = |binds: &[(PathBuf, PathBuf)], path: &Path| {
             binds.iter().any(|(_, target)| path.starts_with(target))
         };
-        if let Ok(real) = std::fs::canonicalize(exe) {
+        // A Node launcher (pnpm's shim, npm's link to a node script) the
+        // binds so far don't show: run node on its script, and bind node's
+        // real file and the script's packages (crate::node_entry), each at
+        // its real path, read-only; pnpm's dependency links as links.
+        let real_exe = std::fs::canonicalize(exe).ok();
+        let entry = match &real_exe {
+            Some(real) if !in_system(real) && !covered(&binds, real) => {
+                crate::node_entry::resolve(exe, &crate::node_entry::node_on_path).map_err(|why| {
+                    tracing::warn!(exe = %exe.display(), %why, "sandbox: launcher refused");
+                    refuse(why)
+                })?
+            }
+            _ => crate::node_entry::Entry::Other,
+        };
+        let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let node_entry = match entry {
+            crate::node_entry::Entry::Node { node, script } => {
+                if !in_system(&node) && !covered(&binds, &node) {
+                    let file = sandbox.bindable(&node)?;
+                    binds.push((file.clone(), file));
+                }
+                let closure = crate::node_entry::closure(&script).map_err(|why| {
+                    tracing::warn!(exe = %exe.display(), %why, "sandbox: launcher refused");
+                    refuse(why)
+                })?;
+                for dir in closure.dirs {
+                    if !in_system(&dir) && !covered(&binds, &dir) {
+                        let dir = sandbox.bindable(&dir)?;
+                        binds.push((dir.clone(), dir));
+                    }
+                }
+                links = closure.links;
+                Some((exe.to_path_buf(), node, script))
+            }
+            crate::node_entry::Entry::Other => None,
+        };
+        if let Some(real) = real_exe.filter(|_| node_entry.is_none()) {
             // The agent's real file, and its folder unless that is one the
             // owner keeps scripts in (or the home): then only the file.
             if !in_system(&real) && !covered(&binds, &real) {
@@ -994,6 +1036,17 @@ impl Launch {
         }
         for (source, target) in &binds {
             push(&["--ro-bind".as_ref(), source.as_os_str(), target.as_os_str()]);
+        }
+        // The links Node finds dependencies through, where no bind (nor the
+        // project, nor the state folder, which show the host's own) has them.
+        let shown = |path: &Path| {
+            covered(&binds, path)
+                || in_system(path)
+                || path.starts_with(&sandbox.root)
+                || sandbox.state.as_ref().is_some_and(|state| path.starts_with(state))
+        };
+        for (target, link) in links.iter().filter(|(_, link)| !shown(link)) {
+            push(&["--symlink".as_ref(), target.as_os_str(), link.as_os_str()]);
         }
         let logins = if sandbox.keys.is_some() { &[][..] } else { logins };
         for file in logins {
@@ -1082,6 +1135,7 @@ impl Launch {
             keys: sandbox.keys.clone(),
             agent_dir: sandbox.agent_dir.clone(),
             _agent_file: sandbox.agent_file.as_ref().map(|(file, _)| file.clone()),
+            node_entry,
         };
         launch.preflight()?;
         Ok(launch)
@@ -1113,7 +1167,15 @@ impl Launch {
     /// down.
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
         let mut command = Command::new(&self.pasta);
-        command.args(&self.args).arg(program);
+        command.args(&self.args);
+        match &self.node_entry {
+            Some((exe, node, script)) if exe.as_os_str() == program.as_ref() => {
+                command.arg(node).arg(script);
+            }
+            _ => {
+                command.arg(program);
+            }
+        }
         command
     }
 

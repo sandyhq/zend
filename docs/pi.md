@@ -6,7 +6,8 @@ and the acceptance barrier are in [PROTOCOL.md](../crates/harness/src/pi/PROTOCO
 
 Install and authenticate Pi through its CLI. `PI_EXECUTABLE` selects an explicit
 Pi executable; otherwise Zend uses its usual PATH, login-shell and install-dir
-discovery. `PI_CODING_AGENT_DIR` continues to control Pi settings and credentials.
+discovery, pnpm's global bin included (`$PNPM_HOME`, `$PNPM_HOME/bin`,
+`~/.local/share/pnpm/bin`), so a pnpm install is found without it on the PATH. `PI_CODING_AGENT_DIR` continues to control Pi settings and credentials.
 `PI_ACP_EXECUTABLE` and `PI_ACP_PI_COMMAND` are no longer used. Zend neither
 installs nor launches `pi-acp`, and existing adapter files need not be deleted.
 
