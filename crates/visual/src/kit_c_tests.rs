@@ -250,6 +250,50 @@ fn a_wide_flowchart_fits_the_column_without_overlaps() {
     }
 }
 
+/// Edge labels, decision labels and wide characters stay in the column.
+#[test]
+fn flowchart_labels_stay_inside_at_the_column_width() {
+    use crate::style::{Align, TextSize};
+    let cjk = format!("flowchart LR\n a[{}]", "界".repeat(150));
+    let cases = [
+        "flowchart TD\n a -->|this is a very long labelled edge that must remain in the column| b".to_string(),
+        "flowchart TD\n a{Long decision label text with many words needing four lines here}".to_string(),
+        cjk,
+    ];
+    for src in &cases {
+        for width in [685.0_f32, 360.0] {
+            let script = format!("return ui.kit.Diagram {{ mermaid = [=[{src}]=] }}");
+            let mut visual = Visual::load(&script, 1).unwrap();
+            let node = visual.render().unwrap();
+            let NodeKind::Canvas(canvas) = &node.kind else { panic!("a canvas") };
+            let cmds = visual.draw_canvas(canvas.draw, width, canvas.height, 0.0, None).unwrap();
+            let diamond = cmds.iter().find_map(|c| match c {
+                DrawCmd::Fill { points, .. } if points.len() == 4 && points[0][0] == points[2][0] => Some(points.clone()),
+                _ => None,
+            });
+            for cmd in &cmds {
+                let DrawCmd::Text(t) = cmd else { continue };
+                assert!(!t.text.contains('\u{FFFD}'), "{src} at {width}: broken character in {:?}", t.text);
+                let cols: usize = t.text.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
+                let w = cols as f32 * if t.size == TextSize::Xs { 5.8 } else { 6.6 };
+                let (x0, x1) = match t.align {
+                    Align::Start => (t.x, t.x + w),
+                    Align::End => (t.x - w, t.x),
+                    _ => (t.x - w / 2.0, t.x + w / 2.0),
+                };
+                assert!(x0 >= 0.0 && x1 <= width, "{src} at {width}: {:?} spans {x0}..{x1}", t.text);
+                if let (Some(d), TextSize::Sm) = (&diamond, t.size) {
+                    // Within the diamond at the line's height.
+                    let (cx, cy, hx, hy) = (d[0][0], d[1][1], d[1][0] - d[0][0], d[1][1] - d[0][1]);
+                    let room = hx * (1.0 - (t.y - cy).abs() / hy);
+                    assert!(w / 2.0 <= room, "{src} at {width}: {:?} wider than the diamond at y={}", t.text, t.y);
+                    assert!((t.x - cx).abs() < 1.0);
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn scene_and_shader_wrap_the_3d_nodes() {
     let scene = tree(

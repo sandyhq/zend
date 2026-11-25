@@ -8,9 +8,43 @@ local define, fail, tone, build, children, cell = h.define, h.fail, h.tone, h.bu
 
 -- Small helpers ---------------------------------------------------------------
 
+-- Columns a character takes: two for East Asian wide characters, else one.
+local function wide(cp)
+	return (cp >= 0x1100 and cp <= 0x115F) or (cp >= 0x2E80 and cp <= 0xA4CF) or (cp >= 0xAC00 and cp <= 0xD7A3) or (cp >= 0xF900 and cp <= 0xFAFF) or (cp >= 0xFE30 and cp <= 0xFE4F) or (cp >= 0xFF00 and cp <= 0xFF60) or (cp >= 0xFFE0 and cp <= 0xFFE6) or cp >= 0x1F300
+end
+
+-- Columns a text takes (bytes, for text that is not UTF-8).
+local function cols(s)
+	s = tostring(s)
+	if not utf8.len(s) then
+		return #s
+	end
+	local n = 0
+	for _, cp in utf8.codes(s) do
+		n += wide(cp) and 2 or 1
+	end
+	return n
+end
+
+-- The longest start of 's' within 'max' columns, cut between characters.
+local function head(s, max)
+	if not utf8.len(s) then
+		return string.sub(s, 1, max)
+	end
+	local n, last = 0, 0
+	for p, cp in utf8.codes(s) do
+		n += wide(cp) and 2 or 1
+		if n > max then
+			break
+		end
+		last = (utf8.offset(s, 2, p) or (#s + 1)) - 1
+	end
+	return string.sub(s, 1, last)
+end
+
 -- Width of a text in pixels, estimated (a canvas cannot measure text).
 local function est(s, size)
-	return #tostring(s) * (size == "xs" and 5.8 or 6.6)
+	return cols(s) * (size == "xs" and 5.8 or 6.6)
 end
 
 -- At most as many characters as fit in 'width' pixels, with an ellipsis.
@@ -18,13 +52,13 @@ local function fit(s, width, size)
 	s = tostring(s)
 	local per = size == "xs" and 5.8 or 6.6
 	local max = math.floor(width / per)
-	if #s <= max then
+	if cols(s) <= max then
 		return s
 	end
 	if max <= 1 then
 		return ""
 	end
-	return string.sub(s, 1, max - 1) .. "…"
+	return head(s, max - 1) .. "…"
 end
 
 local function number(value, what)
@@ -1157,14 +1191,26 @@ local function rank_flowchart(d)
 	d.ranks = ranks
 end
 
--- A label in lines of at most 'max' characters, broken between words (a
--- longer word keeps its own line).
+-- A label in lines of at most 'max' columns, broken between words (a
+-- longer word is broken between its characters).
 local function wrap_words(label, max)
 	local lines, line = {}, ""
+	local words = {}
 	for word in string.gmatch(label, "%S+") do
+		while cols(word) > max do
+			local part = head(word, max)
+			if part == "" then
+				break
+			end
+			table.insert(words, part)
+			word = string.sub(word, #part + 1)
+		end
+		table.insert(words, word)
+	end
+	for _, word in ipairs(words) do
 		if line == "" then
 			line = word
-		elseif #line + 1 + #word <= max then
+		elseif cols(line) + 1 + cols(word) <= max then
 			line ..= " " .. word
 		else
 			table.insert(lines, line)
@@ -1198,42 +1244,82 @@ local function layout_flowchart(d, wrap, flip, tight)
 		end
 		local w, h = math.max(64, text + 26), #lines * LINE + 18
 		if n.shape == "diamond" then
-			w, h = w + 28, h + 12
+			-- Each line within the diamond's width at its own height: the
+			-- narrowest diamond that holds them, about as wide as tall.
+			local best = math.huge
+			for k = 0, 12 do
+				local hy = #lines * LINE / 2 + 12 + k * 6
+				local hx = 32
+				for i, line in ipairs(lines) do
+					local dy = math.abs(i - (#lines + 1) / 2) * LINE + 7
+					hx = math.max(hx, (est(line) / 2 + 6) / (1 - dy / hy))
+				end
+				if hx + hy < best then
+					best, w, h = hx + hy, math.ceil(hx * 2), math.ceil(hy * 2)
+				end
+			end
 		elseif n.shape == "circle" then
 			w = math.max(text + 20, h)
 			h = w
 		end
 		box[n.id] = { lines = lines, w = w, h = h }
 	end
-	-- Between ranks: room for the arrow, and across the page for the label
-	-- of an edge into the next rank.
-	local gaps = {}
+	-- The widest label of an edge into each node from the rank before.
+	local into = {}
+	for _, e in ipairs(d.edges) do
+		if e.label and e.to.rank == e.from.rank + 1 then
+			into[e.to.id] = math.max(into[e.to.id] or 0, est(e.label, "xs"))
+		end
+	end
+	-- Across: the nodes of a rank side by side. Top to bottom, the label
+	-- beside an edge's last run clears the next node's edge.
+	local across, sizes = 0, {}
+	local space = horizontal and 20 or 28
+	for r, list in ipairs(d.ranks) do
+		local size, c, prev = 0, 0, nil
+		for _, n in ipairs(list) do
+			local b = box[n.id]
+			size = math.max(size, horizontal and b.w or b.h)
+			local cross = horizontal and b.h or b.w
+			if prev and not horizontal and into[prev.id] then
+				c = math.max(c, prev.c + into[prev.id] + 16 - cross / 2)
+			end
+			b.c = c + cross / 2
+			c += cross + space
+			prev = b
+			prev.id = n.id
+		end
+		local far = c - space
+		if prev and not horizontal and into[prev.id] then
+			far = math.max(far, prev.c + 6 + into[prev.id] + 2)
+		end
+		across = math.max(across, far)
+		sizes[r] = size
+	end
+	-- Between ranks: room for the arrow, and left to right for the label of
+	-- an edge into the next rank (after its turn, when it turns).
+	-- (A gap with such a label turns early, near its start.)
+	local gaps, early = {}, {}
 	for r = 1, #d.ranks - 1 do
 		gaps[r] = tight and 24 or (horizontal and 48 or 40)
 	end
 	for _, e in ipairs(d.edges) do
 		if e.label and e.to.rank == e.from.rank + 1 and horizontal then
 			local r = e.from.rank + 1
-			gaps[r] = math.max(gaps[r], est(e.label, "xs") + 24)
+			local lw = est(e.label, "xs")
+			local straight = math.abs(box[e.from.id].c - box[e.to.id].c) < 1
+			gaps[r] = math.max(gaps[r], lw + (straight and 24 or 30))
+			early[r] = early[r] or not straight
 		end
 	end
-	local along, across = 0, 0
+	local along = 0
 	local starts = {}
 	for r, list in ipairs(d.ranks) do
-		local size, c = 0, 0
-		for i, n in ipairs(list) do
-			local b = box[n.id]
-			size = math.max(size, horizontal and b.w or b.h)
-			local cross = horizontal and b.h or b.w
-			b.c = c + cross / 2
-			c += cross + (horizontal and 20 or 28)
-		end
-		across = math.max(across, c - (horizontal and 20 or 28))
 		starts[r] = along
 		for _, n in ipairs(list) do
-			box[n.id].a = along + size / 2
+			box[n.id].a = along + sizes[r] / 2
 		end
-		along += size + (gaps[r] or 0)
+		along += sizes[r] + (gaps[r] or 0)
 	end
 	-- An edge that skips ranks runs along its source's row; where a node
 	-- between stands in that row, it goes round by a lane past the rest.
@@ -1260,7 +1346,7 @@ local function layout_flowchart(d, wrap, flip, tight)
 	end
 	local gap = {}
 	for r = 2, #d.ranks do
-		gap[r] = starts[r] - gaps[r - 1] / 2
+		gap[r] = early[r - 1] and (starts[r] - gaps[r - 1] + 12) or (starts[r] - gaps[r - 1] / 2)
 	end
 	local function flip_along(a)
 		return reverse and (along - a) or a
@@ -1338,6 +1424,13 @@ local function draw_flowchart(g, w, hh, d, l, selected, boxes)
 		local a = l.gap[r]
 		return a and (l.horizontal and ox + a * sx or 4 + a * sy) or nil
 	end
+	-- (Labelled edges into each node: one keeps its label past its turn.)
+	local labelled = {}
+	for _, e in ipairs(d.edges) do
+		if e.label then
+			labelled[e.to.id] = (labelled[e.to.id] or 0) + 1
+		end
+	end
 	for _, e in ipairs(d.edges) do
 		local x1, y1, w1, h1 = place(e.from)
 		local x2, y2, w2, h2 = place(e.to)
@@ -1386,22 +1479,40 @@ local function draw_flowchart(g, w, hh, d, l, selected, boxes)
 			arrow_head(g, last[1], last[2], last[1] - before[1], last[2] - before[2], color)
 		end
 		if e.label then
-			-- On the edge's longest run: above a level one, beside an upright
+			-- A forward edge's on its last run, its own past any turn it shares;
+			-- another's on its longest. Above a level run, beside an upright
 			-- one in a top-down layout (where the gap is the rank's height).
-			local pick, long = 1, -1
-			for i = 1, #pts - 1 do
-				local p, q = pts[i], pts[i + 1]
-				local len = math.abs(q[1] - p[1]) + math.abs(q[2] - p[2])
-				if len > long then
-					pick, long = i, len
+			local pick, long = #pts - 1, -1
+			if not forward or lane or labelled[e.to.id] > 1 then
+				for i = 1, #pts - 1 do
+					local p, q = pts[i], pts[i + 1]
+					local len = math.abs(q[1] - p[1]) + math.abs(q[2] - p[2])
+					if len > long then
+						pick, long = i, len
+					end
 				end
 			end
 			local p, q = pts[pick], pts[pick + 1]
 			local mx, my = (p[1] + q[1]) / 2, (p[2] + q[2]) / 2
-			if math.abs(q[2] - p[2]) >= 1 and not l.horizontal then
-				g:text(mx + 6, my, e.label, { size = "xs", color = "muted", baseline = "center" })
+			-- (Always inside the canvas: beside on the side with room, or cut.)
+			local lw = est(e.label, "xs")
+			if l.horizontal and forward and not lane and #pts == 4 and math.abs(q[2] - p[2]) < 1 then
+				-- (After the turn, clear of the upright run it shares.)
+				local s = q[1] >= p[1] and 1 or -1
+				local room = math.abs(q[1] - p[1]) - 6
+				g:text(p[1] + s * 4, my - 8, fit(e.label, room, "xs"), { size = "xs", color = "muted", align = s > 0 and "start" or "end", baseline = "center" })
+			elseif math.abs(q[2] - p[2]) >= 1 and not l.horizontal then
+				local right, left = w - 2 - (mx + 6), mx - 6 - 2
+				if lw <= right or right >= left then
+					g:text(mx + 6, my, fit(e.label, right, "xs"), { size = "xs", color = "muted", baseline = "center" })
+				else
+					g:text(mx - 6, my, fit(e.label, left, "xs"), { size = "xs", color = "muted", align = "end", baseline = "center" })
+				end
 			else
-				g:text(mx, my - 8, e.label, { size = "xs", color = "muted", align = "center", baseline = "center" })
+				local text = fit(e.label, w - 4, "xs")
+				local half = est(text, "xs") / 2
+				local cx = math.max(2 + half, math.min(w - 2 - half, mx))
+				g:text(cx, my - 8, text, { size = "xs", color = "muted", align = "center", baseline = "center" })
 			end
 		end
 	end
@@ -1431,10 +1542,12 @@ local function draw_flowchart(g, w, hh, d, l, selected, boxes)
 			cut[room] = cut[room] .. " …"
 			lines = cut
 		end
-		local inner = nw - (n.shape == "diamond" and 36 or 12)
 		for i, line in ipairs(lines) do
-			local text = sx < 1 and fit(line, inner) or line
-			g:text(x, y + (i - (#lines + 1) / 2) * LINE, text, { size = "sm", align = "center", baseline = "center" })
+			local dy = (i - (#lines + 1) / 2) * LINE
+			-- (A diamond narrows away from its middle.)
+			local inner = n.shape == "diamond" and nw * (1 - (math.abs(dy) + 7) / math.max(nh / 2, 1)) - 12 or nw - 12
+			local text = (sx < 1 or sy < 1 or n.shape == "diamond") and fit(line, inner) or line
+			g:text(x, y + dy, text, { size = "sm", align = "center", baseline = "center" })
 		end
 		table.insert(boxes, { id = n.id, x0 = x - nw / 2, x1 = x + nw / 2, y0 = y - nh / 2, y1 = y + nh / 2 })
 	end
