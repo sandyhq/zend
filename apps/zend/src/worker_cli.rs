@@ -45,10 +45,11 @@ pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Pa
                 let key = w["key"].as_str().unwrap_or_default();
                 let limits = &w["limits"];
                 println!(
-                    "{}  {}  {}  key {}…  {} memory, {} cpus, {} pids  {}",
+                    "{}  {}  {}  device {}  key {}…  {} memory, {} cpus, {} pids  {}",
                     w["name"].as_str().unwrap_or_default(),
                     terminal_safe(w["state"].as_str().unwrap_or("?"), false),
                     w["image"].as_str().unwrap_or_default(),
+                    w["deviceId"].as_str().unwrap_or_default(),
                     &key[..key.len().min(16)],
                     limits["memory"].as_str().unwrap_or("?"),
                     limits["cpus"].as_str().unwrap_or("?"),

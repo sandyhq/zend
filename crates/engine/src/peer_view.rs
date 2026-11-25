@@ -386,8 +386,15 @@ impl PeerView {
             chats: locals.chats.iter().chain(&locals.sessions).chain(&locals.made).cloned().collect(),
             spaces: locals.spaces.clone(),
         };
+        // (Nor a device's id: this one's, its workspace's, a server's.)
+        taken.chats.extend(locals.devices.iter().chain([&locals.own]).cloned());
         drop(locals);
-        for s in self.seen.borrow().iter().filter(|(k, _)| k.as_str() != key).map(|(_, s)| s) {
+        taken.chats.extend(self.seen.borrow().values().map(|s| s.device_id.clone()));
+        // A paired server's ids aren't a worker's to take, whichever came
+        // first: a worker's rows count only against another worker's (and
+        // what a paired server shows merges first, [`merge`]).
+        let worker = key.starts_with(WORKER_PREFIX);
+        for s in self.seen.borrow().iter().filter(|(k, _)| k.as_str() != key && (worker || !k.starts_with(WORKER_PREFIX))).map(|(_, s)| s) {
             taken.chats.extend(s.chats.iter().chain(&s.sessions).filter_map(|r| r["id"].as_str().or(r["chatId"].as_str()).map(str::to_string)));
             taken.spaces.extend(s.spaces.iter().filter_map(|p| p["id"].as_str().map(str::to_string)));
         }
@@ -418,6 +425,9 @@ impl PeerView {
         let rank = |key: &str| key.starts_with(WORKER_PREFIX);
         if rank(key) && !plain_id(device_id) {
             return Err(format!("it says it is {:?}, not a device id", device_id.chars().take(40).collect::<String>()));
+        }
+        if !rank(key) && device_id.starts_with(crate::workers::DEVICE_PREFIX) {
+            return Err(format!("it says it is {device_id}, a worker's id"));
         }
         if zend_proto::is_cloud_device(device_id, "") {
             return Err(format!("it says it is {device_id}, a Cloud device's id"));
@@ -489,19 +499,19 @@ impl PeerView {
         };
         // Not reached, or refused (unpaired there: its handshake's 401; a
         // worker answering with another key).
-        let (client, name, paired_at, worker_project) = match key.strip_prefix(WORKER_PREFIX) {
+        let (client, name, paired_at, worker_project, worker_device) = match key.strip_prefix(WORKER_PREFIX) {
             Some(worker) => {
                 let workers = crate::workers::Workers::new(link.data_dir());
                 let worker = workers.get(worker).map_err(|_| Quiet::Gone)?;
                 drop(link);
                 let client = workers.connect(&worker.name).await.map_err(quiet)?;
-                (client, worker.name.clone(), worker.created_at, Some(worker.project().to_string()))
+                (client, worker.name.clone(), worker.created_at, Some(worker.project()), Some(worker.device_id()))
             }
             None => {
                 let peer = link.peers().into_iter().find(|p| p.key == key).ok_or(Quiet::Gone)?;
                 let client = link.connect(key).await.map_err(quiet)?;
                 drop(link);
-                (client, peer.name.clone().unwrap_or_else(|| "Paired server".into()), peer.paired_at, None)
+                (client, peer.name.clone().unwrap_or_else(|| "Paired server".into()), peer.paired_at, None, None)
             }
         };
         let client = Arc::new(client);
@@ -509,7 +519,9 @@ impl PeerView {
             RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),
             other => Quiet::Refused(other.to_string()),
         })?;
-        let device_id = info["deviceId"].as_str().filter(|d| !d.is_empty() && d.len() <= 200).map(str::to_string);
+        // A worker's device id is its server's word ([`crate::workers::device_of`]):
+        // what it says (`EngineInfo`) is only that it answers.
+        let device_id = worker_device.or_else(|| info["deviceId"].as_str().filter(|d| !d.is_empty() && d.len() <= 200).map(str::to_string));
         let Some(device_id) = device_id else {
             return Err(Quiet::Refused("it said no device id".into()));
         };
@@ -575,6 +587,10 @@ impl PeerView {
         }
         self.live.lock().unwrap().insert(key.to_string(), Live { client: client.clone() });
         tracing::info!(peer = %key, device = %device_id, reads = chats.is_some(), "peer view: a paired server is shown");
+        // A worker's sessions, as it said them: shown only for a chat of its
+        // shown now (in its project), so again as its chats change.
+        let mut said_sessions: Option<Vec<Value>> = None;
+        let worker = worker_project.is_some();
         let mut beat = tokio::time::interval(HEARTBEAT);
         beat.tick().await;
         loop {
@@ -594,6 +610,9 @@ impl PeerView {
                         s.configs.retain(|c, _| ids.contains(c.as_str()));
                         s.chats = rows.clone();
                         s.rebuild_spaces();
+                        if worker {
+                            s.sessions = of_chats_shown(said_sessions.as_deref().unwrap_or_default(), &s.chats);
+                        }
                     });
                     if !shown {
                         break;
@@ -602,7 +621,14 @@ impl PeerView {
                 rows = next(&mut sessions) => {
                     let Some(rows) = rows else { break };
                     let Some(rows) = self.admit(key, &device_id, Kind::Sessions, &rows, only_in) else { continue };
-                    if !self.update(key, |s| s.sessions = rows) {
+                    let shown = if worker {
+                        let shown = self.update(key, |s| s.sessions = of_chats_shown(&rows, &s.chats));
+                        said_sessions = Some(rows);
+                        shown
+                    } else {
+                        self.update(key, |s| s.sessions = rows)
+                    };
+                    if !shown {
                         break;
                     }
                 }
@@ -656,7 +682,7 @@ impl PeerView {
             if locals.spaces.contains(id) {
                 return None;
             }
-            seen.iter().find(|(_, s)| s.spaces.iter().any(|p| p["id"].as_str() == Some(id))).map(|(k, _)| k.clone())
+            paired_first(&seen).find(|(_, s)| s.spaces.iter().any(|p| p["id"].as_str() == Some(id))).map(|(k, _)| k.clone())
         };
         let text = |key: &str| params.get(key).and_then(Value::as_str).filter(|v| !v.is_empty());
         if let Some(device) = text("targetDeviceId") {
@@ -677,7 +703,7 @@ impl PeerView {
             if let Some((key, _)) = self.made.lock().unwrap().get(chat) {
                 return Some(key.clone());
             }
-            if let Some(key) = seen.iter().find(|(_, s)| s.chats.iter().any(|c| c["id"].as_str() == Some(chat))).map(|(k, _)| k.clone()) {
+            if let Some(key) = paired_first(&seen).find(|(_, s)| s.chats.iter().any(|c| c["id"].as_str() == Some(chat))).map(|(k, _)| k.clone()) {
                 return Some(key);
             }
         }
@@ -746,9 +772,16 @@ impl PeerView {
                     if map.get("branch").and_then(Value::as_str).is_none_or(str::is_empty) {
                         map.remove("branch");
                     }
-                    // A worker's chat is in its one project, whatever named it.
+                    // A worker's chat is in its one project, whatever named it,
+                    // and is sent its id and config alone.
                     if let Some(project) = &worker_project {
-                        map.insert("spaceId".into(), json!(project));
+                        let config = map.remove("config").unwrap_or(Value::Null);
+                        *map = serde_json::Map::from_iter([
+                            ("op".to_string(), json!("createChat")),
+                            ("chatId".to_string(), json!(chat)),
+                            ("spaceId".to_string(), json!(project)),
+                            ("config".to_string(), config),
+                        ]);
                     }
                 }
                 self.made.lock().unwrap().insert(chat.clone(), (key.to_string(), params["config"].clone()));
@@ -760,6 +793,12 @@ impl PeerView {
                 return Ok(RpcReply::Value(json!({})));
             }
             _ => {}
+        }
+        // A worker's device is its server's name for it, not its own.
+        if worker_project.is_some()
+            && let Some(map) = params.as_object_mut()
+        {
+            map.remove("targetDeviceId");
         }
         if method == methods::QUEUE_COMMAND {
             only_what_a_server_runs(&mut params);
@@ -927,7 +966,10 @@ fn forwarded_to_worker(method: &str, params: &Value) -> bool {
 /// per-turn model token (plan step 4d-4): a real model turn in a worker
 /// needs one minted for that turn and put into the run here; until then a
 /// worker's agent runs on the API keys it was made with (or none: a
-/// scripted agent).
+/// scripted agent). What it may add is that token alone: short-lived,
+/// scoped to this turn and its model's provider; never a key of this
+/// device's, a path or anything else of its (the run reached here already
+/// cut to its words and agent, [`only_what_a_server_runs`]).
 fn worker_turn(key: &str, params: &mut Value) {
     let _ = (key, params);
 }
@@ -1037,6 +1079,10 @@ fn clean(what: Kind, rows: &[Value], device: &str, taken: &Taken, only_in: Optio
                 if !obj.get("cwd").and_then(Value::as_str).is_some_and(project_relative) {
                     obj.remove("cwd");
                 }
+                // A worker's: only what the window shows of a chat.
+                if only_in.is_some() {
+                    obj = worker_chat(obj);
+                }
             }
             Kind::Sessions => {}
         }
@@ -1064,6 +1110,44 @@ fn project_relative(cwd: &str) -> bool {
     !cwd.is_empty() && !whole && cwd.split(['/', '\\']).all(|part| part != "..")
 }
 
+/// What of a worker's chat row shows: a fixed few fields, each of its
+/// kind (text at most [`MAX_TEXT`] characters), its config only the
+/// agent's settings; no `roomGen`, folder or anything else it adds. (Its
+/// parent, among its own chats, is checked after.)
+fn worker_chat(row: serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    const TEXT: [&str; 8] = ["id", "title", "spaceId", "lastMessageAt", "lastMessagePreview", "createdAt", "lastSeenAt", "parentChatId"];
+    const CONFIG: [&str; 7] = ["harness", "model", "reasoning", "modelOptions", "sandbox", "access", "plan"];
+    let mut kept = serde_json::Map::new();
+    for (key, value) in row {
+        let value = match (key.as_str(), value) {
+            (k, Value::String(text)) if TEXT.contains(&k) || k == "childKind" => Value::String(text.chars().take(MAX_TEXT).collect()),
+            (k, Value::Null) if TEXT.contains(&k) || k == "childKind" => Value::Null,
+            ("archived", Value::Bool(b)) => Value::Bool(b),
+            ("config", Value::Object(config)) => Value::Object(config.into_iter().filter(|(k, _)| CONFIG.contains(&k.as_str())).collect()),
+            ("config", Value::Null) => Value::Null,
+            _ => continue,
+        };
+        kept.insert(key, value);
+    }
+    kept
+}
+
+/// The longest text of a worker's chat row shown.
+const MAX_TEXT: usize = 2000;
+
+/// Of a worker's session rows, those of a chat of it shown (`chats`).
+fn of_chats_shown(sessions: &[Value], chats: &[Value]) -> Vec<Value> {
+    let shown: HashSet<&str> = chats.iter().filter_map(|c| c["id"].as_str()).collect();
+    sessions.iter().filter(|s| s["chatId"].as_str().is_some_and(|c| shown.contains(c))).cloned().collect()
+}
+
+/// `seen`, the paired servers before the workers: of an id both have, the
+/// paired server's shows and is called.
+fn paired_first(seen: &BTreeMap<String, Seen>) -> impl Iterator<Item = (&String, &Seen)> {
+    let worker = |k: &String| k.starts_with(WORKER_PREFIX);
+    seen.iter().filter(move |(k, _)| !worker(k)).chain(seen.iter().filter(move |(k, _)| worker(k)))
+}
+
 /// The next item of a stream this side may not have (never, then).
 async fn next(sub: &mut Option<RpcSubscription>) -> Option<Value> {
     match sub {
@@ -1085,7 +1169,7 @@ fn merge(list: List, local: Value, seen: &BTreeMap<String, Seen>) -> Vec<Value> 
     };
     let key = list.key();
     let mut keys: HashSet<String> = rows.iter().filter_map(|r| r[key].as_str().map(str::to_string)).collect();
-    for s in seen.values() {
+    for (_, s) in paired_first(seen) {
         for row in s.rows(list) {
             let Some(k) = row[key].as_str() else { continue };
             if keys.insert(k.to_string()) {

@@ -47,9 +47,12 @@
 //!   keeps the routes it started with: an address the host gains later is
 //!   blocked from its next start on (stop and start it).
 //! - Its sessions. Its project's id is its own (`work-<its key's first 12
-//!   hex>`, `conf/project`; `work` for a worker made before), so its
+//!   hex>`, `conf/project`, written again at every start: a worker made
+//!   before had `work` and gets its own from its next start), so its
 //!   server's window ([`crate::peer_view`]) shows each running worker as a
 //!   device with one project, `work`, and sends a chat made there to it.
+//!   Its device id there is its server's word too (`worker-<its key's
+//!   first 12 hex>`, [`device_of`]), never what it says.
 //! - Keys. API keys for its agents are Podman secrets (`zend-worker-<name>-<provider>`),
 //!   given as the provider's variable (`ANTHROPIC_API_KEY`, …); no login
 //!   file of the owner's goes in.
@@ -143,17 +146,33 @@ pub struct Worker {
     #[serde(default)]
     pub limits: Limits,
     /// Its project's id on the worker (empty: made before ids were its
-    /// own, [`crate::worker::PROJECT`]); see [`Worker::project`].
+    /// own); see [`Worker::project`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project: String,
 }
 
 impl Worker {
-    /// Its one project's id on the worker.
-    pub fn project(&self) -> &str {
-        if self.project.is_empty() { crate::worker::PROJECT } else { &self.project }
+    /// Its one project's id on the worker: [`project_of`] its key for one
+    /// made before ids were its own (`work` then), from its next start on.
+    pub fn project(&self) -> String {
+        if self.project.is_empty() { project_of(&self.key) } else { self.project.clone() }
+    }
+
+    /// The device id its server shows it as ([`device_of`]).
+    pub fn device_id(&self) -> String {
+        device_of(&self.key)
     }
 }
+
+/// The device id a worker with public key `key` shows as on its server:
+/// the server's, whatever the worker says (a worker is as trusted as its
+/// agent).
+pub fn device_of(key: &str) -> String {
+    format!("{DEVICE_PREFIX}{}", key.get(..12).unwrap_or(key))
+}
+
+/// What a worker's device id starts with; no paired server shows as one.
+pub const DEVICE_PREFIX: &str = "worker-";
 
 /// The project id a worker with public key `key` gets.
 pub fn project_of(key: &str) -> String {
@@ -461,6 +480,7 @@ impl Workers {
         if self.state(name).await != "running" {
             self.write_conf(name, crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())
                 .map_err(|e| format!("worker {name}: {e}"))?;
+            // (A worker made with `work` gets its own id from here on.)
             self.write_conf(name, crate::worker::PROJECT_FILE, worker.project().as_bytes())
                 .map_err(|e| format!("worker {name}: {e}"))?;
             self.podman(&["init", &worker.container], None).await?;
@@ -595,6 +615,7 @@ impl zend_rpc::RpcService for WorkersRpc {
                     let mut value = serde_json::to_value(&worker).map_err(|e| RpcError::Failed(e.to_string()))?;
                     value["state"] = state.into();
                     value["project"] = worker.project().into();
+                    value["deviceId"] = worker.device_id().into();
                     listed.push(value);
                 }
                 Ok(RpcReply::Value(json!({ "workers": listed })))
@@ -617,6 +638,21 @@ impl zend_rpc::RpcService for WorkersRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// A worker made before project ids were its own (none kept) gets its
+    /// own, as a new one does: what its start writes to `conf/project`.
+    /// Its device id is its server's, from its key.
+    #[test]
+    fn an_old_worker_gets_its_own_project_and_every_worker_its_device() {
+        let key = "a4b3f3e0b0839d1c".repeat(4);
+        let old: Worker = serde_json::from_value(json!({ "name": "w", "key": key, "image": "i", "container": "c" })).unwrap();
+        assert_eq!(old.project(), "work-a4b3f3e0b083");
+        assert_eq!(old.project(), project_of(&key));
+        let new = Worker { project: project_of(&key), ..old.clone() };
+        assert_eq!(new.project(), old.project());
+        assert_eq!(old.device_id(), "worker-a4b3f3e0b083");
+    }
 
     #[test]
     fn names_and_blocked_networks() {

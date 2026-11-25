@@ -74,6 +74,8 @@ fn assemble(data_dir: &Path, device_id: &str) -> EngineCore {
 /// One in-process worker.
 struct Worker {
     core: EngineCore,
+    /// The device id its server shows it as (`worker-…`), whatever it says.
+    device: String,
     heard: Heard,
     work: PathBuf,
     project: String,
@@ -107,7 +109,8 @@ impl Server {
         Self { _temp: temp, root, core, link, window, workers: Vec::new() }
     }
 
-    /// Worker `name` as `device`, saying `lie`; kept in `workers.json`.
+    /// Worker `name`, its engine calling itself `device`, saying `lie`;
+    /// kept in `workers.json`.
     fn add_worker(&mut self, name: &str, device: &str, lie: Lie) {
         let der = NodeKey::generate_pkcs8().unwrap();
         let key = NodeKey::from_pkcs8(&der).unwrap();
@@ -145,7 +148,7 @@ impl Server {
         }));
         std::fs::write(&saved, serde_json::to_vec(&all).unwrap()).unwrap();
         self.link.view().refresh();
-        self.workers.push(Worker { core, heard, work, project, _served: served });
+        self.workers.push(Worker { core, device: zend_engine::workers::device_of(key.public()), heard, work, project, _served: served });
     }
 }
 
@@ -286,22 +289,36 @@ async fn transcript_says(window: &RpcClient, chat: &str, words: &str) -> String 
 async fn a_worker_shows_as_a_device_and_a_chat_runs_in_its_folder() {
     let mut s = Server::new().await;
     s.add_worker("w1", "device-w1", honest());
+    let w1 = s.workers[0].device.clone();
     let (project, work) = (s.workers[0].project.clone(), s.workers[0].work.clone());
     assert!(project.starts_with("work-") && project.len() == 17, "{project}");
 
     let mut devices = Watched::open(&s.window, methods::WATCH_DEVICES, "id").await;
-    let rows = devices.until("the worker's device", |rows| has(rows, "device-w1")).await;
-    let device = row(&rows, "device-w1");
+    let rows = devices.until("the worker's device", |rows| has(rows, w1.as_str())).await;
+    // Its device id is its server's word, not what it says it is.
+    assert!(w1.starts_with("worker-") && w1.len() == 19, "{w1}");
+    assert!(!has(&rows, "device-w1"), "shown as what it says: {rows:?}");
+    let device = row(&rows, w1.as_str());
     assert_eq!(device["name"], "w1", "{device}");
     assert_eq!(device["capabilities"], json!(["paired-server", "worker"]), "{device}");
     let mut spaces = Watched::open(&s.window, methods::WATCH_SPACES, "id").await;
     let rows = spaces.until("its project", |rows| has(rows, &project)).await;
     let p = row(&rows, &project);
-    assert_eq!((p["deviceId"].as_str(), p["name"].as_str(), p["path"].as_str()), (Some("device-w1"), Some("work"), Some("")));
+    assert_eq!((p["deviceId"].as_str(), p["name"].as_str(), p["path"].as_str()), (Some(w1.as_str()), Some("work"), Some("")));
     assert!(!has(&rows, "elsewhere"), "a project it has besides shows: {rows:?}");
 
-    let made = create(&s.window, "w-chat", "device-w1").await.expect("made on the worker");
-    assert_eq!(made["deviceId"], "device-w1", "{made}");
+    let made = s
+        .window
+        .call(
+            methods::MUTATE,
+            json!({ "op": "createChat", "chatId": "w-chat", "deviceId": w1.as_str(), "cwd": "/home/server/private", "branch": "feature-x",
+                    "title": "t", "parentChatId": "own-chat", "worktree": true, "sourceContext": { "path": "/home/server" }, "config": mock_config() }),
+        )
+        .await
+        .expect("made on the worker");
+    let sent: Vec<Value> = s.workers[0].heard.lock().unwrap().iter().filter(|(m, _)| m == methods::MUTATE).map(|(_, p)| p.clone()).collect();
+    assert_eq!(sent, vec![json!({ "op": "createChat", "chatId": "w-chat", "spaceId": project, "config": mock_config() })], "a createChat sent more");
+    assert_eq!(made["deviceId"], w1.as_str(), "{made}");
     let chat = s.workers[0].core.workspace.chat("w-chat").unwrap().expect("the chat is the worker's");
     assert_eq!(chat.space_id.as_deref(), Some(project.as_str()));
     assert!(s.core.workspace.chat("w-chat").unwrap().is_none(), "made here too");
@@ -312,7 +329,7 @@ async fn a_worker_shows_as_a_device_and_a_chat_runs_in_its_folder() {
     let mut chats = Watched::open(&s.window, methods::WATCH_CHATS, "id").await;
     let rows = chats.until("its chat", |rows| has(rows, "w-chat")).await;
     let c = row(&rows, "w-chat");
-    assert_eq!(c["deviceId"], "device-w1");
+    assert_eq!(c["deviceId"], w1.as_str());
     // Its folder as a field: none (what its agent says is its own words).
     assert!(c.get("cwd").is_none_or(|cwd| cwd == "."), "its folder shows: {c}");
     let queued: Vec<String> = s.workers[0].heard.lock().unwrap().iter().filter(|(m, _)| m == methods::QUEUE_COMMAND).map(|(_, p)| p.to_string()).collect();
@@ -320,10 +337,10 @@ async fn a_worker_shows_as_a_device_and_a_chat_runs_in_its_folder() {
 
     // Not a worker's to take: said no to here, unheard there.
     for (method, params) in [
-        (methods::PEER_LIST_PROJECT_FILES, json!({ "targetDeviceId": "device-w1", "projectId": project })),
-        (methods::ENGINE_INFO, json!({ "targetDeviceId": "device-w1" })),
+        (methods::PEER_LIST_PROJECT_FILES, json!({ "targetDeviceId": w1.as_str(), "projectId": project })),
+        (methods::ENGINE_INFO, json!({ "targetDeviceId": w1.as_str() })),
         (methods::MUTATE, json!({ "op": "archiveChat", "chatId": "w-chat" })),
-        (methods::SET_PEER_KEY, json!({ "targetDeviceId": "device-w1", "peer": "x", "provider": "anthropic", "key": "sk" })),
+        (methods::SET_PEER_KEY, json!({ "targetDeviceId": w1.as_str(), "peer": "x", "provider": "anthropic", "key": "sk" })),
     ] {
         let before = s.workers[0].heard.lock().unwrap().len();
         let refused = s.window.call(method, params.clone()).await;
@@ -333,7 +350,7 @@ async fn a_worker_shows_as_a_device_and_a_chat_runs_in_its_folder() {
         let heard: Vec<String> = s.workers[0].heard.lock().unwrap()[before..].iter().map(|(m, _)| m.clone()).collect();
         assert!(!heard.iter().any(|m| m == method), "the worker heard {method}");
     }
-    let harnesses = s.window.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-w1" })).await;
+    let harnesses = s.window.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": w1.as_str() })).await;
     assert!(harnesses.is_ok(), "control: its harnesses: {harnesses:?}");
     assert!(s.workers[0].heard.lock().unwrap().iter().any(|(m, _)| m == methods::LIST_HARNESSES));
 }
@@ -345,11 +362,12 @@ async fn a_worker_shows_as_a_device_and_a_chat_runs_in_its_folder() {
 async fn a_paired_server_and_the_phone_see_no_worker() {
     let mut s = Server::new().await;
     s.add_worker("w1", "device-w1", honest());
+    let w1 = s.workers[0].device.clone();
     let project = s.workers[0].project.clone();
     let mut chats = Watched::open(&s.window, methods::WATCH_CHATS, "id").await;
     let mut devices = Watched::open(&s.window, methods::WATCH_DEVICES, "id").await;
-    devices.until("control: the window shows the worker", |rows| has(rows, "device-w1")).await;
-    create(&s.window, "w-chat", "device-w1").await.expect("made on the worker");
+    devices.until("control: the window shows the worker", |rows| has(rows, w1.as_str())).await;
+    create(&s.window, "w-chat", w1.as_str()).await.expect("made on the worker");
     chats.until("control: the window shows the worker's chat", |rows| has(rows, "w-chat")).await;
 
     // A laptop paired to this server, granted all it reads and runs.
@@ -366,7 +384,7 @@ async fn a_paired_server_and_the_phone_see_no_worker() {
     assert!(!has(&rows, "w-chat"), "the laptop sees the worker's chat: {rows:?}");
     let mut l_devices = Watched::open(&laptop_window, methods::WATCH_DEVICES, "id").await;
     let rows = l_devices.until("the laptop: this server", |rows| has(rows, "device-server")).await;
-    assert!(!has(&rows, "device-w1"), "the laptop sees the worker: {rows:?}");
+    assert!(!has(&rows, w1.as_str()), "the laptop sees the worker: {rows:?}");
     let mut l_spaces = Watched::open(&laptop_window, methods::WATCH_SPACES, "id").await;
     let rows = l_spaces.settle(2).await;
     assert!(has(&rows, "sp") && !has(&rows, &project), "{rows:?}");
@@ -375,7 +393,7 @@ async fn a_paired_server_and_the_phone_see_no_worker() {
     let before = s.workers[0].heard.lock().unwrap().len();
     let _ = as_peer.call(methods::QUEUE_COMMAND, run("w-chat", "/pwd")).await;
     let _ = as_peer.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "l-made", "spaceId": project, "config": mock_config() })).await;
-    let _ = as_peer.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-w1" })).await;
+    let _ = as_peer.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": w1.as_str() })).await;
     let _ = as_peer.subscribe_checked(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "w-chat" })).await;
 
     // The phone link, served this server's own (wrapped) service.
@@ -396,11 +414,11 @@ async fn a_paired_server_and_the_phone_see_no_worker() {
     if let Ok(sub) = phone.subscribe_checked(methods::WATCH_DEVICES, json!({})).await {
         let mut devices = Watched { sub, rows: Vec::new(), key: "id" };
         let rows = devices.settle(1).await;
-        assert!(!has(&rows, "device-w1"), "the phone sees the worker: {rows:?}");
+        assert!(!has(&rows, w1.as_str()), "the phone sees the worker: {rows:?}");
     }
-    let _ = phone.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-w1" })).await;
+    let _ = phone.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": w1.as_str() })).await;
     let _ = phone.call(methods::QUEUE_COMMAND, run("w-chat", "/pwd")).await;
-    let _ = phone.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "phone-made", "deviceId": "device-w1", "spaceId": project })).await;
+    let _ = phone.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "phone-made", "deviceId": w1.as_str(), "spaceId": project })).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let heard: Vec<String> = s.workers[0].heard.lock().unwrap()[before..]
         .iter()
@@ -414,15 +432,21 @@ async fn a_paired_server_and_the_phone_see_no_worker() {
     assert!(!s.workers[0].work.join(".zend-mock-ran").exists(), "a run reached the worker");
 }
 
-/// A worker saying it is this device, a paired server or no plain id
-/// doesn't show (the paired server keeps its id); its rows can't take this
-/// device's chat, show a chat outside its project, or say they're another
-/// device's; a made chat's reply says the worker's device. Control: an
-/// honest worker beside them shows.
+/// A worker's device id is its server's (`worker-<12 hex of its key>`),
+/// whatever it says it is: this device, a paired server (shown or not, as
+/// here before it grants anything) or no plain id. A paired server saying
+/// it is a worker doesn't show. Its rows can't take this device's chats (an
+/// archived one too) or a device's id, show a chat outside its project or a
+/// session of a chat not shown, carry anything but a chat row's few
+/// fields, or say they're another device's; a made chat's reply says the
+/// worker's device. Control: an honest worker beside them shows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_a_worker_lies_about_is_dropped() {
     let mut s = Server::new().await;
-    // A paired server this server dials, as device-p.
+    s.core.workspace.create_chat("archived-chat", Some("sp"), Some(&s.core.device_id), None, None).unwrap();
+    s.window.call(methods::MUTATE, json!({ "op": "setChatArchived", "chatId": "archived-chat", "archived": true })).await.expect("archived");
+    // A paired server this server dials, as device-p, granting nothing yet:
+    // not shown, its id free to take.
     let p = assemble(&s.root.join("p"), "device-p");
     let p_own = s.root.join("p-projects").join("pp");
     std::fs::create_dir_all(&p_own).unwrap();
@@ -431,7 +455,6 @@ async fn what_a_worker_lies_about_is_dropped() {
     let p_link = PeerLink::new(&s.root.join("p"), 0, p.rpc_service(), loopback());
     let code = p_link.pair().await.expect("pair");
     s.link.join(code["code"].as_str().unwrap()).await.expect("join");
-    p_link.set_grants(s.link.node_key().unwrap().public(), &["sessions.read".to_string()]).expect("grants");
 
     let says_device = |id: &'static str| -> Lie {
         Arc::new(move |method, mut v| {
@@ -441,20 +464,33 @@ async fn what_a_worker_lies_about_is_dropped() {
             v
         })
     };
-    s.add_worker("w-here", "device-wh", says_device("device-server"));
     s.add_worker("w-paired", "device-wp", says_device("device-p"));
+    s.add_worker("w-here", "device-wh", says_device("device-server"));
     s.add_worker("w-odd", "device-wo", says_device("device\nodd"));
-    // Rows: this device's chat, a chat in another project, another
-    // device's id and a folder; a made chat's reply naming this device.
+    // Rows: this device's chats (an archived one), a device's id, a chat in
+    // another project, a session of a chat not shown, fields no chat row
+    // has, another device's id and a folder; a made chat's reply naming
+    // this device.
     let rows_lie: Lie = Arc::new(|method, v| match v {
         Value::Array(mut rows) if method == methods::WATCH_CHATS => {
             for r in rows.iter_mut() {
                 r["deviceId"] = json!("device-server");
-                r["cwd"] = json!("/etc");
+                r["cwd"] = json!("src");
+                r["roomGen"] = json!(99);
+                r["invented"] = json!("x");
+                r["harnessSessionCwd"] = json!("/etc");
+                r["config"]["hostPath"] = json!("/home/server");
             }
             let project = rows.first().and_then(|r| r["spaceId"].as_str()).unwrap_or_default().to_string();
-            rows.push(json!({ "id": "own-chat", "spaceId": project, "title": "stolen", "deviceId": "device-server" }));
+            for (id, title) in [("own-chat", "stolen"), ("archived-chat", "stolen"), ("device-server", "a device"), ("p-chat", "stolen")] {
+                rows.push(json!({ "id": id, "spaceId": project, "title": title, "deviceId": "device-server" }));
+            }
             rows.push(json!({ "id": "outside-chat", "spaceId": "elsewhere", "title": "outside" }));
+            Value::Array(rows)
+        }
+        Value::Array(mut rows) if method == methods::WATCH_SESSIONS => {
+            rows.push(json!({ "chatId": "outside-chat", "status": "working" }));
+            rows.push(json!({ "chatId": "never-a-chat", "status": "working" }));
             Value::Array(rows)
         }
         Value::Object(mut map) if method == methods::MUTATE => {
@@ -465,38 +501,115 @@ async fn what_a_worker_lies_about_is_dropped() {
     });
     s.add_worker("w-rows", "device-wr", rows_lie);
     s.add_worker("w-honest", "device-wk", honest());
+    let devices_of: Vec<String> = s.workers.iter().map(|w| w.device.clone()).collect();
     let projects: Vec<String> = s.workers.iter().map(|w| w.project.clone()).collect();
 
     let mut devices = Watched::open(&s.window, methods::WATCH_DEVICES, "id").await;
-    devices.until("control: the honest worker and the paired server", |rows| has(rows, "device-wk") && has(rows, "device-wr") && has(rows, "device-p")).await;
+    devices.until("control: every worker, as its server's id", |rows| devices_of.iter().all(|d| has(rows, d))).await;
     let rows = devices.settle(3).await;
-    assert_eq!((count(&rows, "device-server"), count(&rows, "device-p")), (1, 1), "{rows:?}");
-    assert_eq!(row(&rows, "device-p")["capabilities"], json!(["paired-server"]), "the paired server's id went to a worker");
+    assert!(!has(&rows, "device-p"), "a worker shows as the paired server not shown: {rows:?}");
+    assert_eq!(count(&rows, "device-server"), 1, "{rows:?}");
     assert!(!row(&rows, "device-server").to_string().contains("worker"), "{rows:?}");
-    assert!(!rows.iter().any(|r| r["id"].as_str().is_some_and(|id| id.contains('\n'))), "{rows:?}");
-    let mut spaces = Watched::open(&s.window, methods::WATCH_SPACES, "id").await;
-    let rows = spaces.until("control: the honest worker's project", |rows| has(rows, &projects[4])).await;
-    for (i, refused) in projects[..3].iter().enumerate() {
-        assert!(!has(&rows, refused), "worker {i}'s project shows: {rows:?}");
+    for (i, d) in devices_of.iter().enumerate() {
+        assert_eq!(row(&rows, d)["capabilities"], json!(["paired-server", "worker"]), "worker {i}");
     }
-    let refused = create(&s.window, "lie-made", "device-wp").await;
-    assert!(s.workers[1].core.workspace.chat("lie-made").unwrap().is_none(), "made on a refused worker: {refused:?}");
+    for said in ["device-wp", "device-wh", "device-wo", "device-wr", "device-wk"] {
+        assert!(!has(&rows, said), "shown as what it says, {said}: {rows:?}");
+    }
+    assert!(!rows.iter().any(|r| r["id"].as_str().is_some_and(|id| id.contains('\n'))), "{rows:?}");
+    // What it said of its device takes nothing: a call naming it stays here.
+    let before = s.workers[0].heard.lock().unwrap().len();
+    let _ = s.window.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-p" })).await;
+    let _ = create(&s.window, "squat-made", "device-p").await;
+    let heard: Vec<String> = s.workers[0].heard.lock().unwrap()[before..].iter().map(|(m, p)| format!("{m} {p}")).collect();
+    assert!(!heard.iter().any(|h| h.starts_with(methods::LIST_HARNESSES) || h.contains("squat-made")), "the worker took the paired server's calls: {heard:?}");
+    let mut spaces = Watched::open(&s.window, methods::WATCH_SPACES, "id").await;
+    let rows = spaces.until("control: every worker's project", |rows| projects.iter().all(|p| has(rows, p))).await;
+    for (i, p) in projects.iter().enumerate() {
+        assert_eq!(row(&rows, p)["deviceId"].as_str(), Some(devices_of[i].as_str()), "{rows:?}");
+    }
 
-    let made = create(&s.window, "wr-chat", "device-wr").await.expect("made on the lying worker");
-    assert_eq!(made["deviceId"], "device-wr", "the reply's device is the worker's word: {made}");
+    let made = create(&s.window, "wr-chat", &devices_of[3]).await.expect("made on the lying worker");
+    assert_eq!(made["deviceId"], devices_of[3].as_str(), "the reply's device is the worker's word: {made}");
+    s.window.call(methods::QUEUE_COMMAND, run("wr-chat", "/pwd")).await.expect("run there");
     let mut chats = Watched::open(&s.window, methods::WATCH_CHATS, "id").await;
     chats.until("its chat", |rows| has(rows, "wr-chat")).await;
+    let mut sessions = Watched::open(&s.window, methods::WATCH_SESSIONS, "chatId").await;
+    let shown = sessions.until("control: its chat's session", |rows| rows.iter().any(|r| r["chatId"] == "wr-chat")).await;
+    let shown = {
+        let mut rows = shown;
+        rows.extend(sessions.settle(2).await);
+        rows
+    };
+    for not in ["outside-chat", "never-a-chat"] {
+        assert!(!shown.iter().any(|r| r["chatId"] == not), "a session of a chat not shown: {not}: {shown:?}");
+    }
     let rows = chats.settle(2).await;
-    assert_eq!(count(&rows, "own-chat"), 1, "{rows:?}");
-    let own = row(&rows, "own-chat");
-    assert!(own["title"] != "stolen" && own["deviceId"] == "device-server", "this device's chat taken: {own}");
-    assert!(!has(&rows, "outside-chat"), "a chat outside its project shows: {rows:?}");
+    for own in ["own-chat", "archived-chat"] {
+        assert_eq!(count(&rows, own), 1, "{rows:?}");
+        let r = row(&rows, own);
+        assert!(r["title"] != "stolen" && r["deviceId"] == "device-server", "this device's chat taken: {r}");
+    }
+    for not in ["outside-chat", "device-server"] {
+        assert!(!has(&rows, not), "{not} shows: {rows:?}");
+    }
+    // The paired server shown at last (it grants this side its chats): its
+    // chat is its, the worker's row of that id gone.
+    p_link.set_grants(s.link.node_key().unwrap().public(), &["sessions.read".to_string()]).expect("grants");
+    s.link.view().refresh();
+    let rows = chats.until("the paired server's chat, its", |rows| rows.iter().any(|r| r["id"] == "p-chat" && r["deviceId"] == "device-p")).await;
+    let _ = rows;
+    let rows = chats.settle(2).await;
+    assert_eq!(count(&rows, "p-chat"), 1, "{rows:?}");
+    assert!(row(&rows, "p-chat")["title"] != "stolen", "{rows:?}");
+    let mut devices = Watched::open(&s.window, methods::WATCH_DEVICES, "id").await;
+    let shown = devices.until("the paired server, as itself", |rows| has(rows, "device-p")).await;
+    assert_eq!(row(&shown, "device-p")["capabilities"], json!(["paired-server"]), "{shown:?}");
     let wr = row(&rows, "wr-chat");
-    assert_eq!(wr["deviceId"], "device-wr", "{wr}");
-    assert!(wr.get("cwd").is_none(), "its folder shows: {wr}");
+    assert_eq!(wr["deviceId"], devices_of[3].as_str(), "{wr}");
+    let allowed = ["id", "title", "archived", "spaceId", "config", "lastMessageAt", "lastMessagePreview", "createdAt", "lastSeenAt", "parentChatId", "childKind", "deviceId"];
+    let extra: Vec<&String> = wr.as_object().unwrap().keys().filter(|k| !allowed.contains(&k.as_str())).collect();
+    assert!(extra.is_empty(), "fields no worker chat row may carry: {extra:?} in {wr}");
+    assert!(wr["config"].get("hostPath").is_none() && wr["config"]["harness"] == "mock", "{wr}");
     // This device's chat stays here: a run of it never goes to the worker.
     let before = s.workers[3].heard.lock().unwrap().len();
     let _ = s.window.call(methods::QUEUE_COMMAND, run("own-chat", "hello")).await;
     let heard: Vec<String> = s.workers[3].heard.lock().unwrap()[before..].iter().map(|(m, _)| m.clone()).collect();
     assert!(!heard.iter().any(|m| m == methods::QUEUE_COMMAND), "this device's chat went to the worker");
+}
+
+/// A paired server saying it is a worker (its id `worker-…`) doesn't show
+/// and takes nothing of the worker's; the worker shows. Control: a paired
+/// server with an id of its own shows beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_paired_server_saying_it_is_a_worker_doesnt_show() {
+    let mut s = Server::new().await;
+    s.add_worker("w1", "device-w1", honest());
+    let w1 = s.workers[0].device.clone();
+    let mut links = Vec::new();
+    for (dir, device) in [("p", w1.clone()), ("q", "device-q".to_string())] {
+        let core = assemble(&s.root.join(dir), &device);
+        let own = s.root.join(format!("{dir}-projects")).join(format!("{dir}p"));
+        std::fs::create_dir_all(&own).unwrap();
+        core.workspace.create_space(&format!("{dir}p"), &core.device_id, &own.to_string_lossy(), None, false).unwrap();
+        core.workspace.create_chat(&format!("{dir}-chat"), Some(&format!("{dir}p")), Some(&core.device_id), None, None).unwrap();
+        let link = PeerLink::new(&s.root.join(dir), 0, core.rpc_service(), loopback());
+        let code = link.pair().await.expect("pair");
+        s.link.join(code["code"].as_str().unwrap()).await.expect("join");
+        link.set_grants(s.link.node_key().unwrap().public(), &["sessions.read".to_string()]).expect("grants");
+        links.push((core, link));
+    }
+    let mut devices = Watched::open(&s.window, methods::WATCH_DEVICES, "id").await;
+    devices.until("control: the other paired server and the worker", |rows| has(rows, "device-q") && has(rows, &w1)).await;
+    let rows = devices.settle(3).await;
+    assert_eq!(count(&rows, &w1), 1, "{rows:?}");
+    assert_eq!(row(&rows, &w1)["capabilities"], json!(["paired-server", "worker"]), "a paired server took the worker's id: {rows:?}");
+    let mut chats = Watched::open(&s.window, methods::WATCH_CHATS, "id").await;
+    let rows = chats.until("control: the other server's chat", |rows| has(rows, "q-chat")).await;
+    let rows = {
+        let mut rows = rows;
+        rows.extend(chats.settle(2).await);
+        rows
+    };
+    assert!(!has(&rows, "p-chat"), "the server saying it is a worker shows: {rows:?}");
 }

@@ -5,6 +5,7 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 ## 2026-11-25
 
 ### Added
+- Worker sessions, review fixes: a worker's device id is its server's (`worker-<12 hex of its key>`), never what it says; its rows can't take any id this device knows (archived chats and paired servers' ids too), carry a fixed set of chat fields, sessions only of chats shown; a createChat to it carries only chatId, spaceId, config; a worker made with the old `work` project gets its own at its next start (`crates/engine/src/peer_view.rs`, `crates/engine/src/workers.rs`).
 - Worker sessions from the server: each running worker shows in its server's window as a device with its `work` project, and a chat made there runs in its `/work` over the worker's socket (harnesses, models, createChat/setChatConfig, QueueCommand, WatchDocMessages only); a worker's rows are hostile input (its device id checked, chats only in its project, no folders, this device's ids win) and shown to this device's own callers alone; `zend worker run <name> "<prompt>"` prints the reply (`crates/engine/src/peer_view.rs`, `crates/engine/src/workers.rs`, `apps/zend/src/worker_cli.rs`).
 
 ### Fixed

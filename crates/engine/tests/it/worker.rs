@@ -160,7 +160,9 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     // 1. Its server, and only its server.
     let client = workers.connect(&name).await.expect("its server dials in");
     let info = client.call(methods::ENGINE_INFO, json!({})).await.expect("engine info for its server");
-    let worker_device = info["deviceId"].as_str().expect("its device id").to_string();
+    // (Its own word for its device; its server shows it as its own word.)
+    assert!(info["deviceId"].as_str().is_some_and(|d| !d.is_empty()), "{info}");
+    let worker_device = worker.device_id();
     for method in [methods::LIST_PEERS, methods::PEER_PAIR, methods::CREATE_WORKER, methods::SET_PEER_KEY, methods::PEER_LIST_PROJECT_FILES] {
         assert!(client.call(method, json!({})).await.is_err(), "{method} answered its server");
     }
@@ -323,7 +325,7 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let rows = tokio::time::timeout_at(deadline, spaces.recv()).await.expect("its project in the window in 30 s").expect("watch");
-        if let Some(p) = rows.as_array().into_iter().flatten().find(|p| p["id"].as_str() == Some(worker.project())) {
+        if let Some(p) = rows.as_array().into_iter().flatten().find(|p| p["id"].as_str() == Some(worker.project().as_str())) {
             assert_eq!((p["deviceId"].as_str(), p["path"].as_str()), (Some(worker_device.as_str()), Some("")), "{p}");
             break;
         }
