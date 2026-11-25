@@ -826,6 +826,14 @@ pub mod methods {
     pub const REMOVE_PEER_KEY: &str = "RemovePeerKey";
     /// `{}` → `{keys: [{peer, name?, providers: [..]}]}`: names only.
     pub const LIST_PEER_KEYS: &str = "ListPeerKeys";
+    /// `{peer, provider}` → `{peer, provider, keyWins, hostSignedIn}`: a
+    /// server's sandboxed chats on that provider's models may run on this
+    /// device's pi login for it (its access token only, step 4d-4).
+    pub const ALLOW_PEER_LOGIN: &str = "AllowPeerLogin";
+    /// `{peer, provider}` → `{peer, provider, removed}`.
+    pub const REMOVE_PEER_LOGIN: &str = "RemovePeerLogin";
+    /// `{}` → `{logins: [{peer, name?, providers: [..]}]}`.
+    pub const LIST_PEER_LOGINS: &str = "ListPeerLogins";
     /// A paired server's (`projects.share:<project>`): `{project, path?}` →
     /// `{entries: [{name, kind, size?}]}`, a folder of that project by a
     /// path from its root.
@@ -921,6 +929,9 @@ pub fn local_only(method: &str) -> bool {
             | methods::SET_PEER_KEY
             | methods::REMOVE_PEER_KEY
             | methods::LIST_PEER_KEYS
+            | methods::ALLOW_PEER_LOGIN
+            | methods::REMOVE_PEER_LOGIN
+            | methods::LIST_PEER_LOGINS
             // Workers: this server's containers.
             | methods::CREATE_WORKER
             | methods::LIST_WORKERS

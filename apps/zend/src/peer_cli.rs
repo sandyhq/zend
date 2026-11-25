@@ -3,7 +3,7 @@
 //! this device's own: [`zend_engine::peer_link`]).
 
 use serde_json::{Value, json};
-use zend_cli::{PeerChangesCommand, PeerCommand, PeerKeyCommand, terminal_safe};
+use zend_cli::{PeerChangesCommand, PeerCommand, PeerKeyCommand, PeerLoginCommand, terminal_safe};
 use zend_rpc::methods;
 
 pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path) -> anyhow::Result<()> {
@@ -133,6 +133,38 @@ pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path
                 println!("Removed; its chats on {provider} models no longer run.");
             } else {
                 println!("No {provider} key was kept for that server.");
+            }
+        }
+        PeerCommand::Login(PeerLoginCommand::Allow { peer, provider }) => {
+            let reply = call(methods::ALLOW_PEER_LOGIN, json!({ "peer": peer, "provider": provider })).await?;
+            let server = reply["peer"].as_str().map(|k| &k[..k.len().min(16)]).unwrap_or_default().to_string();
+            println!(
+                "Allowed. Chats of {server}… on {provider} models run on this device's {provider} login: each turn gets its access token only, never the refresh token."
+            );
+            if reply["keyWins"].as_bool() == Some(true) {
+                println!("An API key is kept for it and {provider}: the key wins over the login (zend peer key rm to use the login).");
+            }
+            if reply["hostSignedIn"].as_bool() == Some(false) {
+                eprintln!("This device's pi has no {provider} login yet: sign in (pi, /login) or its chats are refused.");
+            }
+        }
+        PeerCommand::Login(PeerLoginCommand::Rm { peer, provider }) => {
+            let reply = call(methods::REMOVE_PEER_LOGIN, json!({ "peer": peer, "provider": provider })).await?;
+            if reply["removed"].as_bool() == Some(true) {
+                println!("Taken back; its chats on {provider} models no longer run on this device's login, and the token left their sandboxes.");
+            } else {
+                println!("That server wasn't allowed this device's {provider} login.");
+            }
+        }
+        PeerCommand::Login(PeerLoginCommand::List) => {
+            let reply = call(methods::LIST_PEER_LOGINS, json!({})).await?;
+            let logins = reply["logins"].as_array().cloned().unwrap_or_default();
+            if logins.is_empty() {
+                println!("No server may use this device's logins.");
+            }
+            for row in logins {
+                let providers: Vec<&str> = row["providers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                println!("{}  {}", who(&json!({ "key": row["peer"], "name": row["name"] })), providers.join(" "));
             }
         }
         PeerCommand::Key(PeerKeyCommand::List) => {

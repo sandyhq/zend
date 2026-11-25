@@ -25,7 +25,10 @@
 //!
 //! A run on keys of its own ([`Sandbox::with_keys`], a chat another server
 //! started) gets none of the owner's login files and, of every credential
-//! in its environment, only the keys it was given ([`only_keys`]).
+//! in its environment, only the keys it was given ([`only_keys`]). It may
+//! have an agent folder of its own in its state folder
+//! ([`Sandbox::with_agent_dir`], Pi's `PI_CODING_AGENT_DIR`): where the
+//! engine puts the one short-lived login it may use (plan step 4d-4).
 //!
 //! Its root is a project folder ([`check_root`]) or a working copy Zend
 //! made for it in its own data ([`check_copy_root`]): a chat another server
@@ -149,6 +152,8 @@ pub struct Sandbox {
     state: Option<PathBuf>,
     /// The run's own keys ([`Self::with_keys`]): no owner login, only these.
     keys: Option<std::collections::BTreeMap<String, String>>,
+    /// The agent's own config folder ([`Self::with_agent_dir`]).
+    agent_dir: Option<PathBuf>,
 }
 
 fn refuse(why: impl std::fmt::Display) -> HarnessError {
@@ -304,6 +309,7 @@ impl Sandbox {
             ip,
             state: None,
             keys: None,
+            agent_dir: None,
         }
     }
 
@@ -354,6 +360,35 @@ impl Sandbox {
     /// The chat's own folder ([`Self::with_state`]), if it has one.
     pub fn state(&self) -> Option<&Path> {
         self.state.as_deref()
+    }
+
+    /// Give the agent `dir` as its own config folder (Pi:
+    /// `PI_CODING_AGENT_DIR`), in place of the host's: a folder inside its
+    /// state folder ([`Self::with_state`], set first), made if missing.
+    /// Only for a run on its own keys ([`Self::with_keys`]), which gets
+    /// none of the owner's login files: what is in it is what the engine
+    /// put there.
+    pub fn with_agent_dir(mut self, dir: &Path) -> Result<Self, HarnessError> {
+        let Some(state) = self.state.clone() else {
+            return Err(refuse("its agent folder needs a state folder"));
+        };
+        if self.keys.is_none() {
+            return Err(refuse("an agent folder of its own is only for a run on its own keys"));
+        }
+        std::fs::create_dir_all(dir)
+            .map_err(|e| refuse(format!("its agent folder {}: {e}", dir.display())))?;
+        let dir = std::fs::canonicalize(dir)
+            .map_err(|e| refuse(format!("its agent folder {}: {e}", dir.display())))?;
+        if dir == state || !dir.starts_with(&state) {
+            return Err(refuse(format!("its agent folder {} is not inside its state folder", dir.display())));
+        }
+        self.agent_dir = Some(dir);
+        Ok(self)
+    }
+
+    /// The agent's own config folder ([`Self::with_agent_dir`]), if set.
+    pub fn agent_dir(&self) -> Option<&Path> {
+        self.agent_dir.as_deref()
     }
 
     /// Whether the host may read `path` for this run (an attachment it
@@ -793,6 +828,8 @@ pub struct Launch {
     home: PathBuf,
     /// Its own keys ([`Sandbox::with_keys`]): only these credentials.
     keys: Option<std::collections::BTreeMap<String, String>>,
+    /// Its agent folder ([`Sandbox::with_agent_dir`]): its PI_CODING_AGENT_DIR.
+    agent_dir: Option<PathBuf>,
 }
 
 impl Launch {
@@ -978,6 +1015,7 @@ impl Launch {
             bwrap_args,
             home,
             keys: sandbox.keys.clone(),
+            agent_dir: sandbox.agent_dir.clone(),
         };
         launch.preflight()?;
         Ok(launch)
@@ -1030,6 +1068,11 @@ impl Launch {
         let mut env = final_env(self.harness, &self.home, std::env::vars_os(), explicit);
         if let Some(keys) = &self.keys {
             env = only_keys(env, keys);
+        }
+        // Its own agent folder (Pi reads PI_CODING_AGENT_DIR), whatever the
+        // driver or the engine's environment named (the host's).
+        if let Some(dir) = &self.agent_dir {
+            env.insert("PI_CODING_AGENT_DIR".into(), dir.into());
         }
         let std = command.as_std_mut();
         std.env_clear();

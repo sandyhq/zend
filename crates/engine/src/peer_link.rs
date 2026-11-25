@@ -527,6 +527,11 @@ impl PeerLink {
         if let Err(error) = crate::peer_keys::PeerKeys::new(&self.data_dir).forget(&key) {
             tracing::warn!(peer = %key, %error, "peer link: forgetting an unpaired server's API keys failed");
         }
+        // And this device's logins it was allowed (their files leave its
+        // chats' sandboxes as the watchers run).
+        if let Err(error) = crate::peer_logins::PeerLogins::new(&self.data_dir).forget(&key) {
+            tracing::warn!(peer = %key, %error, "peer link: taking back an unpaired server's logins failed");
+        }
         grants_changed(&self.data_dir);
         Ok(json!({ "removed": key }))
     }
@@ -539,6 +544,11 @@ impl PeerLink {
     /// The servers' API keys ([`crate::peer_keys`]).
     pub fn keys(&self) -> crate::peer_keys::PeerKeys {
         crate::peer_keys::PeerKeys::new(&self.data_dir)
+    }
+
+    /// The servers allowed this device's logins ([`crate::peer_logins`]).
+    pub fn logins(&self) -> crate::peer_logins::PeerLogins {
+        crate::peer_logins::PeerLogins::new(&self.data_dir)
     }
 
     /// Every working copy and what it changed (paths only).
@@ -648,6 +658,9 @@ impl RpcService for PeerLinkRpc {
             | methods::SET_PEER_KEY
             | methods::REMOVE_PEER_KEY
             | methods::LIST_PEER_KEYS
+            | methods::ALLOW_PEER_LOGIN
+            | methods::REMOVE_PEER_LOGIN
+            | methods::LIST_PEER_LOGINS
                 if !zend_rpc::caller().is_local() =>
             {
                 Err(RpcError::Failed(format!("{method} is this device's own")))
@@ -716,6 +729,35 @@ impl RpcService for PeerLinkRpc {
                     .map(|(peer, providers)| json!({ "peer": peer, "name": names.get(&peer).cloned().flatten(), "providers": providers }))
                     .collect();
                 Ok(RpcReply::Value(json!({ "keys": keys })))
+            }
+            methods::ALLOW_PEER_LOGIN => {
+                let p: KeyParams = zend_rpc::parse_params(given())?;
+                let peer = self.link.find(&p.peer)?;
+                self.link.logins().allow(&peer, &p.provider).map_err(RpcError::BadParams)?;
+                let key = self.link.keys().providers(&peer).contains(&p.provider);
+                let host = crate::peer_logins::HostLogin::current().has(&p.provider);
+                Ok(RpcReply::Value(json!({ "peer": peer, "provider": p.provider, "keyWins": key, "hostSignedIn": host })))
+            }
+            methods::REMOVE_PEER_LOGIN => {
+                let p: KeyParams = zend_rpc::parse_params(given())?;
+                let peer = self.link.find(&p.peer)?;
+                let removed = self.link.logins().remove(&peer, &p.provider).map_err(RpcError::Failed)?;
+                // Its live runs on that login end, its file leaves their
+                // sandboxes; the next is refused.
+                grants_changed(&self.link.data_dir);
+                Ok(RpcReply::Value(json!({ "peer": peer, "provider": p.provider, "removed": removed })))
+            }
+            methods::LIST_PEER_LOGINS => {
+                let names: std::collections::BTreeMap<String, Option<String>> =
+                    self.link.book.list().into_iter().map(|p| (p.key, p.name)).collect();
+                let logins: Vec<Value> = self
+                    .link
+                    .logins()
+                    .list()
+                    .into_iter()
+                    .map(|(peer, providers)| json!({ "peer": peer, "name": names.get(&peer).cloned().flatten(), "providers": providers }))
+                    .collect();
+                Ok(RpcReply::Value(json!({ "logins": logins })))
             }
             methods::PEER_PAIR => self.link.pair().await.map(RpcReply::Value),
             methods::PEER_JOIN => {

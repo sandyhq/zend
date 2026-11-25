@@ -4,6 +4,9 @@ Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the g
 
 ## 2026-11-25
 
+### Added
+- Paired servers, subscription login per server (step 4d-4): `zend peer login allow|rm|list <server> <provider>` (anthropic, openai-codex) lets a server's sandboxed Pi chats run on this device's pi login. Each turn gets an `auth.json` of its own (that provider's access token, `refresh` empty) in its `PI_CODING_AGENT_DIR`. The host's pi refreshes a token with less than 10 minutes left first (`pi auth print-bearer-token`). A key wins over a login. `rm` and unpair take the file out and end live runs (`crates/engine/src/peer_logins.rs`, `crates/harness/src/sandbox.rs` `with_agent_dir`).
+
 ### Fixed
 - Paired servers, live-test fixes: a run a server's chat won't take (no key kept for that server and provider, a harness that can't run sandboxed) is refused to the sender at once with the reason, logged, and shown under the prompt in the window; a run refused as it starts leaves an error turn in the chat instead of only the user's message. A server that unpaired this side (its handshake's 401) drops out of the window at once; one not reached shows offline from the first failed redial and its rows go after 10 minutes.
 
