@@ -82,6 +82,10 @@ fn each_grant_opens_only_its_methods() {
         methods::SET_PEER_KEY,
         methods::REMOVE_PEER_KEY,
         methods::LIST_PEER_KEYS,
+        methods::CREATE_WORKER,
+        methods::LIST_WORKERS,
+        methods::START_WORKER,
+        methods::REMOVE_WORKER,
     ] {
         assert!(crate::local_only(m) && !crate::agent_allowed(m) && !crate::remote_allowed(m, &serde_json::Value::Null), "{m}");
     }
@@ -120,6 +124,17 @@ fn a_signature_answers_only_its_own_keys_nonces_side_and_purpose() {
 /// Answers every call with the caller it was served as, and counts them.
 #[derive(Default)]
 struct Echo(std::sync::atomic::AtomicUsize);
+
+/// Answers with `params.bytes` bytes of text.
+struct Big;
+
+#[async_trait::async_trait]
+impl RpcService for Big {
+    async fn handle(&self, _method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let bytes = params["bytes"].as_u64().unwrap_or(0) as usize;
+        Ok(RpcReply::Value(serde_json::json!({ "blob": "x".repeat(bytes) })))
+    }
+}
 
 #[async_trait::async_trait]
 impl RpcService for Echo {
@@ -355,4 +370,102 @@ async fn unpairing_or_new_grants_cut_its_connections() {
     assert!(cut(&client).await, "unpairing didn't cut");
     assert!(connect_peer(&s.url, &me, s.key.public()).await.is_err());
     s.task.abort();
+}
+
+// ---- a worker's socket ----------------------------------------------------
+
+/// A worker: its socket serves the one server it was made for, with the
+/// grant it was made with (`sessions.run.unconfined:work`): the run
+/// methods, nothing else; another key is refused at the handshake, a
+/// worker that isn't the pinned one hears nothing, and no code pairs here.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_workers_socket_serves_only_its_server_and_only_the_run_methods() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let worker = Arc::new(NodeKey::generate().unwrap());
+    let server = NodeKey::generate().unwrap();
+    let book = Book::new("worker");
+    book.pair(server.public(), grants(&["sessions.run.unconfined:work"]));
+    book.codes.lock().unwrap().push(("a-code-that-would-pair".into(), true));
+    let echo = Arc::new(Echo::default());
+    let _task = tokio::spawn(serve_peer_unix(listener, echo.clone(), worker.clone(), book.clone()));
+
+    let client = connect_peer_unix(&path, &server, worker.public()).await.unwrap();
+    let reply = client.call(methods::ENGINE_INFO, serde_json::json!({})).await.unwrap();
+    let caller = reply["caller"].as_str().unwrap();
+    assert!(caller.starts_with("PeerServer") && caller.contains(server.public()), "{caller}");
+    for open in [methods::LIST_HARNESSES, methods::LIST_MODELS, methods::MUTATE, methods::QUEUE_COMMAND, methods::WATCH_DOC_MESSAGES] {
+        client.call(open, serde_json::json!({})).await.unwrap_or_else(|e| panic!("{open}: {e}"));
+    }
+    for closed in [methods::WATCH_CHATS, methods::WATCH_SESSIONS, methods::PEER_READ_PROJECT_FILE, methods::SET_PEER_GRANTS, methods::PEER_PAIR, methods::ACCESS_TOKEN, "SomethingAddedLater"] {
+        let refused = client.call(closed, serde_json::json!({})).await;
+        assert!(refused.is_err(), "{closed}: {refused:?}");
+    }
+    assert_eq!(echo.0.load(std::sync::atomic::Ordering::SeqCst), 6);
+
+    // Another key: refused before anything is served.
+    let stranger = NodeKey::generate().unwrap();
+    let refused = connect_peer_unix(&path, &stranger, worker.public()).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("401")), "{:?}", refused.err());
+    // A socket answering with another key than the worker's pinned one.
+    let other = NodeKey::generate().unwrap();
+    let refused = connect_peer_unix(&path, &server, other.public()).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("didn't prove")), "{:?}", refused.err());
+    // A code doesn't pair over a worker's socket (no tailnet node to pin).
+    let (request, _) = caller_request(WORKER_URL, &stranger, Some("a-code-that-would-pair")).unwrap();
+    let stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+    let joined = tokio_tungstenite::client_async(request, stream).await;
+    assert!(joined.as_ref().is_err_and(|e| e.to_string().contains("401")), "{:?}", joined.err());
+    assert!(book.grants(stranger.public()).is_none());
+    assert_eq!(echo.0.load(std::sync::atomic::Ordering::SeqCst), 6);
+}
+
+/// Its server dials a worker's socket only as itself: a symlink to another
+/// socket, or a file, put in its place is refused, not followed (the worker
+/// writes where its socket is). Control: the socket itself answers.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_workers_socket_is_dialled_only_as_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let worker = Arc::new(NodeKey::generate().unwrap());
+    let server = NodeKey::generate().unwrap();
+    let book = Book::new("worker");
+    book.pair(server.public(), grants(&["sessions.run.unconfined:work"]));
+    let _task = tokio::spawn(serve_peer_unix(listener, Arc::new(Echo::default()), worker.clone(), book));
+
+    let client = connect_peer_unix(&path, &server, worker.public()).await.expect("the socket itself");
+    client.call(methods::ENGINE_INFO, serde_json::json!({})).await.unwrap();
+    let link = dir.path().join("link.sock");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    let refused = connect_peer_unix(&link, &server, worker.public()).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("not a socket")), "a symlink was followed: {:?}", refused.err());
+    let file = dir.path().join("file.sock");
+    std::fs::write(&file, b"").unwrap();
+    let refused = connect_peer_unix(&file, &server, worker.public()).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("not a socket")), "{:?}", refused.err());
+}
+
+/// Its server takes no message over 16 MiB from a worker (a worker is as
+/// trusted as its agent): the connection ends. Control: 15 MiB comes in.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_takes_no_message_over_16_mib_from_a_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let worker = Arc::new(NodeKey::generate().unwrap());
+    let server = NodeKey::generate().unwrap();
+    let book = Book::new("worker");
+    book.pair(server.public(), grants(&["sessions.run.unconfined:work"]));
+    let _task = tokio::spawn(serve_peer_unix(listener, Arc::new(Big), worker.clone(), book));
+
+    let client = connect_peer_unix(&path, &server, worker.public()).await.unwrap();
+    let small = client.call(methods::ENGINE_INFO, serde_json::json!({ "bytes": 15 << 20 })).await.expect("15 MiB");
+    assert_eq!(small["blob"].as_str().map(str::len), Some(15 << 20));
+    let big = client.call(methods::ENGINE_INFO, serde_json::json!({ "bytes": 17 << 20 })).await;
+    assert!(big.is_err(), "a 17 MiB reply was taken in");
 }

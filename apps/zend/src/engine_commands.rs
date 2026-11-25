@@ -5,7 +5,7 @@
 
 use zend_cli::EngineCommand;
 
-use crate::{auth_cli, engine_config_from_env, ipc_cli, peer_cli, plugin_cli};
+use crate::{auth_cli, engine_config_from_env, ipc_cli, peer_cli, plugin_cli, worker_cli};
 
 pub fn run_engine_command(command: EngineCommand) -> anyhow::Result<()> {
     match command {
@@ -57,6 +57,11 @@ pub fn run_engine_command(command: EngineCommand) -> anyhow::Result<()> {
             let runtime = tokio::runtime::Runtime::new()?;
             let config = engine_config_from_env();
             runtime.block_on(peer_cli::run(command, config.ipc_port, &config.data_dir))
+        }
+        EngineCommand::Worker(command) => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            let config = engine_config_from_env();
+            runtime.block_on(worker_cli::run(command, config.ipc_port, &config.data_dir))
         }
         EngineCommand::Engine => crate::background::run(),
     }

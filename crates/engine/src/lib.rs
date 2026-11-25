@@ -111,6 +111,8 @@ pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
 pub mod workspace_search;
+pub mod worker;
+pub mod workers;
 mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
@@ -1294,57 +1296,61 @@ impl Engine {
         // Spawned for every install: application updates must not depend on
         // workspace sync being enabled — the feed is the public release feed
         // (served without authentication), not an edge feature.
-        let quiescent = core.update_quiescence(runner::is_cloud_platform());
-        core.harness_updates.set_compatibility_feed(format!(
-            "{}/releases/harness-compatibility.json",
-            config.edge_url.trim_end_matches('/')
-        ));
-        // The release channel a macOS app install follows lives in the data
-        // dir (update-channel.json), so this report follows the app's choice.
-        zend_update::channel::set_data_dir(&config.data_dir);
-        let updater = zend_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
-        // A check that came due while the machine slept runs as it wakes,
-        // so the loop needn't look at the clock each minute.
-        updater.follow_wakes(zend_sync::wake::subscribe());
-        // Whatever restarts this engine into another version (an update, a
-        // newer install, a channel switch's update), the store it leaves is
-        // one every version reads.
-        // (Held weakly: the hook is process-wide and outlives this graph;
-        // a strong hold kept a shut-down engine's whole graph alive.)
-        let version_change_docs = core.doc_host.downgrade();
-        let version_change_registry = core.workspace.downgrade();
-        zend_update::set_before_restart(move || {
-            // Only this process's live engine restarts it: with its graph
-            // gone there is nothing left to prepare.
-            let (Some(version_change_docs), Some(version_change_registry)) =
-                (version_change_docs.upgrade(), version_change_registry.upgrade())
-            else {
-                return;
-            };
-            // No more deltas from here (a debounced registry save is whole
-            // too), the registry saved whole (older builds don't read row
-            // deltas), then every chat saved whole and the WAL folded in.
-            version_change_docs.store().stop_snapshot_deltas();
-            version_change_registry.flush();
-            version_change_docs.prepare_for_version_change();
-        });
-        // (Not on a Cloud machine: every boot's first token would start a
-        // release check, and possibly a download, as the message starts its run.
-        // Its checks keep their own schedule; its token is never a recovery.)
-        if let Some(mut token_changes) = edge
-            .as_ref()
-            .filter(|_| !runner::is_cloud_platform())
-            .and_then(EdgeConfig::token_changes)
-        {
-            let updater_for_tokens = updater.clone();
-            let wake = tokio::spawn(async move {
-                while token_changes.changed().await.is_ok() {
-                    updater_for_tokens.check_now();
-                }
+        // A worker opens no connection to Zend's servers: no release or
+        // harness-compatibility checks (its image is its server's to renew).
+        if worker::role().is_none() {
+            let quiescent = core.update_quiescence(runner::is_cloud_platform());
+            core.harness_updates.set_compatibility_feed(format!(
+                "{}/releases/harness-compatibility.json",
+                config.edge_url.trim_end_matches('/')
+            ));
+            // The release channel a macOS app install follows lives in the data
+            // dir (update-channel.json), so this report follows the app's choice.
+            zend_update::channel::set_data_dir(&config.data_dir);
+            let updater = zend_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
+            // A check that came due while the machine slept runs as it wakes,
+            // so the loop needn't look at the clock each minute.
+            updater.follow_wakes(zend_sync::wake::subscribe());
+            // Whatever restarts this engine into another version (an update, a
+            // newer install, a channel switch's update), the store it leaves is
+            // one every version reads.
+            // (Held weakly: the hook is process-wide and outlives this graph;
+            // a strong hold kept a shut-down engine's whole graph alive.)
+            let version_change_docs = core.doc_host.downgrade();
+            let version_change_registry = core.workspace.downgrade();
+            zend_update::set_before_restart(move || {
+                // Only this process's live engine restarts it: with its graph
+                // gone there is nothing left to prepare.
+                let (Some(version_change_docs), Some(version_change_registry)) =
+                    (version_change_docs.upgrade(), version_change_registry.upgrade())
+                else {
+                    return;
+                };
+                // No more deltas from here (a debounced registry save is whole
+                // too), the registry saved whole (older builds don't read row
+                // deltas), then every chat saved whole and the WAL folded in.
+                version_change_docs.store().stop_snapshot_deltas();
+                version_change_registry.flush();
+                version_change_docs.prepare_for_version_change();
             });
-            core.set_updater_wake(wake);
+            // (Not on a Cloud machine: every boot's first token would start a
+            // release check, and possibly a download, as the message starts its run.
+            // Its checks keep their own schedule; its token is never a recovery.)
+            if let Some(mut token_changes) = edge
+                .as_ref()
+                .filter(|_| !runner::is_cloud_platform())
+                .and_then(EdgeConfig::token_changes)
+            {
+                let updater_for_tokens = updater.clone();
+                let wake = tokio::spawn(async move {
+                    while token_changes.changed().await.is_ok() {
+                        updater_for_tokens.check_now();
+                    }
+                });
+                core.set_updater_wake(wake);
+            }
+            core.set_updater(updater);
         }
-        core.set_updater(updater);
         tracing::info!(device_id = %core.device_id, "engine core assembled");
         // Managed ACP adapters install in the background at boot (agents
         // whose CLI is present but whose adapter isn't yet), so a first chat
@@ -1420,6 +1426,14 @@ impl Engine {
         tracing::info!(data_dir = %config.data_dir.display(), daemon, "engine starting");
 
         std::fs::create_dir_all(&config.data_dir)?;
+        // A worker: its one server and key kept, and not a step further
+        // until the host is out of reach (worker.rs).
+        if let Some(conf) = worker::conf() {
+            let conf = conf.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
+            conf.install(&config.data_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+            conf.wait_for_routes().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            tracing::info!(server = %conf.server_key, "worker: blocked routes in place");
+        }
         if daemon {
             update_trial::boot(&config.data_dir)?;
         } else {
@@ -1463,6 +1477,16 @@ impl Engine {
             .ok_or_else(|| EngineError::Other("synced workspace profile is not ready".into()))?;
 
         let runtime = Self::assemble_runtime(&config, auth, profile).await?;
+        if let Some(Ok(conf)) = worker::conf() {
+            let core = runtime.core();
+            core.workspace.create_space(
+                worker::PROJECT,
+                &core.device_id,
+                &conf.work.to_string_lossy(),
+                Some(worker::PROJECT.to_string()),
+                false,
+            )?;
+        }
         // The desktop app or `zend update` may install a newer binary under
         // a running service; restart into it once no run or terminal is live.
         if daemon && let Some(updater) = runtime.core().updater() {
@@ -1651,6 +1675,14 @@ pub async fn serve_ipc(
     // port on the tailnet addresses, once this port is ours.
     // Paired servers (peer_link): their own tailnet listener, on the next
     // port, while any is paired.
+    // A worker: its server's socket only, no tailnet or phone listener.
+    #[cfg(unix)]
+    if let Some(Ok(conf)) = worker::conf() {
+        let _worker = peer_link::serve_worker(service.clone(), data_dir, &conf.socket)?;
+        return Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(listener, service, tokens)));
+    }
+    let service: std::sync::Arc<dyn zend_rpc::RpcService> =
+        std::sync::Arc::new(workers::WorkersRpc { inner: service, workers: workers::Workers::new(data_dir) });
     let service = peer_link::wrap(service, data_dir, peer_link::peer_port(port));
     let service = phone_link::wrap(service, data_dir, port);
     Ok(tokio::spawn(zend_rpc::serve_ws_listener_scoped(

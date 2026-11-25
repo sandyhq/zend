@@ -42,6 +42,7 @@ export KACHE_PRESERVE_INCREMENTAL="${KACHE_PRESERVE_INCREMENTAL:-1}"
 for v in $(compgen -e | grep '^KACHE_' || true); do env+=(-e "$v"); done
 
 tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-it)
+# Memory capped: an uncapped test binary once grew to 29 GB and took the server down.
 exec docker run --rm "${tty[@]}" --init --memory 12g --memory-swap 12g \
   -v "$ROOT:/src" \
   -v "$target:/opt/target" \

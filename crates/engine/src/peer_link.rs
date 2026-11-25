@@ -313,18 +313,7 @@ impl PeerLink {
         if let Some(key) = held.as_ref() {
             return Ok(key.clone());
         }
-        let path = self.data_dir.join(KEY_FILE);
-        let key = match std::fs::read(&path) {
-            Ok(der) => NodeKey::from_pkcs8(&der).map_err(|e| format!("{}: {e}", path.display()))?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let der = NodeKey::generate_pkcs8()?;
-                crate::runner::write_private_atomic(&path, &der)
-                    .map_err(|err| format!("couldn't keep the node key: {err}"))?;
-                NodeKey::from_pkcs8(&der)?
-            }
-            Err(err) => return Err(format!("{}: {err}", path.display())),
-        };
-        let key = Arc::new(key);
+        let key = Arc::new(load_node_key(&self.data_dir)?);
         *held = Some(key.clone());
         Ok(key)
     }
@@ -832,6 +821,20 @@ pub fn kept_grants(data_dir: &Path, key: &str) -> Option<Grants> {
     Book::load(data_dir).grants(key)
 }
 
+/// The node key kept in `data_dir`, made and kept (mode 600) the first time.
+pub fn load_node_key(data_dir: &Path) -> Result<NodeKey, String> {
+    let path = data_dir.join(KEY_FILE);
+    match std::fs::read(&path) {
+        Ok(der) => NodeKey::from_pkcs8(&der).map_err(|e| format!("{}: {e}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let der = NodeKey::generate_pkcs8()?;
+            crate::runner::write_private_atomic(&path, &der).map_err(|err| format!("couldn't keep the node key: {err}"))?;
+            NodeKey::from_pkcs8(&der)
+        }
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
 /// The peer port of an engine on IPC port `ipc_port`.
 pub fn peer_port(ipc_port: u16) -> u16 {
     ipc_port.checked_add(1).unwrap_or(ipc_port)
@@ -845,6 +848,35 @@ pub fn wrap(service: Arc<dyn RpcService>, data_dir: &Path, port: u16) -> Arc<dyn
     link.resume();
     link.view();
     Arc::new(PeerLinkRpc { inner: service, link })
+}
+
+/// A worker's listener ([`crate::worker`]): `service` to the one server in
+/// `data_dir`'s book, on the unix socket `socket` and nowhere else: no
+/// tailnet listener, no pairing. The socket is open to every user (0666):
+/// the worker runs as a subordinate uid of its server's user, who must
+/// connect; on the host its folder sits in a 0700 folder of the server's
+/// data, and whoever connects still has to prove the server's key.
+#[cfg(unix)]
+pub fn serve_worker(
+    service: Arc<dyn RpcService>,
+    data_dir: &Path,
+    socket: &Path,
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let link = PeerLink::new(data_dir, 0, service.clone(), Seams::real());
+    let key = link.node_key().map_err(std::io::Error::other)?;
+    if let Some(dir) = socket.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    match std::fs::remove_file(socket) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o666))?;
+    tracing::info!(socket = %socket.display(), key = %key.public(), "worker: listening for its server");
+    let book: Arc<dyn zend_rpc::peer_link::PeerBook> = link.book.clone();
+    Ok(tokio::spawn(zend_rpc::peer_link::serve_peer_unix(listener, service, key, book)))
 }
 
 #[cfg(test)]

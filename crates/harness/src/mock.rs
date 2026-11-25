@@ -386,6 +386,21 @@ impl Harness for MockHarness {
             .unwrap_or(0);
         let delay = std::time::Duration::from_millis(delay_ms);
 
+        // `/pwd`: where the run is, proved by a file written there
+        // (`.zend-mock-ran`): a worker's test asks it of a session in /work.
+        if request.prompt.trim() == "/pwd" {
+            let cwd = request.cwd.clone();
+            let text = match std::fs::write(std::path::Path::new(&cwd).join(".zend-mock-ran"), "the mock ran here\n") {
+                Ok(()) => format!("cwd {cwd}; wrote .zend-mock-ran"),
+                Err(err) => format!("cwd {cwd}; couldn't write .zend-mock-ran: {err}"),
+            };
+            let events = vec![
+                Ok(AgentEvent::TextDelta { text }),
+                Ok(AgentEvent::Done { status: DoneStatus::Completed, result: None, error: None, session_id: None }),
+            ];
+            return Ok(futures::stream::iter(events).boxed());
+        }
+
         // Dev/testing knob: `ZEND_MOCK_QUESTION=1` swaps in a run that asks
         // the user questions mid-stream via `controls.request_input` (the
         // engine mints the request id, emits `InputRequested`, and resolves it
