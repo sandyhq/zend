@@ -21,9 +21,14 @@ const FRAGMENT_BYTES: usize = 1 << 20;
 const MAX_MESSAGE_BYTES: usize = 512 << 20;
 
 pub(crate) fn config() -> WebSocketConfig {
+    config_capped(MAX_MESSAGE_BYTES)
+}
+
+/// [`config`] with messages (and frames) of at most `max` bytes.
+pub(crate) fn config_capped(max: usize) -> WebSocketConfig {
     WebSocketConfig {
-        max_message_size: Some(MAX_MESSAGE_BYTES),
-        max_frame_size: Some(MAX_MESSAGE_BYTES),
+        max_message_size: Some(max),
+        max_frame_size: Some(max),
         ..WebSocketConfig::default()
     }
 }

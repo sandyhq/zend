@@ -3,17 +3,61 @@
 //! chat made from the window in one of its projects is made and run there,
 //! over the peer link (no edge). Two engines, each its own data folder and
 //! peer link, paired over loopback.
+//!
+//! What a server says is display only: its rows can't take this device's
+//! ids, folders or device, nor another server's (a lying server: [`Liar`]).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use serde_json::{Value, json};
 use zend_doc::commands::SessionCommandPayload;
 use zend_engine::peer_link::{PeerLink, PeerLinkRpc, Seams};
 use zend_engine::{EngineCore, HarnessRegistry};
 use zend_proto::{HarnessId, RunRequest, SandboxLevel};
-use zend_rpc::{RpcClient, methods};
+use zend_rpc::{RpcClient, RpcError, RpcReply, RpcService, methods};
+
+/// What a server's replies become before they leave it (a lying server).
+type Lie = Arc<dyn Fn(&str, Value) -> Value + Send + Sync>;
+
+/// A server's own service, recording each call a paired server makes of it
+/// and passing each reply (and each item of a stream) through `lie`.
+struct Liar {
+    inner: Arc<dyn RpcService>,
+    lie: Lie,
+    heard: Arc<Mutex<Vec<(String, Value)>>>,
+}
+
+#[async_trait::async_trait]
+impl RpcService for Liar {
+    async fn handle(&self, method: &str, params: Value) -> Result<RpcReply, RpcError> {
+        self.heard.lock().unwrap().push((method.to_string(), params.clone()));
+        match self.inner.handle(method, params).await? {
+            RpcReply::Value(v) => Ok(RpcReply::Value((self.lie)(method, v))),
+            RpcReply::Stream(items) => {
+                let (lie, method) = (self.lie.clone(), method.to_string());
+                Ok(RpcReply::Stream(items.map(move |v| lie(&method, v)).boxed()))
+            }
+        }
+    }
+}
+
+fn honest() -> Lie {
+    Arc::new(|_, v| v)
+}
+
+/// Each row of a list (whole lists, as the peer view asks) through `edit`.
+fn rows(v: Value, edit: impl Fn(&mut serde_json::Map<String, Value>)) -> Value {
+    match v {
+        Value::Array(mut rows) => {
+            rows.iter_mut().filter_map(Value::as_object_mut).for_each(edit);
+            Value::Array(rows)
+        }
+        other => other,
+    }
+}
 
 fn loopback() -> Seams {
     Seams {
@@ -39,37 +83,67 @@ fn assemble(data_dir: &Path, device_id: &str) -> EngineCore {
 /// the grants the server gives the laptop, and the laptop's window.
 struct Pair {
     _temp: tempfile::TempDir,
+    root: std::path::PathBuf,
     server: EngineCore,
     server_link: Arc<PeerLink>,
+    /// What the laptop asked of the server.
+    heard: Arc<Mutex<Vec<(String, Value)>>>,
     laptop: EngineCore,
     laptop_link: Arc<PeerLink>,
     window: RpcClient,
 }
 
+impl Pair {
+    /// Whether any call the server heard names `id`.
+    fn server_heard_of(&self, id: &str) -> Vec<(String, Value)> {
+        let needle = format!("\"{id}\"");
+        self.heard.lock().unwrap().iter().filter(|(_, p)| p.to_string().contains(&needle)).cloned().collect()
+    }
+}
+
+/// A server engine in `root/name` as `device`: projects p and q, a chat
+/// `chat` in p; its link serving its own service through `lie`.
+fn server(root: &Path, name: &str, device: &str, chat: &str, lie: Lie) -> (EngineCore, Arc<PeerLink>, Arc<Mutex<Vec<(String, Value)>>>) {
+    let core = assemble(&root.join(name), device);
+    for project in ["p", "q"] {
+        let dir = root.join(format!("{name}-projects")).join(project);
+        std::fs::create_dir_all(&dir).unwrap();
+        core.workspace.create_space(project, &core.device_id, &dir.to_string_lossy(), None, false).unwrap();
+    }
+    core.workspace.create_chat(chat, Some("p"), Some(&core.device_id), None, None).unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let served = Arc::new(Liar { inner: core.rpc_service(), lie, heard: heard.clone() });
+    let link = PeerLink::new(&root.join(name), 0, served, loopback());
+    (core, link, heard)
+}
+
+/// The laptop joins `server`, which grants it `grants`.
+async fn join(laptop: &Arc<PeerLink>, server: &Arc<PeerLink>, grants: &[&str]) {
+    let code = server.pair().await.expect("pair");
+    laptop.join(code["code"].as_str().unwrap()).await.expect("join");
+    let laptop_key = laptop.node_key().unwrap();
+    server.set_grants(laptop_key.public(), &grants.iter().map(|g| g.to_string()).collect::<Vec<_>>()).expect("grants");
+}
+
 async fn pair(grants: &[&str]) -> Pair {
+    pair_with(grants, honest(), |_, _| {}).await
+}
+
+/// [`pair`] with a server that says `lie`, both engines set up further
+/// by `before` (server, laptop) before they pair.
+async fn pair_with(grants: &[&str], lie: Lie, before: impl FnOnce(&EngineCore, &EngineCore)) -> Pair {
     let home = std::fs::canonicalize(std::env::var_os("HOME").expect("HOME")).unwrap();
     let temp = tempfile::Builder::new().prefix("zend-peer-window-").tempdir_in(home).unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
-    let server = assemble(&root.join("server-data"), "device-server");
-    for project in ["p", "q"] {
-        let dir = root.join(project);
-        std::fs::create_dir_all(&dir).unwrap();
-        server.workspace.create_space(project, &server.device_id, &dir.to_string_lossy(), None, false).unwrap();
-    }
-    server.workspace.create_chat("srv-chat", Some("p"), Some(&server.device_id), None, None).unwrap();
+    let (server, server_link, heard) = server(&root, "server-data", "device-server", "srv-chat", lie);
     let laptop = assemble(&root.join("laptop-data"), "device-laptop");
     laptop.workspace.create_chat("own-chat", None, Some(&laptop.device_id), None, None).unwrap();
+    before(&server, &laptop);
 
-    let server_link = PeerLink::new(&root.join("server-data"), 0, server.rpc_service(), loopback());
     let laptop_link = PeerLink::new(&root.join("laptop-data"), 0, laptop.rpc_service(), loopback());
-    let code = server_link.pair().await.expect("pair");
-    laptop_link.join(code["code"].as_str().unwrap()).await.expect("join");
-    let laptop_key = laptop_link.node_key().unwrap();
-    server_link
-        .set_grants(laptop_key.public(), &grants.iter().map(|g| g.to_string()).collect::<Vec<_>>())
-        .expect("grants");
+    join(&laptop_link, &server_link, grants).await;
     let window = zend_rpc::memory_client(Arc::new(PeerLinkRpc { inner: laptop.rpc_service(), link: laptop_link.clone() }));
-    Pair { _temp: temp, server, server_link, laptop, laptop_link, window }
+    Pair { _temp: temp, root, server, server_link, heard, laptop, laptop_link, window }
 }
 
 /// A list watch's rows, frames applied (whole lists, or change frames).
@@ -118,6 +192,19 @@ impl Watched {
 
 fn has(rows: &[Value], key: &str, id: &str) -> bool {
     rows.iter().any(|r| r[key].as_str() == Some(id))
+}
+
+fn count(rows: &[Value], key: &str, id: &str) -> usize {
+    rows.iter().filter(|r| r[key].as_str() == Some(id)).count()
+}
+
+/// Frames for `secs` seconds (what shows once the view had time to hear).
+async fn settle(watched: &mut Watched, secs: u64) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, watched.sub.recv()).await {
+        watched.apply(frame);
+    }
+    watched.rows.clone()
 }
 
 fn run(chat: &str) -> Value {
@@ -194,6 +281,56 @@ async fn a_paired_server_shows_as_a_device_and_a_chat_starts_there() {
     drop(t.server_link);
 }
 
+/// A chat made on a server from here is held only until its list has it
+/// (then only its config, for the window setting it again), and nothing
+/// of it once the server is unpaired; one the server doesn't list (no
+/// sessions.read) is held until then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_this_side_keeps_of_chats_it_made_there_goes_with_the_server() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let config = json!({ "harness": "mock", "model": null, "reasoning": null, "modelOptions": {}, "sandbox": "workspace-write" });
+    let create = |chat: &str| json!({ "op": "createChat", "chatId": chat, "spaceId": "p", "deviceId": "device-server", "config": config });
+    t.window.call(methods::MUTATE, create("made-1")).await.expect("made there");
+    chats.until("listed", |rows| has(rows, "id", "made-1")).await;
+    let view = t.laptop_link.view();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while view.made_counts() != (0, 1) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(view.made_counts(), (0, 1), "listed: only its config is kept");
+    t.window
+        .call(methods::MUTATE, json!({ "op": "setChatConfig", "chatId": "made-1", "config": config }))
+        .await
+        .expect("its config, as made, still answered here");
+    let server_key = t.server_link.node_key().unwrap().public().to_string();
+    t.laptop_link.unpair(&server_key).expect("unpaired");
+    view.refresh();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while view.made_counts() != (0, 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(view.made_counts(), (0, 0), "unpaired: nothing of it kept");
+
+    // Not listed (it grants no sessions.read): held until it's unpaired.
+    let t = pair(&["sessions.run.unconfined:q"]).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("project q", |rows| has(rows, "id", "q")).await;
+    let made = json!({ "op": "createChat", "chatId": "made-2", "spaceId": "q", "deviceId": "device-server", "config": config });
+    t.window.call(methods::MUTATE, made).await.expect("made there");
+    let view = t.laptop_link.view();
+    assert_eq!(view.made_counts(), (1, 0));
+    let server_key = t.server_link.node_key().unwrap().public().to_string();
+    t.laptop_link.unpair(&server_key).expect("unpaired");
+    view.refresh();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while view.made_counts() != (0, 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(view.made_counts(), (0, 0), "unpaired: nothing of it kept");
+}
+
 /// Granted only after this side first dialled (and was refused), as
 /// pairing goes (join, then grant): the server shows within a scan.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -268,4 +405,224 @@ async fn the_laptop_shows_a_server_nothing_of_another() {
     let ids: Vec<&str> = rows.as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
     assert_eq!(ids, ["own-chat"], "{rows}");
     assert!(back.subscribe_checked(methods::WATCH_DEVICES, json!({})).await.is_err(), "devices aren't a server's to read");
+}
+
+/// The server has a chat with the id of the laptop's own (own-chat), a
+/// project with the id of one of the laptop's (lp) and a chat in it, and a
+/// chat whose id the laptop then makes in lp: the laptop's ids stay the
+/// laptop's. Its rows show once, as the laptop's; the server's rows with
+/// those ids don't show; the window's calls naming them run here, and the
+/// server never hears of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn this_devices_own_ids_stay_here_whatever_a_server_claims() {
+    let t = pair_with(&["sessions.read", "sessions.run.unconfined:p", "sessions.run.unconfined:lp"], honest(), |server, laptop| {
+        let dir = std::env::temp_dir();
+        laptop.workspace.create_space("lp", &laptop.device_id, &dir.to_string_lossy(), None, false).unwrap();
+        server.workspace.create_space("lp", &server.device_id, &dir.to_string_lossy(), None, false).unwrap();
+        server.workspace.create_chat("own-chat", Some("lp"), Some(&server.device_id), None, None).unwrap();
+        server.workspace.create_chat("srv-in-lp", Some("lp"), Some(&server.device_id), None, None).unwrap();
+        server.workspace.create_chat("srv-claimed", Some("p"), Some(&server.device_id), None, None).unwrap();
+    })
+    .await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let rows = settle(&mut chats, 1).await;
+    assert_eq!(count(&rows, "id", "own-chat"), 1, "{rows:?}");
+    let own = rows.iter().find(|c| c["id"] == "own-chat").unwrap();
+    assert_eq!(own["deviceId"], "device-laptop", "{own}");
+    assert!(!has(&rows, "id", "srv-in-lp"), "a server's chat in the laptop's project lp: {rows:?}");
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    let rows = spaces.until("the server's p", |rows| has(rows, "id", "p")).await;
+    assert_eq!(count(&rows, "id", "lp"), 1, "{rows:?}");
+    assert_eq!(rows.iter().find(|s| s["id"] == "lp").unwrap()["deviceId"], "device-laptop");
+
+    let config = json!({ "harness": "mock", "model": null, "reasoning": null, "modelOptions": {}, "sandbox": "workspace-write" });
+    t.window
+        .call(methods::MUTATE, json!({ "op": "setChatConfig", "chatId": "own-chat", "config": config }))
+        .await
+        .expect("the laptop's own chat's config, set here");
+    t.window.call(methods::QUEUE_COMMAND, run("own-chat")).await.expect("its run queued here");
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "srv-claimed", "spaceId": "lp", "deviceId": "device-laptop", "config": config }))
+        .await
+        .expect("made here, in lp");
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "new-in-lp", "spaceId": "lp", "deviceId": "device-laptop", "config": config }))
+        .await
+        .expect("made here, in lp");
+    t.window
+        .call(methods::MUTATE, json!({ "op": "setChatConfig", "chatId": "srv-claimed", "config": config }))
+        .await
+        .expect("the chat made here, set here");
+    for chat in ["srv-claimed", "new-in-lp"] {
+        let made = t.laptop.workspace.chat(chat).unwrap().unwrap_or_else(|| panic!("{chat} is the laptop's"));
+        assert_eq!(made.space_id.as_deref(), Some("lp"));
+    }
+    assert!(t.server.workspace.chat("new-in-lp").unwrap().is_none());
+    for id in ["own-chat", "srv-claimed", "new-in-lp", "lp"] {
+        let heard = t.server_heard_of(id);
+        assert!(heard.is_empty(), "the server heard of {id}: {heard:?}");
+    }
+}
+
+/// A server saying it is the laptop, or a Cloud device, shows nowhere, and
+/// the window's calls naming the laptop stay here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_saying_it_is_this_device_or_cloud_is_refused() {
+    for claimed in ["device-laptop", "cloud-device-1"] {
+        let lie: Lie = Arc::new(move |method, mut v| {
+            if method == methods::ENGINE_INFO {
+                v["deviceId"] = json!(claimed);
+            }
+            v
+        });
+        let t = pair_with(&["sessions.read", "sessions.run.unconfined:p"], lie, |_, _| {}).await;
+        let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+        chats.until("the laptop's own chat", |rows| has(rows, "id", "own-chat")).await;
+        let rows = settle(&mut chats, 3).await;
+        assert!(!has(&rows, "id", "srv-chat"), "{claimed}: {rows:?}");
+        assert!(t.laptop_link.view().devices().is_empty(), "{claimed}: {:?}", t.laptop_link.view().devices());
+        let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+        let rows = settle(&mut devices, 1).await;
+        assert_eq!(count(&rows, "id", claimed), usize::from(claimed == "device-laptop"), "{claimed}: {rows:?}");
+        t.window
+            .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "here-1", "deviceId": "device-laptop" }))
+            .await
+            .expect("made here");
+        assert!(t.laptop.workspace.chat("here-1").unwrap().is_some(), "{claimed}");
+        assert!(t.server_heard_of("here-1").is_empty(), "{claimed}");
+    }
+}
+
+/// Two servers saying one device id: the first paired shows, the second
+/// doesn't (its chats neither).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn of_two_servers_with_one_device_id_the_first_paired_keeps_it() {
+    let t = pair(&["sessions.read"]).await;
+    let (_second, second_link, _) = server(&t.root, "second-data", "device-server", "second-chat", honest());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    join(&t.laptop_link, &second_link, &["sessions.read"]).await;
+    t.laptop_link.view().refresh();
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the first's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let rows = settle(&mut chats, 4).await;
+    assert!(has(&rows, "id", "srv-chat"), "{rows:?}");
+    assert!(!has(&rows, "id", "second-chat"), "{rows:?}");
+    assert_eq!(t.laptop_link.view().devices(), ["device-server"]);
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    let rows = settle(&mut devices, 1).await;
+    assert_eq!(count(&rows, "id", "device-server"), 1, "{rows:?}");
+}
+
+/// A server whose rows name the laptop as their device, a folder of any
+/// device's, the harness's folder, a checkout, a parent of the laptop's,
+/// and capabilities the window acts on: shown as its own, none of that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_rows_are_its_own_and_name_no_folder() {
+    let lie: Lie = Arc::new(|method, mut v| match method {
+        methods::ENGINE_INFO => {
+            v["capabilities"] = json!(["cloud-session", "cloud-account", "harness-updates-v1"]);
+            v
+        }
+        methods::WATCH_CHATS => rows(v, |c| {
+            c.insert("deviceId".into(), json!("device-laptop"));
+            c.insert("cwd".into(), json!("/home/feysen/.ssh"));
+            c.insert("harnessSessionCwd".into(), json!("/home/feysen"));
+            c.insert("checkoutId".into(), json!("co-1"));
+            c.insert("sourceContext".into(), json!({ "repoRoot": "/home/feysen/src" }));
+            c.insert("parentChatId".into(), json!("own-chat"));
+        }),
+        methods::WATCH_SESSIONS => match v {
+            Value::Array(mut sessions) => {
+                sessions.push(json!({ "chatId": "srv-chat", "deviceId": "device-laptop", "status": "running" }));
+                Value::Array(sessions)
+            }
+            other => other,
+        },
+        _ => v,
+    });
+    let t = pair_with(&["sessions.read", "sessions.run.unconfined:p"], lie, |_, _| {}).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    let rows = chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    for chat in rows.iter().filter(|c| c["id"] != "own-chat") {
+        assert_eq!(chat["deviceId"], "device-server", "{chat}");
+        for key in ["cwd", "harnessSessionCwd", "checkoutId", "sourceContext", "parentChatId"] {
+            assert!(chat.get(key).is_none(), "{key}: {chat}");
+        }
+    }
+    let mut sessions = Watched::open(&t.window, methods::WATCH_SESSIONS, json!({}), "chatId").await;
+    let rows = sessions.until("the server's session", |rows| has(rows, "chatId", "srv-chat")).await;
+    let session = rows.iter().find(|s| s["chatId"] == "srv-chat").unwrap();
+    assert_eq!(session["deviceId"], "device-server", "{session}");
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    let rows = devices.until("the server", |rows| has(rows, "id", "device-server")).await;
+    let device = rows.iter().find(|d| d["id"] == "device-server").unwrap();
+    assert_eq!(device["capabilities"], json!(["paired-server"]), "{device}");
+}
+
+/// A list over 5000 rows is dropped as a frame (the server's device still
+/// shows); a message over 4 MiB costs the connection, never shows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_can_t_fill_this_sides_memory() {
+    let many: Lie = Arc::new(|method, v| match (method, v) {
+        (methods::WATCH_CHATS, Value::Array(mut rows)) => {
+            rows.extend((0..5001).map(|i| json!({ "id": format!("fake-{i}"), "spaceId": "p" })));
+            Value::Array(rows)
+        }
+        (_, v) => v,
+    });
+    let big: Lie = Arc::new(|method, v| match (method, v) {
+        (methods::WATCH_CHATS, Value::Array(mut rows)) => {
+            rows.push(json!({ "id": "big", "spaceId": "p", "title": "x".repeat(5 << 20) }));
+            Value::Array(rows)
+        }
+        (_, v) => v,
+    });
+    for (lie, shown) in [(many, "fake-0"), (big, "big")] {
+        let t = pair_with(&["sessions.read"], lie, |_, _| {}).await;
+        let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+        devices.until("the server", |rows| has(rows, "id", "device-server")).await;
+        let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+        let rows = settle(&mut chats, 3).await;
+        assert!(!has(&rows, "id", shown) && !has(&rows, "id", "srv-chat"), "{shown}: {} rows", rows.len());
+        assert!(has(&rows, "id", "own-chat"));
+    }
+}
+
+/// A linked phone (served by the same wrapped service, as `serve_ipc`
+/// does) sees none of a paired server's rows, and its calls naming the
+/// server's device, chat or project don't reach the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_phone_link_gets_no_paired_server() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the window: the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+
+    let wrapped: Arc<dyn RpcService> = Arc::new(PeerLinkRpc { inner: t.laptop.rpc_service(), link: t.laptop_link.clone() });
+    let key = zend_rpc::ipc_auth::generate_token().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _served = tokio::spawn(zend_rpc::remote::serve_remote_listener_admitting(listener, wrapped, key.clone(), |_| {
+        Box::pin(std::future::ready(true))
+    }));
+    let phone = tokio::time::timeout(Duration::from_secs(5), zend_rpc::connect_phone_link(&format!("ws://{addr}"), &key))
+        .await
+        .expect("in time")
+        .expect("the phone dials in");
+    let mut phone_chats = Watched::open(&phone, methods::WATCH_CHATS, json!({}), "id").await;
+    let rows = phone_chats.until("the phone: the laptop's chat", |rows| has(rows, "id", "own-chat")).await;
+    assert!(!has(&rows, "id", "srv-chat"), "{rows:?}");
+    if let Ok(sub) = phone.subscribe_checked(methods::WATCH_DEVICES, json!({})).await {
+        let mut devices = Watched { sub, rows: Vec::new(), key: "id" };
+        let rows = settle(&mut devices, 1).await;
+        assert!(!has(&rows, "id", "device-server"), "{rows:?}");
+    }
+    let before = t.heard.lock().unwrap().len();
+    let _ = phone.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-server" })).await;
+    let _ = phone.call(methods::QUEUE_COMMAND, run("srv-chat")).await;
+    let _ = phone.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "phone-made", "spaceId": "p", "deviceId": "device-server" })).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let heard: Vec<String> = t.heard.lock().unwrap()[before..].iter().map(|(m, _)| m.clone()).collect();
+    assert!(heard.is_empty(), "the server heard the phone's calls: {heard:?}");
+    assert!(t.server.workspace.chat("phone-made").unwrap().is_none());
 }

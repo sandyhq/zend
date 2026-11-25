@@ -623,6 +623,11 @@ async fn serve_peer_socket<S>(
 
 type ClientWs = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// The largest message this side takes from a paired server it dialled
+/// (its lists, a transcript's tail, a file): more is another device's
+/// runaway, and costs the connection, not this side's memory.
+pub const PEER_MAX_MESSAGE_BYTES: usize = 4 << 20;
+
 /// Dial `url` as `key`, expecting the server holding `peer_key`; the frame
 /// to send once it proved that, signed.
 async fn dial(url: &str, key: &NodeKey, peer_key: &str, secret: Option<&str>) -> Result<(ClientWs, String), RpcError> {
@@ -641,7 +646,7 @@ async fn dial(url: &str, key: &NodeKey, peer_key: &str, secret: Option<&str>) ->
     }
     let (mut ws, response) = tokio::time::timeout(
         DIAL_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(request, Some(crate::ws::config()), true),
+        tokio_tungstenite::connect_async_with_config(request, Some(crate::ws::config_capped(PEER_MAX_MESSAGE_BYTES)), true),
     )
     .await
     .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?

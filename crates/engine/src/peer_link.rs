@@ -290,6 +290,11 @@ impl PeerLink {
         })
     }
 
+    /// The service it serves paired servers: this engine's own.
+    pub(crate) fn service(&self) -> Arc<dyn RpcService> {
+        self.service.clone()
+    }
+
     /// The paired servers this engine dials for its own window, followed
     /// from the first time it's asked ([`crate::peer_view`]).
     pub fn view(self: &Arc<Self>) -> Arc<crate::peer_view::PeerView> {
