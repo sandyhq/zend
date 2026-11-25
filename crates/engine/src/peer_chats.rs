@@ -53,6 +53,22 @@ impl PeerChats {
         (record.chat_id == chat_id).then_some(record.peer)
     }
 
+    /// Every chat a server created here, with that server's key.
+    pub fn list(&self) -> Vec<(String, String)> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let chat = name.strip_suffix(".peer")?.to_string();
+                let peer = self.peer(&chat)?;
+                Some((chat, peer))
+            })
+            .collect()
+    }
+
     /// Drop the record (its chat was never made).
     pub fn forget(&self, chat_id: &str) {
         if let Some(path) = self.path(chat_id) {

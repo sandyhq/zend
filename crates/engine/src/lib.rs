@@ -81,6 +81,7 @@ pub mod peer_chats;
 pub mod peer_copies;
 pub(crate) mod peer_files;
 pub mod peer_keys;
+pub mod peer_logins;
 pub mod peer_link;
 pub mod peer_view;
 pub mod phone_link;

@@ -178,9 +178,14 @@ pub enum PeerCommand {
     #[command(subcommand)]
     Changes(PeerChangesCommand),
     /// The API keys a paired server's sandboxed chats run on, one per model
-    /// provider. They never get your own logins.
+    /// provider. A key wins over a login allowed with `zend peer login`.
     #[command(subcommand)]
     Key(PeerKeyCommand),
+    /// Let a paired server's sandboxed chats use this device's own pi
+    /// login (subscription) for a provider: each turn gets only its access
+    /// token, never the refresh token, which stays here.
+    #[command(subcommand)]
+    Login(PeerLoginCommand),
 }
 
 #[derive(Subcommand)]
@@ -291,6 +296,30 @@ pub fn terminal_safe(text: &str, lines: bool) -> String {
         }
     }
     out
+}
+
+#[derive(Subcommand)]
+pub enum PeerLoginCommand {
+    /// Allow a server's chats on a provider's models (anthropic,
+    /// openai-codex) this device's pi login for it. Before each of their
+    /// turns their sandbox gets that provider's access token alone; this
+    /// device refreshes the login itself. The agent can read the token while
+    /// it runs.
+    Allow {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        /// anthropic or openai-codex, as in Pi's model ids.
+        provider: String,
+    },
+    /// Take the login back: its chats' runs on it end, the token leaves
+    /// their sandboxes.
+    Rm {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        provider: String,
+    },
+    /// The providers each server may use this device's login for.
+    List,
 }
 
 #[derive(Subcommand)]

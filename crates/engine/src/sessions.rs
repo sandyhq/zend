@@ -364,6 +364,10 @@ struct Inner {
     /// run here now ([`SessionsEngine::set_peers_data_dir`]). Unset, no
     /// chat a server made runs ([`Inner::peer_may_run`]).
     peers_data_dir: OnceLock<std::path::PathBuf>,
+    /// Where this device's pi login is, to lend to a server's chats
+    /// ([`crate::peer_logins`]); unset: the engine's own
+    /// ([`crate::peer_logins::HostLogin::current`]).
+    host_login: OnceLock<crate::peer_logins::HostLogin>,
     /// Where the chats' visuals are kept: a visual the person closed
     /// without answers is told to its agent as a line on the next prompt
     /// into its chat (live_visuals `with_dismissals`). Absent in bare tests.
@@ -541,6 +545,7 @@ impl SessionsEngine {
                 turn_listener: OnceLock::new(),
                 plugins: OnceLock::new(),
                 peers_data_dir: OnceLock::new(),
+                host_login: OnceLock::new(),
                 visuals: OnceLock::new(),
                 warm: Mutex::new(HashMap::new()),
                 warm_leases: Mutex::new(None),
@@ -659,6 +664,11 @@ impl SessionsEngine {
         if self.inner.peers_data_dir.set(data_dir.to_path_buf()).is_err() {
             return;
         }
+        // No run is live yet: a login kept for one (a crash's) goes now.
+        let swept = crate::peer_logins::sweep(data_dir);
+        if swept > 0 {
+            tracing::info!(files = swept, "peer link: logins kept for runs before this start removed");
+        }
         // A working copy isn't read or applied while a run of a chat in it
         // is live (crate::peer_copies).
         let held = Arc::downgrade(&self.inner);
@@ -676,10 +686,20 @@ impl SessionsEngine {
             let Some(inner) = weak.upgrade() else { return false };
             let sessions = SessionsEngine { inner };
             if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                // The login file first (gone at once), then the runs.
+                sessions.inner.take_back_lent_logins();
                 rt.spawn(async move { sessions.end_ungranted_peer_runs().await });
+            } else {
+                sessions.inner.take_back_lent_logins();
             }
             true
         });
+    }
+
+    /// Where this device's pi login is read and refreshed for the servers'
+    /// chats allowed to use it (tests point it at a stand-in).
+    pub fn set_host_login(&self, login: crate::peer_logins::HostLogin) {
+        let _ = self.inner.host_login.set(login);
     }
 
     /// End (as a Stop does: the runtime and all it runs) every live run of a
@@ -768,6 +788,11 @@ impl SessionsEngine {
                 let Some(inner) = weak.upgrade() else { return };
                 let sessions = SessionsEngine { inner };
                 for gone in known.difference(&now) {
+                    // A login kept for its run goes with it now (the run,
+                    // ended below, holds what its sandbox mounted).
+                    if let Some(dir) = sessions.inner.peers_data_dir.get() {
+                        crate::peer_logins::take_back(dir, gone);
+                    }
                     if !sessions.has_run(gone) {
                         continue;
                     }
@@ -2428,6 +2453,11 @@ impl SessionsEngine {
         self.inner.peer_keys().ok()
     }
 
+    /// The servers allowed this device's logins ([`crate::peer_logins`]).
+    pub fn peer_logins(&self) -> Option<crate::peer_logins::PeerLogins> {
+        self.inner.peer_logins().ok()
+    }
+
     /// Why a run of `chat_id` on `harness` won't start here, said before
     /// it is queued (a paired server's QueueCommand, `rpc::peer_gate`, gets
     /// it as its answer): what [`Inner::peer_may_run`] says (its grants, its
@@ -3423,8 +3453,15 @@ impl Inner {
                 .and_then(|chat| chat.config);
             if let Some(config) = config {
                 let provider = crate::peer_keys::provider_of(config.harness, config.model.as_deref());
-                if let Err(why) = self.peer_keys().and_then(|keys| keys.for_run(&peer, provider.as_deref()).map(drop)) {
-                    return Err(EngineError::Other(format!("chat {chat_id}: a paired server's chat: {why}: it doesn't run")));
+                let usable = self.peer_credential(&peer, provider.as_deref()).and_then(|credential| match credential {
+                    PeerCredential::Login(provider) if !self.host_login().has(&provider) => {
+                        Err(format!("this device's pi has no {provider} login to lend: sign in on this device (pi, /login)"))
+                    }
+                    _ => Ok(()),
+                });
+                if let Err(why) = usable {
+                    let told = no_credential(chat_id, &peer, provider.as_deref(), &why);
+                    return Err(EngineError::Other(format!("chat {chat_id}: a paired server's chat: {told}: it doesn't run")));
                 }
             }
         }
@@ -3480,13 +3517,40 @@ impl Inner {
         // device's logins (steps 4d-2, 4d-3).
         let peer = crate::peer_chats::PeerChats::new(self.journal.dir()).peer(chat_id);
         let copies = self.copies().filter(|copies| copies.holds(&root));
+        let state = self.journal.sandbox_state_dir(chat_id);
         let sandbox = match (&peer, copies) {
+            // On a key kept for its server and provider, else (4d-4) on
+            // this device's login for that provider, when its server is
+            // allowed it: the key wins. Only the login's access token, fresh,
+            // kept in Zend's data for this run and shown to it read-only.
             (Some(peer), Some(copies)) => {
                 let provider = crate::peer_keys::provider_of(harness_id, model);
-                let keys = self.peer_keys().map_err(&refuse)?;
-                let (var, key) = keys.for_run(peer, provider.as_deref()).map_err(&refuse)?;
-                zend_harness::sandbox::Sandbox::working_copy(&root, copies.dir(), self.sandbox_host())?
-                    .with_keys([(var, key)].into_iter().collect())?
+                let credential = self
+                    .peer_credential(peer, provider.as_deref())
+                    .map_err(|why| refuse(no_credential(chat_id, peer, provider.as_deref(), &why)))?;
+                let copy = zend_harness::sandbox::Sandbox::working_copy(&root, copies.dir(), self.sandbox_host())?;
+                match credential {
+                    PeerCredential::Key(var, key) => copy.with_keys([(var, key)].into_iter().collect())?.with_state(&state)?,
+                    PeerCredential::Login(provider) => {
+                        // Kept in Zend's data for this run only, shown to
+                        // it read-only as auth.json in its agent folder:
+                        // nothing is written or removed by a path the
+                        // sandbox can change.
+                        let data_dir = self.peers_data_dir.get().ok_or_else(|| refuse("this engine lends no logins to servers".into()))?;
+                        let lent = self
+                            .host_login()
+                            .sandbox_auth(&provider)
+                            .and_then(|auth| crate::peer_logins::lend(data_dir, chat_id, &auth))
+                            .map_err(|why| refuse(no_credential(chat_id, peer, Some(&provider), &why)))?;
+                        let sandbox = copy
+                            .with_keys(Default::default())?
+                            .with_state(&state)?
+                            .with_agent_dir(crate::peer_logins::AGENT_DIR)?
+                            .with_agent_file(crate::peer_logins::AUTH_FILE, lent)?;
+                        tracing::info!(chat = %chat_id, peer = %peer, %provider, "peer link: a server's chat runs on this device's login (its access token only)");
+                        sandbox
+                    }
+                }
             }
             (Some(_), None) => {
                 return Err(refuse(
@@ -3500,8 +3564,66 @@ impl Inner {
             }
             (None, None) => zend_harness::sandbox::Sandbox::project(&root, self.sandbox_host())?,
         };
-        let sandbox = sandbox.with_state(&self.journal.sandbox_state_dir(chat_id))?;
+        let sandbox = sandbox.with_state(&state)?;
         Ok(Some(sandbox))
+    }
+
+    /// What a chat of `peer`'s on a `provider` model runs on: a key kept for
+    /// them ([`crate::peer_keys`]), which wins, else this device's login when
+    /// `peer` is allowed it ([`crate::peer_logins`]), else why neither.
+    fn peer_credential(&self, peer: &str, provider: Option<&str>) -> Result<PeerCredential, String> {
+        let keys = self.peer_keys()?;
+        let no_key = match keys.for_run(peer, provider) {
+            Ok((var, key)) => return Ok(PeerCredential::Key(var, key)),
+            Err(why) => why,
+        };
+        let Some(provider) = provider.filter(|p| crate::peer_logins::lendable(p)) else {
+            return Err(no_key);
+        };
+        if self.peer_logins()?.allowed(peer, provider) {
+            return Ok(PeerCredential::Login(provider.to_string()));
+        }
+        let login = format!("allow it this device's {provider} login with `zend peer login allow {peer} {provider}`");
+        Err(match zend_harness::sandbox::provider_key_var(provider) {
+            Some(_) => format!("no API key is kept for {peer} and {provider}: set one with `zend peer key set {peer} {provider}`, or {login}"),
+            None => format!("{provider} has no API key to run on and {peer} may not use this device's login for it: {login}"),
+        })
+    }
+
+    fn peer_logins(&self) -> Result<crate::peer_logins::PeerLogins, String> {
+        self.peers_data_dir
+            .get()
+            .map(|dir| crate::peer_logins::PeerLogins::new(dir))
+            .ok_or_else(|| "this engine lends no logins to servers".to_string())
+    }
+
+    fn host_login(&self) -> crate::peer_logins::HostLogin {
+        self.host_login.get().cloned().unwrap_or_else(crate::peer_logins::HostLogin::current)
+    }
+
+    /// Take the login kept for the runs of every server's chat that may no
+    /// longer use it (allowance taken back, server unpaired, a key kept now,
+    /// its model changed): its file in Zend's data goes at once (its live
+    /// runs end next, and with them what their sandboxes mounted).
+    fn take_back_lent_logins(&self) {
+        let Some(data_dir) = self.peers_data_dir.get() else { return };
+        let lent = crate::peer_logins::lent_chats(data_dir);
+        let peers: HashMap<String, String> = crate::peer_chats::PeerChats::new(self.journal.dir()).list().into_iter().collect();
+        for chat_id in lent {
+            let Some(peer) = peers.get(&chat_id).cloned() else {
+                crate::peer_logins::take_back(data_dir, &chat_id);
+                continue;
+            };
+            let config = self
+                .doc_host()
+                .and_then(|host| host.workspace().and_then(|w| w.chat(&chat_id).ok().flatten()))
+                .and_then(|chat| chat.config);
+            let provider = config.and_then(|c| crate::peer_keys::provider_of(c.harness, c.model.as_deref()));
+            if !matches!(self.peer_credential(&peer, provider.as_deref()), Ok(PeerCredential::Login(_))) {
+                crate::peer_logins::take_back(data_dir, &chat_id);
+                tracing::info!(chat = %chat_id, "peer link: a server's chat may no longer use this device's login: taken back");
+            }
+        }
     }
 
     /// The working copies of servers' chats, once the data dir is wired.
@@ -4687,6 +4809,25 @@ fn next_commit(last: Option<tokio::time::Instant>) -> tokio::time::Instant {
         Some(at) => (at + std::time::Duration::from_millis(STREAM_COMMIT_MS)).max(now),
         None => now,
     }
+}
+
+/// What a server is told when its chat has no key and may not or can't use
+/// this device's login: only that there is no credential for the provider
+/// here. Why (and how the owner would allow it) is logged on this device.
+fn no_credential(chat_id: &str, peer: &str, provider: Option<&str>, why: &str) -> String {
+    tracing::warn!(chat = %chat_id, peer = %peer, provider = provider.unwrap_or("-"), %why, "peer link: a server's chat has no credential to run on");
+    match provider {
+        Some(provider) => format!("no credential for {provider} on this device"),
+        None => "no credential for its model on this device".to_string(),
+    }
+}
+
+/// What a paired server's chat runs on ([`Inner::peer_credential`]).
+enum PeerCredential {
+    /// A key kept for its server: its variable and the key.
+    Key(String, String),
+    /// This device's login for this provider, lent.
+    Login(String),
 }
 
 /// Why `harness` doesn't run a sandboxed chat (a paired server's, or one in

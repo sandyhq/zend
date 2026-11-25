@@ -416,6 +416,8 @@ async fn a_confined_chat_takes_this_sides_access_not_the_peers() {
 struct ShellRun {
     cwd: String,
     root: Option<PathBuf>,
+    /// Its sandbox's state folder.
+    state: Option<PathBuf>,
     out: String,
 }
 
@@ -461,6 +463,7 @@ impl zend_harness::Harness for ShellAgent {
         use futures::StreamExt as _;
         let failed = |e: String| zend_harness::HarnessError::Sandbox(e);
         let root = controls.sandbox.as_ref().map(|s| s.root().to_path_buf());
+        let state = controls.sandbox.as_ref().and_then(|s| s.state().map(Path::to_path_buf));
         let out = match &controls.sandbox {
             None => "UNCONFINED".to_string(),
             Some(sandbox) => {
@@ -480,7 +483,27 @@ impl zend_harness::Harness for ShellAgent {
                 format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
             }
         };
-        self.runs.lock().unwrap().push(ShellRun { cwd: request.cwd.clone(), root, out });
+        self.runs.lock().unwrap().push(ShellRun { cwd: request.cwd.clone(), root, state, out });
+        // A script starting "# hold": its turn stays live until stopped.
+        if request.prompt.starts_with("# hold") {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                let _ = tx.send(Ok(zend_proto::AgentEvent::SessionStarted {
+                    harness: HarnessId::Mock,
+                    model: "mock-1".into(),
+                    tools: vec![],
+                    cwd: request.cwd.clone(),
+                    session_id: "shell-held".into(),
+                    assistant_message_id: "a-held".into(),
+                }));
+                // Its sandbox (and what it lends) lives as long as the run,
+                // as a real harness's does.
+                let held = controls.sandbox;
+                controls.interrupt.cancelled().await;
+                drop(held);
+            });
+            return Ok(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed());
+        }
         Ok(futures::stream::iter(vec![Ok(zend_proto::AgentEvent::Done {
             status: zend_proto::DoneStatus::Completed,
             result: None,
@@ -918,7 +941,8 @@ async fn a_servers_chat_runs_only_on_a_key_kept_for_that_server() {
         a.core.sessions.start_idle("theirs", request)
     };
     let no_key = start("anthropic/claude-test").await;
-    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains(&format!("zend peer key set {} anthropic", a.b_key))), "{no_key:?}");
+    // What B is told (4d-4 review): only that there is none here.
+    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains("no credential for anthropic on this device")), "{no_key:?}");
 
     let owner = owner(&a);
     owner.call(methods::SET_PEER_KEY, json!({ "peer": a.b_key, "provider": "openai", "key": "sk-openai-B" })).await.unwrap();
@@ -951,6 +975,375 @@ async fn a_servers_chat_runs_only_on_a_key_kept_for_that_server() {
     assert!(unpaired.is_err(), "{unpaired:?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(runs.lock().unwrap().len(), 1);
+}
+
+const HOST_ACCESS: &str = "sk-ant-oat01-HOST-ACCESS-LENT";
+const HOST_REFRESH: &str = "sk-ant-ort01-HOST-REFRESH-KEPT";
+const CODEX_ACCESS: &str = "codex-HOST-ACCESS-NOT-LENT";
+
+/// A stand-in for this device's pi login: its folder with an auth.json of
+/// two logins and an API key, `minutes` left on the anthropic one.
+fn host_pi(root: &Path, minutes: i64) -> (PathBuf, zend_engine::peer_logins::HostLogin) {
+    let dir = root.join("host-pi-agent");
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let auth = json!({
+        "anthropic": { "type": "oauth", "access": HOST_ACCESS, "refresh": HOST_REFRESH, "expires": now + minutes * 60_000 },
+        "openai-codex": { "type": "oauth", "access": CODEX_ACCESS, "refresh": "codex-REFRESH", "expires": now + 6_000 * 60_000, "accountId": "acct" },
+        "openrouter": { "type": "api_key", "key": "sk-or-HOST-KEY" },
+    });
+    let file = dir.join("auth.json");
+    std::fs::write(&file, serde_json::to_vec_pretty(&auth).unwrap()).unwrap();
+    (file, zend_engine::peer_logins::HostLogin { agent_dir: dir, pi: None })
+}
+
+/// Where A keeps the logins it lends for runs (outside every sandbox).
+fn kept_dir(a: &Paired) -> PathBuf {
+    kept_dir_of(&a.data)
+}
+
+/// [`kept_dir`] of an engine assembled on `data` (its device's folder).
+fn kept_dir_of(data: &Path) -> PathBuf {
+    zend_engine::EngineProfile::development(data, "dev-org", "dev-user").device_root().join("peer-login-tokens")
+}
+
+/// The logins A keeps for runs now.
+fn kept_logins(a: &Paired) -> Vec<PathBuf> {
+    std::fs::read_dir(kept_dir(a)).into_iter().flatten().flatten().map(|e| e.path()).collect()
+}
+
+/// Every file of the test's (Zend's data, the projects, the copies) that
+/// holds the host's access token, but the host's own login file.
+fn holding_token(a: &Paired, host_file: &Path) -> Vec<PathBuf> {
+    files_holding(&a.root, HOST_ACCESS).into_iter().filter(|f| f != host_file).collect()
+}
+
+/// Every file below `dir` that holds `needle`.
+fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t) if t.is_file() => {
+                    if std::fs::read(&path).is_ok_and(|raw| raw.windows(needle.len()).any(|w| w == needle.as_bytes())) {
+                        out.push(path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// What the engine logs, kept to search (where this process's subscriber
+/// is ours: nextest runs each test alone).
+#[derive(Clone, Default)]
+struct Logged(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logged {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// 4d-4: a chat of B's runs on this device's pi login only when the owner
+/// allowed B that provider's login. (1) Not allowed: refused, and no token
+/// is in its sandbox (also when it runs on a key, which wins). (2) Allowed:
+/// its sandbox's auth.json, its PI_CODING_AGENT_DIR, holds that one
+/// provider's access token with refresh empty; the host's file is unchanged
+/// and unseen. (3) Taking the login back or unpairing ends the live run and
+/// takes the file out. (4) The token is in no log line, no journal or
+/// other file of Zend's, no reply to B or the owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_chat_runs_on_this_devices_login_only_while_allowed() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let logged = Logged::default();
+    let capturing = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer({
+            let logged = logged.clone();
+            move || logged.clone()
+        })
+        .try_init()
+        .is_ok();
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
+    let a = paired_with(&["sessions.run:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    let (host_file, login) = host_pi(&a.root, 300);
+    a.core.sessions.set_host_login(login);
+    let host_before = std::fs::read(&host_file).unwrap();
+    let mut replies: Vec<String> = Vec::new();
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
+    let queue = |prompt: String, n: usize| {
+        let mut queued = run("theirs", "/");
+        queued["command"]["request"]["prompt"] = prompt.into();
+        queued["command"]["messageId"] = format!("m-login-{n}").into();
+        a.b.call(methods::QUEUE_COMMAND, queued)
+    };
+    let owner = owner(&a);
+
+    // (1) Not allowed, no key: refused. B hears only that there is no
+    // credential for the provider here; how to allow it is in this device's
+    // log only.
+    let refused = queue("true".into(), 0).await;
+    let words = format!("zend peer login allow {} anthropic", a.b_key);
+    let told = refused.as_ref().map(|_| String::new()).unwrap_or_else(|e| e.to_string());
+    assert!(told.contains("no credential for anthropic on this device"), "{refused:?}");
+    for detail in ["zend peer", "login", "API key", "sign in", "expire", "refresh"] {
+        assert!(!told.contains(detail), "B is told {detail:?}: {told}");
+    }
+    replies.push(format!("{refused:?}"));
+
+    // (2) Allowed: one provider's access token, no refresh, in its own
+    // agent folder; the host's login file neither changed nor visible.
+    let allowed = owner.call(methods::ALLOW_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    assert_eq!((allowed["provider"].as_str(), allowed["keyWins"].as_bool()), (Some("anthropic"), Some(false)), "{allowed}");
+    replies.push(allowed.to_string());
+    let codex = owner.call(methods::ALLOW_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "openrouter" })).await;
+    assert!(codex.is_err(), "{codex:?}");
+    let listed = owner.call(methods::LIST_PEER_LOGINS, json!({})).await.unwrap();
+    assert_eq!(listed["logins"][0]["providers"], json!(["anthropic"]), "{listed}");
+    replies.push(listed.to_string());
+    let script = format!(
+        r#"cat "$PI_CODING_AGENT_DIR/auth.json"; echo; echo "DIR=$PI_CODING_AGENT_DIR"; env | grep -E 'KEY|TOKEN|ACCESS' || true; cat '{}' 2>/dev/null && echo HOST-VISIBLE; ls '{}' 2>/dev/null && echo KEPT-VISIBLE; echo "MODE=$(stat -c %a "$PI_CODING_AGENT_DIR/auth.json")"; (echo x > "$PI_CODING_AGENT_DIR/auth.json") 2>/dev/null && echo WRITABLE; rm -f "$PI_CODING_AGENT_DIR/auth.json" 2>/dev/null && echo REMOVABLE; true"#,
+        host_file.display(),
+        kept_dir(&a).display()
+    );
+    replies.push(queue(script.clone(), 1).await.expect("runs on the lent login").to_string());
+    let ran = shell_run(&runs, 1).await;
+    let (json_part, rest) = ran.out.split_once("\nDIR=").expect("its auth.json and folder");
+    let lent: Value = serde_json::from_str(json_part.trim()).unwrap_or_else(|e| panic!("{e}: {}", ran.out));
+    assert_eq!(lent.as_object().unwrap().keys().collect::<Vec<_>>(), ["anthropic"], "{lent}");
+    assert_eq!(lent["anthropic"], json!({ "type": "oauth", "refresh": "", "access": HOST_ACCESS, "expires": lent["anthropic"]["expires"] }));
+    assert!(!ran.out.contains(HOST_REFRESH) && !ran.out.contains(CODEX_ACCESS) && !ran.out.contains("sk-or-HOST-KEY"), "{}", ran.out);
+    assert!(!ran.out.contains("HOST-VISIBLE") && !ran.out.contains("API_KEY="), "{}", ran.out);
+    // Read-only to the sandbox, and where it is kept out of its sight.
+    assert!(ran.out.contains("\nMODE=600\n"), "{}", ran.out);
+    for seen in ["WRITABLE", "REMOVABLE", "KEPT-VISIBLE"] {
+        assert!(!ran.out.contains(seen), "{seen}: {}", ran.out);
+    }
+    let state = ran.state.clone().expect("a state folder");
+    let agent_dir = state.join(zend_engine::peer_logins::AGENT_DIR);
+    assert_eq!(rest.lines().next().unwrap(), agent_dir.display().to_string(), "{}", ran.out);
+    assert_eq!(std::fs::read(&host_file).unwrap(), host_before, "the host's auth.json is unchanged");
+    // (MEDIUM) Its run over, the token is on no disk but the host's file.
+    until(|| holding_token(&a, &host_file).is_empty(), "the lent login to go with its run").await;
+    let lent = || !kept_logins(&a).is_empty();
+
+    // (1) A key kept for B and anthropic wins: the token is taken out
+    // before that turn, which sees only the key.
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    let keyed = format!("ls '{}' 2>&1; cat '{}' 2>&1; env | grep -E 'KEY|TOKEN|PI_CODING' || true", agent_dir.display(), agent_dir.join("auth.json").display());
+    replies.push(queue(keyed, 2).await.expect("runs on B's key").to_string());
+    let ran = shell_run(&runs, 2).await;
+    assert!(!ran.out.contains(HOST_ACCESS) && ran.out.contains(&format!("ANTHROPIC_API_KEY={B_KEY}")), "{}", ran.out);
+    assert!(!lent());
+    a.link.keys().remove(&a.b_key, "anthropic").unwrap();
+
+    // (3) Taken back mid-turn: the run ends, the file leaves its sandbox,
+    // the next is refused.
+    queue("# hold\ntrue".into(), 3).await.expect("held on the login");
+    shell_run(&runs, 3).await;
+    until(|| a.core.sessions.has_run("theirs") && lent(), "a held turn on the login").await;
+    let removed = owner.call(methods::REMOVE_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    assert_eq!(removed["removed"], true);
+    assert!(!lent(), "the login is taken back as the answer comes, before the run ends");
+    replies.push(removed.to_string());
+    until(|| !a.core.sessions.has_run("theirs"), "taking the login back to end the run").await;
+    assert!(holding_token(&a, &host_file).is_empty());
+    let again = queue("true".into(), 4).await;
+    assert!(again.is_err(), "{again:?}");
+    replies.push(format!("{again:?}"));
+
+    // (3) Unpaired mid-turn: the same.
+    owner.call(methods::ALLOW_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    queue("# hold\ntrue".into(), 5).await.expect("held on the login again");
+    shell_run(&runs, 4).await;
+    until(|| a.core.sessions.has_run("theirs") && lent(), "a second held turn").await;
+    replies.push(owner.call(methods::UNPAIR_PEER, json!({ "peer": a.b_key })).await.unwrap().to_string());
+    assert!(!lent(), "unpairing takes the login back as it answers");
+    until(|| !a.core.sessions.has_run("theirs"), "unpairing to end the run").await;
+    assert!(holding_token(&a, &host_file).is_empty());
+    assert_eq!(owner.call(methods::LIST_PEER_LOGINS, json!({})).await.unwrap()["logins"], json!([]));
+    assert_eq!(runs.lock().unwrap().len(), 4);
+
+    // (4) The token nowhere but the host's own file: not in Zend's data
+    // (journals, chats, logs), the project, the copy, a reply or a log line.
+    assert_eq!(std::fs::read(&host_file).unwrap(), host_before, "the host's auth.json is unchanged");
+    let holding: Vec<PathBuf> = files_holding(&a.root, HOST_ACCESS).into_iter().filter(|f| !f.starts_with(host_file.parent().unwrap())).collect();
+    assert!(holding.is_empty(), "the token is kept in {holding:?}");
+    assert!(files_holding(&copy, HOST_ACCESS).is_empty());
+    for reply in &replies {
+        assert!(!reply.contains(HOST_ACCESS) && !reply.contains(HOST_REFRESH), "{reply}");
+    }
+    if capturing {
+        let logs = String::from_utf8_lossy(&logged.0.lock().unwrap()).into_owned();
+        assert!(logs.contains("runs on this device's login"), "the log captured nothing of it");
+        assert!(logs.contains(&words), "this device's log says how to allow it");
+        assert!(!logs.contains(HOST_ACCESS) && !logs.contains(HOST_REFRESH), "the token is in a log line");
+    }
+}
+
+/// A's chat for B, its model on anthropic, B allowed A's anthropic login
+/// (`minutes` left on it; `pi` the host's pi that refreshes it): A, its
+/// runs, and the host's login file.
+async fn on_login(minutes: i64, pi: Option<PathBuf>) -> (Paired, Arc<Mutex<Vec<ShellRun>>>, PathBuf) {
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ShellAgent { runs: runs.clone() }));
+    let a = paired_with(&["sessions.run:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    let (host_file, login) = host_pi(&a.root, minutes);
+    a.core.sessions.set_host_login(zend_engine::peer_logins::HostLogin { pi, ..login });
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    owner(&a).call(methods::ALLOW_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    (a, runs, host_file)
+}
+
+/// B queues `prompt` (a shell script) in its chat.
+async fn queue_theirs(a: &Paired, prompt: &str, n: usize) -> Result<Value, RpcError> {
+    let mut queued = run("theirs", "/");
+    queued["command"]["request"]["prompt"] = prompt.into();
+    queued["command"]["messageId"] = format!("m-theirs-{n}").into();
+    a.b.call(methods::QUEUE_COMMAND, queued).await
+}
+
+/// 4d-4 review, HIGH (delete): a server's sandbox owns its state folder
+/// and puts a link there, `pi-agent` to this device's pi folder (from
+/// inside, in a turn on a key: `rm -rf pi-agent; ln -s <host> pi-agent`).
+/// The next turn on a key and taking the login back used to remove
+/// `pi-agent/auth.json` by that path: the owner's own login file. Now the
+/// host acts by no path in the state folder: its file stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sandbox_linking_its_agent_folder_to_the_hosts_cant_have_the_hosts_login_deleted() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let (a, runs, host_file) = on_login(300, None).await;
+    let host_before = std::fs::read(&host_file).unwrap();
+    queue_theirs(&a, "true", 1).await.expect("runs on the lent login");
+    let state = shell_run(&runs, 1).await.state.expect("a state folder");
+    let unchanged = |when: &str| assert_eq!(std::fs::read(&host_file).ok().as_ref(), Some(&host_before), "{when}: the host's login file");
+
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    let attack = format!("cd '{}' && rm -rf pi-agent && ln -s '{}' pi-agent && echo LINKED", state.display(), host_file.parent().unwrap().display());
+    queue_theirs(&a, &attack, 2).await.expect("runs on B's key");
+    let ran = shell_run(&runs, 2).await;
+    assert!(ran.out.contains("LINKED"), "{}", ran.out);
+    assert!(std::fs::symlink_metadata(state.join("pi-agent")).unwrap().file_type().is_symlink());
+    unchanged("the attack itself");
+
+    queue_theirs(&a, "true", 3).await.expect("runs on B's key again");
+    shell_run(&runs, 3).await;
+    unchanged("a turn on a key after it");
+
+    a.link.keys().remove(&a.b_key, "anthropic").unwrap();
+    let back = owner(&a).call(methods::REMOVE_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    assert_eq!(back["removed"], true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    unchanged("taking the login back");
+    owner(&a).call(methods::ALLOW_PEER_LOGIN, json!({ "peer": a.b_key, "provider": "anthropic" })).await.unwrap();
+    owner(&a).call(methods::UNPAIR_PEER, json!({ "peer": a.b_key })).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    unchanged("unpairing");
+    assert!(holding_token(&a, &host_file).is_empty());
+}
+
+/// 4d-4 review, HIGH (overwrite): the same link, put there while the host's
+/// pi refreshes the login (a race with the chat's sandbox, here made sure:
+/// the stand-in pi puts the link as it refreshes). Writing the lent file by
+/// that path used to replace the owner's login file with the lent one (no
+/// refresh token). Now the lent file is written only in Zend's data and
+/// mounted by bubblewrap, which won't follow the link out: the owner's file
+/// is what pi made of it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sandbox_linking_its_agent_folder_to_the_hosts_cant_have_the_hosts_login_overwritten() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !sandbox_tools_present() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("state-to-link");
+    let refreshed = temp.path().join("refreshed.json");
+    let far = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64 + 600 * 60_000;
+    let refreshed_login = json!({ "anthropic": { "type": "oauth", "access": HOST_ACCESS, "refresh": HOST_REFRESH, "expires": far } });
+    std::fs::write(&refreshed, serde_json::to_vec(&refreshed_login).unwrap()).unwrap();
+    let pi = temp.path().join("pi");
+    std::fs::write(
+        &pi,
+        format!(
+            r#"#!/bin/sh
+if [ -f '{t}' ]; then st=$(cat '{t}'); rm -rf "$st/pi-agent"; ln -s "$PI_CODING_AGENT_DIR" "$st/pi-agent"; fi
+cp '{r}' "$PI_CODING_AGENT_DIR/auth.json"
+"#,
+            t = target.display(),
+            r = refreshed.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (a, runs, host_file) = on_login(5, Some(pi)).await;
+    queue_theirs(&a, "true", 1).await.expect("runs on the refreshed login");
+    let state = shell_run(&runs, 1).await.state.expect("a state folder");
+
+    // Near its end again: the next turn has pi refresh it, and the link is
+    // put as it does.
+    host_pi(&a.root, 5);
+    std::fs::write(&target, state.display().to_string()).unwrap();
+    let raced = queue_theirs(&a, "true", 2).await;
+    until(|| std::fs::symlink_metadata(state.join("pi-agent")).is_ok_and(|m| m.file_type().is_symlink()), "the stand-in pi to put the link").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let now: Value = serde_json::from_slice(&std::fs::read(&host_file).unwrap()).unwrap();
+    assert_eq!(now, refreshed_login, "the host's login file was replaced (turn: {raced:?})");
+    until(|| kept_logins(&a).is_empty(), "the lent login to go").await;
+    assert!(holding_token(&a, &host_file).is_empty(), "the token is kept outside the host's file");
+}
+
+/// 4d-4 review, MEDIUM: a deleted chat's lent login goes with it (its run
+/// ends), and none is left on disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_chats_lent_login_goes_with_it() {
+    if !sandbox_tools_present() {
+        return;
+    }
+    let (a, runs, host_file) = on_login(300, None).await;
+    queue_theirs(&a, "# hold\ntrue", 1).await.expect("held on the login");
+    shell_run(&runs, 1).await;
+    until(|| a.core.sessions.has_run("theirs") && !holding_token(&a, &host_file).is_empty(), "a held turn on the login").await;
+    owner(&a).call(methods::MUTATE, json!({ "op": "deleteChat", "chatId": "theirs" })).await.expect("deleted");
+    until(|| !a.core.sessions.has_run("theirs"), "deleting the chat to end its run").await;
+    until(|| holding_token(&a, &host_file).is_empty(), "the lent login to go with the chat").await;
+}
+
+/// 4d-4 review, MEDIUM: a login kept for a run when the engine stopped (a
+/// crash) is gone once it starts again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_kept_for_a_run_is_swept_at_start() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    drop(assemble(&data, "device-a", HarnessRegistry::new()));
+    let kept = kept_dir_of(&data);
+    std::fs::create_dir_all(&kept).unwrap();
+    let left = kept.join("theirs.0123abcd.json");
+    std::fs::write(&left, format!("{{\"anthropic\":{{\"access\":\"{HOST_ACCESS}\"}}}}")).unwrap();
+    let core = assemble(&data, "device-a", HarnessRegistry::new());
+    assert!(!left.exists(), "a login left from before the start is still kept");
+    drop(core);
 }
 
 /// An agent that records each prompt it gets and completes the turn, except
@@ -1206,8 +1599,8 @@ async fn a_run_refused_here_says_why() {
     let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
 
     let no_key = a.b.call(methods::QUEUE_COMMAND, run("theirs", "/")).await;
-    let words = format!("no API key is kept for {} and anthropic", a.b_key);
-    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains(&words)), "{no_key:?}");
+    let words = "no credential for anthropic on this device";
+    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains(words) && !e.to_string().contains("zend peer")), "{no_key:?}");
     a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
     let unsandboxed = a.b.call(methods::QUEUE_COMMAND, run("theirs", "/")).await;
     assert!(unsandboxed.as_ref().is_err_and(|e| e.to_string().contains("mock can't run sandboxed here; only pi does")), "{unsandboxed:?}");
