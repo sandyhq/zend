@@ -642,8 +642,30 @@ async fn dial(url: &str, key: &NodeKey, peer_key: &str, secret: Option<&str>) ->
     )
     .await
     .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
-    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    .map_err(dial_error)?;
     callee_proved(ws, &response, url, key, peer_key, &caller_nonce, secret.is_some()).await
+}
+
+/// A dial's failure: refused (`Failed`) when the server answered and said
+/// no (401/403: this side's key unknown there, unpaired, or not allowed),
+/// in its words; else not reached (`Transport`).
+fn dial_error(error: tokio_tungstenite::tungstenite::Error) -> RpcError {
+    use tokio_tungstenite::tungstenite::Error;
+    match error {
+        Error::Http(response) if matches!(response.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
+            let words = response
+                .body()
+                .as_deref()
+                .map(|body| String::from_utf8_lossy(&body[..body.len().min(240)]).trim().to_string())
+                .filter(|words| !words.is_empty());
+            RpcError::Failed(format!(
+                "the server refused this side ({}): {}",
+                response.status(),
+                words.as_deref().unwrap_or("no reason given")
+            ))
+        }
+        other => RpcError::Transport(other.to_string()),
+    }
 }
 
 /// The caller's handshake request to `url`: its key, a fresh nonce (also

@@ -2428,6 +2428,25 @@ impl SessionsEngine {
         self.inner.peer_keys().ok()
     }
 
+    /// Why a run of `chat_id` on `harness` won't start here, said before
+    /// it is queued (a paired server's QueueCommand, `rpc::peer_gate`, gets
+    /// it as its answer): what [`Inner::peer_may_run`] says (its grants, its
+    /// working copy, a key for its model's provider), or a harness that
+    /// can't run sandboxed for a sandboxed chat. None: nothing known stops it
+    /// (dispatch checks again, and a refusal there lands in the chat).
+    pub(crate) fn run_refusal(&self, chat_id: &str, harness: HarnessId) -> Option<String> {
+        if let Err(why) = self.inner.peer_may_run(chat_id) {
+            return Some(why.to_string());
+        }
+        if self.inner.journal.sandbox(chat_id).is_some()
+            && let Ok(driver) = self.inner.registry.resolve(harness)
+            && !driver.runs_sandboxed()
+        {
+            return Some(format!("chat {chat_id}: {}", cant_run_sandboxed(harness)));
+        }
+        None
+    }
+
     /// [`Self::terminate`], of the run `run_id` only when given.
     async fn terminate_run(
         &self,
@@ -3454,10 +3473,7 @@ impl Inner {
         }
         let harness = self.registry.resolve(harness_id)?;
         if !harness.runs_sandboxed() {
-            return Err(refuse(format!(
-                "{} can't run sandboxed yet",
-                harness_id.as_str()
-            )));
+            return Err(refuse(cant_run_sandboxed(harness_id)));
         }
         // A server's chat: in its working copy (never the owner's folder),
         // on its server's own key for the model's provider, none of this
@@ -4671,6 +4687,12 @@ fn next_commit(last: Option<tokio::time::Instant>) -> tokio::time::Instant {
         Some(at) => (at + std::time::Duration::from_millis(STREAM_COMMIT_MS)).max(now),
         None => now,
     }
+}
+
+/// Why `harness` doesn't run a sandboxed chat (a paired server's, or one in
+/// a project sandbox).
+fn cant_run_sandboxed(harness: HarnessId) -> String {
+    format!("{} can't run sandboxed here; only pi does", harness.as_str())
 }
 
 /// Test-only instrumentation: how often `drive_run`'s coalesced commit branch

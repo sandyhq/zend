@@ -465,6 +465,11 @@ impl PeerLink {
             return Err(RpcError::Failed("that server said nowhere to dial it".into()));
         };
         let here = self.node_at(&host).await;
+        // Not told yet (the tailnet not up, `tailscale` not answering): not
+        // reached, which a refusal is not.
+        if here.is_none() && peer.node.is_some() {
+            return Err(RpcError::Transport(format!("can't tell which tailnet node {host} is now: not dialled")));
+        }
         if peer.node.is_none() || here != peer.node {
             return Err(RpcError::Failed(format!(
                 "{host} is another tailnet node than the one {} was paired from: not dialled",

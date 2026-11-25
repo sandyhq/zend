@@ -708,3 +708,46 @@ async fn a_run_sent_to_a_server_carries_no_path_of_this_device() {
     }
     assert!(sent.contains("hello from the laptop"), "{sent}");
 }
+
+/// Unpaired there (the server forgot this side's key): its handshake is
+/// refused (401), and nothing of it stays here, not kept as if it were
+/// only out of reach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_unpaired_this_side_leaves_nothing_here() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    devices.until("the server", |rows| has(rows, "id", "device-server")).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("its chat", |rows| has(rows, "id", "srv-chat")).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("its project", |rows| has(rows, "id", "p")).await;
+    let laptop_key = t.laptop_link.node_key().unwrap().public().to_string();
+    t.server_link.unpair(&laptop_key).expect("unpaired there");
+    devices.until("the server gone", |rows| !has(rows, "id", "device-server")).await;
+    chats.until("its chat gone", |rows| !has(rows, "id", "srv-chat")).await;
+    spaces.until("its project gone", |rows| !has(rows, "id", "p")).await;
+    assert!(has(&chats.rows, "id", "own-chat"), "{:?}", chats.rows);
+}
+
+/// Not reached (it stopped): its device shows offline from the first
+/// failed redial, its rows stay a while, then go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_not_reached_shows_offline_then_goes() {
+    let t = pair(&["sessions.read"]).await;
+    t.laptop_link.view().keep_quiet_servers_for(Duration::from_secs(6));
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    let online = |rows: &[Value]| rows.iter().any(|d| d["id"] == "device-server" && d["lastSeenAt"].is_string());
+    devices.until("the server, online", online).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("its chat", |rows| has(rows, "id", "srv-chat")).await;
+    let Pair { _temp, server_link, window, laptop_link, server, laptop, .. } = t;
+    drop(server_link);
+    let offline = |rows: &[Value]| rows.iter().any(|d| d["id"] == "device-server" && d["lastSeenAt"].is_null());
+    devices.until("the server, offline", offline).await;
+    let rows = settle(&mut chats, 1).await;
+    assert!(has(&rows, "id", "srv-chat"), "kept while it may come back: {rows:?}");
+    devices.until("the server gone", |rows| !has(rows, "id", "device-server")).await;
+    chats.until("its chat gone", |rows| !has(rows, "id", "srv-chat")).await;
+    drop((window, laptop_link, server, laptop));
+}
+

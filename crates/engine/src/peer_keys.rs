@@ -118,7 +118,7 @@ impl PeerKeys {
         let var = zend_harness::sandbox::provider_key_var(provider)
             .ok_or_else(|| format!("its model's provider {provider} has no API key to run on (a paired server's chat never uses this device's logins)"))?;
         let key = self.load().get(peer).and_then(|keys| keys.get(provider)).cloned().ok_or_else(|| {
-            format!("no API key is kept for its server and provider {provider}: set one with `zend peer key set <server> {provider}`")
+            format!("no API key is kept for {peer} and {provider}: set one with `zend peer key set {peer} {provider}`")
         })?;
         Ok((var.to_string(), key))
     }

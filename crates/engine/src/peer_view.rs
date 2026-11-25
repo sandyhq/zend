@@ -12,7 +12,9 @@
 //! the projects its grants name; refused, it grants this side nothing and
 //! shows nowhere), then follow `WatchChats` and `WatchSessions` (refused
 //! without `sessions.read`: no chats shown). Lost, it is dialled again, waiting
-//! longer each time; its rows stay, its device goes quiet (shown offline).
+//! longer each time. Not reached, its rows stay and its device shows
+//! offline from the first failed redial, for [`QUIET_KEEP`] (then they go);
+//! refused (unpaired there: its handshake's 401), nothing of it stays.
 //!
 //! What a server says is display, never authority over this device:
 //! - This device's own ids come first. A call naming a chat, project or
@@ -51,6 +53,9 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// How soon a server that granted this side nothing is asked again (it
 /// may grant something any time; it doesn't say so).
 const REFUSED_RETRY: Duration = SCAN;
+/// How long a server not reached keeps its rows here (shown offline from
+/// its first failed redial); then they go, until it's reached again.
+const QUIET_KEEP: Duration = Duration::from_secs(10 * 60);
 /// The most rows a server's list may hold (chats, sessions, projects); a
 /// frame over it is dropped, and what it showed before stays.
 pub const MAX_ROWS: usize = 5000;
@@ -184,6 +189,8 @@ pub struct PeerView {
     /// What was dropped of a server's, logged once.
     logged: Mutex<HashSet<String>>,
     wake: Arc<Notify>,
+    /// How long a server not reached keeps its rows ([`QUIET_KEEP`]).
+    quiet_keep: Mutex<Duration>,
 }
 
 /// This device's own ids (its engine's lists, followed), checked before any
@@ -248,6 +255,7 @@ impl PeerView {
             locals: watch::Sender::new(Locals::default()),
             logged: Mutex::default(),
             wake: Arc::new(Notify::new()),
+            quiet_keep: Mutex::new(QUIET_KEEP),
         })
     }
 
@@ -281,6 +289,13 @@ impl PeerView {
     /// The paired servers' device ids, as heard (for the tests).
     pub fn devices(&self) -> Vec<String> {
         self.seen.borrow().values().map(|s| s.device_id.clone()).collect()
+    }
+
+    /// Keep a server not reached `keep` instead of [`QUIET_KEEP`] (for
+    /// the tests).
+    #[doc(hidden)]
+    pub fn keep_quiet_servers_for(&self, keep: Duration) {
+        *self.quiet_keep.lock().unwrap() = keep;
     }
 
     /// How many chats made on a server from here wait for its list to have
@@ -390,18 +405,36 @@ impl PeerView {
     /// Dial `key` and follow it, again after each loss.
     async fn follow(self: Arc<Self>, key: String) {
         let mut wait = RETRY_MIN;
+        // Since when it isn't reached (its first failed redial).
+        let mut quiet: Option<tokio::time::Instant> = None;
         loop {
             match self.follow_once(&key).await {
-                Ok(()) => wait = RETRY_MIN,
+                Ok(()) => {
+                    wait = RETRY_MIN;
+                    quiet = None;
+                }
                 Err(Quiet::Gone) => return,
+                // Unpaired there (its handshake refused), or granted nothing:
+                // nothing of it stays.
                 Err(Quiet::Refused(why)) => {
-                    tracing::debug!(peer = %key, %why, "peer view: the server shows nothing to this side");
+                    tracing::info!(peer = %key, %why, "peer view: the server shows nothing to this side");
                     self.forget(&key);
                     wait = REFUSED_RETRY;
+                    quiet = None;
                 }
                 Err(Quiet::Unreachable(why)) => {
                     tracing::debug!(peer = %key, %why, "peer view: the server isn't reached");
-                    wait = (wait * 2).min(RETRY_MAX);
+                    let since = *quiet.get_or_insert_with(|| {
+                        // Shown offline now, not once its last beat is old.
+                        self.update(&key, |s| s.device["lastSeenAt"] = Value::Null);
+                        tokio::time::Instant::now()
+                    });
+                    let keep = *self.quiet_keep.lock().unwrap();
+                    if since.elapsed() >= keep && self.seen.borrow().contains_key(&key) {
+                        tracing::info!(peer = %key, ?keep, "peer view: a server not reached for long: its rows go");
+                        self.forget(&key);
+                    }
+                    wait = (wait * 2).min(RETRY_MAX).min(keep.max(RETRY_MIN));
                 }
             }
             self.live.lock().unwrap().remove(&key);
@@ -418,7 +451,11 @@ impl PeerView {
         let _ = self.locals.subscribe().wait_for(Locals::ready).await;
         let link = self.link.upgrade().ok_or(Quiet::Gone)?;
         let peer = link.peers().into_iter().find(|p| p.key == key).ok_or(Quiet::Gone)?;
-        let client = Arc::new(link.connect(key).await.map_err(|e| Quiet::Unreachable(e.to_string()))?);
+        // Not reached, or refused (unpaired there: its handshake's 401).
+        let client = Arc::new(link.connect(key).await.map_err(|e| match e {
+            RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),
+            other => Quiet::Refused(other.to_string()),
+        })?);
         drop(link);
         let info = client.call(methods::ENGINE_INFO, json!({})).await.map_err(|e| match e {
             RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),

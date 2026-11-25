@@ -182,6 +182,18 @@ impl EngineRpc {
             }
             other => other,
         };
+        // What won't run is said now, to the server that sent it, and
+        // logged here: not queued to fail where it can't see.
+        if runs {
+            let harness = match &command {
+                SessionCommandPayload::Run { request, .. } => self.doc_host.harness_for_request(&chat.id, request),
+                _ => self.doc_host.harness_for(&chat.id),
+            };
+            if let Some(why) = self.sessions.run_refusal(&chat.id, harness) {
+                tracing::warn!(peer = %peer, chat = %chat.id, %why, "peer gate: a server's run refused");
+                return Err(refused(why));
+            }
+        }
         Ok(json!({ "chatId": chat.id, "command": command }))
     }
 

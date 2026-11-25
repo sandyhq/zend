@@ -7170,14 +7170,19 @@ impl DocHost {
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
                 }
-                self.dispatch_with_source_context(
-                    sessions,
-                    chat_id,
-                    harness,
-                    request,
-                    Some(message_id.clone()),
-                )
-                .await?;
+                if let Err(err) = self
+                    .dispatch_with_source_context(sessions, chat_id, harness, request, Some(message_id.clone()))
+                    .await
+                {
+                    // Refused before it ran (no key, a harness that can't run
+                    // sandboxed, a grant gone): the chat says why under the
+                    // user's message, not only the command's outcome.
+                    tracing::warn!(chat = %chat_id, error = %err, "run refused");
+                    if let Err(note) = handle.note_turn_failure(message_id, &err.to_string()) {
+                        tracing::warn!(chat = %chat_id, error = %note, "noting a refused run failed");
+                    }
+                    return Err(err);
+                }
                 // A fresh user-authored turn is the deliberate action that
                 // thaws a queue frozen by Cancel. Clear only after dispatch
                 // succeeds so a failed send cannot silently unfreeze it.

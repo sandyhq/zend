@@ -918,7 +918,7 @@ async fn a_servers_chat_runs_only_on_a_key_kept_for_that_server() {
         a.core.sessions.start_idle("theirs", request)
     };
     let no_key = start("anthropic/claude-test").await;
-    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains("zend peer key set <server> anthropic")), "{no_key:?}");
+    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains(&format!("zend peer key set {} anthropic", a.b_key))), "{no_key:?}");
 
     let owner = owner(&a);
     owner.call(methods::SET_PEER_KEY, json!({ "peer": a.b_key, "provider": "openai", "key": "sk-openai-B" })).await.unwrap();
@@ -1190,3 +1190,50 @@ async fn a_copy_of_a_servers_chat_stays_its_and_sandboxed_alike() {
     assert_eq!(peers.peer("own-copy"), None);
     assert!(a.core.sessions.chat_sandbox("own-copy").is_none());
 }
+
+/// A run a server sends that won't start here is refused to it at once, in
+/// words: no key kept for it and its model's provider, an agent that can't
+/// run sandboxed. One queued from this side and refused as it starts says
+/// why in the chat, under the user's message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_refused_here_says_why() {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Holder { prompts: prompts.clone() }));
+    let a = paired_with(&["sessions.run:p"], registry).await;
+    a.core.sessions.set_no_ipc_port();
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "theirs", "spaceId": "p", "config": keyed_config() })).await.expect("create");
+    let copy = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("confined");
+
+    let no_key = a.b.call(methods::QUEUE_COMMAND, run("theirs", "/")).await;
+    let words = format!("no API key is kept for {} and anthropic", a.b_key);
+    assert!(no_key.as_ref().is_err_and(|e| e.to_string().contains(&words)), "{no_key:?}");
+    a.link.keys().set(&a.b_key, "anthropic", B_KEY).unwrap();
+    let unsandboxed = a.b.call(methods::QUEUE_COMMAND, run("theirs", "/")).await;
+    assert!(unsandboxed.as_ref().is_err_and(|e| e.to_string().contains("mock can't run sandboxed here; only pi does")), "{unsandboxed:?}");
+
+    // From this side (queued unchecked): refused as it starts, in the chat.
+    let owner = owner(&a);
+    let mut queued = run("theirs", "/");
+    queued["command"]["request"]["cwd"] = json!(copy.display().to_string());
+    owner.call(methods::QUEUE_COMMAND, queued).await.expect("queued");
+    let mut watch = owner
+        .subscribe_checked(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "theirs" }))
+        .await
+        .expect("its transcript");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let frame = tokio::time::timeout_at(deadline, watch.recv())
+            .await
+            .expect("the refusal in the chat in time")
+            .expect("watch alive");
+        let said = frame.to_string();
+        if said.contains("mock can't run sandboxed here") {
+            // A whole transcript, or the note placed after the user's message.
+            assert!(said.contains("hello") || said.contains(r#""after":"m-theirs""#), "under the user's message: {frame}");
+            break;
+        }
+    }
+    assert!(prompts.lock().unwrap().is_empty(), "it never ran");
+}
+
