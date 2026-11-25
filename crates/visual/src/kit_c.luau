@@ -1088,7 +1088,9 @@ local function parse_flowchart(lines, direction)
 	return { kind = "flow", direction = direction, nodes = order, edges = edges }
 end
 
-local function layout_flowchart(d)
+-- Ranks along the edges (longest path, back edges of cycles left out) and
+-- each rank's order (barycentre of the rank before), once per diagram.
+local function rank_flowchart(d)
 	local state, back = {}, {}
 	local out_edges = {}
 	for _, e in ipairs(d.edges) do
@@ -1113,11 +1115,6 @@ local function layout_flowchart(d)
 	end
 	for _, n in ipairs(d.nodes) do
 		n.rank = 0
-		n.w = math.max(64, est(n.label) + 26)
-		n.h = n.shape == "diamond" and 46 or 34
-		if n.shape == "diamond" then
-			n.w += 28
-		end
 	end
 	for _ = 1, #d.nodes do
 		for _, e in ipairs(d.edges) do
@@ -1157,39 +1154,165 @@ local function layout_flowchart(d)
 			return a.seq < b.seq
 		end)
 	end
+	d.ranks = ranks
+end
+
+-- A label in lines of at most 'max' characters, broken between words (a
+-- longer word keeps its own line).
+local function wrap_words(label, max)
+	local lines, line = {}, ""
+	for word in string.gmatch(label, "%S+") do
+		if line == "" then
+			line = word
+		elseif #line + 1 + #word <= max then
+			line ..= " " .. word
+		else
+			table.insert(lines, line)
+			line = word
+		end
+	end
+	if line ~= "" or #lines == 0 then
+		table.insert(lines, line)
+	end
+	return lines
+end
+
+local LINE = 16
+
+-- One layout of a ranked flowchart: labels wrapped at 'wrap' characters,
+-- across the page when 'flip' turns LR into TD (RL into BT). Boxes are by
+-- node id, centres in layout pixels from the top left; 'gap' is the middle
+-- of the gap before each rank, where an edge into it turns.
+local function layout_flowchart(d, wrap, flip, tight)
 	local horizontal = d.direction == "LR" or d.direction == "RL"
-	local widest = 0
+	if flip then
+		horizontal = not horizontal
+	end
+	local reverse = d.direction == "RL" or d.direction == "BT"
+	local box = {}
 	for _, n in ipairs(d.nodes) do
-		widest = math.max(widest, n.w)
+		local lines = wrap_words(n.label, wrap)
+		local text = 0
+		for _, line in ipairs(lines) do
+			text = math.max(text, est(line))
+		end
+		local w, h = math.max(64, text + 26), #lines * LINE + 18
+		if n.shape == "diamond" then
+			w, h = w + 28, h + 12
+		elseif n.shape == "circle" then
+			w = math.max(text + 20, h)
+			h = w
+		end
+		box[n.id] = { lines = lines, w = w, h = h }
+	end
+	-- Between ranks: room for the arrow, and across the page for the label
+	-- of an edge into the next rank.
+	local gaps = {}
+	for r = 1, #d.ranks - 1 do
+		gaps[r] = tight and 24 or (horizontal and 48 or 40)
+	end
+	for _, e in ipairs(d.edges) do
+		if e.label and e.to.rank == e.from.rank + 1 and horizontal then
+			local r = e.from.rank + 1
+			gaps[r] = math.max(gaps[r], est(e.label, "xs") + 24)
+		end
 	end
 	local along, across = 0, 0
-	-- 'along' runs with the edges, 'across' is the width of the widest rank.
-	local pos_along = 0
-	for r, list in ipairs(ranks) do
-		local size = 0
-		for _, n in ipairs(list) do
-			size = math.max(size, horizontal and n.w or n.h)
-		end
+	local starts = {}
+	for r, list in ipairs(d.ranks) do
+		local size, c = 0, 0
 		for i, n in ipairs(list) do
-			n.a = pos_along + size / 2
-			n.c = (i - 1) * (horizontal and 50 or (widest + 28)) + (horizontal and 17 or widest / 2)
-			across = math.max(across, n.c + (horizontal and 17 or widest / 2))
+			local b = box[n.id]
+			size = math.max(size, horizontal and b.w or b.h)
+			local cross = horizontal and b.h or b.w
+			b.c = c + cross / 2
+			c += cross + (horizontal and 20 or 28)
 		end
-		pos_along += size + (horizontal and 60 or 44)
+		across = math.max(across, c - (horizontal and 20 or 28))
+		starts[r] = along
+		for _, n in ipairs(list) do
+			box[n.id].a = along + size / 2
+		end
+		along += size + (gaps[r] or 0)
 	end
-	along = pos_along - (horizontal and 60 or 44)
-	local reverse = d.direction == "RL" or d.direction == "BT"
-	for _, n in ipairs(d.nodes) do
-		local a = reverse and (along - n.a) or n.a
+	-- An edge that skips ranks runs along its source's row; where a node
+	-- between stands in that row, it goes round by a lane past the rest.
+	local lanes, lane = {}, across + 16
+	for _, e in ipairs(d.edges) do
+		if e.to.rank > e.from.rank + 1 then
+			local c = box[e.from.id].c
+			local blocked = false
+			for r = e.from.rank + 2, e.to.rank do
+				for _, n in ipairs(d.ranks[r]) do
+					local b = box[n.id]
+					local half = (horizontal and b.h or b.w) / 2 + 6
+					if math.abs(b.c - c) < half then
+						blocked = true
+					end
+				end
+			end
+			if blocked then
+				lanes[e] = lane
+				across = lane + 6
+				lane += 12
+			end
+		end
+	end
+	local gap = {}
+	for r = 2, #d.ranks do
+		gap[r] = starts[r] - gaps[r - 1] / 2
+	end
+	local function flip_along(a)
+		return reverse and (along - a) or a
+	end
+	for _, b in pairs(box) do
+		local a = flip_along(b.a)
 		if horizontal then
-			n.x, n.y = a, n.c
+			b.x, b.y = a, b.c
 		else
-			n.x, n.y = n.c, a
+			b.x, b.y = b.c, a
 		end
 	end
-	d.width = horizontal and along or across
-	d.height = horizontal and across or along
-	d.horizontal = horizontal
+	for r, a in pairs(gap) do
+		gap[r] = flip_along(a)
+	end
+	return {
+		box = box,
+		gap = gap,
+		lanes = lanes,
+		horizontal = horizontal,
+		width = horizontal and along or across,
+		height = horizontal and across or along,
+	}
+end
+
+-- The first layout that fits 'maxw' by 'maxh': the diagram's own direction,
+-- then narrower labels, then (a left-to-right diagram) top to bottom. When
+-- none fits, the one that overflows least.
+local function fit_flowchart(d, maxw, maxh)
+	local turns = d.direction == "LR" or d.direction == "RL"
+	local tries = { { 24, false }, { 14, false } }
+	if turns then
+		table.insert(tries, { 24, true })
+		table.insert(tries, { 14, true })
+	end
+	-- (Last, shorter arrows.)
+	table.insert(tries, { 14, false, true })
+	if turns then
+		table.insert(tries, { 14, true, true })
+	end
+	local best, over = nil, math.huge
+	for _, t in ipairs(tries) do
+		local l = layout_flowchart(d, t[1], t[2], t[3])
+		if l.width <= maxw and l.height <= maxh then
+			return l
+		end
+		local o = math.max(l.width / math.max(maxw, 1), l.height / math.max(maxh, 1))
+		if o < over then
+			best, over = l, o
+		end
+	end
+	return best
 end
 
 local function arrow_head(g, x, y, dx, dy, color)
@@ -1201,28 +1324,61 @@ local function arrow_head(g, x, y, dx, dy, color)
 	g:polygon({ { x, y }, { x - dx * 8 - dy * 4, y - dy * 8 + dx * 4 }, { x - dx * 8 + dy * 4, y - dy * 8 - dx * 4 } }, { fill = color })
 end
 
-local function draw_flowchart(g, w, hh, d, selected, boxes)
-	local sx = math.min(1, math.max(w - 8, 10) / math.max(d.width, 1))
-	local sy = math.min(1, math.max(hh - 8, 10) / math.max(d.height, 1))
-	local ox = (w - d.width * sx) / 2
-	local function px(n)
-		return ox + n.x * sx, 4 + n.y * sy
+local function draw_flowchart(g, w, hh, d, l, selected, boxes)
+	-- A layout that still overflows shrinks whole: boxes with their places,
+	-- each line cut to its box, so nothing overlaps.
+	local sx = math.min(1, math.max(w - 8, 10) / math.max(l.width, 1))
+	local sy = math.min(1, math.max(hh - 8, 10) / math.max(l.height, 1))
+	local ox = (w - l.width * sx) / 2
+	local function place(n)
+		local b = l.box[n.id]
+		return ox + b.x * sx, 4 + b.y * sy, b.w * sx, b.h * sy, b
+	end
+	local function turn(r)
+		local a = l.gap[r]
+		return a and (l.horizontal and ox + a * sx or 4 + a * sy) or nil
 	end
 	for _, e in ipairs(d.edges) do
-		local x1, y1 = px(e.from)
-		local x2, y2 = px(e.to)
+		local x1, y1, w1, h1 = place(e.from)
+		local x2, y2, w2, h2 = place(e.to)
 		local color = ui.color("text", 0.45)
 		local width = e.style == "thick" and 3 or 1.5
 		local dash = e.style == "dotted" and 4 or nil
+		-- (A forward edge turns in the gap before its target, so one that
+		-- skips ranks runs along its own row, clear of the nodes between.)
+		local forward = e.to.rank > e.from.rank
+		local at = forward and turn(e.to.rank + 1) or nil
+		-- (A back edge in line with a forward one runs beside it.)
+		if not forward then
+			if l.horizontal and math.abs(y2 - y1) < 1 then
+				y1, y2 = y1 + 8, y2 + 8
+			elseif not l.horizontal and math.abs(x2 - x1) < 1 then
+				x1, x2 = x1 + 12, x2 + 12
+			end
+		end
 		local pts
-		if d.horizontal then
+		local lane = l.lanes[e]
+		local out = lane and turn(e.from.rank + 2)
+		if lane and out and at then
+			if l.horizontal then
+				local s = x2 >= x1 and 1 or -1
+				local ly = 4 + lane * sy
+				pts = { { x1 + s * w1 / 2, y1 }, { out, y1 }, { out, ly }, { at, ly }, { at, y2 }, { x2 - s * w2 / 2, y2 } }
+			else
+				local s = y2 >= y1 and 1 or -1
+				local lx = ox + lane * sx
+				pts = { { x1, y1 + s * h1 / 2 }, { x1, out }, { lx, out }, { lx, at }, { x2, at }, { x2, y2 - s * h2 / 2 } }
+			end
+		elseif l.horizontal then
 			local s = x2 >= x1 and 1 or -1
-			local ax, bx = x1 + s * e.from.w / 2, x2 - s * e.to.w / 2
-			pts = (math.abs(y2 - y1) < 1) and { { ax, y1 }, { bx, y2 } } or { { ax, y1 }, { (ax + bx) / 2, y1 }, { (ax + bx) / 2, y2 }, { bx, y2 } }
+			local ax, bx = x1 + s * w1 / 2, x2 - s * w2 / 2
+			local tx = at or (ax + bx) / 2
+			pts = (math.abs(y2 - y1) < 1) and { { ax, y1 }, { bx, y2 } } or { { ax, y1 }, { tx, y1 }, { tx, y2 }, { bx, y2 } }
 		else
 			local s = y2 >= y1 and 1 or -1
-			local ay, by = y1 + s * e.from.h / 2, y2 - s * e.to.h / 2
-			pts = (math.abs(x2 - x1) < 1) and { { x1, ay }, { x2, by } } or { { x1, ay }, { x1, (ay + by) / 2 }, { x2, (ay + by) / 2 }, { x2, by } }
+			local ay, by = y1 + s * h1 / 2, y2 - s * h2 / 2
+			local ty = at or (ay + by) / 2
+			pts = (math.abs(x2 - x1) < 1) and { { x1, ay }, { x2, by } } or { { x1, ay }, { x1, ty }, { x2, ty }, { x2, by } }
 		end
 		g:polyline(pts, { color = color, width = width, dash = dash })
 		local last, before = pts[#pts], pts[#pts - 1]
@@ -1230,32 +1386,57 @@ local function draw_flowchart(g, w, hh, d, selected, boxes)
 			arrow_head(g, last[1], last[2], last[1] - before[1], last[2] - before[2], color)
 		end
 		if e.label then
-			local mid = pts[math.ceil(#pts / 2)]
-			local nxt = pts[math.ceil(#pts / 2) + 1] or mid
-			g:text((mid[1] + nxt[1]) / 2, (mid[2] + nxt[2]) / 2 - 8, e.label, { size = "xs", color = "muted", align = "center" })
+			-- On the edge's longest run: above a level one, beside an upright
+			-- one in a top-down layout (where the gap is the rank's height).
+			local pick, long = 1, -1
+			for i = 1, #pts - 1 do
+				local p, q = pts[i], pts[i + 1]
+				local len = math.abs(q[1] - p[1]) + math.abs(q[2] - p[2])
+				if len > long then
+					pick, long = i, len
+				end
+			end
+			local p, q = pts[pick], pts[pick + 1]
+			local mx, my = (p[1] + q[1]) / 2, (p[2] + q[2]) / 2
+			if math.abs(q[2] - p[2]) >= 1 and not l.horizontal then
+				g:text(mx + 6, my, e.label, { size = "xs", color = "muted", baseline = "center" })
+			else
+				g:text(mx, my - 8, e.label, { size = "xs", color = "muted", align = "center", baseline = "center" })
+			end
 		end
 	end
 	for _, n in ipairs(d.nodes) do
-		local x, y = px(n)
+		local x, y, nw, nh, b = place(n)
 		local fill = ui.color("text", 0.08)
 		local edge = selected == n.id and "accent" or ui.color("text", 0.25)
 		if n.shape == "diamond" then
-			local pts = { { x, y - n.h / 2 }, { x + n.w / 2, y }, { x, y + n.h / 2 }, { x - n.w / 2, y } }
+			local pts = { { x, y - nh / 2 }, { x + nw / 2, y }, { x, y + nh / 2 }, { x - nw / 2, y } }
 			g:polygon(pts, { fill = fill })
 			table.insert(pts, pts[1])
 			g:polyline(pts, { color = edge, width = selected == n.id and 2 or 1 })
 		elseif n.shape == "circle" then
-			g:circle(x, y, n.h / 2 + 4, { fill = fill })
-			g:circle(x, y, n.h / 2 + 4, { color = edge, width = selected == n.id and 2 or 1 })
+			g:circle(x, y, math.min(nw, nh) / 2, { fill = fill })
+			g:circle(x, y, math.min(nw, nh) / 2, { color = edge, width = selected == n.id and 2 or 1 })
 		else
-			local r = n.shape == "round" and n.h / 2 or 6
-			g:rect(x - n.w / 2, y - n.h / 2, n.w, n.h, { fill = fill, radius = r })
+			local r = n.shape == "round" and math.min(nh / 2, 17) or 6
+			g:rect(x - nw / 2, y - nh / 2, nw, nh, { fill = fill, radius = r })
 			if selected == n.id then
-				g:rect(x - n.w / 2, y - n.h / 2, n.w, n.h, { color = "accent", width = 2, radius = r })
+				g:rect(x - nw / 2, y - nh / 2, nw, nh, { color = "accent", width = 2, radius = r })
 			end
 		end
-		g:text(x, y, n.label, { size = "sm", align = "center", baseline = "center" })
-		table.insert(boxes, { id = n.id, x0 = x - n.w / 2, x1 = x + n.w / 2, y0 = y - n.h / 2, y1 = y + n.h / 2 })
+		local lines = b.lines
+		local room = math.max(1, math.floor((nh - 10) / LINE))
+		if #lines > room then
+			local cut = table.move(lines, 1, room, 1, {})
+			cut[room] = cut[room] .. " …"
+			lines = cut
+		end
+		local inner = nw - (n.shape == "diamond" and 36 or 12)
+		for i, line in ipairs(lines) do
+			local text = sx < 1 and fit(line, inner) or line
+			g:text(x, y + (i - (#lines + 1) / 2) * LINE, text, { size = "sm", align = "center", baseline = "center" })
+		end
+		table.insert(boxes, { id = n.id, x0 = x - nw / 2, x1 = x + nw / 2, y0 = y - nh / 2, y1 = y + nh / 2 })
 	end
 end
 
@@ -1367,7 +1548,7 @@ define("Diagram", { "mermaid", "details", "key", "height" }, function(p)
 			fail("has unknown direction '" .. dir .. "': use LR, RL, TD, or BT")
 		end
 		d = parse_flowchart(lines, dir)
-		layout_flowchart(d)
+		rank_flowchart(d)
 	elseif kind == "sequenceDiagram" then
 		if p.details then
 			fail("takes details only on a flowchart")
@@ -1378,8 +1559,11 @@ define("Diagram", { "mermaid", "details", "key", "height" }, function(p)
 	end
 	local id = p.key or source
 	local height
+	-- A flowchart is laid out for the reply column (about 720 px) to size
+	-- its canvas, then again for the width it's drawn at.
+	local layouts = {}
 	if d.kind == "flow" then
-		height = p.height or math.min(d.height + 12, 460)
+		height = p.height or math.min(fit_flowchart(d, 680, math.huge).height + 12, 640)
 	else
 		height = p.height or (52 + #d.rows * 34)
 	end
@@ -1389,7 +1573,9 @@ define("Diagram", { "mermaid", "details", "key", "height" }, function(p)
 		draw = function(g, w, hh)
 			if d.kind == "flow" then
 				boxes = {}
-				draw_flowchart(g, w, hh, d, diagram_sel[id], boxes)
+				local key = math.floor(w) .. "x" .. math.floor(hh)
+				layouts[key] = layouts[key] or fit_flowchart(d, w - 8, hh - 8)
+				draw_flowchart(g, w, hh, d, layouts[key], diagram_sel[id], boxes)
 			else
 				draw_sequence(g, w, d)
 			end

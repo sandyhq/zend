@@ -173,6 +173,83 @@ fn diagram_draws_flowcharts_and_sequences() {
     assert!(after.contains("Alpha|about alpha"), "{after}");
 }
 
+/// A flowchart wider than the column, as an agent wrote it: five nodes in a
+/// row with long labels and two labelled edges.
+const WIDE_FLOW: &str = r#"return ui.kit.Diagram { mermaid = [=[flowchart LR
+  b1["browser on laptop"] --> ls["local fork server 127.0.0.1"]
+  ls --> hub["hub space: journal/ zen/ anexia/ (symlinks)"]
+  hub --> jr["~/Projects/journal"]
+  jr -- "sync: the open question" --> gh[("GitHub private: nesyeklaf/journal")]
+  ai["AI fork server: space journal"] -- "built-in Git Sync" --> gh
+  b2["phone or browser elsewhere"] --> ai
+]=] }"#;
+
+/// Node boxes (fills larger than an arrow head) and node labels (sm text).
+fn flow_boxes_and_labels(cmds: &[DrawCmd]) -> (Vec<[f32; 4]>, Vec<(f32, f32, String)>) {
+    let mut boxes = Vec::new();
+    let mut labels = Vec::new();
+    for cmd in cmds {
+        match cmd {
+            DrawCmd::Fill { points, .. } => {
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for p in points {
+                    x0 = x0.min(p[0]);
+                    y0 = y0.min(p[1]);
+                    x1 = x1.max(p[0]);
+                    y1 = y1.max(p[1]);
+                }
+                if x1 - x0 > 20.0 && y1 - y0 > 20.0 {
+                    boxes.push([x0, y0, x1, y1]);
+                }
+            }
+            DrawCmd::Text(t) if t.size == crate::style::TextSize::Sm => {
+                labels.push((t.x, t.y, t.text.clone()));
+            }
+            _ => {}
+        }
+    }
+    (boxes, labels)
+}
+
+#[test]
+fn a_wide_flowchart_fits_the_column_without_overlaps() {
+    for width in [685.0_f32, 360.0] {
+        let mut visual = Visual::load(WIDE_FLOW, 1).unwrap();
+        let node = visual.render().unwrap();
+        let canvas = match &node.kind {
+            NodeKind::Canvas(c) => c.clone(),
+            _ => panic!("a canvas"),
+        };
+        let cmds = visual
+            .draw_canvas(canvas.draw, width, canvas.height, 0.0, None)
+            .unwrap();
+        let (boxes, labels) = flow_boxes_and_labels(&cmds);
+        assert_eq!(boxes.len(), 7, "{width}: one box per node");
+        for (i, a) in boxes.iter().enumerate() {
+            assert!(
+                a[0] >= 0.0 && a[2] <= width && a[1] >= 0.0 && a[3] <= canvas.height,
+                "{width}: box {a:?} outside {width}x{}",
+                canvas.height
+            );
+            for b in &boxes[i + 1..] {
+                let apart = a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1];
+                assert!(apart, "{width}: boxes overlap: {a:?} and {b:?}");
+            }
+        }
+        // Every label line sits inside a box, at the kit's width estimate.
+        for (x, y, text) in &labels {
+            let half = text.len() as f32 * 6.6 / 2.0;
+            let inside = boxes
+                .iter()
+                .any(|b| x - half >= b[0] && x + half <= b[2] && *y >= b[1] && *y <= b[3]);
+            assert!(
+                inside,
+                "{width}: label {text:?} at ({x}, {y}) spills out of its box"
+            );
+        }
+    }
+}
+
 #[test]
 fn scene_and_shader_wrap_the_3d_nodes() {
     let scene = tree(
