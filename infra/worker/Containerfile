@@ -7,7 +7,10 @@ FROM ${BASE}
 COPY zend-engine /usr/local/bin/zend-engine
 # /work and /data become the worker's named volumes; Podman fills an empty
 # volume from these folders, so they start owned by the engine's uid (1000).
-RUN mkdir -p /work /data /run/zend-worker /etc/zend-worker \
+# The engine image carries its builder's git identity (/etc/gitconfig);
+# a worker carries no one's.
+RUN rm -rf /etc/gitconfig /etc/gitconfig.d \
+ && mkdir -p /work /data /run/zend-worker /etc/zend-worker \
  && chown 1000:1000 /work /data \
  && chmod 0755 /usr/local/bin/zend-engine
 ENV ZEND_DATA_DIR=/data \

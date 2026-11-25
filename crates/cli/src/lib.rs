@@ -200,6 +200,15 @@ pub enum WorkerCommand {
         /// provider's variable. No login of yours goes in.
         #[arg(long = "key", value_name = "PROVIDER")]
         key: Option<String>,
+        /// Its memory, swap none (default 4g).
+        #[arg(long)]
+        memory: Option<String>,
+        /// Its CPUs (default 2).
+        #[arg(long)]
+        cpus: Option<String>,
+        /// Its processes and threads (default 512).
+        #[arg(long)]
+        pids: Option<u32>,
     },
     /// This server's workers and their containers' state.
     List,

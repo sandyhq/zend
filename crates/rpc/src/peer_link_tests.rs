@@ -125,6 +125,17 @@ fn a_signature_answers_only_its_own_keys_nonces_side_and_purpose() {
 #[derive(Default)]
 struct Echo(std::sync::atomic::AtomicUsize);
 
+/// Answers with `params.bytes` bytes of text.
+struct Big;
+
+#[async_trait::async_trait]
+impl RpcService for Big {
+    async fn handle(&self, _method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let bytes = params["bytes"].as_u64().unwrap_or(0) as usize;
+        Ok(RpcReply::Value(serde_json::json!({ "blob": "x".repeat(bytes) })))
+    }
+}
+
 #[async_trait::async_trait]
 impl RpcService for Echo {
     async fn handle(&self, method: &str, _params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -409,4 +420,52 @@ async fn a_workers_socket_serves_only_its_server_and_only_the_run_methods() {
     assert!(joined.as_ref().is_err_and(|e| e.to_string().contains("401")), "{:?}", joined.err());
     assert!(book.grants(stranger.public()).is_none());
     assert_eq!(echo.0.load(std::sync::atomic::Ordering::SeqCst), 6);
+}
+
+/// Its server dials a worker's socket only as itself: a symlink to another
+/// socket, or a file, put in its place is refused, not followed (the worker
+/// writes where its socket is). Control: the socket itself answers.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_workers_socket_is_dialled_only_as_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let worker = Arc::new(NodeKey::generate().unwrap());
+    let server = NodeKey::generate().unwrap();
+    let book = Book::new("worker");
+    book.pair(server.public(), grants(&["sessions.run.unconfined:work"]));
+    let _task = tokio::spawn(serve_peer_unix(listener, Arc::new(Echo::default()), worker.clone(), book));
+
+    let client = connect_peer_unix(&path, &server, worker.public()).await.expect("the socket itself");
+    client.call(methods::ENGINE_INFO, serde_json::json!({})).await.unwrap();
+    let link = dir.path().join("link.sock");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    let refused = connect_peer_unix(&link, &server, worker.public()).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("not a socket")), "a symlink was followed: {:?}", refused.err());
+    let file = dir.path().join("file.sock");
+    std::fs::write(&file, b"").unwrap();
+    let refused = connect_peer_unix(&file, &server, worker.public()).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("not a socket")), "{:?}", refused.err());
+}
+
+/// Its server takes no message over 16 MiB from a worker (a worker is as
+/// trusted as its agent): the connection ends. Control: 15 MiB comes in.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_takes_no_message_over_16_mib_from_a_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let worker = Arc::new(NodeKey::generate().unwrap());
+    let server = NodeKey::generate().unwrap();
+    let book = Book::new("worker");
+    book.pair(server.public(), grants(&["sessions.run.unconfined:work"]));
+    let _task = tokio::spawn(serve_peer_unix(listener, Arc::new(Big), worker.clone(), book));
+
+    let client = connect_peer_unix(&path, &server, worker.public()).await.unwrap();
+    let small = client.call(methods::ENGINE_INFO, serde_json::json!({ "bytes": 15 << 20 })).await.expect("15 MiB");
+    assert_eq!(small["blob"].as_str().map(str::len), Some(15 << 20));
+    let big = client.call(methods::ENGINE_INFO, serde_json::json!({ "bytes": 17 << 20 })).await;
+    assert!(big.is_err(), "a 17 MiB reply was taken in");
 }

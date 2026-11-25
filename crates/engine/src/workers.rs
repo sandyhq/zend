@@ -7,14 +7,21 @@
 //! {data}/workers.json                 [{name, key, image, container, providers, createdAt}]
 //! {data}/workers/<name>/             0700, the server's user's
 //! {data}/workers/<name>/conf/         ro at /etc/zend-worker: node-key, server-key, blocked
-//! {data}/workers/<name>/run/          at /run/zend-worker: worker.sock
+//! {data}/workers/<name>/run/          0711, the worker's: at /run/zend-worker: worker.sock
 //! ```
 //!
-//! - As whom. The container's engine runs as uid 1000 (the image's `node`),
-//!   which rootless Podman maps to a subordinate uid of the server's user:
-//!   not the server's user, and nobody else's. It reads `conf` (0755/0644)
-//!   and makes its socket in `run` (0777); the 0700 folder around both
+//! - Trust. A worker is as trusted as its agent: everything from it is
+//!   hostile input. Its server dials its socket only as itself (no
+//!   symlink followed), takes no message over 16 MiB from it, and uses
+//!   nothing it answers but that it answered (ENGINE_INFO, to know it runs).
+//! - As whom. `--userns=auto`: the container has a user namespace of its
+//!   own, from the server's user's subordinate ids (its root isn't the
+//!   server's user). Its engine runs as uid 1000 (the image's `node`). It
+//!   reads `conf` (0755/0644, the server's) and makes its socket in `run`
+//!   (0711, chowned to it by Podman, `U`); the 0700 folder around both
 //!   keeps every other user of the host out.
+//! - Limits. Memory (no swap), CPUs and processes are capped per worker
+//!   ([`Limits`], 4 GiB, 2 CPUs, 512 by default). /work's size isn't.
 //!
 //! - Who. The server makes the worker's Ed25519 key, gives it its own
 //!   public key (`server-key`) and pins the worker's (`key` in
@@ -26,13 +33,18 @@
 //!   local user or a tailnet node could reach.
 //! - The network. pasta, IPv4 only, no gateway mapping to the host
 //!   (`--no-map-gw`, no forwarded ports), the sandbox's addresses
-//!   (169.254.2.2/30, DNS through 169.254.2.1); then, before the container's
-//!   first process runs (`podman init`), an unreachable route in its
-//!   namespace for every network of [`blocked_networks`] (private, the
+//!   (169.254.2.2/30, DNS through 169.254.2.1, which pasta sends to a
+//!   public resolver, [`DNS_HOST`], not the host's: no tailnet names);
+//!   then, on every start, before the container's first process runs
+//!   (`podman init`), an unreachable route in its namespace for every
+//!   network of [`blocked_networks`] as they are then (private, the
 //!   tailnet's 100.64/10, link-local and cloud metadata, the host's own
-//!   addresses and subnets, docker's bridges among them). No capabilities
-//!   (`--cap-drop all`, `no-new-privileges`): nothing inside changes a
-//!   route. The worker's engine checks the routes are there before it serves.
+//!   addresses and subnets, docker's bridges among them), also written to
+//!   `conf/blocked`. No capabilities (`--cap-drop all`,
+//!   `no-new-privileges`): nothing inside changes a route. The worker's
+//!   engine checks the routes are there before it serves. A running worker
+//!   keeps the routes it started with: an address the host gains later is
+//!   blocked from its next start on (stop and start it).
 //! - Keys. API keys for its agents are Podman secrets (`zend-worker-<name>-<provider>`),
 //!   given as the provider's variable (`ANTHROPIC_API_KEY`, …); no login
 //!   file of the owner's goes in.
@@ -56,7 +68,58 @@ const START_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// pasta's options: IPv4 only, the sandbox's addresses, no address mapped
 /// to the host, no ports forwarded either way.
-pub const PASTA: &str = "pasta:-4,--no-map-gw,-a,169.254.2.2,-n,30,-g,169.254.2.1,--dns-forward,169.254.2.1,-t,none,-u,none,-T,none,-U,none";
+pub const PASTA: &str = "pasta:-4,--no-map-gw,-a,169.254.2.2,-n,30,-g,169.254.2.1,--dns-forward,169.254.2.1,--dns-host,1.1.1.1,-t,none,-u,none,-T,none,-U,none";
+
+/// Where pasta sends a worker's DNS queries: a public resolver, never the
+/// host's (on a tailnet host that is MagicDNS, which names tailnet nodes).
+pub const DNS_HOST: &str = "1.1.1.1";
+
+/// What a worker may use of its host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Limits {
+    /// Memory, as Podman takes it (`4g`, `512m`); no swap beyond it.
+    pub memory: String,
+    /// CPUs (`2`, `0.5`).
+    pub cpus: String,
+    /// Processes and threads.
+    pub pids: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self { memory: "4g".into(), cpus: "2".into(), pids: 512 }
+    }
+}
+
+impl Limits {
+    /// Why Podman shouldn't be given these, if it shouldn't.
+    pub fn check(&self) -> Result<(), String> {
+        let memory = self.memory.to_ascii_lowercase();
+        let (digits, unit) = memory.split_at(memory.find(|c: char| !c.is_ascii_digit()).unwrap_or(memory.len()));
+        let factor: u64 = match unit {
+            "" | "b" => 1,
+            "k" => 1 << 10,
+            "m" => 1 << 20,
+            "g" => 1 << 30,
+            _ => 0,
+        };
+        let bytes = digits.parse::<u64>().ok().filter(|_| factor > 0).and_then(|n| n.checked_mul(factor));
+        if !bytes.is_some_and(|b| b >= 64 << 20) {
+            return Err(format!("memory {:?}: a size like 4g or 512m, at least 64m", self.memory));
+        }
+        let cpus_ok = !self.cpus.is_empty()
+            && self.cpus.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && self.cpus.parse::<f64>().is_ok_and(|n| n > 0.0 && n <= 1024.0);
+        if !cpus_ok {
+            return Err(format!("cpus {:?}: a number like 2 or 0.5", self.cpus));
+        }
+        if !(32..=1_000_000).contains(&self.pids) {
+            return Err(format!("pids {}: 32 to 1000000", self.pids));
+        }
+        Ok(())
+    }
+}
 
 /// One worker, as its server keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +135,8 @@ pub struct Worker {
     pub providers: Vec<String>,
     #[serde(default)]
     pub created_at: i64,
+    #[serde(default)]
+    pub limits: Limits,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -87,6 +152,7 @@ pub struct NewWorker {
     pub image: Option<String>,
     /// (provider, API key).
     pub keys: Vec<(String, String)>,
+    pub limits: Limits,
 }
 
 /// Every network a worker may not reach: the sandbox's list and the host's
@@ -104,6 +170,21 @@ fn valid_name(name: &str) -> bool {
     name.len() <= 32
         && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// An image name Podman can't take for an option: no leading `-`, no
+/// spaces or control characters.
+fn valid_image(image: &str) -> bool {
+    !image.is_empty() && image.len() <= 255 && !image.starts_with('-') && image.chars().all(|c| c.is_ascii_graphic())
+}
+
+/// What a create made so far, taken away again if a later step fails.
+#[derive(Default)]
+struct Made {
+    secrets: Vec<String>,
+    volumes: Vec<String>,
+    container: bool,
+    saved: bool,
 }
 
 fn container_of(name: &str) -> String {
@@ -175,7 +256,10 @@ impl Workers {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Make a worker, start it and check it answers with the key it was given.
+    /// Make a worker, start it and check it answers with the key it was
+    /// given. When a step fails, what it made is taken away again (its key
+    /// secrets, container, folders, the volumes it made, its entry): a create
+    /// leaves a running worker or nothing.
     pub async fn create(&self, new: NewWorker) -> Result<Worker, String> {
         let name = new.name.trim().to_string();
         if !valid_name(&name) {
@@ -184,6 +268,11 @@ impl Workers {
         if self.list().iter().any(|w| w.name == name) {
             return Err(format!("worker {name} exists"));
         }
+        let image = new.image.clone().unwrap_or_else(|| DEFAULT_IMAGE.to_string());
+        if !valid_image(&image) {
+            return Err(format!("image {image:?}: a name, not an option"));
+        }
+        new.limits.check()?;
         let mut variables = Vec::new();
         for (provider, key) in &new.keys {
             let variable = zend_harness::sandbox::provider_key_var(provider)
@@ -193,15 +282,37 @@ impl Workers {
             }
             variables.push((provider.clone(), variable, key.trim().to_string()));
         }
+        let container = container_of(&name);
+        if self.podman(&["container", "exists", &container], None).await.is_ok() {
+            return Err(format!("a container {container} exists already (another Zend's?): not made"));
+        }
+        let mut made = Made::default();
+        match self.make(&name, &image, &new.limits, &variables, &mut made).await {
+            Ok(worker) => Ok(worker),
+            Err(err) => {
+                self.undo(&name, &made).await;
+                Err(err)
+            }
+        }
+    }
+
+    async fn make(
+        &self,
+        name: &str,
+        image: &str,
+        limits: &Limits,
+        variables: &[(String, &'static str, String)],
+        made: &mut Made,
+    ) -> Result<Worker, String> {
         let server = crate::peer_link::load_node_key(&self.data_dir)?;
         let der = NodeKey::generate_pkcs8()?;
         let key = NodeKey::from_pkcs8(&der)?;
-        let dir = self.dir(&name);
+        let dir = self.dir(name);
         let (conf, run) = (dir.join("conf"), dir.join("run"));
         {
             use std::os::unix::fs::DirBuilderExt as _;
             use std::os::unix::fs::PermissionsExt as _;
-            for (folder, mode) in [(&dir, 0o700), (&conf, 0o755), (&run, 0o777)] {
+            for (folder, mode) in [(&dir, 0o700), (&conf, 0o755), (&run, 0o711)] {
                 std::fs::DirBuilder::new()
                     .recursive(true)
                     .mode(mode)
@@ -210,38 +321,39 @@ impl Workers {
                     .map_err(|e| format!("{}: {e}", folder.display()))?;
             }
         }
-        // Readable by the container's uid (see "As whom").
-        let write = |file: &str, bytes: &[u8]| {
-            use std::os::unix::fs::PermissionsExt as _;
-            let path = conf.join(file);
-            crate::runner::write_private_atomic(&path, bytes)
-                .map_err(|e| e.to_string())
-                .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string()))
-                .map_err(|e| format!("{file}: {e}"))
-        };
-        write(crate::worker::KEY_FILE, &der)?;
-        write(crate::worker::SERVER_KEY_FILE, server.public().as_bytes())?;
-        write(crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())?;
+        self.write_conf(name, crate::worker::KEY_FILE, &der)?;
+        self.write_conf(name, crate::worker::SERVER_KEY_FILE, server.public().as_bytes())?;
+        self.write_conf(name, crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())?;
 
-        let image = new.image.clone().unwrap_or_else(|| DEFAULT_IMAGE.to_string());
-        let container = container_of(&name);
         let mut secrets = Vec::new();
-        for (provider, variable, value) in &variables {
-            let secret = secret_of(&name, provider);
+        for (provider, variable, value) in variables {
+            let secret = secret_of(name, provider);
+            made.secrets.push(secret.clone());
             self.podman(&["secret", "create", "--replace", &secret, "-"], Some(value)).await?;
             secrets.push(format!("{secret},type=env,target={variable}"));
         }
+        for what in ["work", "data"] {
+            let volume = volume_of(name, what);
+            if self.podman(&["volume", "exists", &volume], None).await.is_err() {
+                made.volumes.push(volume);
+            }
+        }
+        // U: Podman chowns these to the container's uid 1000, whichever
+        // subordinate ids its namespace got (--userns=auto).
         let mounts = [
-            format!("type=volume,src={},dst=/work", volume_of(&name, "work")),
-            format!("type=volume,src={},dst=/data", volume_of(&name, "data")),
+            format!("type=volume,src={},dst=/work,U=true", volume_of(name, "work")),
+            format!("type=volume,src={},dst=/data,U=true", volume_of(name, "data")),
             format!("type=bind,src={},dst=/etc/zend-worker,ro", conf.display()),
-            format!("type=bind,src={},dst=/run/zend-worker", run.display()),
+            format!("type=bind,src={},dst=/run/zend-worker,U=true", run.display()),
         ];
+        let container = container_of(name);
         let label = format!("zend.worker={name}");
+        let pids = limits.pids.to_string();
         let mut args: Vec<&str> = vec![
-            "create", "--name", &container, "--label", &label, "--user", "1000:1000",
+            "create", "--pull", "never", "--name", &container, "--label", &label, "--user", "1000:1000", "--userns", "auto",
             "--network", PASTA, "--dns", "169.254.2.1", "--dns-search", ".",
             "--cap-drop", "all", "--security-opt", "no-new-privileges",
+            "--memory", &limits.memory, "--memory-swap", &limits.memory, "--cpus", &limits.cpus, "--pids-limit", &pids,
             "--env", "ZEND_WORKER_DIR=/etc/zend-worker",
         ];
         for mount in &mounts {
@@ -250,24 +362,62 @@ impl Workers {
         for secret in &secrets {
             args.extend(["--secret", secret.as_str()]);
         }
-        args.push(&image);
-        if let Err(err) = self.podman(&args, None).await {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(err);
-        }
+        args.extend(["--", image]);
+        self.podman(&args, None).await?;
+        made.container = true;
         let worker = Worker {
-            name: name.clone(),
+            name: name.to_string(),
             key: key.public().to_string(),
-            image,
+            image: image.to_string(),
             container,
             providers: variables.iter().map(|(p, _, _)| p.clone()).collect(),
             created_at: crate::now_ms(),
+            limits: limits.clone(),
         };
         let mut all = self.list();
         all.push(worker.clone());
         self.save(all)?;
-        self.start(&name).await?;
+        made.saved = true;
+        self.start(name).await?;
         Ok(worker)
+    }
+
+    /// Take away what a failed create made.
+    async fn undo(&self, name: &str, made: &Made) {
+        if made.container {
+            let _ = self.podman(&["rm", "--force", "--time", "0", "--ignore", &container_of(name)], None).await;
+        }
+        for secret in &made.secrets {
+            let _ = self.podman(&["secret", "rm", secret], None).await;
+        }
+        for volume in &made.volumes {
+            let _ = self.podman(&["volume", "rm", "--force", volume], None).await;
+        }
+        self.remove_dir(name).await;
+        if made.saved {
+            let _ = self.save(self.list().into_iter().filter(|w| w.name != name).collect());
+        }
+    }
+
+    /// Write one of the worker's `conf` files, readable by the container's
+    /// uid (see "As whom").
+    fn write_conf(&self, name: &str, file: &str, bytes: &[u8]) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = self.dir(name).join("conf").join(file);
+        crate::runner::write_private_atomic(&path, bytes)
+            .map_err(|e| e.to_string())
+            .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string()))
+            .map_err(|e| format!("{file}: {e}"))
+    }
+
+    /// Remove a worker's folders; `run` (and its socket) is the container's
+    /// uid's, so what this user can't remove goes through `podman unshare`.
+    async fn remove_dir(&self, name: &str) {
+        let dir = self.dir(name);
+        if std::fs::remove_dir_all(&dir).is_err() && dir.exists() {
+            let path = dir.display().to_string();
+            let _ = self.podman(&["unshare", "rm", "-rf", "--", &path], None).await;
+        }
     }
 
     /// The container's state (`running`, `exited`, …), or why it can't say.
@@ -278,11 +428,15 @@ impl Workers {
     }
 
     /// Start a worker that isn't running: its network made, the blocked
-    /// routes added before its first process runs, then started, and
-    /// answering with its pinned key.
+    /// networks taken afresh ([`blocked_networks`], the host's addresses
+    /// as they are now) and written to `conf/blocked`, their routes added
+    /// before its first process runs, then started, and answering with its
+    /// pinned key. A running worker is left as it is, its routes with it.
     pub async fn start(&self, name: &str) -> Result<(), String> {
         let worker = self.get(name)?;
         if self.state(name).await != "running" {
+            self.write_conf(name, crate::worker::BLOCKED_FILE, (blocked_networks().join("\n") + "\n").as_bytes())
+                .map_err(|e| format!("worker {name}: {e}"))?;
             self.podman(&["init", &worker.container], None).await?;
             let pid = self.podman(&["inspect", "--format", "{{.State.Pid}}", &worker.container], None).await?;
             if pid.parse::<u32>().ok().filter(|p| *p > 0).is_none() {
@@ -343,7 +497,7 @@ impl Workers {
                 let _ = self.podman(&["volume", "rm", "--force", &volume_of(name, what)], None).await;
             }
         }
-        let _ = std::fs::remove_dir_all(self.dir(name));
+        self.remove_dir(name).await;
         self.save(self.list().into_iter().filter(|w| w.name != name).collect())?;
         Ok(worker)
     }
@@ -363,6 +517,12 @@ struct CreateParams {
     image: Option<String>,
     #[serde(default)]
     keys: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    memory: Option<String>,
+    #[serde(default)]
+    cpus: Option<String>,
+    #[serde(default)]
+    pids: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -389,7 +549,15 @@ impl zend_rpc::RpcService for WorkersRpc {
                 let p: CreateParams = zend_rpc::parse_params(given())?;
                 let worker = self
                     .workers
-                    .create(NewWorker { name: p.name, image: p.image, keys: p.keys.into_iter().collect() })
+                    .create({
+                        let default = Limits::default();
+                        let limits = Limits {
+                            memory: p.memory.unwrap_or(default.memory),
+                            cpus: p.cpus.unwrap_or(default.cpus),
+                            pids: p.pids.unwrap_or(default.pids),
+                        };
+                        NewWorker { name: p.name, image: p.image, keys: p.keys.into_iter().collect(), limits }
+                    })
                     .await
                     .map_err(RpcError::Failed)?;
                 Ok(RpcReply::Value(serde_json::to_value(worker).map_err(|e| RpcError::Failed(e.to_string()))?))
@@ -436,5 +604,28 @@ mod tests {
             assert!(blocked.iter().any(|b| b == net), "{net}");
         }
         assert!(!blocked.iter().any(|b| b.starts_with("127.")), "{blocked:?}");
+    }
+
+    #[test]
+    fn an_image_is_never_an_option() {
+        for good in ["localhost/zend-worker:latest", "docker.io/library/node:22", "img@sha256:abc"] {
+            assert!(valid_image(good), "{good}");
+        }
+        for bad in ["", "-v", "--privileged", "--network=host", "a b", "a\nb", "x\u{7f}"] {
+            assert!(!valid_image(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn limits_take_sizes_and_numbers_only() {
+        assert!(Limits::default().check().is_ok());
+        for (memory, cpus, pids) in [("512m", "0.5", 32), ("8G", "16", 4096), ("1073741824", "1", 1_000_000)] {
+            let l = Limits { memory: memory.into(), cpus: cpus.into(), pids };
+            assert!(l.check().is_ok(), "{l:?}");
+        }
+        for (memory, cpus, pids) in [("4x", "2", 512), ("-1", "2", 512), ("1m", "2", 512), ("", "2", 512), ("4g", "-2", 512), ("4g", "0", 512), ("4g", "2e3", 512), ("4g", "2", 10)] {
+            let l = Limits { memory: memory.into(), cpus: cpus.into(), pids };
+            assert!(l.check().is_err(), "{l:?}");
+        }
     }
 }

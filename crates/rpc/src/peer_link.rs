@@ -771,9 +771,47 @@ pub async fn serve_peer_unix(
     }
 }
 
+/// Connect to the unix socket at `path` itself, never through a symlink:
+/// the worker can write where its socket is, so a symlink or another file
+/// put there instead is refused, not followed. On Linux the socket is
+/// opened `O_PATH | O_NOFOLLOW`, checked to be a socket, and dialled
+/// through that descriptor (`/proc/self/fd/N`), so nothing swapped in
+/// after the check is reached.
+#[cfg(unix)]
+async fn connect_socket_itself(path: &std::path::Path) -> Result<tokio::net::UnixStream, RpcError> {
+    use std::os::unix::fs::FileTypeExt as _;
+    let failed = |e: &dyn std::fmt::Display| RpcError::Transport(format!("{}: {e}", path.display()));
+    let not_socket = || RpcError::Transport(format!("{}: not a socket (a symlink or another file): not dialled", path.display()));
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let socket = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| failed(&e))?;
+        if !socket.metadata().map_err(|e| failed(&e))?.file_type().is_socket() {
+            return Err(not_socket());
+        }
+        let stream = tokio::net::UnixStream::connect(format!("/proc/self/fd/{}", socket.as_raw_fd())).await;
+        drop(socket);
+        stream.map_err(|e| failed(&e))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !std::fs::symlink_metadata(path).map_err(|e| failed(&e))?.file_type().is_socket() {
+            return Err(not_socket());
+        }
+        tokio::net::UnixStream::connect(path).await.map_err(|e| failed(&e))
+    }
+}
+
 /// Dial the worker whose socket is `path` as `key`, expecting it to prove
 /// `worker_key` (pinned when the worker was made) first: one that can't is
-/// an error, and nothing was sent to it.
+/// an error, and nothing was sent to it. A worker is as trusted as its
+/// agent: the socket is dialled only as itself ([`connect_socket_itself`]),
+/// and no message from it over 16 MiB is taken in (the connection ends).
 #[cfg(unix)]
 pub async fn connect_peer_unix(path: &std::path::Path, key: &NodeKey, worker_key: &str) -> Result<RpcClient, RpcError> {
     use futures::SinkExt as _;
@@ -781,10 +819,9 @@ pub async fn connect_peer_unix(path: &std::path::Path, key: &NodeKey, worker_key
 
     let (request, caller_nonce) = caller_request(WORKER_URL, key, None)?;
     let dialled = tokio::time::timeout(DIAL_TIMEOUT, async {
-        let stream = tokio::net::UnixStream::connect(path)
-            .await
-            .map_err(|e| RpcError::Transport(format!("{}: {e}", path.display())))?;
-        tokio_tungstenite::client_async_with_config(request, stream, Some(crate::ws::config()))
+        let stream = connect_socket_itself(path).await?;
+        let config = crate::ws::config_capped(crate::ws::WORKER_MAX_MESSAGE_BYTES);
+        tokio_tungstenite::client_async_with_config(request, stream, Some(config))
             .await
             .map_err(|e| RpcError::Transport(e.to_string()))
     })

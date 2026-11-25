@@ -15,7 +15,7 @@ pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Pa
         async move { client.call(method, params).await.map_err(|e| anyhow::anyhow!(terminal_safe(&e.to_string(), true))) }
     };
     match command {
-        WorkerCommand::Create { name, image, key } => {
+        WorkerCommand::Create { name, image, key, memory, cpus, pids } => {
             let mut keys = serde_json::Map::new();
             if let Some(provider) = key {
                 use std::io::{IsTerminal as _, Read as _};
@@ -26,7 +26,7 @@ pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Pa
                 std::io::stdin().read_to_string(&mut value)?;
                 keys.insert(provider, value.trim().into());
             }
-            let reply = call(methods::CREATE_WORKER, json!({ "name": name, "image": image, "keys": keys })).await?;
+            let reply = call(methods::CREATE_WORKER, json!({ "name": name, "image": image, "keys": keys, "memory": memory, "cpus": cpus, "pids": pids })).await?;
             println!(
                 "Worker {} runs ({}), key {}.",
                 reply["name"].as_str().unwrap_or_default(),
@@ -43,12 +43,16 @@ pub async fn run(command: WorkerCommand, ipc_port: u16, data_dir: &std::path::Pa
             for w in workers {
                 let providers: Vec<&str> = w["providers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 let key = w["key"].as_str().unwrap_or_default();
+                let limits = &w["limits"];
                 println!(
-                    "{}  {}  {}  key {}…  {}",
+                    "{}  {}  {}  key {}…  {} memory, {} cpus, {} pids  {}",
                     w["name"].as_str().unwrap_or_default(),
                     terminal_safe(w["state"].as_str().unwrap_or("?"), false),
                     w["image"].as_str().unwrap_or_default(),
                     &key[..key.len().min(16)],
+                    limits["memory"].as_str().unwrap_or("?"),
+                    limits["cpus"].as_str().unwrap_or("?"),
+                    limits["pids"],
                     if providers.is_empty() { "no API keys".to_string() } else { providers.join(" ") }
                 );
             }

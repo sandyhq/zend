@@ -11,6 +11,12 @@
 //!    while the internet answers (control: the same listener answers from
 //!    the host).
 //! 3. A session runs in /work: a scripted agent's run writes there.
+//!
+//! And after review: its limits hold (cgroup), its root isn't this user
+//! (`--userns=auto`), it resolves no tailnet name, a start blocks the
+//! host's networks as they are then (not as written at create), a symlink
+//! it puts for its socket isn't followed, it carries no git identity, and
+//! a create that fails leaves nothing behind (`a_failed_create_…`).
 
 use std::path::Path;
 use std::time::Duration;
@@ -34,6 +40,7 @@ impl Drop for Cleanup {
         for what in ["work", "data"] {
             podman(&["volume", "rm", "--force", &format!("zend-worker-{}-{what}", self.0)]);
         }
+        podman(&["secret", "rm", "--ignore", &format!("zend-worker-{}-anthropic", self.0)]);
     }
 }
 
@@ -58,6 +65,31 @@ fn host_addresses() -> Vec<String> {
         }
     }
     addrs
+}
+
+/// From inside `container`: each name's DNS lookup, its address or the error.
+fn resolve(container: &str, names: &[&str]) -> Vec<String> {
+    let list = serde_json::to_string(names).unwrap();
+    let script = format!(
+        "const dns=require('dns');const n={list};let out={{}};\
+         process.on('exit',()=>console.log(JSON.stringify(n.map(x=>out[x]||'?'))));\
+         for(const x of n)dns.lookup(x,{{family:4}},(e,a)=>{{out[x]=e?(e.code||String(e)):a;}});"
+    );
+    let (ok, out) = exec(container, &["node", "-e", &script]);
+    assert!(ok, "resolve: {out}");
+    serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out}"))
+}
+
+/// This host's own tailnet name, if it is on one.
+fn tailnet_name() -> Option<String> {
+    let out = std::process::Command::new("tailscale").args(["status", "--self", "--json"]).output().ok()?;
+    let status: Value = serde_json::from_slice(&out.stdout).ok()?;
+    status["Self"]["DNSName"].as_str().map(|n| n.trim_end_matches('.').to_string()).filter(|n| !n.is_empty())
+}
+
+fn podman_out(args: &[&str]) -> String {
+    let out = std::process::Command::new("podman").args(args).output().expect("podman");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// From inside `container`: each target's TCP connect, `REACHED` or the error.
@@ -116,7 +148,10 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     let _cleanup = Cleanup(name.clone());
     let workers = Workers::new(&data);
     let image = std::env::var("ZEND_WORKER_IMAGE").ok();
-    let worker = workers.create(NewWorker { name: name.clone(), image, keys: vec![] }).await.expect("worker made and answering");
+    let worker = workers
+        .create(NewWorker { name: name.clone(), image, ..Default::default() })
+        .await
+        .expect("worker made and answering");
     assert_eq!(workers.list(), vec![worker.clone()]);
     assert_eq!(workers.state(&name).await, "running");
     let socket = workers.socket(&name);
@@ -139,6 +174,24 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     }
     // (And the server checks the worker: another key expected, not a word sent.)
     assert!(connect_peer_unix(&socket, &server, stranger.public()).await.is_err(), "a worker not pinned accepted");
+
+    // Its limits hold (before: none, "max").
+    let cgroup = |file: &str| exec(&worker.container, &["cat", &format!("/sys/fs/cgroup/{file}")]).1.trim().to_string();
+    assert_eq!(
+        (cgroup("memory.max"), cgroup("memory.swap.max"), cgroup("cpu.max"), cgroup("pids.max")),
+        ((4u64 << 30).to_string(), "0".into(), "200000 100000".into(), "512".into())
+    );
+    // Its root isn't this user: its namespace maps 0 to a subordinate id.
+    let pid = podman_out(&["inspect", "--format", "{{.State.Pid}}", &worker.container]);
+    let map = std::fs::read_to_string(format!("/proc/{pid}/uid_map")).unwrap();
+    let me = podman_out(&["unshare", "cat", "/proc/self/uid_map"]);
+    let my_uid = me.split_whitespace().nth(1).unwrap().to_string();
+    let root_is = map.split_whitespace().nth(1).unwrap().to_string();
+    assert_ne!(root_is, my_uid, "the worker's root is this user: {map}");
+    // No git identity of anyone's.
+    assert!(!exec(&worker.container, &["test", "-e", "/etc/gitconfig"]).0, "/etc/gitconfig in the worker");
+    let (_, identity) = exec(&worker.container, &["git", "config", "--get", "user.email"]);
+    assert!(identity.trim().is_empty(), "a git identity in the worker: {identity}");
 
     // 2. No host, no tailnet; the internet yes.
     let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
@@ -169,6 +222,19 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     }
     let internet = probe(&worker.container, &[("1.1.1.1".to_string(), 443)]);
     assert_eq!(internet[0].1, "REACHED", "control: no internet from the worker: {internet:?}");
+    // DNS: a public name resolves, this host's tailnet name doesn't
+    // (pasta asks a public resolver, not the host's MagicDNS).
+    let tailnet = tailnet_name();
+    let mut names = vec!["api.anthropic.com"];
+    names.extend(tailnet.as_deref());
+    let resolved = resolve(&worker.container, &names);
+    eprintln!("resolved by the worker: {names:?} -> {resolved:?}");
+    assert!(resolved[0].parse::<std::net::Ipv4Addr>().is_ok(), "control: no DNS in the worker: {resolved:?}");
+    if tailnet.is_some() {
+        assert!(resolved[1].parse::<std::net::Ipv4Addr>().is_err(), "the worker resolved this host's tailnet name: {resolved:?}");
+    } else {
+        eprintln!("not on a tailnet: no tailnet name to resolve");
+    }
     // Control: the same image and pasta options without the blocked routes
     // reach this host (what this test catches), and the worker's engine
     // there refuses to start.
@@ -182,6 +248,15 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
     let leaked: Vec<&String> = unblocked.iter().filter(|(_, r)| r == "REACHED").map(|(t, _)| t).collect();
     assert!(!leaked.is_empty(), "control: without the routes nothing was reached: {unblocked:?}");
     podman(&["rm", "--force", "--time", "0", &bare]);
+    if let Some(tailnet) = &tailnet {
+        // Control: pasta sending DNS on to the host's resolver (before) resolves it.
+        let old = zend_engine::workers::PASTA.replace(&format!(",--dns-host,{}", zend_engine::workers::DNS_HOST), "");
+        let made = podman(&["run", "-d", "--name", &bare, "--network", &old, "--dns", "169.254.2.1", "--entrypoint", "sleep", &worker.image, "120"]);
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let resolved = resolve(&bare, &[tailnet]);
+        assert!(resolved[0].parse::<std::net::Ipv4Addr>().is_ok(), "control: the host's resolver didn't name {tailnet}: {resolved:?}");
+        podman(&["rm", "--force", "--time", "0", &bare]);
+    }
     let conf = data.join("workers").join(&name).join("conf");
     let started = podman(&[
         "run", "--rm", "--network", zend_engine::workers::PASTA, "--user", "1000:1000",
@@ -225,11 +300,78 @@ async fn a_worker_answers_its_server_alone_reaches_no_host_and_runs_in_work() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
-    // And away again.
+    // A start blocks the host's networks as they are then: a blocked list
+    // gone stale (here: only 10/8 left) is written afresh, and the host's
+    // addresses stay out of reach (before: the stale list was applied).
     drop(client);
+    let blocked = conf.join("blocked");
+    std::fs::write(&blocked, "10.0.0.0/8\n").unwrap();
+    let stopped = podman(&["stop", "--time", "5", &worker.container]);
+    assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
+    workers.start(&name).await.expect("started again");
+    assert_eq!(std::fs::read_to_string(&blocked).unwrap(), zend_engine::workers::blocked_networks().join("\n") + "\n");
+    let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let again: Vec<(String, u16)> = host.iter().map(|a| (a.clone(), port)).collect();
+    let probed = probe(&worker.container, &again);
+    eprintln!("after a start: {probed:?}");
+    for (target, result) in &probed {
+        assert_ne!(result, "REACHED", "after a start the worker reached {target}");
+    }
+    drop(listener);
+    workers.connect(&name).await.expect("its server dials in again");
+
+    // Its socket swapped for a symlink (the worker can write where it is):
+    // its server doesn't follow it.
+    let (ok, out) = exec(
+        &worker.container,
+        &["sh", "-c", "mv /run/zend-worker/worker.sock /run/zend-worker/real.sock && ln -s real.sock /run/zend-worker/worker.sock"],
+    );
+    assert!(ok, "{out}");
+    let refused = workers.connect(&name).await;
+    assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("not a socket")), "a symlink was followed: {:?}", refused.err());
+
+    // And away again.
     workers.remove(&name, false).await.expect("removed");
     assert!(workers.list().is_empty());
     assert!(!Path::new(&data.join("workers").join(&name)).exists());
     let (ok, _) = exec(&worker.container, &["true"]);
     assert!(!ok, "its container is still there");
+}
+
+/// A create that fails (here at the image, after its key secret is made)
+/// leaves nothing behind: no secret, container, folder or entry, and a
+/// volume that was there before it (kept by `rm --keep-volumes`) stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs rootless podman"]
+async fn a_failed_create_leaves_nothing_behind() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("server");
+    std::fs::create_dir_all(&data).unwrap();
+    let name = format!("f{}", std::process::id());
+    let _cleanup = Cleanup(name.clone());
+    let kept = format!("zend-worker-{name}-work");
+    let made = std::process::Command::new("podman").args(["volume", "create", &kept]).output().unwrap();
+    assert!(made.status.success());
+    let workers = Workers::new(&data);
+    let failed = workers
+        .create(NewWorker {
+            name: name.clone(),
+            image: Some("localhost/zend-worker-not-there:none".into()),
+            keys: vec![("anthropic".into(), "sk-ant-not-a-key".into())],
+            ..Default::default()
+        })
+        .await;
+    assert!(failed.is_err(), "made from an image that isn't there");
+    eprintln!("failed: {}", failed.unwrap_err());
+    let exists = |what: &[&str]| std::process::Command::new("podman").args(what).output().unwrap().status.success();
+    assert!(!exists(&["secret", "exists", &format!("zend-worker-{name}-anthropic")]), "its key secret is left");
+    assert!(!exists(&["container", "exists", &format!("zend-worker-{name}")]), "its container is left");
+    assert!(!exists(&["volume", "exists", &format!("zend-worker-{name}-data")]), "a volume it made is left");
+    assert!(exists(&["volume", "exists", &kept]), "a volume from before is gone");
+    assert!(workers.list().is_empty());
+    assert!(!data.join("workers").join(&name).exists(), "its folder is left");
+    // Refused before anything is made: an option for an image.
+    let refused = workers.create(NewWorker { name: name.clone(), image: Some("--privileged".into()), ..Default::default() }).await;
+    assert!(refused.is_err_and(|e| e.contains("not an option")));
 }
