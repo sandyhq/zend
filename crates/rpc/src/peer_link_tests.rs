@@ -469,3 +469,37 @@ async fn a_server_takes_no_message_over_16_mib_from_a_worker() {
     let big = client.call(methods::ENGINE_INFO, serde_json::json!({ "bytes": 17 << 20 })).await;
     assert!(big.is_err(), "a 17 MiB reply was taken in");
 }
+
+/// The tailnet listener takes no message over 4 MiB from a paired server
+/// (the connection ends, nothing served); 3 MiB is served.
+#[tokio::test]
+async fn the_tailnet_listener_takes_no_message_over_4_mib() {
+    let s = server().await;
+    let me = NodeKey::generate().unwrap();
+    s.book.pair(me.public(), grants(&["sessions.read"]));
+    let client = connect_peer(&s.url, &me, s.key.public()).await.unwrap();
+    client.call(methods::ENGINE_INFO, serde_json::json!({ "pad": "x".repeat(3 << 20) })).await.expect("3 MiB");
+    assert_eq!(s.served(), 1);
+    let big = client.call(methods::ENGINE_INFO, serde_json::json!({ "pad": "x".repeat(5 << 20) })).await;
+    assert!(matches!(big, Err(RpcError::Closed | RpcError::Transport(_))), "a 5 MiB call: {big:?}");
+    assert_eq!(s.served(), 1, "the 5 MiB call was served");
+}
+
+/// A worker's socket takes up to 16 MiB from its one server (it runs what
+/// that server sends: prompts, files): 5 MiB is served there.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_workers_socket_takes_5_mib_from_its_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let worker = Arc::new(NodeKey::generate().unwrap());
+    let server = NodeKey::generate().unwrap();
+    let book = Book::new("worker");
+    book.pair(server.public(), grants(&["sessions.run.unconfined:work"]));
+    let echo = Arc::new(Echo::default());
+    let _task = tokio::spawn(serve_peer_unix(listener, echo.clone(), worker.clone(), book));
+    let client = connect_peer_unix(&path, &server, worker.public()).await.unwrap();
+    client.call(methods::ENGINE_INFO, serde_json::json!({ "pad": "x".repeat(5 << 20) })).await.expect("5 MiB");
+    assert_eq!(echo.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

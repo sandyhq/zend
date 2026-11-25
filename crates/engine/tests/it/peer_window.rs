@@ -626,3 +626,85 @@ async fn the_phone_link_gets_no_paired_server() {
     assert!(heard.is_empty(), "the server heard the phone's calls: {heard:?}");
     assert!(t.server.workspace.chat("phone-made").unwrap().is_none());
 }
+
+/// The window's calls that name a server but are no server's to take (a
+/// key typed into Settings, a worker with its keys, an upload, a queued
+/// message): said no to here, and the server hears nothing of them; what a
+/// server takes still goes (control: its harnesses).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn calls_no_server_takes_never_leave_this_device() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let calls = [
+        (methods::SET_ACP_AGENT_KEY, json!({ "agentId": "gemini", "value": "secret-key-1", "targetDeviceId": "device-server" })),
+        (methods::CREATE_WORKER, json!({ "name": "w", "keys": { "anthropic": "secret-key-2" }, "targetDeviceId": "device-server" })),
+        (methods::UPLOAD_CHUNK, json!({ "uploadId": "u1", "seq": 0, "data": "c2VjcmV0", "targetDeviceId": "device-server" })),
+        (methods::QUEUE_MESSAGE, json!({ "chatId": "srv-chat", "text": "secret words 3" })),
+        (methods::MUTATE, json!({ "op": "setChatArchived", "chatId": "srv-chat", "archived": true })),
+    ];
+    for (method, params) in calls {
+        let refused = t.window.call(method, params).await.expect_err(method);
+        let said = refused.to_string();
+        assert!(said.contains("peer_refused") && said.contains("isn't sent to a paired server"), "{method}: {said}");
+    }
+    let heard: Vec<String> = t.heard.lock().unwrap().iter().map(|(m, p)| format!("{m} {p}")).collect();
+    for word in ["secret", "SetAcpAgentKey", "CreateWorker", "UploadChunk", "QueueMessage", "setChatArchived"] {
+        assert!(!heard.iter().any(|h| h.contains(word)), "the server heard {word}: {heard:?}");
+    }
+    t.window
+        .call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-server" }))
+        .await
+        .expect("its harnesses, asked there");
+    assert!(t.heard.lock().unwrap().iter().any(|(m, _)| m == methods::LIST_HARNESSES));
+}
+
+/// This device's archived chat is still its own: a server claiming its id
+/// gets none of its calls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archived_chat_here_stays_here() {
+    let t = pair_with(&["sessions.read", "sessions.run.unconfined:p"], honest(), |server, laptop| {
+        laptop.workspace.create_chat("old-chat", None, Some(&laptop.device_id), None, None).unwrap();
+        assert!(laptop.workspace.set_chat_archived("old-chat", true).unwrap());
+        server.workspace.create_chat("old-chat", Some("p"), Some(&server.device_id), None, None).unwrap();
+    })
+    .await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let config = json!({ "harness": "mock", "model": null, "reasoning": null, "modelOptions": {}, "sandbox": "workspace-write" });
+    t.window
+        .call(methods::MUTATE, json!({ "op": "setChatConfig", "chatId": "old-chat", "config": config }))
+        .await
+        .expect("set here");
+    let _ = t.window.call(methods::QUEUE_COMMAND, run("old-chat")).await;
+    let _ = t.window.subscribe_checked(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "old-chat" })).await;
+    let heard = t.server_heard_of("old-chat");
+    assert!(heard.is_empty(), "the server heard of the archived chat: {heard:?}");
+}
+
+/// A run sent to a server's chat carries the words and the agent picked,
+/// none of this device's folder, attachment paths, worktree, MCP servers,
+/// resume or queued files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_sent_to_a_server_carries_no_path_of_this_device() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let mut params = run("srv-chat");
+    let request = &mut params["command"]["request"];
+    request["cwd"] = json!("/home/laptop/private");
+    request["attachments"] = json!(["/home/laptop/private/shot.png"]);
+    request["worktree"] = json!({ "repoPath": "/home/laptop/private", "base": "HEAD" });
+    request["resume"] = json!("laptop-session-1");
+    request["mcp"] = json!({ "name": "zend", "command": "/home/laptop/bin/zend", "args": [], "env": {} });
+    params["transfers"] = json!([{ "path": "/home/laptop/private/shot.png" }]);
+    t.window.call(methods::QUEUE_COMMAND, params).await.expect("its run queued there");
+    let heard: Vec<Value> =
+        t.heard.lock().unwrap().iter().filter(|(m, _)| m == methods::QUEUE_COMMAND).map(|(_, p)| p.clone()).collect();
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    let sent = heard[0].to_string();
+    for word in ["/home/laptop", "laptop-session-1", "transfers", "worktree", "mcp"] {
+        assert!(!sent.contains(word), "{word} crossed: {sent}");
+    }
+    assert!(sent.contains("hello from the laptop"), "{sent}");
+}

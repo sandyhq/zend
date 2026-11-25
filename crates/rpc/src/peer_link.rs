@@ -446,7 +446,7 @@ pub async fn serve_peer_listener(
                     }
                     let node = node_of(peer.ip()).await;
                     let _ = stream.set_nodelay(true);
-                    serve_peer_socket(stream, service, key, book, node).await;
+                    serve_peer_socket(stream, service, key, book, node, PEER_MAX_MESSAGE_BYTES).await;
                 });
             }
             Err(err) => {
@@ -473,12 +473,16 @@ struct CallerFrame {
     join: Option<JoinInfo>,
 }
 
+/// Serve one connection: `max` is the largest message taken from the
+/// caller (a paired server over the tailnet: [`PEER_MAX_MESSAGE_BYTES`];
+/// a worker's one server on its socket: [`crate::ws::WORKER_MAX_MESSAGE_BYTES`]).
 async fn serve_peer_socket<S>(
     stream: S,
     service: Arc<dyn RpcService>,
     key: Arc<NodeKey>,
     book: Arc<dyn PeerBook>,
     node: Option<String>,
+    max: usize,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -540,7 +544,7 @@ async fn serve_peer_socket<S>(
         });
         Ok(resp)
     };
-    let mut ws = match tokio_tungstenite::accept_hdr_async_with_config(stream, authorize, Some(crate::ws::config())).await {
+    let mut ws = match tokio_tungstenite::accept_hdr_async_with_config(stream, authorize, Some(crate::ws::config_capped(max))).await {
         Ok(ws) => ws,
         Err(err) => {
             tracing::debug!(error = %err, "rpc: peer link: handshake failed");
@@ -766,7 +770,14 @@ pub async fn serve_peer_unix(
         while connections.try_join_next().is_some() {}
         match listener.accept().await {
             Ok((stream, _)) => {
-                connections.spawn(serve_peer_socket(stream, service.clone(), key.clone(), book.clone(), None));
+                connections.spawn(serve_peer_socket(
+                    stream,
+                    service.clone(),
+                    key.clone(),
+                    book.clone(),
+                    None,
+                    crate::ws::WORKER_MAX_MESSAGE_BYTES,
+                ));
             }
             Err(err) => {
                 tracing::warn!(error = %err, "rpc: worker socket: accept failed");

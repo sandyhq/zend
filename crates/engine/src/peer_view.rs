@@ -604,7 +604,19 @@ impl PeerView {
         if let Some(list) = List::of(method) {
             return Some(self.merged(inner, method, params, list).await);
         }
-        let Some(key) = self.target(method, params) else {
+        let target = self.target(method, params);
+        if let Some(key) = &target
+            && !forwarded(method, params)
+        {
+            // Names a server, but isn't one a server takes from here: said
+            // no to here, and nothing of it leaves this device.
+            tracing::warn!(method, server = %key.get(..12).unwrap_or(key), "peer view: refused a call naming a paired server that no server takes");
+            return Some(Err(RpcError::Failed(format!(
+                "{REFUSED_PREFIX} {}: {method} isn't sent to a paired server: do it on that server",
+                self.name(key)
+            ))));
+        }
+        let Some(key) = target else {
             if method == methods::MUTATE
                 && params["op"].as_str() == Some("createChat")
                 && let Some(chat) = params["chatId"].as_str().filter(|c| !c.is_empty())
@@ -647,6 +659,9 @@ impl PeerView {
                 return Ok(RpcReply::Value(json!({})));
             }
             _ => {}
+        }
+        if method == methods::QUEUE_COMMAND {
+            only_what_a_server_runs(&mut params);
         }
         let said = |e: RpcError| match e {
             RpcError::Transport(_) | RpcError::Closed => RpcError::Failed(format!("{name} is unreachable: {e}")),
@@ -755,6 +770,50 @@ enum Kind {
     Sessions,
     /// The projects its grants name (`EngineInfo.peer.projects`).
     Projects,
+}
+
+/// Whether a call of this device's own that names a paired server is sent
+/// to it: only what a paired server can ever take
+/// ([`zend_rpc::peer_link::peer_server_allowed`], and of `Mutate` only
+/// making a chat and setting its config), never this device's own
+/// ([`zend_rpc::local_only`]). Anything else (keys, workers, settings,
+/// uploads) stays here, refused.
+fn forwarded(method: &str, params: &Value) -> bool {
+    if zend_rpc::local_only(method) || !zend_rpc::peer_link::PEER_METHODS.contains(&method) {
+        return false;
+    }
+    match method {
+        methods::ENGINE_INFO
+        | methods::LIST_HARNESSES
+        | methods::LIST_MODELS
+        | methods::QUEUE_COMMAND
+        | methods::WATCH_DOC_MESSAGES
+        | methods::PEER_LIST_PROJECT_FILES
+        | methods::PEER_READ_PROJECT_FILE => true,
+        methods::MUTATE => matches!(params["op"].as_str(), Some("createChat" | "setChatConfig")),
+        _ => false,
+    }
+}
+
+/// A `QueueCommand` for a server's chat as it leaves: a run only with
+/// what the server runs it with (the words, the agent and model picked),
+/// none of this device's folder, files, worktree, MCP servers or a resume;
+/// no files queued with it. (The server builds the run from its own row
+/// and the words alone; this keeps the rest from crossing at all.)
+fn only_what_a_server_runs(params: &mut Value) {
+    let Some(map) = params.as_object_mut() else { return };
+    map.remove("transfers");
+    let Some(command) = map.get_mut("command").and_then(Value::as_object_mut) else { return };
+    if command.get("kind").and_then(Value::as_str) != Some("run") {
+        return;
+    }
+    let Some(request) = command.get_mut("request").and_then(Value::as_object_mut) else { return };
+    let keep = ["prompt", "harness", "model", "reasoning", "modelOptions", "sandbox", "access", "plan"];
+    request.retain(|key, _| keep.contains(&key.as_str()));
+    for (key, value) in [("cwd", json!(".")), ("resume", Value::Null), ("model", Value::Null), ("reasoning", Value::Null)] {
+        request.entry(key).or_insert(value);
+    }
+    request.entry("sandbox").or_insert(json!("workspace-write"));
 }
 
 /// Follow this device's own lists into `view`'s [`Locals`], again after
