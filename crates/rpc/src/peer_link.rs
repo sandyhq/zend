@@ -48,7 +48,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 };
 use tokio_tungstenite::tungstenite::http::StatusCode;
 
-use crate::{RpcClient, RpcError, RpcReply, RpcService, methods};
+use crate::{RpcClient, RpcError, RpcReply, RpcService, Scope, methods};
 
 /// The handshake header that names a side's public key (the caller's
 /// request, the callee's response).
@@ -174,6 +174,55 @@ pub enum Grant {
     ProjectsShare(String),
     /// `workers.manage`: run this device's workers (none yet: step 5).
     WorkersManage,
+    /// `projects.manage`: this device's projects, repositories, branches,
+    /// worktrees and project actions; browsing its folders.
+    ProjectsManage,
+    /// `files`: any file on this machine (read, write, move, delete), diffs,
+    /// change requests. Full access to the machine.
+    Files,
+    /// `settings`: plugins (not allowing them), templates, themes, Zend's
+    /// settings, the sidebar, this device's name.
+    Settings,
+    /// `logins`: agent accounts and their sign-in, ACP agents, harnesses.
+    Logins,
+    /// `updates`: Zend's and the harnesses' updates.
+    Updates,
+    /// `terminal`: terminals, project actions, background tasks. Full
+    /// access to the machine.
+    Terminal,
+    /// `full`: every area above and `sessions.read`, and what no area
+    /// holds ([`crate::peer_scope::Scope::Full`]); never
+    /// [`crate::peer_scope::Scope::Never`], never a project's run or share.
+    Full,
+}
+
+/// The grants without a project, as `zend peer grant` writes them.
+const AREAS: [(&str, Grant); 8] = [
+    ("workers.manage", Grant::WorkersManage),
+    ("projects.manage", Grant::ProjectsManage),
+    ("files", Grant::Files),
+    ("settings", Grant::Settings),
+    ("logins", Grant::Logins),
+    ("updates", Grant::Updates),
+    ("terminal", Grant::Terminal),
+    ("full", Grant::Full),
+];
+
+impl Grant {
+    /// Whether it gives the run of the whole machine (`zend peer grant`
+    /// says so as it's given).
+    pub fn is_machine_wide(&self) -> bool {
+        matches!(self, Grant::Files | Grant::Terminal | Grant::Full)
+    }
+
+    /// One of the grants before step 6 (all an agent in a server's chat
+    /// is ever held to).
+    pub fn is_session_grant(&self) -> bool {
+        matches!(
+            self,
+            Grant::SessionsRead | Grant::SessionsRun(_) | Grant::SessionsRunUnconfined(_) | Grant::ProjectsShare(_) | Grant::WorkersManage
+        )
+    }
 }
 
 /// Whether `id` may name a project in a grant.
@@ -189,14 +238,16 @@ impl std::str::FromStr for Grant {
         let project = |rest: &str| {
             valid_project(rest).then(|| rest.to_string()).ok_or_else(|| format!("{text}: not a project id"))
         };
+        if let Some((_, grant)) = AREAS.iter().find(|(name, _)| *name == text) {
+            return Ok(grant.clone());
+        }
         match text.split_once(':') {
             None if text == "sessions.read" => Ok(Grant::SessionsRead),
-            None if text == "workers.manage" => Ok(Grant::WorkersManage),
             Some(("sessions.run", rest)) => project(rest).map(Grant::SessionsRun),
             Some(("sessions.run.unconfined", rest)) => project(rest).map(Grant::SessionsRunUnconfined),
             Some(("projects.share", rest)) => project(rest).map(Grant::ProjectsShare),
             _ => Err(format!(
-                "{text}: not a grant (sessions.read, sessions.run:<project>, sessions.run.unconfined:<project>, projects.share:<project>, workers.manage)"
+                "{text}: not a grant (sessions.read, sessions.run:<project>, sessions.run.unconfined:<project>, projects.share:<project>, workers.manage, projects.manage, files, settings, logins, updates, terminal, full)"
             )),
         }
     }
@@ -209,7 +260,10 @@ impl std::fmt::Display for Grant {
             Grant::SessionsRun(p) => write!(f, "sessions.run:{p}"),
             Grant::SessionsRunUnconfined(p) => write!(f, "sessions.run.unconfined:{p}"),
             Grant::ProjectsShare(p) => write!(f, "projects.share:{p}"),
-            Grant::WorkersManage => f.write_str("workers.manage"),
+            area => match AREAS.iter().find(|(_, grant)| grant == area) {
+                Some((name, _)) => f.write_str(name),
+                None => unreachable!("every grant without a project is in AREAS"),
+            },
         }
     }
 }
@@ -248,9 +302,40 @@ impl Grants {
         self.0.contains(grant)
     }
 
-    /// `sessions.read`.
+    /// `sessions.read` (`full` holds it).
     pub fn reads(&self) -> bool {
-        self.contains(&Grant::SessionsRead)
+        self.contains(&Grant::SessionsRead) || self.contains(&Grant::Full)
+    }
+
+    /// Only the grants before step 6: what an agent in a server's chat
+    /// calls with, whatever else the server holds.
+    pub fn sessions_only(&self) -> Self {
+        Self(self.0.iter().filter(|g| g.is_session_grant()).cloned().collect())
+    }
+
+    /// Whether these grants open calls in `scope`. A project's run or share
+    /// is the engine's to check by project ([`Grants::runs_in`],
+    /// [`Grants::shares`]); `full` gives neither.
+    pub fn covers(&self, scope: Scope) -> bool {
+        let area = |grant: Grant| self.contains(&grant) || self.contains(&Grant::Full);
+        match scope {
+            Scope::Info => self.reads() || self.runs_anywhere() || self.0.iter().any(|g| !g.is_session_grant()),
+            Scope::Sessions => self.reads() || self.runs_anywhere(),
+            Scope::SessionsRead => self.reads(),
+            Scope::SessionsRun => self.runs_anywhere(),
+            Scope::ProjectsShare => self.shares_any(),
+            // workers.manage opens nothing until there are workers (step 5);
+            // `full` runs them.
+            Scope::WorkersManage => self.contains(&Grant::Full),
+            Scope::ProjectsManage => area(Grant::ProjectsManage),
+            Scope::Files => area(Grant::Files),
+            Scope::Settings => area(Grant::Settings),
+            Scope::Logins => area(Grant::Logins),
+            Scope::Updates => area(Grant::Updates),
+            Scope::Terminal => area(Grant::Terminal),
+            Scope::Full => self.contains(&Grant::Full),
+            Scope::Never => false,
+        }
     }
 
     /// Whether it may run chats in `project`: `Some(true)` unconfined,
@@ -282,43 +367,9 @@ impl Grants {
 
 // ---- the method list --------------------------------------------------------
 
-/// With `sessions.read`: the chats and sessions, and their transcripts.
-fn reads(method: &str) -> bool {
-    matches!(
-        method,
-        methods::ENGINE_INFO
-            | methods::WATCH_SESSIONS
-            | methods::WATCH_CHATS
-            | methods::WATCH_DOC_MESSAGES
-            | methods::LIST_HARNESSES
-            | methods::LIST_MODELS
-    )
-}
-
-/// With `sessions.run:<project>` (either kind): a chat created there
-/// (`Mutate` `createChat` only, the engine checks), run, steered, stopped
-/// or answered (`QueueCommand`), and its transcript read; the harnesses
-/// and models to pick.
-fn runs(method: &str) -> bool {
-    matches!(
-        method,
-        methods::ENGINE_INFO
-            | methods::LIST_HARNESSES
-            | methods::LIST_MODELS
-            | methods::MUTATE
-            | methods::QUEUE_COMMAND
-            | methods::WATCH_DOC_MESSAGES
-    )
-}
-
-/// With `projects.share:<project>`: its files, by project id and a path
-/// from its root (no method of the window's, which name absolute paths).
-fn shares(method: &str) -> bool {
-    matches!(method, methods::PEER_LIST_PROJECT_FILES | methods::PEER_READ_PROJECT_FILE)
-}
-
-/// Every method any grant opens to a paired server (for the record and
-/// the tests): nothing else is ever served on a peer connection.
+/// Every method the grants before step 6 open (`sessions.*`,
+/// `projects.share`), for the record and the tests: with only those, a
+/// server reaches these and nothing else, as before.
 pub const PEER_METHODS: &[&str] = &[
     methods::ENGINE_INFO,
     methods::WATCH_SESSIONS,
@@ -332,27 +383,35 @@ pub const PEER_METHODS: &[&str] = &[
     methods::PEER_READ_PROJECT_FILE,
 ];
 
-/// Whether a paired server holding `grants` may call `method` here, or why
-/// not. An allow-list of its own, built from the grants: a method added
-/// later, anywhere, stays this device's until it's listed here. Which
-/// project a call touches is the engine's to check
-/// ([`crate::Caller::PeerServer`]).
-pub fn peer_server_allowed(method: &str, grants: &Grants) -> Result<(), String> {
-    if crate::local_only(method) {
-        return Err(format!("{method} is this device's own: never open to another server"));
+/// Whether a paired server holding `grants` may call `method` here (of
+/// `Mutate`, its `op`), and in which [`Scope`], or why not. The scope is
+/// [`crate::peer_scope`]'s, the one table: a method or op not in it, or
+/// [`Scope::Never`], is refused whatever the grants. Which project or chat
+/// a call touches is the engine's to check ([`crate::Caller::PeerServer`]).
+pub fn peer_server_allowed(method: &str, op: Option<&str>, grants: &Grants) -> Result<Scope, String> {
+    let named = || match op {
+        Some(op) if method == methods::MUTATE => format!("{method} {op}"),
+        _ => method.to_string(),
+    };
+    let Some(scope) = crate::peer_scope(method, op) else {
+        return Err(format!("{} isn't open to another server: this device doesn't know it as a server's", named()));
+    };
+    if scope == Scope::Never {
+        return Err(format!("{} is this device's own: never open to another server", named()));
     }
     if grants.is_empty() {
-        return Err(format!("{method}: this device grants your server nothing yet"));
+        return Err(format!("{}: this device grants your server nothing yet", named()));
     }
-    let open = (grants.reads() && reads(method))
-        || (grants.runs_anywhere() && runs(method))
-        || (grants.shares_any() && shares(method));
-    // workers.manage opens nothing until there are workers (step 5).
-    if open {
-        Ok(())
+    if grants.covers(scope) {
+        Ok(scope)
     } else {
-        Err(format!("{method} isn't open to your server: no grant here covers it"))
+        Err(format!("{} isn't open to your server: it needs {} here", named(), scope.name()))
     }
+}
+
+/// A `Mutate`'s op, as `peer_server_allowed` takes it.
+pub fn mutate_op<'a>(method: &str, params: &'a serde_json::Value) -> Option<&'a str> {
+    (method == methods::MUTATE).then(|| params.get("op").and_then(serde_json::Value::as_str)).flatten()
 }
 
 // ---- the book ---------------------------------------------------------------
@@ -404,15 +463,24 @@ impl RpcService for PeerGuard {
         let Some(grants) = self.book.grants(&self.peer) else {
             return Err(RpcError::Failed("this device isn't paired with your server any more".into()));
         };
-        if let Err(why) = peer_server_allowed(method, &grants) {
-            // (Granted nothing, it redials and is refused all along: said
-            // once as it connects, [`granted_nothing`].)
-            if grants.is_empty() {
-                tracing::debug!(method, peer = %short(&self.peer), "rpc: refused a paired server's call: it is granted nothing here");
-            } else {
-                tracing::warn!(method, peer = %short(&self.peer), "rpc: refused a paired server's call outside its grants");
+        let op = mutate_op(method, &params);
+        let scope = match peer_server_allowed(method, op, &grants) {
+            Ok(scope) => scope,
+            Err(why) => {
+                // (Granted nothing, it redials and is refused all along: said
+                // once as it connects, [`granted_nothing`].)
+                if grants.is_empty() {
+                    tracing::debug!(method, peer = %short(&self.peer), "rpc: refused a paired server's call: it is granted nothing here");
+                } else {
+                    tracing::warn!(method, op, peer = %short(&self.peer), "rpc: refused a paired server's call outside its grants");
+                }
+                return Err(RpcError::Failed(why));
             }
-            return Err(RpcError::Failed(why));
+        };
+        // The machine-wide areas, on the record: which call, from which
+        // server; never what it carries.
+        if scope.logged() {
+            tracing::info!(method, op, scope = scope.name(), peer = %short(&self.peer), "rpc: a paired server's call");
         }
         let caller = crate::Caller::PeerServer { peer: self.peer.clone(), grants };
         crate::with_caller(caller, self.inner.handle(method, params)).await

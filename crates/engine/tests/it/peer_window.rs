@@ -627,36 +627,102 @@ async fn the_phone_link_gets_no_paired_server() {
     assert!(t.server.workspace.chat("phone-made").unwrap().is_none());
 }
 
-/// The window's calls that name a server but are no server's to take (a
-/// key typed into Settings, a worker with its keys, an upload, a queued
-/// message): said no to here, and the server hears nothing of them; what a
-/// server takes still goes (control: its harnesses).
+/// The window's calls that name a server and that no grant ever opens
+/// there (stopping its Zend, signing it out, its vault, removing it):
+/// said no to here, and the server hears nothing of them. A call some
+/// grant opens goes there (plan step 6b), and with today's grants (no
+/// `logins`, `workers.manage`, `full`) comes back refused in the
+/// server's words, changing nothing there; what a server takes still goes
+/// (control: its harnesses).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn calls_no_server_takes_never_leave_this_device() {
     let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
     let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
     chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
-    let calls = [
+    let never = [
+        (methods::STOP_ENGINE, json!({ "targetDeviceId": "device-server" })),
+        (methods::SIGN_OUT, json!({ "targetDeviceId": "device-server" })),
+        (methods::VAULT_CONNECT_CODEX, json!({ "token": "secret-peer", "targetDeviceId": "device-server" })),
+        (methods::MUTATE, json!({ "op": "removeDevice", "deviceId": "device-server" })),
+    ];
+    for (method, params) in never {
+        let said = t.window.call(method, params).await.expect_err(method).to_string();
+        assert!(said.contains("peer_refused") && said.contains("isn't sent to a paired server"), "{method}: {said}");
+    }
+    let heard: Vec<String> = t.heard.lock().unwrap().iter().map(|(m, p)| format!("{m} {p}")).collect();
+    for word in ["StopEngine", "SignOut", "VaultConnectCodex", "secret-peer", "removeDevice"] {
+        assert!(!heard.iter().any(|h| h.contains(word)), "the server heard {word}: {heard:?}");
+    }
+    let cwd_before = t.server.workspace.chat("srv-chat").unwrap().unwrap().cwd;
+    let ungranted = [
         (methods::SET_ACP_AGENT_KEY, json!({ "agentId": "gemini", "value": "secret-key-1", "targetDeviceId": "device-server" })),
         (methods::CREATE_WORKER, json!({ "name": "w", "keys": { "anthropic": "secret-key-2" }, "targetDeviceId": "device-server" })),
         (methods::UPLOAD_CHUNK, json!({ "uploadId": "u1", "seq": 0, "data": "c2VjcmV0", "targetDeviceId": "device-server" })),
         (methods::QUEUE_MESSAGE, json!({ "chatId": "srv-chat", "text": "secret words 3" })),
         (methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "srv-chat", "cwd": "/home/laptop/secret" })),
     ];
-    for (method, params) in calls {
-        let refused = t.window.call(method, params).await.expect_err(method);
-        let said = refused.to_string();
-        assert!(said.contains("peer_refused") && said.contains("isn't sent to a paired server"), "{method}: {said}");
+    for (method, params) in ungranted {
+        let said = t.window.call(method, params).await.expect_err(method).to_string();
+        assert!(said.contains("peer_refused") && said.contains("isn't open to your server"), "{method}: {said}");
     }
-    let heard: Vec<String> = t.heard.lock().unwrap().iter().map(|(m, p)| format!("{m} {p}")).collect();
-    for word in ["secret", "SetAcpAgentKey", "CreateWorker", "UploadChunk", "QueueMessage", "setChatCwd"] {
-        assert!(!heard.iter().any(|h| h.contains(word)), "the server heard {word}: {heard:?}");
-    }
+    assert_eq!(t.server.workspace.chat("srv-chat").unwrap().unwrap().cwd, cwd_before);
     t.window
         .call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-server" }))
         .await
         .expect("its harnesses, asked there");
     assert!(t.heard.lock().unwrap().iter().any(|(m, _)| m == methods::LIST_HARNESSES));
+}
+
+/// With area grants the window's calls aimed at the server are served
+/// there (plan step 6b): a value, a stream, a file, a chat change. A call
+/// aimed there that names this device's own chat, project or device stays
+/// here, one per area, and the server hears nothing of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_area_grant_is_served_there_and_this_devices_ids_stay_here() {
+    let t = pair_with(&["sessions.read", "projects.manage", "files", "settings", "terminal", "updates", "full"], honest(), |_, laptop| {
+        let home = std::fs::canonicalize(std::env::var_os("HOME").expect("HOME")).unwrap();
+        let dir = tempfile::Builder::new().prefix("zend-peer-window-lap-").tempdir_in(home).unwrap().keep();
+        laptop.workspace.create_space("lap-p", &laptop.device_id, &dir.to_string_lossy(), None, false).unwrap();
+    })
+    .await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("both projects", |rows| has(rows, "id", "lap-p") && has(rows, "id", "p")).await;
+    std::fs::write(t.root.join("server-data-projects/p/notes.md"), "SERVER-NOTES\n").unwrap();
+
+    let heard = |method: &str| t.heard.lock().unwrap().iter().any(|(m, _)| m == method);
+    t.window.call(methods::GET_TITLE_SETTINGS, json!({ "targetDeviceId": "device-server" })).await.expect("its title settings");
+    assert!(heard(methods::GET_TITLE_SETTINGS));
+    let file = t.window
+        .call(methods::READ_WORKSPACE_FILE, json!({ "chatId": "srv-chat", "path": "notes.md" }))
+        .await
+        .expect("its file");
+    assert!(file.to_string().contains("SERVER-NOTES"), "{file}");
+    let _updates = t.window.subscribe_checked(methods::UPDATE_STATUS, json!({ "targetDeviceId": "device-server" })).await;
+    assert!(heard(methods::UPDATE_STATUS), "the stream wasn't sent");
+    let q = t.root.join("server-data-projects/q").to_string_lossy().into_owned();
+    t.window
+        .call(methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "srv-chat", "cwd": q }))
+        .await
+        .expect("its chat's folder, set there");
+    assert_eq!(t.server.workspace.chat("srv-chat").unwrap().unwrap().cwd.as_deref(), Some(q.as_str()));
+
+    let before = t.heard.lock().unwrap().len();
+    let own = [
+        ("files", methods::READ_WORKSPACE_FILE, json!({ "chatId": "own-chat", "path": "x", "targetDeviceId": "device-server" }), "chat own-chat"),
+        ("projects.manage", methods::MUTATE, json!({ "op": "renameSpace", "spaceId": "lap-p", "name": "x", "targetDeviceId": "device-server" }), "project lap-p"),
+        ("settings", methods::MUTATE, json!({ "op": "renameDevice", "deviceId": "device-laptop", "name": "x", "targetDeviceId": "device-server" }), "device device-laptop"),
+        ("terminal", methods::OPEN_TERMINAL, json!({ "chatId": "own-chat", "cols": 80, "rows": 24, "targetDeviceId": "device-server" }), "chat own-chat"),
+        ("full", methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "own-chat", "cwd": "/x", "targetDeviceId": "device-server" }), "chat own-chat"),
+    ];
+    for (area, method, params, what) in own {
+        let said = t.window.call(method, params.clone()).await.expect_err(area).to_string();
+        assert!(said.starts_with(zend_engine::peer_view::REFUSED_PREFIX) && said.contains(&format!("names this device's own {what}")), "{area}: {said}");
+    }
+    let heard: Vec<(String, Value)> = t.heard.lock().unwrap()[before..].to_vec();
+    assert!(heard.iter().all(|(_, p)| !p.to_string().contains("own-chat") && !p.to_string().contains("lap-p") && !p.to_string().contains("device-laptop")), "the server heard: {heard:?}");
+    assert_eq!(t.laptop.workspace.space("lap-p").unwrap().unwrap().name, None);
 }
 
 /// What the window does to a server's chat (its config before the first

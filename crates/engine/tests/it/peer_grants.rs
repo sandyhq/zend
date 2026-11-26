@@ -1711,3 +1711,146 @@ async fn an_unconfined_grant_changes_any_chat_of_its_project() {
     assert!(a.core.workspace.chat("owner-p").unwrap().is_none());
 }
 
+
+// ---- plan step 6: the area grants -------------------------------------------
+
+/// Refused by a grant check (the transport's or the engine's), not by
+/// the call itself.
+fn gated(reply: &Result<Value, RpcError>) -> bool {
+    reply.as_ref().is_err_and(|e| {
+        let e = e.to_string();
+        e.contains("isn't open to your server") || e.contains("never open to another server") || e.contains("grants your server nothing")
+    })
+}
+
+/// `params` of `method` as B sends them: a stream's first answer, a value.
+async fn b_calls(a: &Paired, method: &str, params: Value) -> Result<Value, RpcError> {
+    if method == methods::UPDATE_STATUS {
+        return a.b.subscribe_checked(method, params).await.map(|_| Value::Null);
+    }
+    a.b.call(method, params).await
+}
+
+/// B's grants set to `grants`, and B dialled in again.
+async fn regrant(a: &mut Paired, grants: &[&str]) {
+    a.link.set_grants(&a.b_key, &grants.iter().map(|g| g.to_string()).collect::<Vec<_>>()).expect("grants");
+    a.redial().await;
+}
+
+/// Every method constant (crates/rpc's `methods` module).
+fn every_method() -> Vec<&'static str> {
+    let src = include_str!("../../../rpc/src/lib.rs");
+    let start = src.find("pub mod methods {").unwrap();
+    let src = &src[start..start + src[start..].find("\n}\n").unwrap()];
+    src.lines()
+        .filter_map(|l| l.trim().strip_prefix("pub const ")?.split_once(": &str = \""))
+        .map(|(_, rest)| rest.trim_end_matches("\";"))
+        .collect()
+}
+
+/// Each area grant, through the real listener and engine: a call of its
+/// area goes through with it alone, and is refused with every other grant
+/// (`full` aside). With `files` a file outside every project is read; a
+/// chat of another device is no server's, whatever it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_area_grant_opens_its_area_and_nothing_without_it() {
+    let mut a = paired(&[]).await;
+    a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    a.core.workspace.create_chat("far-chat", None, Some("device-elsewhere"), None, None).unwrap();
+    let outside = a.root.join("outside.txt").to_string_lossy().into_owned();
+    let areas = ["projects.manage", "files", "settings", "logins", "updates", "terminal"];
+    let calls: Vec<(&str, &str, Value)> = vec![
+        ("projects.manage", methods::LIST_DRIVES, json!({})),
+        ("projects.manage", methods::MUTATE, json!({ "op": "renameSpace", "spaceId": "p", "name": "Renamed by B" })),
+        ("files", methods::READ_WORKSPACE_FILE, json!({ "chatId": "owner-chat", "path": outside })),
+        ("settings", methods::GET_TITLE_SETTINGS, json!({})),
+        ("logins", methods::LIST_AGENT_ACCOUNTS, json!({})),
+        ("updates", methods::UPDATE_STATUS, json!({})),
+        ("terminal", methods::TERMINAL_STATUS, json!({ "terminalId": "no-such-terminal" })),
+        ("full", methods::LOCAL_DEVICE, json!({})),
+    ];
+    for (grant, method, params) in &calls {
+        regrant(&mut a, &[grant]).await;
+        let with = b_calls(&a, method, params.clone()).await;
+        assert!(!gated(&with), "{grant}: {method} {params}: {with:?}");
+        let mut others: Vec<&str> = areas.iter().copied().filter(|g| g != grant).collect();
+        others.extend(["sessions.read", "sessions.run.unconfined:p", "projects.share:p", "workers.manage"]);
+        regrant(&mut a, &others).await;
+        let without = b_calls(&a, method, params.clone()).await;
+        assert!(gated(&without), "without {grant}: {method} {params}: {without:?}");
+    }
+    // What the calls did with their grant.
+    regrant(&mut a, &["files"]).await;
+    let read = a.b.call(methods::READ_WORKSPACE_FILE, json!({ "chatId": "owner-chat", "path": outside })).await.expect("read with files");
+    assert!(read.to_string().contains("OUTSIDE-SECRET"), "{read}");
+    assert_eq!(a.core.workspace.space("p").unwrap().unwrap().name.as_deref(), Some("Renamed by B"));
+    // Another device's chat: not this server's to reach, with `files` or `full`.
+    for grants in [&["files"][..], &["full"][..]] {
+        regrant(&mut a, grants).await;
+        let far = a.b.call(methods::READ_WORKSPACE_FILE, json!({ "chatId": "far-chat", "path": "x" })).await;
+        assert!(far.as_ref().is_err_and(|e| e.to_string().contains("isn't one of this device's")), "{grants:?}: {far:?}");
+    }
+    // `full` holds every area.
+    for (grant, method, params) in &calls {
+        let reply = b_calls(&a, method, params.clone()).await;
+        assert!(!gated(&reply), "full ({grant}): {method}: {reply:?}");
+    }
+    assert_eq!(a.b.call(methods::LOCAL_DEVICE, json!({})).await.unwrap()["deviceId"], json!("device-a"));
+}
+
+/// Every method the table keeps `never` (pairing, grants, the account,
+/// Cloud, billing, vault, GitHub, the phone link, StopEngine, …) is
+/// refused with every grant there is, `full` among them; the engine runs on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn never_is_refused_with_every_grant() {
+    let a = paired(&[
+        "sessions.read", "sessions.run.unconfined:p", "projects.share:p", "workers.manage",
+        "projects.manage", "files", "settings", "logins", "updates", "terminal", "full",
+    ])
+    .await;
+    let never: Vec<&str> = every_method().into_iter().filter(|m| zend_rpc::peer_scope(m, None) == Some(zend_rpc::Scope::Never)).collect();
+    assert!(never.contains(&methods::STOP_ENGINE) && never.contains(&methods::SET_PEER_GRANTS) && never.len() >= 50, "{never:?}");
+    for method in &never {
+        let reply = a.b.call(method, json!({ "peer": a.b_key, "grants": ["full"] })).await;
+        assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("never open")), "{method}: {reply:?}");
+    }
+    let remove = a.b.call(methods::MUTATE, json!({ "op": "removeDevice", "deviceId": "device-a" })).await;
+    assert!(remove.as_ref().is_err_and(|e| e.to_string().contains("never open")), "{remove:?}");
+    a.b.call(methods::ENGINE_INFO, json!({})).await.expect("still running, still paired");
+    assert_eq!(a.link.peers().iter().find(|p| p.key == a.b_key).map(|p| p.grants.iter().count()), Some(11));
+}
+
+/// An agent in a chat B started gets nothing of B's `full`, `files`,
+/// `terminal` or `settings`: the same calls B itself makes are refused
+/// for it, and it reads no other chat (`full` holds sessions.read). What
+/// it could do before still works (its own child in p).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_in_a_peer_chat_gets_nothing_of_full() {
+    let a = paired(&["sessions.run:p", "full", "files", "terminal", "settings"]).await;
+    a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    a.b.call(methods::MUTATE, create("peer-chat", "p")).await.expect("create in p");
+    let rpc = a.core.rpc_service();
+    let agent = || Caller::Agent { chat: Some("peer-chat".to_string()) };
+    let outside = a.root.join("outside.txt").to_string_lossy().into_owned();
+    for (method, params) in [
+        (methods::LOCAL_DEVICE, json!({})),
+        (methods::GET_TITLE_SETTINGS, json!({})),
+        (methods::TERMINAL_STATUS, json!({ "terminalId": "no-such-terminal" })),
+        (methods::READ_WORKSPACE_FILE, json!({ "chatId": "owner-chat", "path": outside })),
+        (methods::WATCH_DOC_MESSAGES, json!({ "chatId": "owner-chat" })),
+        (methods::MUTATE, json!({ "op": "renameSpace", "spaceId": "p", "name": "x" })),
+    ] {
+        // B itself may (the control).
+        if method != methods::WATCH_DOC_MESSAGES {
+            let b = b_calls(&a, method, params.clone()).await;
+            assert!(!gated(&b), "B: {method}: {b:?}");
+        }
+        let reply = with_caller(agent(), rpc.handle(method, params.clone())).await;
+        assert!(reply.is_err(), "the agent reached {method} {params}");
+    }
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" });
+    with_caller(agent(), rpc.handle(methods::MUTATE, json!({
+        "op": "createChat", "chatId": "p-child", "spaceId": "p", "deviceId": a.core.device_id,
+        "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
+    }))).await.expect("its own child in p, as before");
+}

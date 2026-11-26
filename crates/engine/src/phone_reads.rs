@@ -16,11 +16,15 @@ use std::path::{Path, PathBuf};
 /// Whether the request being served came from another Zend (a linked phone
 /// or another device) and is held to [`Scope`]. Read it in the request's
 /// own task, before any `spawn` (a spawned task is `Local`).
+///
+/// A paired server granted `files` (or `full`) isn't: the owner gave it
+/// the machine's files (plan step 6).
 pub(crate) fn fenced() -> bool {
-    matches!(
-        zend_rpc::caller(),
-        zend_rpc::Caller::Remote | zend_rpc::Caller::Peer { .. } | zend_rpc::Caller::PeerServer { .. }
-    )
+    match zend_rpc::caller() {
+        zend_rpc::Caller::Remote | zend_rpc::Caller::Peer { .. } => true,
+        zend_rpc::Caller::PeerServer { grants, .. } => !grants.covers(zend_rpc::Scope::Files),
+        zend_rpc::Caller::Local | zend_rpc::Caller::Agent { .. } => false,
+    }
 }
 
 /// The folders another Zend may name a path in: each of this device's

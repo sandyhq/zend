@@ -24,6 +24,7 @@ pub mod device_room;
 pub mod ipc_auth;
 pub mod link_proof;
 pub mod peer_link;
+pub mod peer_scope;
 pub mod remote;
 mod server;
 mod ws;
@@ -36,7 +37,8 @@ pub use device_room::{
     NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenError, TokenSource,
     decode_device_frame, device_room_ws_url, encode_device_frame, is_liveness_probe,
 };
-pub use peer_link::{Grant, Grants, NodeKey, connect_peer, peer_server_allowed};
+pub use peer_link::{Grant, Grants, NodeKey, connect_peer, mutate_op, peer_server_allowed};
+pub use peer_scope::{Scope, peer_scope};
 pub use remote::{bind_remote, in_tailnet, remote_allowed, serve_remote_listener};
 pub use server::{
     agent_service, serve_connection, serve_ws_listener, serve_ws_listener_scoped, serve_ws_streams,

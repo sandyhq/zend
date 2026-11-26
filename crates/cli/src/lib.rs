@@ -153,7 +153,14 @@ pub enum PeerCommand {
     /// Set what a paired server may do here, replacing what it had: none
     /// takes everything away. Grants: sessions.read, sessions.run:<project>,
     /// sessions.run.unconfined:<project>, projects.share:<project>,
-    /// workers.manage. sessions.run.unconfined is full trust: an agent it
+    /// workers.manage, and the areas: projects.manage (projects, repos,
+    /// branches, worktrees, browsing folders), files (any file here),
+    /// settings (plugins, templates, themes, settings), logins (agent
+    /// accounts, harnesses), updates, terminal (terminals, project actions),
+    /// full (all areas and the rest; never pairing, grants, the account,
+    /// Cloud, billing, vault, GitHub, the phone link or stopping Zend).
+    /// files, terminal and full are full access to this machine.
+    /// sessions.run.unconfined is full trust: an agent it
     /// runs works as you on this server and can read Zend's IPC token.
     /// sessions.run:<project> runs the server's chats sandboxed in a working
     /// copy of that project in Zend's data (a detached git worktree, or a

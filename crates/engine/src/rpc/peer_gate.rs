@@ -41,6 +41,15 @@
 //! children are kept as that server's too and, if it is confined, confined
 //! to its folder, in its project only.
 //!
+//! - Every other call (plan step 6): what `zend_rpc::peer_scope` puts in an
+//!   area the server holds (`projects.manage`, `files`, `settings`,
+//!   `logins`, `updates`, `terminal`, or `full` for all of them), served
+//!   as this device's window's, with a `chatId` or `spaceId` of this
+//!   device only; `Mutate`'s area ops of this device's projects, chats and
+//!   name. With `files` (or `full`) its paths aren't held to the chats' and
+//!   projects' folders ([`crate::phone_reads::fenced`]). An agent in a
+//!   server's chat holds none of these.
+//!
 //! Nothing is forwarded to another device for it (`targetDeviceId`).
 
 use std::path::PathBuf;
@@ -93,7 +102,9 @@ impl EngineRpc {
             return None;
         }
         let peer = self.sessions.peer_chats().peer(&chat)?;
-        let grants = crate::peer_link::kept_grants(self.repos.data_dir(), &peer).unwrap_or_default();
+        // Only the grants before step 6: `full`, `files`, `terminal` and
+        // the other areas are the owner's window's, never an agent's.
+        let grants = crate::peer_link::kept_grants(self.repos.data_dir(), &peer).unwrap_or_default().sessions_only();
         Some((Caller::PeerServer { peer, grants }, chat))
     }
 
@@ -116,8 +127,13 @@ impl EngineRpc {
         let Caller::PeerServer { peer, grants } = zend_rpc::caller() else {
             return Ok(PeerGate::Pass(params));
         };
-        // The transport checked it; checked again where it's served.
-        zend_rpc::peer_server_allowed(method, &grants).map_err(refused)?;
+        // The transport checked it; checked again where it's served (an
+        // agent in a server's chat comes here without the transport).
+        let op = zend_rpc::mutate_op(method, &params);
+        let scope = zend_rpc::peer_server_allowed(method, op, &grants).map_err(refused)?;
+        if scope.is_area() && PEER_AGENT_CHAT.try_with(|_| ()).is_ok() {
+            return Err(refused(format!("{method}: an agent in a server's chat calls with that server's session grants only")));
+        }
         if params
             .get("targetDeviceId")
             .and_then(Value::as_str)
@@ -136,14 +152,83 @@ impl EngineRpc {
                 Ok(PeerGate::Pass(params))
             }
             methods::QUEUE_COMMAND => self.peer_queue_command(&peer, &grants, params).map(PeerGate::Pass),
-            methods::MUTATE => match params.get("op").and_then(Value::as_str) {
+            methods::MUTATE => match op {
                 Some(op) if CHAT_OPS.contains(&op) => self.peer_change_chat(&peer, &grants, params).await.map(PeerGate::Pass),
-                _ => self.peer_create_chat(&peer, &grants, params).await.map(PeerGate::Reply),
+                Some("createChat") => self.peer_create_chat(&peer, &grants, params).await.map(PeerGate::Reply),
+                // An area's op (projects, settings, full): of this device's
+                // own projects, chats and device only.
+                _ if scope.is_area() => self.peer_area_mutate(&peer, scope, params).map(PeerGate::Pass),
+                _ => Err(refused(MUTATE_REFUSED)),
             },
             methods::PEER_LIST_PROJECT_FILES => self.peer_list_files(&grants, params).map(PeerGate::Reply),
             methods::PEER_READ_PROJECT_FILE => self.peer_read_file(&grants, params).map(PeerGate::Reply),
+            // Every other call a grant opens (`projects.manage`, `files`,
+            // `terminal`, …, `full`): served as this device's window's,
+            // of this device's own chats and projects.
+            _ if scope.is_area() || scope == zend_rpc::Scope::WorkersManage => {
+                self.peer_own_ids(method, &params)?;
+                Ok(PeerGate::Pass(params))
+            }
             _ => Err(refused(format!("{method} isn't open to your server"))),
         }
+    }
+
+    /// A call's `chatId` and `spaceId`, where it names them, of this device:
+    /// a chat hosted here, a project here (or none yet, as `createSpace`
+    /// makes). Nothing of the account's other devices through a server.
+    fn peer_own_ids(&self, method: &str, params: &Value) -> Result<(), RpcError> {
+        let own = self.doc_host.device_id();
+        if let Some(chat_id) = params.get("chatId").and_then(Value::as_str) {
+            let here = self.workspace.chat(chat_id).map_err(|e| RpcError::Failed(e.to_string()))?;
+            if !here.is_some_and(|chat| chat.device_id == own) {
+                return Err(refused(format!("{method}: chat {chat_id} isn't one of this device's")));
+            }
+        }
+        if let Some(space_id) = params.get("spaceId").and_then(Value::as_str) {
+            let here = self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?;
+            if here.is_some_and(|space| space.device_id != own) {
+                return Err(refused(format!("{method}: project {space_id} isn't one of this device's")));
+            }
+        }
+        Ok(())
+    }
+
+    /// A `Mutate` an area grant opens: a project of this device (made
+    /// here, or one here renamed, given an icon, deleted), this device's
+    /// own name, the sidebar, a chat hosted here (`full`).
+    fn peer_area_mutate(&self, peer: &str, scope: zend_rpc::Scope, params: Value) -> Result<Value, RpcError> {
+        let p: MutateParams = zend_rpc::parse_params(params.clone())?;
+        let own = self.doc_host.device_id().to_string();
+        let not_here = |what: String| Err(refused(format!("Mutate: {what} isn't this device's")));
+        match &p {
+            MutateParams::CreateSpace { device_id, .. } if device_id != &own => return not_here(format!("device {device_id}")),
+            MutateParams::CreateSpace { space_id, .. } => {
+                if self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?.is_some() {
+                    return Err(refused(format!("Mutate createSpace: project {space_id} exists")));
+                }
+            }
+            MutateParams::RenameSpace { space_id, .. } | MutateParams::SetSpaceIcon { space_id, .. } | MutateParams::DeleteSpace { space_id } => {
+                let here = self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?;
+                if !here.is_some_and(|space| space.device_id == own) {
+                    return not_here(format!("project {space_id}"));
+                }
+            }
+            MutateParams::RenameDevice { device_id, .. } if device_id != &own => return not_here(format!("device {device_id}")),
+            MutateParams::RenameDevice { .. } | MutateParams::ChangeSidebarPin { .. } => {}
+            MutateParams::SetChatBranch { chat_id, .. }
+            | MutateParams::SetChatCwd { chat_id, .. }
+            | MutateParams::SetChatActivity { chat_id, .. }
+            | MutateParams::SetChatHost { chat_id, .. }
+            | MutateParams::SetChatSleep { chat_id, .. } => {
+                let here = self.workspace.chat(chat_id).map_err(|e| RpcError::Failed(e.to_string()))?;
+                if !here.is_some_and(|chat| chat.device_id == own) {
+                    return not_here(format!("chat {chat_id}"));
+                }
+            }
+            _ => return Err(refused(MUTATE_REFUSED)),
+        }
+        tracing::info!(peer = %peer.get(..12).unwrap_or(peer), op = zend_rpc::mutate_op(methods::MUTATE, &params), scope = scope.name(), "peer link: a paired server changes this device");
+        Ok(params)
     }
 
     /// The chat `chat_id`, hosted here, when the server holding `peer` may run
@@ -603,4 +688,31 @@ fn project_path(params: &Value) -> Result<(String, String), RpcError> {
     };
     let path = params.get("path").and_then(Value::as_str).unwrap_or_default();
     Ok((project.to_string(), path.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    /// `zend_rpc::peer_scope::MUTATE_OPS`, the table's list of ops, is
+    /// `MutateParams`' variants, each as its `op` tag: an op added there
+    /// has its row in the table before a server can send it.
+    #[test]
+    fn peer_scope_lists_every_mutate_op() {
+        let src = include_str!("../rpc.rs");
+        let start = src.find("enum MutateParams {").unwrap();
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        let mut variants: Vec<String> = body
+            .lines()
+            .filter(|l| l.starts_with("    ") && !l.starts_with("     "))
+            .filter_map(|l| l.trim().split([' ', '{', ',']).next().filter(|w| w.starts_with(|c: char| c.is_ascii_uppercase())))
+            .map(|w| w[..1].to_ascii_lowercase() + &w[1..])
+            .collect();
+        variants.sort();
+        let mut ops: Vec<String> = zend_rpc::peer_scope::MUTATE_OPS.iter().map(|s| s.to_string()).collect();
+        ops.sort();
+        assert_eq!(variants.len(), 18, "{variants:?}");
+        assert_eq!(variants, ops);
+        for op in &ops {
+            assert!(zend_rpc::peer_scope(zend_rpc::methods::MUTATE, Some(op)).is_some(), "{op}");
+        }
+    }
 }

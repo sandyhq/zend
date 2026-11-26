@@ -46,6 +46,14 @@ pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path
         }
         PeerCommand::Grant { peer, grants } => {
             let grants: Vec<String> = grants.into_iter().filter(|g| g != "none").collect();
+            let parsed = grants.iter().map(|g| g.parse::<zend_rpc::Grant>()).collect::<Result<Vec<_>, _>>().map_err(|e| anyhow::anyhow!(e))?;
+            let wide: Vec<String> = parsed.iter().filter(|g| g.is_machine_wide()).map(ToString::to_string).collect();
+            if !wide.is_empty() {
+                eprintln!(
+                    "Warning: {} gives that server full access to this machine: any file, a shell, as you. Unpair it (zend peer unpair) if its key is ever lost.",
+                    wide.join(", ")
+                );
+            }
             let reply = call(methods::SET_PEER_GRANTS, json!({ "peer": peer, "grants": grants })).await?;
             println!("{} may now: {}", who(&reply["peer"]), if grants.is_empty() { "nothing".into() } else { grants.join(" ") });
         }

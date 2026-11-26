@@ -8,6 +8,9 @@ use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http::H
 /// Every method name in lib.rs's methods module, and one added later.
 fn every_method() -> Vec<&'static str> {
     let src = include_str!("lib.rs");
+    // The methods module only (not capability_errors' codes).
+    let start = src.find("pub mod methods {").unwrap();
+    let src = &src[start..start + src[start..].find("\n}\n").unwrap()];
     let mut all: Vec<&str> = src
         .lines()
         .filter_map(|l| l.trim().strip_prefix("pub const ")?.split_once(": &str = \""))
@@ -18,16 +21,38 @@ fn every_method() -> Vec<&'static str> {
     all
 }
 
+/// Whether `g` opens `method` (of `Mutate`, any op).
+fn opens(method: &str, g: &Grants) -> bool {
+    if method == methods::MUTATE {
+        crate::peer_scope::MUTATE_OPS.iter().any(|op| peer_server_allowed(method, Some(op), g).is_ok())
+    } else {
+        peer_server_allowed(method, None, g).is_ok()
+    }
+}
+
 fn grants(list: &[&str]) -> Grants {
     Grants::new(list.iter().map(|g| g.parse::<Grant>().unwrap()))
 }
 
 #[test]
 fn grants_read_and_print_as_the_plan_names_them() {
-    for text in ["sessions.read", "sessions.run:p1", "sessions.run.unconfined:p-2", "projects.share:abc_D.e", "workers.manage"] {
+    for text in [
+        "sessions.read",
+        "sessions.run:p1",
+        "sessions.run.unconfined:p-2",
+        "projects.share:abc_D.e",
+        "workers.manage",
+        "projects.manage",
+        "files",
+        "settings",
+        "logins",
+        "updates",
+        "terminal",
+        "full",
+    ] {
         assert_eq!(text.parse::<Grant>().unwrap().to_string(), text);
     }
-    for bad in ["", "sessions", "sessions.run", "sessions.run:", "sessions.run:a/b", "sessions.run:../x", "projects.share:/etc", "files.read", "sessions.read:p"] {
+    for bad in ["", "sessions", "sessions.run", "sessions.run:", "sessions.run:a/b", "sessions.run:../x", "projects.share:/etc", "files.read", "sessions.read:p", "full:p", "files:/", "Full"] {
         assert!(bad.parse::<Grant>().is_err(), "{bad}");
     }
     let g = grants(&["sessions.run:p", "sessions.run.unconfined:q", "projects.share:s"]);
@@ -42,7 +67,7 @@ fn grants_read_and_print_as_the_plan_names_them() {
 fn with_no_grants_every_method_is_refused() {
     let none = Grants::default();
     for method in every_method().into_iter().chain(PEER_METHODS.iter().copied()) {
-        let refused = peer_server_allowed(method, &none);
+        let refused = peer_server_allowed(method, None, &none);
         assert!(refused.as_ref().is_err_and(|why| why.contains(method)), "{method}: {refused:?}");
     }
 }
@@ -52,7 +77,7 @@ fn with_no_grants_every_method_is_refused() {
 #[test]
 fn each_grant_opens_only_its_methods() {
     let open = |g: &Grants| -> BTreeSet<&'static str> {
-        every_method().into_iter().filter(|m| peer_server_allowed(m, g).is_ok()).collect()
+        every_method().into_iter().filter(|m| opens(m, g)).collect()
     };
     let set = |list: &[&'static str]| list.iter().copied().collect::<BTreeSet<_>>();
     assert_eq!(
@@ -67,7 +92,7 @@ fn each_grant_opens_only_its_methods() {
     let all = grants(&["sessions.read", "sessions.run:p", "sessions.run.unconfined:p", "projects.share:p", "workers.manage"]);
     assert_eq!(open(&all), set(PEER_METHODS));
     for m in every_method().into_iter().filter(|m| crate::local_only(m)) {
-        assert!(peer_server_allowed(m, &all).is_err(), "{m}");
+        assert!(!opens(m, &all), "{m}");
     }
     for m in [
         methods::SET_PEER_GRANTS,
@@ -100,6 +125,175 @@ fn each_grant_opens_only_its_methods() {
     for m in [methods::READ_WORKSPACE_FILE, methods::LIST_WORKSPACE_DIRECTORY] {
         assert!(!PEER_METHODS.contains(&m), "{m}");
     }
+}
+
+// ---- the scope table (plan step 6a) ----------------------------------------
+
+/// Every method constant and every `Mutate` op has its row in
+/// [`crate::peer_scope`]; a name it doesn't know has none. (The engine's
+/// test holds [`crate::peer_scope::MUTATE_OPS`] to `MutateParams`.)
+#[test]
+fn the_table_classes_every_method_and_every_mutate_op() {
+    let unclassed: Vec<&str> = every_method()
+        .into_iter()
+        .filter(|m| *m != "SomethingAddedLater" && *m != methods::MUTATE)
+        .filter(|m| crate::peer_scope(m, None).is_none())
+        .collect();
+    assert!(unclassed.is_empty(), "methods with no row in peer_scope: {unclassed:?}");
+    let ops: Vec<&str> =
+        crate::peer_scope::MUTATE_OPS.iter().copied().filter(|op| crate::peer_scope(methods::MUTATE, Some(op)).is_none()).collect();
+    assert!(ops.is_empty(), "Mutate ops with no row: {ops:?}");
+    assert_eq!(crate::peer_scope("SomethingAddedLater", None), None);
+    assert_eq!(crate::peer_scope(methods::MUTATE, None), None);
+    assert_eq!(crate::peer_scope(methods::MUTATE, Some("somethingAddedLater")), None);
+    // Unclassed is refused, even with everything.
+    let all = grants(&["sessions.read", "sessions.run:p", "projects.share:p", "workers.manage", "full"]);
+    assert!(peer_server_allowed("SomethingAddedLater", None, &all).is_err());
+    assert!(peer_server_allowed(methods::MUTATE, Some("somethingAddedLater"), &all).is_err());
+    assert!(peer_server_allowed(methods::MUTATE, None, &all).is_err());
+}
+
+/// How many methods (and `Mutate` ops) each scope holds, printed for the
+/// record (`--nocapture`); every scope holds at least one.
+#[test]
+fn every_scope_holds_some_and_the_counts_are_printed() {
+    use crate::Scope;
+    let mut counts: std::collections::BTreeMap<Scope, (usize, usize)> = Default::default();
+    for m in every_method().into_iter().filter(|m| *m != "SomethingAddedLater" && *m != methods::MUTATE) {
+        counts.entry(crate::peer_scope(m, None).unwrap()).or_default().0 += 1;
+    }
+    for op in crate::peer_scope::MUTATE_OPS {
+        counts.entry(crate::peer_scope(methods::MUTATE, Some(op)).unwrap()).or_default().1 += 1;
+    }
+    for (scope, (methods, ops)) in &counts {
+        println!("scope {:<32} methods {methods:>3}  mutate ops {ops:>2}", scope.name());
+    }
+    assert_eq!(counts.len(), 14, "{counts:?}");
+}
+
+/// Each new grant: a call of its area goes through with it (or with
+/// `full`), and is refused with every other grant but it and `full`.
+#[test]
+fn each_area_grant_opens_its_area_and_only_with_it() {
+    let others = |but: &str| {
+        let mut list = vec!["sessions.read", "sessions.run.unconfined:p", "projects.share:p", "workers.manage"];
+        for g in ["projects.manage", "files", "settings", "logins", "updates", "terminal"] {
+            if g != but {
+                list.push(g);
+            }
+        }
+        grants(&list)
+    };
+    let full = grants(&["full"]);
+    for (grant, method, op) in [
+        ("projects.manage", methods::LIST_FOLDERS, None),
+        ("projects.manage", methods::MUTATE, Some("createSpace")),
+        ("projects.manage", methods::CREATE_WORKTREE, None),
+        ("files", methods::READ_WORKSPACE_FILE, None),
+        ("files", methods::WRITE_WORKSPACE_FILE, None),
+        ("files", methods::DISCARD_WORKING_TREE, None),
+        ("settings", methods::USE_THEME, None),
+        ("settings", methods::INSTALL_PLUGIN, None),
+        ("settings", methods::MUTATE, Some("renameDevice")),
+        ("logins", methods::LIST_AGENT_ACCOUNTS, None),
+        ("logins", methods::START_AGENT_LOGIN, None),
+        ("updates", methods::UPDATE_STATUS, None),
+        ("updates", methods::APPLY_HARNESS_UPDATE, None),
+        ("terminal", methods::OPEN_TERMINAL, None),
+        ("terminal", methods::WRITE_TERMINAL, None),
+        ("terminal", methods::RUN_PROJECT_ACTION, None),
+    ] {
+        assert!(peer_server_allowed(method, op, &grants(&[grant])).is_ok(), "{grant}: {method} {op:?}");
+        assert!(peer_server_allowed(method, op, &full).is_ok(), "full: {method} {op:?}");
+        let refused = peer_server_allowed(method, op, &others(grant));
+        assert!(refused.as_ref().is_err_and(|why| why.contains(grant)), "without {grant}: {method} {op:?}: {refused:?}");
+    }
+    // What only `full` opens.
+    for (method, op) in [
+        (methods::QUEUE_MESSAGE, None),
+        (methods::FORK_SIDE_CHAT, None),
+        (methods::DECIDE_PLUGIN, None),
+        (methods::CREATE_WORKER, None),
+        (methods::MUTATE, Some("setChatCwd")),
+    ] {
+        assert!(peer_server_allowed(method, op, &full).is_ok(), "{method} {op:?}");
+        assert!(peer_server_allowed(method, op, &others("")).is_err(), "{method} {op:?}");
+    }
+    // `full` reads sessions but runs and shares no project of its own.
+    assert!(peer_server_allowed(methods::WATCH_CHATS, None, &full).is_ok());
+    assert!(full.reads() && !full.runs_anywhere() && !full.shares("p"));
+    assert!(peer_server_allowed(methods::QUEUE_COMMAND, None, &full).is_err());
+    assert!(peer_server_allowed(methods::PEER_READ_PROJECT_FILE, None, &full).is_err());
+    // An area grant alone still says who this device is.
+    assert!(peer_server_allowed(methods::ENGINE_INFO, None, &grants(&["updates"])).is_ok());
+    // An agent in a server's chat holds only the grants before step 6.
+    assert_eq!(grants(&["full", "files", "sessions.run:p"]).sessions_only(), grants(&["sessions.run:p"]));
+    assert!(!grants(&["full"]).sessions_only().reads());
+}
+
+/// The binding `never` list (plan step 6), and every other `Never` row:
+/// refused with every grant there is.
+#[test]
+fn never_is_refused_even_with_full() {
+    let all = grants(&[
+        "sessions.read",
+        "sessions.run.unconfined:p",
+        "projects.share:p",
+        "workers.manage",
+        "projects.manage",
+        "files",
+        "settings",
+        "logins",
+        "updates",
+        "terminal",
+        "full",
+    ]);
+    let binding = [
+        methods::PEER_PAIR,
+        methods::PEER_JOIN,
+        methods::LIST_PEERS,
+        methods::SET_PEER_GRANTS,
+        methods::UNPAIR_PEER,
+        methods::SET_PEER_KEY,
+        methods::REMOVE_PEER_KEY,
+        methods::LIST_PEER_KEYS,
+        methods::ALLOW_PEER_LOGIN,
+        methods::REMOVE_PEER_LOGIN,
+        methods::LIST_PEER_LOGINS,
+        methods::SIGN_IN,
+        methods::SIGN_OUT,
+        methods::ACCESS_TOKEN,
+        methods::STEP_UP,
+        methods::DELETE_ACCOUNT,
+        methods::LIST_ORGS,
+        methods::CREATE_ORG,
+        methods::SELECT_ORG,
+        methods::BILLING_STATUS,
+        methods::BILLING_CHECKOUT,
+        methods::BILLING_PORTAL,
+        methods::GITHUB_CONNECT_START,
+        methods::GITHUB_CONNECT_POLL,
+        methods::PHONE_LINK_STATUS,
+        methods::SET_PHONE_LINK,
+        methods::NEW_PHONE_LINK_KEY,
+        methods::STOP_ENGINE,
+    ];
+    let prefixed: Vec<&str> =
+        every_method().into_iter().filter(|m| m.starts_with("Cloud") || m.starts_with("Billing") || m.starts_with("Vault")).collect();
+    assert!(prefixed.len() >= 15, "{prefixed:?}");
+    for m in binding.into_iter().chain(prefixed) {
+        assert_eq!(crate::peer_scope(m, None), Some(crate::Scope::Never), "{m}");
+    }
+    let mut never = 0;
+    for m in every_method() {
+        if crate::peer_scope(m, None) == Some(crate::Scope::Never) {
+            never += 1;
+            let refused = peer_server_allowed(m, None, &all);
+            assert!(refused.as_ref().is_err_and(|why| why.contains("never")), "{m}: {refused:?}");
+        }
+    }
+    assert!(never >= 50, "{never}");
+    assert!(peer_server_allowed(methods::MUTATE, Some("removeDevice"), &all).is_err());
 }
 
 #[test]
@@ -257,8 +451,11 @@ async fn a_paired_server_is_served_once_both_prove_their_keys() {
     let caller = reply["caller"].as_str().unwrap();
     assert!(caller.starts_with("PeerServer") && caller.contains(me.public()) && caller.contains("SessionsRead"), "{caller}");
     // Outside its grants: refused before the engine hears it, with why.
-    let refused = client.call(methods::MUTATE, serde_json::json!({})).await.unwrap_err();
+    let refused = client.call(methods::MUTATE, serde_json::json!({ "op": "createChat" })).await.unwrap_err();
     assert!(refused.to_string().contains("isn't open to your server"), "{refused}");
+    // A Mutate that names no op is no server's.
+    let refused = client.call(methods::MUTATE, serde_json::json!({})).await.unwrap_err();
+    assert!(refused.to_string().contains("isn't open to another server"), "{refused}");
     let refused = client.call(methods::SET_PEER_GRANTS, serde_json::json!({})).await.unwrap_err();
     assert!(refused.to_string().contains("this device's own"), "{refused}");
     assert_eq!(s.served(), 1);
@@ -404,7 +601,7 @@ async fn a_workers_socket_serves_only_its_server_and_only_the_run_methods() {
     let caller = reply["caller"].as_str().unwrap();
     assert!(caller.starts_with("PeerServer") && caller.contains(server.public()), "{caller}");
     for open in [methods::LIST_HARNESSES, methods::LIST_MODELS, methods::MUTATE, methods::QUEUE_COMMAND, methods::WATCH_DOC_MESSAGES] {
-        client.call(open, serde_json::json!({})).await.unwrap_or_else(|e| panic!("{open}: {e}"));
+        client.call(open, serde_json::json!({ "op": "createChat" })).await.unwrap_or_else(|e| panic!("{open}: {e}"));
     }
     for closed in [methods::WATCH_CHATS, methods::WATCH_SESSIONS, methods::PEER_READ_PROJECT_FILE, methods::SET_PEER_GRANTS, methods::PEER_PAIR, methods::ACCESS_TOKEN, "SomethingAddedLater"] {
         let refused = client.call(closed, serde_json::json!({})).await;

@@ -1052,30 +1052,16 @@ enum Kind {
 }
 
 /// Whether a call of this device's own that names a paired server is sent
-/// to it: only what a paired server can ever take
-/// ([`zend_rpc::peer_link::peer_server_allowed`], and of `Mutate` only
-/// making a chat and what a server takes of one it may run: its config,
-/// archiving, seen, title, deleting it), never this device's own
-/// ([`zend_rpc::local_only`]). Anything else (keys, workers, settings,
-/// uploads) stays here, refused.
+/// to it (plan step 6b): every call [`zend_rpc::peer_scope`] knows (of
+/// `Mutate`, by its op) and doesn't keep [`zend_rpc::Scope::Never`],
+/// streams and chunk calls with them. Whether the server takes it is its
+/// grants' (`zend_rpc::peer_server_allowed` there): its refusal comes back
+/// as [`REFUSED_PREFIX`]. Pairing, grants, the account, Cloud, billing,
+/// vault, GitHub, the phone link and stopping Zend stay here, refused, and
+/// so does a call naming this device's own chat, project or device
+/// ([`PeerView::route`], first).
 fn forwarded(method: &str, params: &Value) -> bool {
-    if zend_rpc::local_only(method) || !zend_rpc::peer_link::PEER_METHODS.contains(&method) {
-        return false;
-    }
-    match method {
-        methods::ENGINE_INFO
-        | methods::LIST_HARNESSES
-        | methods::LIST_MODELS
-        | methods::QUEUE_COMMAND
-        | methods::WATCH_DOC_MESSAGES
-        | methods::PEER_LIST_PROJECT_FILES
-        | methods::PEER_READ_PROJECT_FILE => true,
-        methods::MUTATE => matches!(
-            params["op"].as_str(),
-            Some("createChat" | "setChatConfig" | "setChatArchived" | "markChatSeen" | "renameChat" | "deleteChat")
-        ),
-        _ => false,
-    }
+    zend_rpc::peer_scope(method, zend_rpc::mutate_op(method, params)).is_some_and(|scope| scope != zend_rpc::Scope::Never)
 }
 
 /// Whether a call of this device's own that names one of its workers is
