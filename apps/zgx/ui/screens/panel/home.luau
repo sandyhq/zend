@@ -101,6 +101,16 @@ local function action_icon(icon: string?): Icon.Name
 	return "action-play"
 end
 
+-- A failed call's words: a paired server that doesn't grant it says which
+-- grant to give it and where (screens/files/paths), else the engine's own.
+local function failed_words(err: any): string
+	local denied = require("@app/screens/files/paths").not_granted_words(err)
+	if denied then
+		return denied.body
+	end
+	return if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
+end
+
 local function trim(s: string?): string
 	return string.match(s or "", "^%s*(.-)%s*$") or ""
 end
@@ -347,12 +357,7 @@ local function actions(props: Props, sid: string): Node
 		api.actions(c.space, c.device):after(function(snapshot: any)
 			actions_by:set_key(c.slot, { state = "ready", snapshot = snapshot })
 		end, function(err: any)
-			local m = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
-			-- (A paired server that doesn't grant it: said plainly.)
-			local denied = require("@app/screens/files/paths").not_granted_words(err)
-			if denied then
-				m = denied.body
-			end
+			local m = failed_words(err)
 			local before = actions_by:peek()[c.slot]
 			actions_by:set_key(c.slot, {
 				state = if m == "unsupported" then "unsupported" else "failed",
@@ -422,7 +427,7 @@ local function actions(props: Props, sid: string): Node
 			editing:set(false)
 		end, function(err: any)
 			saving:set(false)
-			problem:set(if type(err) == "table" and err.message then tostring(err.message) else tostring(err))
+			problem:set(failed_words(err))
 		end)
 	end
 	local function delete()
@@ -438,7 +443,7 @@ local function actions(props: Props, sid: string): Node
 			editing:set(false)
 		end, function(err: any)
 			saving:set(false)
-			problem:set(if type(err) == "table" and err.message then tostring(err.message) else tostring(err))
+			problem:set(failed_words(err))
 		end)
 	end
 	local function run(a: any)

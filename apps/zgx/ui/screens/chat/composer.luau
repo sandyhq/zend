@@ -1516,8 +1516,14 @@ local function Composer(): Node
 				if not id then
 					return
 				end
-				store.stop_task(id, task):after(function() end, function()
-					own_notice:set { tone = "danger", key = "chat.composer.couldnt_stop_task", dismissable = true }
+				store.stop_task(id, task):after(function() end, function(err: any)
+					-- (A paired server that doesn't grant terminal: said, with the way on.)
+					local denied = require("@app/screens/files/paths").not_granted_words(err)
+					if denied then
+						own_notice:set { tone = "danger", text = denied.body, dismissable = true }
+					else
+						own_notice:set { tone = "danger", key = "chat.composer.couldnt_stop_task", dismissable = true }
+					end
 				end)
 			end,
 			question = asks.question,

@@ -993,7 +993,7 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
     });
     // A background process of the chat's stopped, on its host (the shipping
     // app's `stop_background_task`): whether it's stopping.
-    host.async_action("chat.stop_task", move |args| async move { stop_task(args).await.map_err(String::from) });
+    host.async_action("chat.stop_task", move |args| async move { stop_task(args).await });
     host.async_action("chat.stop_waiting", move |id| async move { stop_waiting(text(&id)).await.map_err(String::from) });
     let pick = which.clone();
     host.async_action("chat.respond", move |args| {
@@ -3409,26 +3409,24 @@ fn unsendable(req: &Value) -> Option<Why> {
 
 /// A command for a chat (`QueueCommand`): a run, an interrupt, an answer.
 /// `StopBackgroundTask` for `{ session, task }`, routed to the chat's host.
-async fn stop_task(args: Value) -> Result<Value, Outcome> {
+async fn stop_task(args: Value) -> Result<Value, String> {
     let id = args.field("session").map(text).unwrap_or_default();
     let task = args.field("task").map(text).unwrap_or_default();
     if id.is_empty() || task.is_empty() {
-        return Err("missing");
+        return Err("missing".into());
     }
     let chats = CHATS.with(Rc::clone);
     let mut params = json!({ "chatId": id, "taskId": task });
     if let Some(t) = chats.chat(&id).and_then(|c| chats.target(&c)) {
         // (A paired server that doesn't grant terminal hears nothing:
         // the task stays, src/server_route.rs.)
-        if crate::server_route::gate(Some(&t), "terminal").is_err() {
-            return Err("failed");
-        }
+        crate::server_route::gate(Some(&t), "terminal")?;
         params["targetDeviceId"] = json!(t);
     }
     let answer = engine::get()
         .call("StopBackgroundTask", params)
         .await
-        .map_err(|e| engine::outcome(&e))?;
+        .map_err(crate::server_route::failure)?;
     Ok(Value::Bool(answer["stopping"].as_bool() == Some(true)))
 }
 

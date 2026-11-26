@@ -142,7 +142,20 @@ home_api.actions = function(space: string, device: string?): any
 	end
 	return settled(true, table.clone(snapshot))
 end
+-- `refuse_edits`: saving and deleting an action are refused as a server
+-- that doesn't grant terminal does (src/server_route.rs).
+local edits_refused = false
+ui.command {
+	id = "refuse_edits",
+	title = "Refuse saving and deleting actions",
+	run = function()
+		edits_refused = true
+	end,
+}
 home_api.save_action = function(space: string, _device: string?, draft: any): any
+	if edits_refused then
+		return settled(false, "not_granted|terminal|AI|Laptop")
+	end
 	note(`save:{space}:{draft.id or "new"}:{draft.name}:{draft.command}:{draft.icon}:{tostring(draft.setup)}`)
 	local next_actions = {}
 	local found = false
@@ -161,6 +174,9 @@ home_api.save_action = function(space: string, _device: string?, draft: any): an
 	return settled(true, table.clone(snapshot))
 end
 home_api.delete_action = function(space: string, _device: string?, id: string): any
+	if edits_refused then
+		return settled(false, "not_granted|terminal|AI|Laptop")
+	end
 	note(`delete:{space}:{id}`)
 	local next_actions = {}
 	for _, a in snapshot.actions do

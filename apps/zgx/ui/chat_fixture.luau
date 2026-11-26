@@ -575,18 +575,30 @@ stub.interrupt = function(id: string)
 end
 -- A background process stopped (noted); `stop_fails` makes the next fail.
 local STOP_FAILS = ui.state("fixture_stop_fails", false)
+-- (`stop_refused`: the next fails as a server that doesn't grant terminal
+-- refuses it, src/server_route.rs.)
+local STOP_REFUSED = ui.state("fixture_stop_refused", false)
 stub.stop_task = function(session: string, task: string): any
 	note(`stop_task:{session}:{task}`)
-	if STOP_FAILS:peek() then
+	if STOP_FAILS:peek() or STOP_REFUSED:peek() then
+		local why = if STOP_REFUSED:peek() then "not_granted|terminal|AI|Laptop" else "failed"
 		STOP_FAILS:set(false)
+		STOP_REFUSED:set(false)
 		return {
 			after = function(_self: any, _ok: any, err: (any) -> ())
-				err("failed")
+				err(why)
 			end,
 		}
 	end
 	return settled(true)
 end
+ui.command {
+	id = "stop_refused",
+	title = "The next Stop is refused for a grant",
+	run = function()
+		STOP_REFUSED:set(true)
+	end,
+}
 ui.command {
 	id = "stop_fails",
 	title = "The next Stop fails",

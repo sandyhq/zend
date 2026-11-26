@@ -67,6 +67,14 @@ pub(crate) fn said(error: String) -> String {
     from_engine(&error, &here).unwrap_or(error)
 }
 
+/// An engine error as an outcome word (`offline`, `failed`, …) for a call
+/// whose page has no words of its own, but a refusal for grants kept whole
+/// (`not_granted|…`) for the page to say.
+pub(crate) fn failure(error: String) -> String {
+    let error = said(error);
+    if error.starts_with(NOT_GRANTED) { error } else { crate::engine::outcome(&error).to_string() }
+}
+
 fn here_name(devices: &Json, here: Option<&str>) -> String {
     here.and_then(|id| devices.as_array()?.iter().find(|d| d["id"].as_str() == Some(id)))
         .and_then(|d| d["name"].as_str())
@@ -138,6 +146,15 @@ mod tests {
         assert_eq!(from_engine("offline", "Laptop"), None);
     }
 
+    /// A call that has only outcome words keeps a grant's refusal whole.
+    #[test]
+    fn a_failure_keeps_the_refusal_and_names_any_other_by_outcome() {
+        let refused = "peer_refused: AI: AI doesn't grant terminal, so StopBackgroundTask isn't sent";
+        assert_eq!(failure(refused.to_string()), "not_granted|terminal|AI|this device");
+        assert_eq!(failure("offline".to_string()), "offline");
+        assert_eq!(failure("something broke".to_string()), "failed");
+    }
+
     /// This device's name, for the command to run on the server.
     #[test]
     fn this_devices_name_is_the_one_the_row_says() {
@@ -176,6 +193,61 @@ mod tests {
             "the pane never gave the command"
         );
         assert!(app.find("role:treeitem \"src\"").is_none(), "the old tree stayed");
+    }
+
+    /// Stop on a background process of a chat on a server that doesn't
+    /// grant terminal says why, in words with the command, in place of
+    /// "Couldn't stop that process" (ui/chat_fixture.luau).
+    #[test]
+    fn a_refused_stop_says_the_grant_it_needs() {
+        use zgx_script::{ScriptHost, testing::TestApp};
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/chat_fixture.luau");
+        let mut app = TestApp::new(|runtime| ScriptHost::new(runtime, path));
+        app.ui.scene.borrow_mut().resize(900., 700.);
+        app.frames(30);
+        for command in ["go_s2", "task_running"] {
+            assert!(app.host.run_command(command), "{command}");
+            app.frames(30);
+        }
+        app.click("role:button \"Open Running\"");
+        app.frames(30);
+        assert!(app.host.run_command("stop_refused"));
+        app.click("role:button \"Stop npm run dev\"");
+        app.frames(10);
+        app.click("role:tab \"Open Alerts\"");
+        app.frames(30);
+        assert!(
+            app.find("~\"AI hasn't opened terminal to this device. On AI, run: zend peer grant Laptop terminal\"").is_some(),
+            "the stop never said which grant it needs\n{}",
+            app.tree()
+        );
+        assert!(app.find("~\"Couldn't stop that process\"").is_none());
+    }
+
+    /// Saving an action of a project on a server that doesn't grant
+    /// terminal says which grant it needs, in the editor's problem line, not
+    /// the refusal's four parts (ui/panel_home_fixture.luau).
+    #[test]
+    fn a_refused_action_save_says_the_grant_it_needs() {
+        use zgx_script::{ScriptHost, testing::TestApp};
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/panel_home_fixture.luau");
+        let mut app = TestApp::new(|runtime| ScriptHost::new(runtime, path));
+        app.ui.scene.borrow_mut().resize(1000., 900.);
+        app.frames(30);
+        assert!(app.wait_until(|app| app.find("role:button \"Add action\"").is_some()), "the home never showed Add action");
+        assert!(app.host.run_command("refuse_edits"));
+        app.click("role:button \"Add action\"");
+        assert!(app.wait_until(|app| app.find("role:dialog >> \"Add action\"").is_some()), "the editor never opened");
+        app.frames(30);
+        app.type_text("role:textbox \"Name\"", "Lint");
+        app.type_text("role:textbox \"Command\"", "cargo clippy");
+        app.click("role:button \"Save action\"");
+        assert!(
+            app.wait_until(|app| app.find("#panel-home-editor-problem >> \"AI hasn't opened terminal to this device. On AI, run: zend peer grant Laptop terminal\"").is_some()),
+            "the editor never said which grant it needs\n{}",
+            app.tree()
+        );
+        assert!(app.find("~\"not_granted|\"").is_none(), "the refusal's parts showed raw");
     }
 
     /// The terminal of a session on a paired server that doesn't grant

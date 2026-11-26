@@ -52,7 +52,8 @@ function M.not_granted_words(err: unknown): { title: string, body: string }?
 	if not g then
 		return nil
 	end
-	local p = { server = g.server, area = g.area, device = g.device }
+	-- (The command is an argument, not words to translate.)
+	local p = { server = g.server, area = g.area, command = `zend peer grant {g.device} {g.area}` }
 	return { title = ui.t("files.not_granted.title", p):get(), body = ui.t("files.not_granted.body", p):get() }
 end
 

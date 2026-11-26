@@ -3440,7 +3440,7 @@
     },
     "not_granted": {
       "title": "{server} 未授予 {area}",
-      "body": "{server} 尚未向此设备开放 {area}。请在 {server} 上运行：zend peer grant {device} {area}"
+      "body": "{server} 尚未向此设备开放 {area}。请在 {server} 上运行：{command}"
     },
     "unreadable": {
       "title": "无法读取这些文件",

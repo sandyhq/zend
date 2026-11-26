@@ -899,8 +899,9 @@ local function composer(chat: string, view: any, name: string, focus: State<numb
 		todos = asks.todos,
 		tasks = asks.tasks,
 		on_stop_task = function(task: string)
-			store.stop_task(chat, task):after(function() end, function()
-				notice:set({ tone = "danger", text = locale.s("chat.composer.couldnt_stop_task"), dismissable = true })
+			store.stop_task(chat, task):after(function() end, function(err: any)
+				local denied = require("@app/screens/files/paths").not_granted_words(err)
+				notice:set({ tone = "danger", text = if denied then denied.body else locale.s("chat.composer.couldnt_stop_task"), dismissable = true })
 			end)
 		end,
 		tray = tray,

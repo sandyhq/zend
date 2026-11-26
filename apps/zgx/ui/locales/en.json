@@ -3440,7 +3440,7 @@
     },
     "not_granted": {
       "title": "{server} doesn't grant {area}",
-      "body": "{server} hasn't opened {area} to this device. On {server}, run: zend peer grant {device} {area}"
+      "body": "{server} hasn't opened {area} to this device. On {server}, run: {command}"
     },
     "unreadable": {
       "title": "These files couldn't be read",
