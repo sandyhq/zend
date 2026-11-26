@@ -184,7 +184,13 @@ impl Updates {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|d| !crate::sessions::is_cloud(d) && d["id"].as_str().is_some())
+                // (A paired server's updates are done on that server: its
+                // engine never takes UpdateStatus from this one.)
+                .filter(|d| {
+                    !crate::sessions::is_cloud(d)
+                        && !crate::sessions::is_paired_server(d)
+                        && d["id"].as_str().is_some()
+                })
                 .collect();
             let before = devices.len();
             devices.retain(|id, _| wanted.iter().any(|d| d["id"].as_str() == Some(id)));
