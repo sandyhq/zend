@@ -747,6 +747,20 @@ impl PeerView {
         None
     }
 
+    /// Which of this device's own ids the call names (`chatId`, `spaceId`,
+    /// `deviceId`), as words for a refusal: such a call is never a server's.
+    fn names_own(&self, params: &Value) -> Option<String> {
+        let locals = self.locals.borrow();
+        let text = |key: &str| params.get(key).and_then(Value::as_str).filter(|v| !v.is_empty());
+        if let Some(chat) = text("chatId").filter(|c| locals.chat(c)) {
+            return Some(format!("chat {chat}"));
+        }
+        if let Some(space) = text("spaceId").filter(|s| locals.spaces.contains(*s)) {
+            return Some(format!("project {space}"));
+        }
+        text("deviceId").filter(|d| locals.device(d)).map(|d| format!("device {d}"))
+    }
+
     /// This device's own call, answered here or by a paired server; `None`:
     /// the engine's (nothing of a paired server's in it).
     pub(crate) async fn route(&self, inner: &Arc<dyn RpcService>, method: &str, params: &Value) -> Option<Result<RpcReply, RpcError>> {
@@ -754,6 +768,17 @@ impl PeerView {
             return Some(self.merged(inner, method, params, list).await);
         }
         let target = self.target(method, params);
+        // Aimed at a server (`targetDeviceId`) while naming this device's
+        // own chat, project or device: never sent, whichever it means.
+        if let Some(key) = &target
+            && let Some(own) = self.names_own(params)
+        {
+            tracing::warn!(method, server = %key.get(..12).unwrap_or(key), "peer view: refused a call aimed at a paired server that names this device's own {own}");
+            return Some(Err(RpcError::Failed(format!(
+                "{REFUSED_PREFIX} {}: {method} names this device's own {own}, so it isn't sent to a paired server: send it without targetDeviceId",
+                self.name(key)
+            ))));
+        }
         if let Some(key) = &target
             && !(if key.starts_with(WORKER_PREFIX) { forwarded_to_worker(method, params) } else { forwarded(method, params) })
         {
@@ -815,12 +840,9 @@ impl PeerView {
                 }
                 self.made.lock().unwrap().insert(chat.clone(), (key.to_string(), params["config"].clone()));
             }
-            // A chat made from here, sent the config it was made with (the
-            // window sets it again as it sends the first message): nothing
-            // to change there. Another is the server's to refuse.
-            Some("setChatConfig") if self.made_with(key, &chat).is_some_and(|config| config == params["config"]) => {
-                return Ok(RpcReply::Value(json!({})));
-            }
+            // Every config is sent, the same one too (the window sets it
+            // again as it sends the first message, and a revert is one):
+            // the server's gate takes it of a chat it may run, or refuses.
             _ => {}
         }
         // A worker's device is its server's name for it, not its own; a
@@ -841,6 +863,7 @@ impl PeerView {
             RpcError::Transport(_) | RpcError::Closed => RpcError::Failed(format!("{name} is unreachable: {e}")),
             other => RpcError::Failed(format!("{REFUSED_PREFIX} {name}: {other}")),
         };
+        let config = (op.as_deref() == Some("setChatConfig")).then(|| params["config"].clone());
         let reply = if crate::rpc::is_stream_method(method) {
             client.subscribe_checked(method, params).await.map(|sub| RpcReply::Stream(items(sub)))
         } else {
@@ -848,6 +871,14 @@ impl PeerView {
         };
         if reply.is_err() && op.as_deref() == Some("createChat") {
             self.made.lock().unwrap().remove(&chat);
+        }
+        // What it runs with now (a worker's turn picks its login by it).
+        if reply.is_ok()
+            && let Some(config) = config
+            && let Some((k, kept)) = self.made.lock().unwrap().get_mut(&chat)
+            && k == key
+        {
+            *kept = config;
         }
         let mut reply = reply.map_err(said)?;
         // A worker's chat is on the device this side shows it as.

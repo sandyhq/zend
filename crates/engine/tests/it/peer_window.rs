@@ -701,6 +701,62 @@ async fn a_servers_chat_is_changed_there() {
     assert!(t.server.workspace.chat("srv-chat").unwrap().is_none());
 }
 
+/// A chat made there from here, its config changed and then changed back
+/// to the one it was made with: the server ends on that one (each is sent).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_config_set_back_to_the_one_made_with_reaches_the_server() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("project p", |rows| has(rows, "id", "p")).await;
+    let config = |sandbox: &str| json!({ "harness": "mock", "model": null, "reasoning": null, "modelOptions": {}, "sandbox": sandbox });
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "made-a", "spaceId": "p", "deviceId": "device-server", "config": config("workspace-write") }))
+        .await
+        .expect("made there");
+    let sandbox = || t.server.workspace.chat("made-a").unwrap().unwrap().config.map(|c| c.sandbox);
+    for (sent, now) in [("read-only", SandboxLevel::ReadOnly), ("workspace-write", SandboxLevel::WorkspaceWrite)] {
+        t.window
+            .call(methods::MUTATE, json!({ "op": "setChatConfig", "chatId": "made-a", "config": config(sent) }))
+            .await
+            .unwrap_or_else(|e| panic!("{sent}: {e}"));
+        assert_eq!(sandbox(), Some(now), "after {sent}");
+    }
+}
+
+/// A call aimed at a server (`targetDeviceId`) that names this device's
+/// own chat, project or device is refused here, in words saying so, and
+/// the server hears nothing of it; this device's chat stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_aimed_at_a_server_naming_this_devices_own_ids_stays_here() {
+    let t = pair_with(&["sessions.read", "sessions.run.unconfined:p"], honest(), |_, laptop| {
+        // (Kept: the project's folder outlives the test's few seconds.)
+        let home = std::fs::canonicalize(std::env::var_os("HOME").expect("HOME")).unwrap();
+        let dir = tempfile::Builder::new().prefix("zend-peer-window-lap-").tempdir_in(home).unwrap().keep();
+        laptop.workspace.create_space("lap-p", &laptop.device_id, &dir.to_string_lossy(), None, false).unwrap();
+    })
+    .await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("both projects", |rows| has(rows, "id", "lap-p") && has(rows, "id", "p")).await;
+    let before = t.heard.lock().unwrap().len();
+    let calls = [
+        (methods::MUTATE, json!({ "op": "deleteChat", "chatId": "own-chat", "targetDeviceId": "device-server" }), "chat own-chat"),
+        (methods::MUTATE, json!({ "op": "setChatArchived", "chatId": "own-chat", "archived": true, "targetDeviceId": "device-server" }), "chat own-chat"),
+        (methods::QUEUE_COMMAND, { let mut r = run("own-chat"); r["targetDeviceId"] = json!("device-server"); r }, "chat own-chat"),
+        (methods::MUTATE, json!({ "op": "createChat", "chatId": "new-1", "spaceId": "lap-p", "targetDeviceId": "device-server" }), "project lap-p"),
+        (methods::MUTATE, json!({ "op": "createChat", "chatId": "new-2", "deviceId": "device-laptop", "targetDeviceId": "device-server" }), "device device-laptop"),
+    ];
+    for (method, params, own) in calls {
+        let said = t.window.call(method, params.clone()).await.expect_err(method).to_string();
+        assert!(said.starts_with(zend_engine::peer_view::REFUSED_PREFIX) && said.contains(&format!("names this device's own {own}")), "{params}: {said}");
+    }
+    let heard: Vec<(String, Value)> = t.heard.lock().unwrap()[before..].to_vec();
+    assert!(heard.iter().all(|(m, _)| m != methods::MUTATE && m != methods::QUEUE_COMMAND), "the server heard: {heard:?}");
+    let own = t.laptop.workspace.chat("own-chat").unwrap().expect("this device's chat stays");
+    assert!(!own.archived);
+}
+
 /// This device's archived chat is still its own: a server claiming its id
 /// gets none of its calls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
