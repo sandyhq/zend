@@ -146,6 +146,9 @@ impl EngineRpc {
             methods::LIST_HARNESSES | methods::LIST_MODELS => Ok(PeerGate::Pass(params)),
             methods::WATCH_CHATS => Ok(PeerGate::Reply(RpcReply::Stream(self.peer_watch_chats()))),
             methods::WATCH_SESSIONS => Ok(PeerGate::Reply(RpcReply::Stream(self.peer_watch_sessions()))),
+            // Under `projects.manage` (the scope checked above): this
+            // device's own projects, live (the other devices' stay out).
+            methods::WATCH_SPACES => Ok(PeerGate::Reply(RpcReply::Stream(self.peer_watch_spaces()))),
             methods::WATCH_DOC_MESSAGES => {
                 let chat_id = params.get("chatId").and_then(Value::as_str).unwrap_or_default();
                 self.peer_reaches(&peer, &grants, chat_id, true)?;
@@ -614,6 +617,13 @@ impl EngineRpc {
                 seen_chats(chats, &own, &spaces)
             })
             .boxed()
+    }
+
+    /// This device's own projects (`projects.manage`): its name, folder and git
+    /// state as they change; no other device's.
+    fn peer_watch_spaces(&self) -> futures::stream::BoxStream<'static, Value> {
+        let own = self.doc_host.device_id().to_string();
+        super::watch_stream(self.workspace.watch_spaces()).map(move |spaces| only_own(spaces, &own)).boxed()
     }
 
     /// This device's own sessions.

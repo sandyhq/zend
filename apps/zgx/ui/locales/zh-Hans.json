@@ -2746,8 +2746,8 @@
       "on_device": "在 {device} 上",
       "from_github": "来自 GitHub",
       "add_cloud_project": "添加项目",
-      "not_granted": "{server} doesn't grant {area}",
-      "not_granted_hint": "On {server}, run: zend peer grant {device} {area}"
+      "not_granted": "{server} 未授予 {area}",
+      "not_granted_hint": "请在 {server} 上运行：{command}"
     },
     "updates": {
       "available": "有可用更新",

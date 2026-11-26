@@ -1053,3 +1053,132 @@ async fn a_server_not_reached_shows_offline_then_goes() {
     drop((window, laptop_link, server, laptop));
 }
 
+
+// ---- projects.manage: the server's project list, followed live (plan step 6c, review) ----
+
+/// A project made on a server (createSpace naming its device) shows in this
+/// window's WatchSpaces, with its folder: the server's list is followed, not
+/// read once from EngineInfo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_made_on_a_server_shows_in_the_window() {
+    let t = pair(&["sessions.read", "projects.manage"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("server connected", |rows| has(rows, "id", "srv-chat")).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("old project p", |rows| has(rows, "id", "p")).await;
+    let dir = t.root.join("server-data-projects/made");
+    std::fs::create_dir_all(&dir).unwrap();
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "made", "deviceId": "device-server", "path": dir.to_string_lossy(), "gitDetected": false }))
+        .await
+        .expect("the server takes createSpace");
+    assert!(t.server.workspace.space("made").unwrap().is_some());
+    assert!(t.laptop.workspace.space("made").unwrap().is_none(), "made on the server, not here");
+    let rows = spaces.until("the new server project", |rows| has(rows, "id", "made")).await;
+    let made = rows.iter().find(|r| r["id"] == "made").unwrap();
+    assert_eq!(made["deviceId"], "device-server");
+    assert_eq!(made["path"], dir.to_string_lossy().as_ref(), "its folder, as the server says it: {made}");
+}
+
+/// A server project renamed from this window shows its new name here, and
+/// gone once removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_project_renamed_or_removed_shows_so_in_the_window() {
+    let t = pair(&["sessions.read", "projects.manage"]).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("old project q", |rows| has(rows, "id", "q")).await;
+    t.window.call(methods::MUTATE, json!({ "op": "renameSpace", "spaceId": "q", "name": "Renamed" })).await.expect("the server takes renameSpace");
+    assert_eq!(t.server.workspace.space("q").unwrap().unwrap().name.as_deref(), Some("Renamed"));
+    spaces.until("the new name", |rows| rows.iter().any(|r| r["id"] == "q" && r["name"] == "Renamed")).await;
+    t.window.call(methods::MUTATE, json!({ "op": "deleteSpace", "spaceId": "q" })).await.expect("the server takes deleteSpace");
+    spaces.until("q gone", |rows| !has(rows, "id", "q")).await;
+    assert!(has(&spaces.rows, "id", "p"), "{:?}", spaces.rows);
+}
+
+/// A server project its chats are in shows what the server says of it (its
+/// folder, git state), not an empty folder and no git.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_projects_folder_and_git_state_show_in_the_window() {
+    let t = pair_with(&["sessions.read", "projects.manage"], honest(), |server, _| {
+        let p = server.workspace.space("p").unwrap().unwrap();
+        let dir = std::path::Path::new(&p.path).parent().unwrap().join("with-git");
+        std::fs::create_dir_all(&dir).unwrap();
+        server.workspace.create_space("git-p", &server.device_id, &dir.to_string_lossy(), None, true).unwrap();
+        server.workspace.create_chat("git-chat", Some("git-p"), Some(&server.device_id), None, None).unwrap();
+    })
+    .await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    let rows = spaces.until("the git project", |rows| rows.iter().any(|r| r["id"] == "git-p" && r["gitDetected"] == true)).await;
+    let row = rows.iter().find(|r| r["id"] == "git-p").unwrap();
+    assert!(row["path"].as_str().is_some_and(|p| p.ends_with("with-git")), "its folder: {row}");
+}
+
+/// Without projects.manage the rows are today's: the projects its chats and
+/// grants name, no folder, no git state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_projects_manage_a_servers_projects_show_no_folder() {
+    let t = pair(&["sessions.read"]).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    let rows = spaces.until("p, from its chat", |rows| has(rows, "id", "p")).await;
+    assert_eq!(rows.iter().find(|r| r["id"] == "p").unwrap()["path"], "");
+    assert!(!has(&rows, "id", "q"), "only what its chats name: {rows:?}");
+}
+
+/// Under projects.manage a server lists its own projects only: another
+/// device's project in its registry stays out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_list_has_its_own_projects_only() {
+    let t = pair_with(&["sessions.read", "projects.manage"], honest(), |server, _| {
+        let dir = std::path::Path::new(&server.workspace.space("p").unwrap().unwrap().path).parent().unwrap().join("far");
+        std::fs::create_dir_all(&dir).unwrap();
+        server.workspace.create_space("far", "device-far", &dir.to_string_lossy(), None, false).unwrap();
+    })
+    .await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("its own q", |rows| has(rows, "id", "q")).await;
+    let rows = settle(&mut spaces, 2).await;
+    assert!(!has(&rows, "id", "far"), "another device's project through a server: {rows:?}");
+}
+
+/// A project made for this device or one that isn't a paired server's
+/// stays in this registry, whatever a server lists under that id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_for_this_device_or_a_non_server_stays_here_whatever_a_server_lists() {
+    for device in ["device-laptop", "unpaired-device"] {
+        let t = pair(&["sessions.read", "projects.manage"]).await;
+        let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+        spaces.until("server project p", |rows| has(rows, "id", "p")).await;
+        let before = t.server.workspace.space("p").unwrap().unwrap().path;
+        let dir = t.root.join("laptop-projects/collision");
+        std::fs::create_dir_all(&dir).unwrap();
+        t.window
+            .call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "p", "deviceId": device, "path": dir.to_string_lossy(), "gitDetected": false }))
+            .await
+            .expect("made here");
+        let made = t.laptop.workspace.space("p").unwrap().expect("stays in this registry");
+        assert_eq!(made.device_id, device);
+        assert_eq!(t.server.workspace.space("p").unwrap().unwrap().path, before);
+        assert!(t.server_heard_of("p").is_empty(), "sent to the server: {:?}", t.server_heard_of("p"));
+    }
+}
+
+/// A project made on a server under an id this device's registry has is
+/// refused before it is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_project_under_a_local_id_is_refused_before_it_is_sent() {
+    let t = pair(&["sessions.read", "projects.manage"]).await;
+    let mut spaces = Watched::open(&t.window, methods::WATCH_SPACES, json!({}), "id").await;
+    spaces.until("server project p", |rows| has(rows, "id", "p")).await;
+    let dir = t.root.join("laptop-projects/collision");
+    std::fs::create_dir_all(&dir).unwrap();
+    t.laptop.workspace.create_space("local-collision", &t.laptop.device_id, &dir.to_string_lossy(), None, false).unwrap();
+    spaces.until("the local project", |rows| has(rows, "id", "local-collision")).await;
+    let server_dir = t.root.join("server-data-projects/collision");
+    std::fs::create_dir_all(&server_dir).unwrap();
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "local-collision", "deviceId": "device-server", "path": server_dir.to_string_lossy(), "gitDetected": false }))
+        .await
+        .expect_err("refused");
+    assert!(t.server.workspace.space("local-collision").unwrap().is_none());
+    assert!(t.server_heard_of("local-collision").is_empty());
+}

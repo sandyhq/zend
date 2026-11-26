@@ -2747,7 +2747,7 @@
       "from_github": "From GitHub",
       "add_cloud_project": "Add project",
       "not_granted": "{server} doesn't grant {area}",
-      "not_granted_hint": "On {server}, run: zend peer grant {device} {area}"
+      "not_granted_hint": "On {server}, run: {command}"
     },
     "updates": {
       "available": "Update available",

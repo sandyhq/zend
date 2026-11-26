@@ -28,7 +28,7 @@
 --                                       ("projects.manage"); true for any other
 --                                       device
 --   projects.not_granted(device, area)  nil when granted; else { server, area,
---                                       device (this one's name) }, the words of
+--                                       device (this one's name), command }, the words of
 --                                       "doesn't grant" and the command to run
 --                                       on the server
 --   projects.refused_area(err)          the area an engine refusal says a server
@@ -70,7 +70,7 @@ end
 function M.grants(device: string, area: string): boolean
 	return M.grants_of(record(device), area)
 end
-function M.not_granted_of(d: any, area: string): { server: string, area: string, device: string }?
+function M.not_granted_of(d: any, area: string): { server: string, area: string, device: string, command: string }?
 	if M.grants_of(d, area) then
 		return nil
 	end
@@ -81,9 +81,10 @@ function M.not_granted_of(d: any, area: string): { server: string, area: string,
 			mine = x.name
 		end
 	end
-	return { server = d.name, area = area, device = if mine ~= "" then mine else "<this device>" }
+	local name = if mine ~= "" then mine else "<this device>"
+	return { server = d.name, area = area, device = name, command = `zend peer grant {name} {area}` }
 end
-function M.not_granted(device: string, area: string): { server: string, area: string, device: string }?
+function M.not_granted(device: string, area: string): { server: string, area: string, device: string, command: string }?
 	return M.not_granted_of(record(device), area)
 end
 -- (The engine's words: "peer_refused: <server>: <server> doesn't grant <area>, so …".)

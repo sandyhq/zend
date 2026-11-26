@@ -103,7 +103,11 @@ struct Seen {
     projects: Vec<Value>,
     chats: Vec<Value>,
     sessions: Vec<Value>,
-    /// Project rows (`zend_proto::Space`): those it named, and those its chats are in.
+    /// Its own project list as it says it (`WatchSpaces`, read only when its
+    /// grants open `projects.manage`): name, folder, git, icon; the rows of
+    /// [`Kind::Spaces`]. `None`: not read (not granted, or it doesn't say).
+    listed: Option<Vec<Value>>,
+    /// Project rows (`zend_proto::Space`): those it listed, named, and those its chats are in.
     spaces: Vec<Value>,
     /// When this side first heard it (the project rows' `createdAt`).
     since: String,
@@ -126,6 +130,19 @@ impl Seen {
         let mut ids = HashSet::new();
         let named = self.projects.iter().filter_map(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str().map(str::to_string))));
         let in_chats = self.chats.iter().filter_map(|c| Some((c["spaceId"].as_str()?.to_string(), None)));
+        // What it lists of its own projects comes first, as it says them
+        // (the folder is its own, shown for browsing: `projects.manage`).
+        for row in self.listed.iter().flatten() {
+            let Some(id) = row["id"].as_str() else { continue };
+            if ids.insert(id.to_string()) {
+                let mut row = row.clone();
+                row["deviceId"] = json!(self.device_id);
+                if !row["createdAt"].is_string() {
+                    row["createdAt"] = json!(self.since);
+                }
+                spaces.push(row);
+            }
+        }
         for (id, name) in named.chain(in_chats) {
             if id.is_empty() || !ids.insert(id.clone()) {
                 continue;
@@ -570,6 +587,15 @@ impl PeerView {
         let only_in = worker_project.as_deref();
         let mut chats = client.subscribe_checked(methods::WATCH_CHATS, json!({})).await.ok();
         let mut sessions = client.subscribe_checked(methods::WATCH_SESSIONS, json!({})).await.ok();
+        // Its project list, followed live, when its grants open it
+        // (`projects.manage`): its new, renamed and removed projects show
+        // here as they happen, with their folder and git state. Without
+        // the grant the rows are those its chats and grants name.
+        let mut spaces = if worker_project.is_none() && areas.as_ref().is_some_and(|a| a.contains(&zend_rpc::Scope::ProjectsManage)) {
+            client.subscribe_checked(methods::WATCH_SPACES, json!({})).await.ok()
+        } else {
+            None
+        };
         let mut claimed = Ok(Vec::new());
         self.seen.send_modify(|seen| {
             claimed = self.claim(seen, key, &device_id, paired_at);
@@ -589,6 +615,7 @@ impl PeerView {
                 // Unreadable now: none shown.
                 chats: if chats.is_some() { was.as_ref().map(|w| w.chats.clone()).unwrap_or_default() } else { Vec::new() },
                 sessions: if sessions.is_some() { was.as_ref().map(|w| w.sessions.clone()).unwrap_or_default() } else { Vec::new() },
+                listed: if spaces.is_some() { was.as_ref().and_then(|w| w.listed.clone()) } else { None },
                 configs: was.map(|w| w.configs).unwrap_or_default(),
                 spaces: Vec::new(),
             };
@@ -658,6 +685,25 @@ impl PeerView {
                     } else {
                         self.update(key, |s| s.sessions = rows)
                     };
+                    if !shown {
+                        break;
+                    }
+                }
+                rows = next(&mut spaces) => {
+                    let Some(rows) = rows else {
+                        // (Its list ended: shown as its chats and grants name them, till it is dialled again.)
+                        let _ = self.update(key, |s| {
+                            s.listed = None;
+                            s.rebuild_spaces();
+                        });
+                        spaces = None;
+                        continue;
+                    };
+                    let Some(rows) = self.admit(key, &device_id, Kind::Spaces, &rows, None) else { continue };
+                    let shown = self.update(key, |s| {
+                        s.listed = Some(rows);
+                        s.rebuild_spaces();
+                    });
                     if !shown {
                         break;
                     }
@@ -1107,6 +1153,8 @@ enum Kind {
     Sessions,
     /// The projects its grants name (`EngineInfo.peer.projects`).
     Projects,
+    /// Its own project list (`WatchSpaces`, under `projects.manage`).
+    Spaces,
 }
 
 /// What an id names: a chat, a project, a device.
@@ -1313,7 +1361,7 @@ fn clean(what: Kind, rows: &[Value], device: &str, taken: &Taken, only_in: Optio
         let Some(id) = obj.get(key).and_then(Value::as_str).filter(|id| !id.is_empty()) else { continue };
         let theirs = match what {
             Kind::Chats | Kind::Sessions => &taken.chats,
-            Kind::Projects => &taken.spaces,
+            Kind::Projects | Kind::Spaces => &taken.spaces,
         };
         if theirs.contains(id) {
             dropped.push(format!("{what:?} {id}: this device's or another server's"));
@@ -1327,6 +1375,36 @@ fn clean(what: Kind, rows: &[Value], device: &str, taken: &Taken, only_in: Optio
             Kind::Projects => {
                 let name = obj.get("name").and_then(Value::as_str).map(|n| n.chars().take(200).collect::<String>());
                 kept.push(json!({ "id": id, "name": name }));
+                continue;
+            }
+            // A project of its own, as the window shows it: only these
+            // fields, each of its kind, on this server's device.
+            Kind::Spaces => {
+                let text = |key: &str, most: usize| obj.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(|s| s.chars().take(most).collect::<String>());
+                let mut row = json!({
+                    "id": id,
+                    "deviceId": device,
+                    "name": text("name", 200),
+                    "path": text("path", 4096).unwrap_or_default(),
+                    "gitDetected": obj.get("gitDetected").and_then(Value::as_bool).unwrap_or(false),
+                });
+                if let Some(at) = text("createdAt", 64) {
+                    row["createdAt"] = json!(at);
+                }
+                if let Some(repo) = text("githubRepo", 200) {
+                    row["githubRepo"] = json!(repo);
+                }
+                if let Some(icon) = obj.get("icon").and_then(Value::as_object) {
+                    let part = |key: &str, most: usize| icon.get(key).and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= most).map(str::to_string);
+                    let icon = json!({ "emoji": part("emoji", 64), "image": part("image", 1024), "hue": part("hue", 24) });
+                    row["icon"] = icon;
+                }
+                if row["name"].is_null()
+                    && let Some(r) = row.as_object_mut()
+                {
+                    r.remove("name");
+                }
+                kept.push(row);
                 continue;
             }
             Kind::Chats => {
