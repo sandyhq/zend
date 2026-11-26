@@ -87,6 +87,8 @@ type Outcome = &'static str;
 /// The area of the paired-server grants these calls are under: agent
 /// accounts and sign-in, harness install and on/off, the ACP registry.
 pub(crate) const AREA: &str = "logins";
+/// The area of the harnesses' updates (watch, take, policy).
+pub(crate) const UPDATES_AREA: &str = "updates";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Look {
@@ -309,7 +311,12 @@ pub fn install(host: &ScriptHost) {
     let a = agents.clone();
     host.async_action("agents.update", move |id| {
         let params = a.addressed(json!({ "harness": text(&id) }));
+        let refused = a.updates_refused();
         async move {
+            // (A server that doesn't grant updates is asked nothing.)
+            if refused {
+                return Err("refused".to_string());
+            }
             engine::get()
                 .call("ApplyHarnessUpdate", params)
                 .await
@@ -322,7 +329,11 @@ pub fn install(host: &ScriptHost) {
         let id = args.field("id").map(text).unwrap_or_default();
         let policy = args.field("policy").map(text).unwrap_or_default();
         let params = a.addressed(json!({ "harness": id, "policy": policy }));
+        let refused = a.updates_refused();
         async move {
+            if refused {
+                return Err("refused".to_string());
+            }
             if !matches!(policy.as_str(), "notify" | "auto-when-idle" | "off") {
                 return Err("invalid".to_string());
             }
@@ -698,6 +709,13 @@ impl Agents {
         self.target.borrow().as_deref().is_some_and(|t| crate::sessions::server_refuses(t, AREA))
     }
 
+    /// Whether the device shown is a paired server that doesn't grant
+    /// `updates`: the harnesses' updates (watch, update, policy) are that
+    /// area's, whatever `logins` it grants.
+    fn updates_refused(&self) -> bool {
+        self.target.borrow().as_deref().is_some_and(|t| crate::sessions::server_refuses(t, UPDATES_AREA))
+    }
+
     /// `params`, addressed to the device shown.
     fn addressed(&self, params: Json) -> Json {
         addressed_to(self.target.borrow().as_deref(), params)
@@ -715,7 +733,7 @@ impl Agents {
 
     /// The updates watch, on `rpc`, for the device shown.
     fn watch_updates(self: &Rc<Self>, rpc: &crate::engine::rpc::Rpc) {
-        if self.refused() {
+        if self.updates_refused() {
             return;
         }
         let heard = Rc::downgrade(self);
@@ -1791,6 +1809,27 @@ mod tests {
         assert_eq!(refused(&agents), Some(false));
         agents.retarget(None);
         assert_eq!(agents.addressed(json!({})), json!({}), "this device's engine");
+    }
+
+    /// The harnesses' updates are `updates`', not `logins`': a server that
+    /// grants only logins isn't watched for them, one that grants only
+    /// updates is (and its agents page says why it has none).
+    #[test]
+    fn harness_updates_follow_the_updates_grant_not_logins() {
+        crate::sessions::set_devices_for_tests(json!([
+            { "id": "here", "name": "Mac" },
+            { "id": "logins", "capabilities": ["paired-server"], "peerAreas": ["logins"] },
+            { "id": "updates", "capabilities": ["paired-server"], "peerAreas": ["updates"] },
+            { "id": "full", "capabilities": ["paired-server"], "peerAreas": ["full"] },
+        ]));
+        let agents = Rc::new(Agents::new());
+        assert!(!agents.updates_refused(), "this device");
+        agents.retarget(Some("logins".into()));
+        assert!(!agents.refused() && agents.updates_refused(), "logins only: agents yes, updates no");
+        agents.retarget(Some("updates".into()));
+        assert!(agents.refused() && !agents.updates_refused(), "updates only: agents no, updates yes");
+        agents.retarget(Some("full".into()));
+        assert!(!agents.refused() && !agents.updates_refused());
     }
 
     #[test]

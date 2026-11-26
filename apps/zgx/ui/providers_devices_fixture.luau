@@ -24,6 +24,7 @@ sessions.now:set({
 		{ id = "mac", name = "MacBook Pro", platform = "macos", here = true, online = true },
 		{ id = "ai", name = "AI", platform = "linux", here = false, online = true, paired = true, peer_areas = { "sessions.read" } },
 		{ id = "granting", name = "Granting", platform = "linux", here = false, online = true, paired = true, peer_areas = { "logins" } },
+		{ id = "full", name = "Everything", platform = "linux", here = false, online = true, paired = true, peer_areas = { "logins", "settings", "updates" } },
 	},
 	projects = {},
 	chats = {},
@@ -51,7 +52,7 @@ local function publish(device: string?)
 	if device == "ai" then
 		-- (Nothing asked of a server that doesn't grant logins.)
 		agents.now:set({ state = "unavailable", list = {}, target = device, refused = true } :: any)
-	elseif device == "granting" then
+	elseif device == "granting" or device == "full" then
 		agents.now:set({ state = "ready", list = { agent("codex", "Server Codex", "openai") }, target = device } :: any)
 	else
 		agents.now:set({ state = "ready", list = { agent("claude-code", "Local Claude", "claude") } } :: any)
@@ -72,6 +73,37 @@ stub.target = function(device: string?)
 	note(`target:{device or ""}`)
 	publish(device)
 end
+
+-- The server's grants, taken back and given again while the page is open.
+local function grants(logins: { string }): any
+	local list: { any } = {}
+	for _, d in sessions.now:peek().devices do
+		local copy = table.clone(d)
+		if copy.id == "granting" then
+			copy.peer_areas = logins
+		end
+		table.insert(list, copy)
+	end
+	return list
+end
+ui.command {
+	id = "revoke",
+	title = "Granting takes its logins back",
+	run = function()
+		local now = table.clone(sessions.now:peek())
+		now.devices = grants({ "sessions.read" })
+		sessions.now:set(now)
+	end,
+}
+ui.command {
+	id = "regrant",
+	title = "Granting grants logins again",
+	run = function()
+		local now = table.clone(sessions.now:peek())
+		now.devices = grants({ "logins" })
+		sessions.now:set(now)
+	end,
+}
 
 return ui.scroll {
 	w_full = true,

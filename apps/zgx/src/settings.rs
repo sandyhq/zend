@@ -99,6 +99,25 @@ const ENGINE_METHODS: &[&str] = &[
     "SetViewportFocus",
 ];
 
+/// What a native-subagents call is for the device Providers shows
+/// (`target`; none: this Mac): addressed to it (`targetDeviceId`), or
+/// `Err("refused")` for a paired server that doesn't grant `settings`
+/// (the scope of these calls; nothing is sent, the page says why). Other
+/// methods are this Mac's own settings and go as they are.
+fn for_device_shown(method: &str, mut params: Json, target: Option<&str>) -> Result<Json, Outcome> {
+    if !matches!(method, "GetNativeSubagents" | "SetNativeSubagents") {
+        return Ok(params);
+    }
+    let Some(target) = target else { return Ok(params) };
+    if crate::sessions::server_refuses(target, "settings") {
+        return Err("refused");
+    }
+    if let Some(object) = params.as_object_mut() {
+        object.insert("targetDeviceId".into(), json!(target));
+    }
+    Ok(params)
+}
+
 pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
     host.async_action("account.me", |_| async { crate::plugins::preview::refuse("account.me")?; me("GET", None).await });
     host.async_action("account.rename", |name| {
@@ -324,6 +343,7 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
                 return Err("refused".into());
             }
             let params = if params.is_object() { params } else { json!({}) };
+            let params = for_device_shown(&method, params, crate::agents::shown_target().as_deref())?;
             engine::get()
                 .call(&method, params)
                 .await
@@ -840,6 +860,29 @@ fn snake(item: &Json) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Native subagents follow the device Providers shows: addressed to it,
+    /// and for a paired server without `settings` not sent at all. Title
+    /// settings and the rest stay this Mac's.
+    #[test]
+    fn native_subagents_go_to_the_device_shown_and_nothing_to_one_that_doesnt_grant() {
+        crate::sessions::set_devices_for_tests(json!([
+            { "id": "here", "name": "Mac" },
+            { "id": "closed", "capabilities": ["paired-server"], "peerAreas": ["logins"] },
+            { "id": "open", "capabilities": ["paired-server"], "peerAreas": ["logins", "settings"] },
+        ]));
+        let ask = json!({ "harness": "codex", "enabled": true });
+        assert_eq!(for_device_shown("SetNativeSubagents", ask.clone(), None), Ok(ask.clone()));
+        assert_eq!(
+            for_device_shown("SetNativeSubagents", ask.clone(), Some("open")),
+            Ok(json!({ "harness": "codex", "enabled": true, "targetDeviceId": "open" }))
+        );
+        assert_eq!(for_device_shown("GetNativeSubagents", json!({}), Some("open")), Ok(json!({ "targetDeviceId": "open" })));
+        assert_eq!(for_device_shown("SetNativeSubagents", ask.clone(), Some("closed")), Err("refused"));
+        assert_eq!(for_device_shown("GetNativeSubagents", json!({}), Some("closed")), Err("refused"));
+        // (Not native subagents: this Mac's own, whatever device is shown.)
+        assert_eq!(for_device_shown("SetTitleSettings", ask.clone(), Some("closed")), Ok(ask));
+    }
 
     // Registering is everything short of sounding: the System Sound server
     // opens and accepts every sound zgx plays, from the file it's played

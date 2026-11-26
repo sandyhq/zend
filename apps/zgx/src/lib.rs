@@ -84,6 +84,7 @@ mod terminal;
 mod tool_details;
 mod tool_open;
 mod peer_looks;
+mod peer_updates;
 mod themes;
 mod transparency;
 mod visuals;
@@ -936,6 +937,8 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         themes::install(cx, &host);
         // Another device's themes and templates (src/peer_looks.rs).
         peer_looks::install(&host);
+        // Another device's update status and update (src/peer_updates.rs).
+        peer_updates::install(&host);
     }
     host
 }

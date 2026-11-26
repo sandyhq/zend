@@ -150,7 +150,7 @@ end
 
 local function kind(): string
 	-- A paired server that doesn't grant logins: nothing is asked of it.
-	if (now() :: any).refused == true then
+	if (now() :: any).refused == true or peer_area.refused(shown_device(), "logins") then
 		return "refused"
 	end
 	local s = now().state
@@ -165,7 +165,22 @@ local open_settings = ui.state("settings_agent_open", "")
 -- The engine's native subagent settings: those it can switch, and those off.
 local subagents = ui.state("settings_subagents", nil :: { switchable: { string }, off: { string } }?)
 
+-- Whether the device shown is a paired server that doesn't grant `settings`
+-- (native subagents' area) or `updates` (the update policy's): live, so a
+-- grant taken back while the page is open says so at once.
+local function settings_refused(): boolean
+	return peer_area.refused(shown_device(), "settings")
+end
+local function updates_refused(): boolean
+	return peer_area.refused(shown_device(), "updates")
+end
+
 local function load_subagents()
+	-- (Nothing is asked of a server that doesn't grant it.)
+	if settings_refused() then
+		subagents:set(nil)
+		return
+	end
 	host.call("settings.engine", { method = "GetNativeSubagents", params = {} }):after(function(v: any)
 		subagents:set({ switchable = v.switchable or {}, off = v.off or {} })
 	end, function() end)
@@ -624,6 +639,7 @@ local function settings_dialog(): Node
 		cancel = false,
 		confirm = { label = ui.t("settings.providers.done") :: any },
 		ds.Settings.Group {
+			ui.show(settings_refused, peer_area.Notice(shown_device, "settings")),
 			ui.div {
 				w_full = true,
 				opacity = function()
@@ -666,7 +682,10 @@ local function settings_dialog(): Node
 				control = ds.Switch { value = separate, label = ui.t("settings.providers.skills_separate.label"), on_change = completion("separate") },
 			},
 			ui.show(function()
-				return not own()
+				return not own() and updates_refused()
+			end, peer_area.Notice(shown_device, "updates")),
+			ui.show(function()
+				return not own() and not updates_refused()
 			end, ds.Settings.Row {
 				label = ui.t("settings.providers.updates"),
 				description = function()

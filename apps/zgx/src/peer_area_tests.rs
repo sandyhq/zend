@@ -25,6 +25,21 @@ fn a_server_without_the_logins_grant_is_said_on_providers() {
     run("providers: a server that doesn't grant logins", 1);
 }
 
+/// A grant taken back while Providers is open says so; native subagents and the
+/// update policy follow `settings` and `updates`.
+#[test]
+fn providers_follow_the_grants_live_and_per_area() {
+    run("providers: a grant taken back", 1);
+    run("providers: an agent's settings on a server", 1);
+}
+
+/// About & updates on a paired server: its update, asked of it where it grants
+/// `updates`; the notice where it doesn't.
+#[test]
+fn about_updates_follow_the_device_chosen() {
+    run("about:", 2);
+}
+
 #[test]
 fn update_all_names_a_server_that_doesnt_grant_updates() {
     run("Update all names a paired server", 1);
