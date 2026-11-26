@@ -8084,6 +8084,8 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hmac",
+ "libc",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
