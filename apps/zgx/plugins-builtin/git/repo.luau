@@ -191,6 +191,23 @@ return function(zend: any)
 		m.where = where
 
 		function m.call(method: string, args: { [string]: any }?, timeout: number?): any
+			-- A paired server's chat has no panel here yet (the plugin's
+			-- service would be reached over the old device link, in a folder
+			-- the server's chat doesn't have): nothing is asked, and it fails
+			-- as a refusal does ("paired_server").
+			local s = zend.sessions()[id]
+			if s and s.paired then
+				return {
+					after = function(self: any, _ok: any, fail: any): any
+						if fail then
+							ui.after(0, function()
+								fail("paired_server: The Git panel isn't available on a paired server yet")
+							end)
+						end
+						return self
+					end,
+				}
+			end
 			local device, cwd = where()
 			local a = if args then table.clone(args) else {}
 			a.cwd = cwd
@@ -332,6 +349,11 @@ return function(zend: any)
 			end
 			m.listening = true
 			local device = where()
+			-- (A paired server's chat: nothing is asked of it, as in `call`.)
+			local s = zend.sessions()[id]
+			if s and s.paired then
+				return
+			end
 			zend.service(device):on("changed", function(data: any)
 				local _, cwd = where()
 				if cwd and type(data) == "table" and type(data.cwds) == "table" and table.find(data.cwds, cwd) then

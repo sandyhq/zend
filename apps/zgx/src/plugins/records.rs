@@ -75,11 +75,22 @@ pub fn session_records(permissions: &[String], list: &Value) -> (Value, Value) {
         .iter()
         .filter_map(|p| Some((text(p.field("id"))?, text(p.field("path"))?)))
         .collect();
+    // The devices that are a paired server (the window's device rows): a
+    // session on one is said to be (`paired`), for a plugin that has no way
+    // there yet (Git's panel, plan step 6f).
+    let servers: Vec<Rc<str>> = items("devices")
+        .iter()
+        .filter(|d| matches!(d.field("paired"), Some(Value::Bool(true))))
+        .filter_map(|d| text(d.field("id")))
+        .collect();
     let mut sessions: Vec<(Rc<str>, Value)> = Vec::new();
     for chat in items("chats") {
         let Some(id) = text(chat.field("id")) else { continue };
         let mut fields = pick(&chat, &["title", "status", "project", "device", "updated", "created", "branch", "source_branch", "parent", "child_kind"]);
         let cwd = text(chat.field("cwd"));
+        if text(chat.field("device")).is_some_and(|d| servers.contains(&d)) {
+            fields.push((Rc::from("paired"), Value::Bool(true)));
+        }
         // Each project's folder: a session elsewhere is in a worktree of its
         // own (said as yes or no; the path is files.read's).
         if let (Some(cwd), Some(path)) = (&cwd, text(chat.field("project")).and_then(|p| folders.get(&p).cloned())) {
@@ -223,6 +234,19 @@ mod tests {
             let direct = crate::plugins::value_json(&published(&granted, &[], &live, &list));
             assert_eq!(direct, records(&granted, &s), "{grants:?}");
         }
+    }
+
+    /// A session on a paired server says so; one elsewhere says nothing.
+    #[test]
+    fn a_session_on_a_paired_server_says_so() {
+        let list = crate::plugins::json_value(&json!({
+            "chats": [{ "id": "s1", "device": "ai" }, { "id": "s2", "device": "lap" }],
+            "devices": [{ "id": "ai", "paired": true }, { "id": "lap", "paired": false }],
+        }));
+        let (sessions, _) = session_records(&p(&["sessions.read"]), &list);
+        let r = crate::plugins::value_json(&sessions);
+        assert_eq!(r["s1"]["paired"], json!(true));
+        assert!(r["s2"].get("paired").is_none(), "{r}");
     }
 
     #[test]

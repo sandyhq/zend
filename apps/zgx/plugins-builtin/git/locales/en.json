@@ -199,6 +199,10 @@
       "title": "A newer Zend is needed on {device}",
       "body": "Update Zend there to use Git with this chat."
     },
+    "paired_server": {
+      "title": "The Git panel isn't available on a paired server yet",
+      "body": "Files and the terminal work there."
+    },
     "interrupted": {
       "title": "Git stopped on {device}",
       "body": "It stopped during the call. Try again."

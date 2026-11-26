@@ -30,6 +30,7 @@ return function(zend: any)
 				no_service = true,
 				not_loaded = true,
 				old_engine = true,
+				paired_server = true,
 				interrupted = true,
 			}
 			if known[reason] then

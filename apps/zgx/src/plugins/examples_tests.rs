@@ -3026,6 +3026,30 @@ fn git_says_why_a_device_can_t_answer_and_tries_again() {
     }
 }
 
+/// The Git panel isn't there for a paired server's chat yet (plan step 6f):
+/// its tab, Changes and History, sends nothing to the plugin service (which
+/// would go over the old device link, to a folder the server's chat doesn't
+/// have) and says so, with where files and the terminal work.
+#[test]
+fn git_on_a_paired_server_s_chat_sends_nothing_and_says_so() {
+    let records = json!({ "sessions": { "s1": {
+        "title": "Fix the build", "status": "done", "device": "ai", "cwd": ".", "paired": true,
+    } }, "files_read": true });
+    for view in ["changes", "history"] {
+        let (mut app, heard, _) = git_in("git_fixture.luau", records.clone(), git_world(), None);
+        git_fixture(&mut app, "view", zgx_script::Value::from(view));
+        assert!(
+            app.wait_until(|app| app.tree().contains("The Git panel isn't available on a paired server yet")),
+            "{view}: {}",
+            app.tree()
+        );
+        assert!(app.tree().contains("Files and the terminal work there."), "{view}: {}", app.tree());
+        assert!(app.find("role:button \"Try again\"").is_none(), "{view}: trying again can't help");
+        assert_eq!(service_calls(&heard), Vec::<serde_json::Value>::new(), "{view}: nothing is sent to the service");
+        assert_eq!(app.error(), None, "{view}");
+    }
+}
+
 #[test]
 fn git_s_scopes_branch_and_last_turn() {
     let (mut app, heard, _) = git_tab(git_world(), None);

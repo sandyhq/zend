@@ -199,6 +199,10 @@
       "title": "{device} 需要更新的 Zend",
       "body": "请在那里更新 Zend，才能在这个对话中使用 Git。"
     },
+    "paired_server": {
+      "title": "已配对的服务器上暂不提供 Git 面板",
+      "body": "文件和终端可以在那里使用。"
+    },
     "interrupted": {
       "title": "Git 在 {device} 上中断了",
       "body": "调用过程中它停止了。请重试。"

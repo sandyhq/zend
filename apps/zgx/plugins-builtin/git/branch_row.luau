@@ -42,6 +42,10 @@ return function(zend: any, Repo: any)
 				return
 			end
 			asked = key
+			-- (A paired server's chat has no Git panel here yet: not asked.)
+			if record.paired then
+				return
+			end
 			local slot = slot_of(b) :: string
 			zend.service(b.device):call("branch_totals", { cwd = b.cwd }, { timeout = 60 }):after(function(t: any)
 				if asked ~= key then

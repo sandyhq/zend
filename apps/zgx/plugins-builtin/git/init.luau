@@ -128,7 +128,8 @@ do
 			local before = was[id]
 			was[id] = status
 			local started = status == "working" and before ~= "working" and (before ~= nil or new(s))
-			if started and type(s.cwd) == "string" and s.cwd ~= "" then
+			-- (Not a paired server's chat: no Git panel there yet.)
+			if started and not s.paired and type(s.cwd) == "string" and s.cwd ~= "" then
 				zend.service(s.device):call("turn_start", { cwd = s.cwd, chat = id }, { timeout = 120 }):after(nil, function(err: any)
 					-- (A device without the plugin, or a folder that isn't a
 					-- checkout: no turn to note. Said in its log alone.)
