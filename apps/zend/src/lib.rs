@@ -16,7 +16,7 @@ pub mod plugin_cli;
 
 pub use engine_commands::run_engine_command;
 pub use zend_cli::{
-    DEFAULT_EDGE_URL, DEFAULT_WORKOS_CLIENT_ID, edge_token_from_env, edge_url_from_env, init_logging,
+    DEFAULT_EDGE_URL, DEFAULT_WORKOS_CLIENT_ID, edge_token_from_env, engine_edge_url_from_env, init_logging,
     long_running_setup, open_log_file, paths, workos_client_id_from_env,
 };
 
@@ -50,7 +50,7 @@ pub fn engine_config_from_env() -> zend_engine::EngineConfig {
     }
     zend_engine::EngineConfig {
         data_dir: paths::data_dir(),
-        edge_url: edge_url_from_env(),
+        edge_url: engine_edge_url_from_env(),
         ipc_port: zend_cli::ipc_port_from_env(),
         default_harness: harness_from_env(),
         // WorkOS mode: the signed-in session's org wins; ZEND_ORG_ID (dev

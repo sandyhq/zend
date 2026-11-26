@@ -8,7 +8,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use zend_app::{edge_token_from_env, edge_url_from_env, paths, workos_client_id_from_env};
+use zend_app::{edge_token_from_env, engine_edge_url_from_env, paths, workos_client_id_from_env};
 use zend_cli::{Engines, Launch};
 
 fn main() -> anyhow::Result<()> {
@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
             zend_ui::run_app(zend_ui::UiConfig {
                 data_dir: paths::data_dir(),
                 ipc_port: zend_cli::ipc_port_from_env(),
-                edge_url: edge_url_from_env(),
+                edge_url: engine_edge_url_from_env(),
                 workos_client_id: workos_client_id_from_env(&edge_token),
                 edge_token,
                 org_id: std::env::var("ZEND_ORG_ID").ok(),

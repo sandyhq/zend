@@ -4,6 +4,11 @@
 /// `ZEND_EDGE_URL` overrides (local dev / self-hosting).
 pub const DEFAULT_EDGE_URL: &str = "https://edge.zend.invalid";
 
+/// The edge value (`ZEND_EDGE_URL`, or `edge-url` in [`config_dir`]) that
+/// says "no edge": a development install keeps its `edge-token` (the
+/// profile: org, user, data folder) and opens no edge transport.
+pub const EDGE_NONE: &str = "none";
+
 /// Production WorkOS AuthKit client id — public knowledge (it appears in every
 /// authorize URL), so baking it in is safe. Overridden by `ZEND_WORKOS_CLIENT_ID`;
 /// set it to the empty string — or set a dev bearer via `ZEND_EDGE_TOKEN` — to
@@ -88,7 +93,7 @@ pub fn edge_config_in(dir: &std::path::Path) -> Option<(String, Option<String>)>
 /// a pair kept together is never seen half old, half new.
 pub fn edge_from_env() -> (String, Option<String>) {
     let kept = config_dir().and_then(|dir| edge_config_in(&dir));
-    let url = env_url().or_else(|| kept.as_ref().map(|(url, _)| url.clone())).unwrap_or_else(|| DEFAULT_EDGE_URL.into());
+    let url = edge_url_resolved(env_url(), kept.as_ref().map(|(url, _)| url.as_str()));
     let token = env_token().or_else(|| kept.and_then(|(_, token)| token));
     (url, token)
 }
@@ -178,11 +183,32 @@ fn env_token() -> Option<String> {
 
 /// The edge: `ZEND_EDGE_URL`, else the one kept in [`config_dir`] (its
 /// `edge` record, else `edge-url`), else [`DEFAULT_EDGE_URL`] (which never
-/// resolves: offline).
+/// resolves: offline). [`EDGE_NONE`] also gives the default here: a call to
+/// the edge goes nowhere, as with no edge kept; ask [`edge_off_from_env`]
+/// to tell, and [`engine_edge_url_from_env`] for what the engine takes.
 pub fn edge_url_from_env() -> String {
-    env_url()
-        .or_else(|| config_dir().and_then(|dir| edge_config_in(&dir)).map(|(url, _)| url))
-        .unwrap_or_else(|| DEFAULT_EDGE_URL.into())
+    let url = engine_edge_url_from_env();
+    if is_none(&url) { DEFAULT_EDGE_URL.into() } else { url }
+}
+
+/// [`edge_url_from_env`] as the engine takes it: [`EDGE_NONE`] stays,
+/// for the engine to open no edge transport.
+pub fn engine_edge_url_from_env() -> String {
+    edge_url_resolved(env_url(), config_dir().and_then(|dir| edge_config_in(&dir)).as_ref().map(|(url, _)| url.as_str()))
+}
+
+/// The edge is switched off: `ZEND_EDGE_URL` or `edge-url` is [`EDGE_NONE`].
+pub fn edge_off_from_env() -> bool {
+    is_none(&engine_edge_url_from_env())
+}
+
+fn is_none(url: &str) -> bool {
+    url.trim().eq_ignore_ascii_case(EDGE_NONE)
+}
+
+/// The environment's edge, else the kept one, else the default.
+fn edge_url_resolved(env: Option<String>, kept: Option<&str>) -> String {
+    env.or_else(|| kept.map(str::to_owned)).unwrap_or_else(|| DEFAULT_EDGE_URL.into())
 }
 
 fn env_url() -> Option<String> {
@@ -278,6 +304,28 @@ mod tests {
         // A record that isn't one is nothing: not half of it, not the old files.
         std::fs::write(config.join("edge"), "zend-edge 1\nhttp://x\n").unwrap();
         assert_eq!(super::edge_config_in(config), None);
+    }
+
+    /// "No edge" in development mode: `edge-url` is `none` beside the
+    /// `edge-token`. The engine is told so, a call to the edge still has an
+    /// address that goes nowhere, and a token without an `edge-url` is not
+    /// read at all (so that form can't say it).
+    #[test]
+    fn edge_url_none_keeps_the_token_and_turns_the_edge_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path();
+        std::fs::write(config.join("edge-token"), "u-3da5@zend\n").unwrap();
+        assert_eq!(super::edge_config_in(config), None, "a token alone is no config");
+        std::fs::write(config.join("edge-url"), "none\n").unwrap();
+        assert_eq!(super::edge_config_in(config), Some(("none".into(), Some("u-3da5@zend".into()))));
+        assert_eq!(super::edge_url_resolved(None, Some("none")), "none");
+        assert!(super::is_none(" None "));
+        assert!(!super::is_none("http://100.64.0.1:27640"));
+        assert!(!super::is_none(super::DEFAULT_EDGE_URL));
+        // An edge that is set stays itself; an unset one is the default.
+        assert_eq!(super::edge_url_resolved(None, Some("http://100.64.0.1:27640")), "http://100.64.0.1:27640");
+        assert_eq!(super::edge_url_resolved(None, None), super::DEFAULT_EDGE_URL);
+        assert_eq!(super::edge_url_resolved(Some("none".into()), Some("http://x")), "none");
     }
 
     /// The desktop a phone drives is kept whole, owner-only, and read back;

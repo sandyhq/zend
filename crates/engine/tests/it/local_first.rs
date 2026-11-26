@@ -614,6 +614,42 @@ async fn explicit_dev_bearer_keeps_online_routing_enabled() {
     runtime.shutdown().await;
 }
 
+/// `edge_url = none` beside a dev bearer: the bearer's profile (org and user
+/// folder, as with the edge), and no edge transport at all.
+#[tokio::test]
+async fn edge_none_keeps_the_dev_identity_and_opens_no_edge() {
+    let dir = tempfile::tempdir().unwrap();
+    let (edge_url, requests, edge_task) = rejecting_edge().await;
+    // Same bearer, once with an edge and once with none: the same folder.
+    let with_edge = config(dir.path(), edge_url, None, Some("u-abc123@zend"));
+    let auth = Engine::build_auth(&with_edge).await;
+    let profile = Engine::resolve_profile(&with_edge, &auth, Engine::initial_workspace_scope(&auth))
+        .unwrap()
+        .expect("profile");
+    let with_edge_root = profile.store_root().to_path_buf();
+
+    let config = config(dir.path(), "none".into(), None, Some("u-abc123@zend"));
+    assert!(config.edge_off());
+    let auth = Engine::build_auth(&config).await;
+    let scope = Engine::initial_workspace_scope(&auth);
+    let profile = Engine::resolve_profile(&config, &auth, scope)
+        .unwrap()
+        .expect("development profile is ready");
+    assert_eq!(profile.store_root(), with_edge_root, "the identity is the token's, edge or none");
+    assert_eq!(profile.org_id(), "zend");
+    assert_eq!(profile.store_root(), dir.path().join("orgs/zend/u-abc123"));
+    let runtime = Engine::assemble_runtime(&config, auth, profile).await.unwrap();
+
+    assert_eq!(runtime.workspace_scope(), WorkspaceScope::Development);
+    assert!(runtime.core().links().is_none(), "no edge transports");
+    assert!(!runtime.core().workspace.edge_expected(), "no edge expected: connectivity is Disabled, no pill");
+    assert!(runtime.core().workspace.registry_synced(), "nothing to wait for, as for a local profile");
+    assert!(with_edge_root.is_dir());
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    runtime.shutdown().await;
+    edge_task.abort();
+}
+
 #[tokio::test]
 async fn headless_stop_rpc_drains_the_daemon_and_releases_ipc() {
     let dir = tempfile::tempdir().unwrap();

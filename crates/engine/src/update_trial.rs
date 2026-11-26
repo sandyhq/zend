@@ -145,7 +145,7 @@ pub(crate) fn prove_and_commit(core: &EngineCore, config: &EngineConfig) {
         scope: core.workspace_scope(),
         port: config.ipc_port,
         data_dir: config.data_dir.clone(),
-        edge_url: config.edge_url.clone(),
+        edge_url: config.edge_base().to_string(),
     };
     let doc_host = core.doc_host.clone();
     let sessions = core.sessions.clone();

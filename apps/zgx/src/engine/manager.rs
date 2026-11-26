@@ -366,6 +366,21 @@ fn launch(config: &Config) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The edge a development engine is told: `none` when the install says so
+/// (`edge-url` is `none`, see `zend_cli::EDGE_NONE`) and the account's edge is
+/// the stand-in `zend_cli::edge_url_from_env` gives for it; else the account's.
+fn engine_edge(account_edge: &str) -> String {
+    engine_edge_with(account_edge, zend_cli::edge_off_from_env())
+}
+
+fn engine_edge_with(account_edge: &str, off: bool) -> String {
+    if off && account_edge.trim_end_matches('/') == zend_cli::DEFAULT_EDGE_URL {
+        zend_cli::EDGE_NONE.into()
+    } else {
+        account_edge.into()
+    }
+}
+
 /// A development engine, detached (its own process group, no inherited
 /// pipes), so this app closing leaves it running; it logs to its data dir.
 fn spawn(config: &Config, bin: &Path) -> std::io::Result<()> {
@@ -379,7 +394,7 @@ fn spawn(config: &Config, bin: &Path) -> std::io::Result<()> {
     command
         .env("ZEND_DATA_DIR", &config.data_dir)
         .env("ZEND_IPC_PORT", config.port.to_string())
-        .env("ZEND_EDGE_URL", &config.edge)
+        .env("ZEND_EDGE_URL", engine_edge(&config.edge))
         .env("ZEND_WORKOS_CLIENT_ID", &config.client)
         .env("ZEND_CALLBACK_PORT", config.callback_port.to_string())
         // Not the shipping app's: no app to open from a banner.
@@ -438,6 +453,16 @@ pub fn needs_restart(scope: Option<&str>, signed_in: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// An install with `edge-url` = `none` passes it to the engine it starts;
+    /// every other edge, and an account on its own edge, goes as it is.
+    #[test]
+    fn an_edge_off_install_tells_its_engine_none() {
+        let default = zend_cli::DEFAULT_EDGE_URL;
+        assert_eq!(super::engine_edge_with(default, true), "none");
+        assert_eq!(super::engine_edge_with(default, false), default);
+        assert_eq!(super::engine_edge_with("http://100.64.0.1:27640", true), "http://100.64.0.1:27640");
+    }
+
     use super::*;
 
     fn config_of(vars: &[(&str, &str)], home: &Path, exe: Option<&Path>, edge: &str) -> Result<Config, Refusal> {

@@ -185,7 +185,9 @@ pub(crate) fn new_id() -> String {
 pub struct EngineConfig {
     /// Data directory (default `~/.zend`, dev `~/.zend-dev`).
     pub data_dir: PathBuf,
-    /// Edge base URL.
+    /// Edge base URL, or [`EDGE_NONE`] (`"none"`): no edge at all. A
+    /// development runtime then keeps its dev bearer's identity (org, user,
+    /// data folder) but opens no edge transport; see [`EngineConfig::edge_off`].
     pub edge_url: String,
     /// Explicit development bearer for edge room joins. Synced WorkOS runtimes
     /// obtain their bearer from [`Auth`]; development stays offline when this is absent.
@@ -199,6 +201,26 @@ pub struct EngineConfig {
     pub org_id: Option<String>,
     /// WorkOS client id — enables real auth; `None` = dev mode (bearer = `edge_token`).
     pub workos_client_id: Option<String>,
+}
+
+/// `edge_url` value that switches the edge off in development mode.
+pub const EDGE_NONE: &str = "none";
+
+/// Where the release feed and the like are asked when the edge is off (the
+/// production address, which a stand-alone install uses as well).
+const OFF_EDGE_URL: &str = "https://edge.zend.invalid";
+
+impl EngineConfig {
+    /// `edge_url` is [`EDGE_NONE`]: development mode with no edge.
+    pub fn edge_off(&self) -> bool {
+        self.edge_url.trim().eq_ignore_ascii_case(EDGE_NONE)
+    }
+
+    /// The edge's base URL for calls that are not edge transports (auth
+    /// probes, the release feed): never the sentinel.
+    pub fn edge_base(&self) -> &str {
+        if self.edge_off() { OFF_EDGE_URL } else { &self.edge_url }
+    }
 }
 
 /// The assembled engine core — also constructible without the IPC server for tests
@@ -980,7 +1002,7 @@ impl Engine {
             Ok(None) => {}
             Err(err) => tracing::error!(error = %err, "runner identity unusable; ignoring it"),
         }
-        let mut auth_config = AuthConfig::new(config.edge_url.clone(), config.data_dir.clone());
+        let mut auth_config = AuthConfig::new(config.edge_base().to_string(), config.data_dir.clone());
         auth_config.workos_client_id = config.workos_client_id.clone();
         if let Ok(base) = std::env::var("ZEND_WORKOS_API_BASE")
             && !base.trim().is_empty()
@@ -1132,11 +1154,16 @@ impl Engine {
             // Dev Auth always exposes `dev_user_id` as its synthetic access
             // token, including when WorkOS was merely disabled with
             // ZEND_WORKOS_CLIENT_ID="". Only an explicitly configured,
-            // non-empty bearer opts this runtime into Edge rooms and relays.
-            WorkspaceScope::Development => config
-                .edge_token
-                .as_deref()
-                .is_some_and(|token| !token.trim().is_empty()),
+            // non-empty bearer opts this runtime into Edge rooms and relays,
+            // unless `edge_url` is `none`: the bearer then only names the
+            // profile (org, user) and no edge transport starts.
+            WorkspaceScope::Development => {
+                !config.edge_off()
+                    && config
+                        .edge_token
+                        .as_deref()
+                        .is_some_and(|token| !token.trim().is_empty())
+            }
         };
         if edge_enabled {
             // OS network-path events (macOS NWPathMonitor): the instant the
@@ -1287,7 +1314,7 @@ impl Engine {
             });
         }
         let preview_signaling = edge_enabled.then(|| zend_preview::signaling::Config {
-            edge_url: config.edge_url.clone(),
+            edge_url: config.edge_base().to_string(),
             org_id: preview_org,
             tokens: Arc::new(auth.clone()),
         });
@@ -1304,12 +1331,12 @@ impl Engine {
             let quiescent = core.update_quiescence(runner::is_cloud_platform());
             core.harness_updates.set_compatibility_feed(format!(
                 "{}/releases/harness-compatibility.json",
-                config.edge_url.trim_end_matches('/')
+                config.edge_base().trim_end_matches('/')
             ));
             // The release channel a macOS app install follows lives in the data
             // dir (update-channel.json), so this report follows the app's choice.
             zend_update::channel::set_data_dir(&config.data_dir);
-            let updater = zend_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
+            let updater = zend_update::Updater::spawn(config.edge_base().to_string(), Some(quiescent));
             // A check that came due while the machine slept runs as it wakes,
             // so the loop needn't look at the clock each minute.
             updater.follow_wakes(zend_sync::wake::subscribe());

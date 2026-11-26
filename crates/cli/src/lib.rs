@@ -24,7 +24,7 @@ pub mod update_cli;
 use clap::{CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 
 pub use env::{
-    DEFAULT_EDGE_URL, DEFAULT_IPC_PORT, DEFAULT_WORKOS_CLIENT_ID, config_dir, edge_token_from_env, edge_url_from_env, ipc_port_from,
+    DEFAULT_EDGE_URL, DEFAULT_IPC_PORT, EDGE_NONE, edge_off_from_env, engine_edge_url_from_env, DEFAULT_WORKOS_CLIENT_ID, config_dir, edge_token_from_env, edge_url_from_env, ipc_port_from,
     ipc_port_from_env, store_edge_config, workos_client_id_from_env, edge_config_in, edge_from_env, edge_record_in, restore_edge_record,
     store_desktop_record, desktop_record_in, clear_desktop_record,
 };
