@@ -828,6 +828,41 @@ async fn an_area_grant_is_served_there_and_this_devices_ids_stay_here() {
     assert_eq!(t.laptop.workspace.space("lap-p").unwrap().unwrap().name, None);
 }
 
+/// A project made on a server's device (plan step 6c, New project): its
+/// id is new, so the device it names says where it goes. With
+/// `projects.manage` the server makes it; without, it is held back here;
+/// either way this device's own workspace never gets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_made_on_a_servers_device_is_made_there() {
+    let t = pair(&["sessions.read", "projects.manage"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let dir = t.root.join("server-data-projects/made");
+    std::fs::create_dir_all(&dir).unwrap();
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "made-p", "deviceId": "device-server", "path": dir.to_string_lossy(), "gitDetected": false }))
+        .await
+        .expect("made on the server");
+    assert!(t.server.workspace.space("made-p").unwrap().is_some(), "the server didn't get it");
+    assert!(t.laptop.workspace.space("made-p").unwrap().is_none(), "made on this device instead");
+    drop(t);
+
+    let t = pair(&["sessions.read"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let dir = t.root.join("server-data-projects/made");
+    std::fs::create_dir_all(&dir).unwrap();
+    let said = t
+        .window
+        .call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "made-p", "deviceId": "device-server", "path": dir.to_string_lossy(), "gitDetected": false }))
+        .await
+        .expect_err("not granted")
+        .to_string();
+    assert!(said.starts_with(zend_engine::peer_view::REFUSED_PREFIX) && said.contains("doesn't grant projects.manage"), "{said}");
+    assert!(t.laptop.workspace.space("made-p").unwrap().is_none(), "made here instead");
+    assert!(t.server.workspace.space("made-p").unwrap().is_none());
+}
+
 /// What the window does to a server's chat (its config before the first
 /// message, renaming, seen, archiving, deleting) goes to that server, with
 /// no `targetDeviceId` of this side's; the same on this device's own chat

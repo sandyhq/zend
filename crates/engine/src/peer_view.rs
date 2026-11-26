@@ -746,6 +746,13 @@ impl PeerView {
             }
         }
         if mutate {
+            // A project being made is named by its device: its id is new,
+            // no server has it yet.
+            if params["op"].as_str() == Some("createSpace")
+                && let Some(device) = text("deviceId")
+            {
+                return by_device(device);
+            }
             if let Some(space) = text("spaceId") {
                 return by_space(space);
             }
