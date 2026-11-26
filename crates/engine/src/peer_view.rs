@@ -553,8 +553,9 @@ impl PeerView {
         let since = chrono::Utc::now().to_rfc3339();
         let created_at = chrono::DateTime::from_timestamp_millis(paired_at).map(|t| t.to_rfc3339());
         let capabilities = if worker_project.is_some() { json!([PAIRED_SERVER, WORKER]) } else { json!([PAIRED_SERVER]) };
+        let shown_areas = areas.clone();
         let device = |seen_at: &str| {
-            json!({
+            let mut row = json!({
                 "id": device_id,
                 "name": name,
                 // (A server: the window draws it as one.)
@@ -562,7 +563,9 @@ impl PeerView {
                 "lastSeenAt": seen_at,
                 "createdAt": created_at,
                 "capabilities": capabilities,
-            })
+            });
+            set_peer_areas(&mut row, shown_areas.as_ref());
+            row
         };
         let only_in = worker_project.as_deref();
         let mut chats = client.subscribe_checked(methods::WATCH_CHATS, json!({})).await.ok();
@@ -915,6 +918,7 @@ impl PeerView {
             let areas = areas_of(&info);
             self.seen.send_modify(|seen| {
                 if let Some(s) = seen.get_mut(key) {
+                    set_peer_areas(&mut s.device, areas.as_ref());
                     s.areas = areas;
                 }
             });
@@ -1171,7 +1175,27 @@ fn held_back(method: &str, params: &Value, areas: Option<&HashSet<zend_rpc::Scop
     }
 }
 
-/// The areas a server's `EngineInfo` says its grants open here.
+/// A paired server's device row says which areas its grants open here
+/// ("peerAreas": scope names in the order of zend_rpc::Scope), so the
+/// window can show "not granted" before it sends; absent when the server
+/// didn't say.
+fn set_peer_areas(device: &mut Value, areas: Option<&HashSet<zend_rpc::Scope>>) {
+    match areas {
+        Some(areas) => {
+            let mut sorted: Vec<zend_rpc::Scope> = areas.iter().copied().collect();
+            sorted.sort_unstable();
+            let names: Vec<&str> = sorted.into_iter().map(zend_rpc::Scope::name).collect();
+            device["peerAreas"] = json!(names);
+        }
+        None => {
+            if let Some(row) = device.as_object_mut() {
+                row.remove("peerAreas");
+            }
+        }
+    }
+}
+
+/// The areas a server's EngineInfo says its grants open here.
 fn areas_of(info: &Value) -> Option<HashSet<zend_rpc::Scope>> {
     let areas = info["peer"]["areas"].as_array()?;
     Some(areas.iter().filter_map(Value::as_str).filter_map(zend_rpc::Scope::from_name).collect())

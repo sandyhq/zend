@@ -728,6 +728,48 @@ async fn what_a_server_grants_is_heard_from_it_and_heard_again() {
     assert_eq!(asked(), 1);
 }
 
+/// The server's device row says which areas its grants open here
+/// (peerAreas), so a page can show "not granted" before it sends: the
+/// list follows a grant change (the server redials); a server that
+/// doesn't say has none; a device that isn't a paired server never has it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_servers_device_row_says_which_areas_it_grants() {
+    let names = |row: &Value| -> Vec<String> { row["peerAreas"].as_array().map(|a| a.iter().map(|n| n.as_str().unwrap().to_string()).collect()).unwrap_or_default() };
+    let server_row = |rows: &[Value]| rows.iter().find(|d| d["id"] == "device-server").cloned();
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p", "files"]).await;
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    let rows = devices.until("the server's areas", |rows| server_row(rows).is_some_and(|d| d.get("peerAreas").is_some())).await;
+    let areas = names(&server_row(&rows).unwrap());
+    assert!(areas.contains(&"files".to_string()) && !areas.contains(&"settings".to_string()) && !areas.contains(&"full".to_string()), "{areas:?}");
+    for row in rows.iter().filter(|d| d["id"] != "device-server") {
+        assert!(row.get("peerAreas").is_none(), "only a paired server's row has it: {row}");
+    }
+
+    // Granted more: the new list, once it redialled.
+    let laptop_key = t.laptop_link.node_key().unwrap().public().to_string();
+    t.server_link.set_grants(&laptop_key, &["sessions.read".into(), "sessions.run.unconfined:p".into(), "files".into(), "settings".into()]).unwrap();
+    let rows = devices
+        .until("settings, granted since", |rows| server_row(rows).is_some_and(|d| names(&d).contains(&"settings".to_string())))
+        .await;
+    let areas = names(&server_row(&rows).unwrap());
+    assert!(areas.contains(&"files".to_string()) && areas.contains(&"settings".to_string()), "{areas:?}");
+    drop(t);
+
+    // A server that doesn't say what it grants: no key.
+    let quiet: Lie = Arc::new(|method, mut v| {
+        if method == methods::ENGINE_INFO
+            && let Some(peer) = v["peer"].as_object_mut()
+        {
+            peer.remove("areas");
+        }
+        v
+    });
+    let t = pair_with(&["sessions.read", "files"], quiet, |_, _| {}).await;
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    let rows = devices.until("the server's device", |rows| has(rows, "id", "device-server")).await;
+    assert!(server_row(&rows).unwrap().get("peerAreas").is_none(), "{rows:?}");
+}
+
 /// With area grants the window's calls aimed at the server are served
 /// there (plan step 6b): a value, a stream, a file, a chat change. A call
 /// aimed there that names this device's own chat, project or device stays

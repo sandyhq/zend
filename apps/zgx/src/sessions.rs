@@ -1327,6 +1327,12 @@ impl Sessions {
                 if let Some(version) = d["version"].as_str().filter(|v| !v.is_empty()) {
                     fields.push(("version", Value::from(version)));
                 }
+                // The areas a paired server's grants open here (peer_areas:
+                // scope names, e.g. "files"; absent when it didn't say): a
+                // page shows "not granted" before it sends.
+                if let Some(areas) = d["peerAreas"].as_array().filter(|_| is_paired_server(d)) {
+                    fields.push(("peer_areas", Value::List(areas.iter().filter_map(|a| a.as_str().map(Value::from)).collect())));
+                }
                 Some(Value::record(fields))
             })
             .collect();
@@ -1715,6 +1721,21 @@ pub(crate) fn is_cloud(d: &Json) -> bool {
 /// capability `paired-server`, crates/engine `peer_view::PAIRED_SERVER`).
 pub(crate) fn is_paired_server(d: &Json) -> bool {
     d["capabilities"].as_array().is_some_and(|c| c.iter().any(|c| c.as_str() == Some("paired-server")))
+}
+
+/// Whether the paired server d grants area (a scope name such as "files",
+/// crates/rpc Scope::name), as its device row's peerAreas says (crates/engine
+/// peer_view). A device that isn't a paired server: true (unchanged). A
+/// server's "full" opens every area. A server that didn't say (no peerAreas)
+/// holds only what grants before step 6 open: the sessions areas.
+pub(crate) fn server_grants(d: &Json, area: &str) -> bool {
+    if !is_paired_server(d) {
+        return true;
+    }
+    match d["peerAreas"].as_array() {
+        Some(areas) => areas.iter().any(|a| matches!(a.as_str(), Some(a) if a == area || a == "full")),
+        None => area.starts_with("sessions."),
+    }
 }
 
 /// Why the engine didn't remove a device, as a word for the page.
@@ -2834,6 +2855,46 @@ mod tests {
         for (id, is) in [("here", false), ("laptop", false), ("ai", true)] {
             assert_eq!(paired(id), Some(zgx_script::Value::Bool(is)), "{id}");
         }
+    }
+
+    /// A paired server's areas (peerAreas): a device that isn't one is
+    /// always granted; a server is by its list ("full" opens all); one
+    /// that didn't say holds only the sessions areas.
+    #[test]
+    fn server_grants_reads_the_servers_areas() {
+        let own = json!({ "id": "here" });
+        let other = json!({ "id": "laptop", "capabilities": ["agent-updates"], "peerAreas": [] });
+        let files = json!({ "id": "ai", "capabilities": ["paired-server"], "peerAreas": ["sessions.read", "files"] });
+        let full = json!({ "id": "ai", "capabilities": ["paired-server"], "peerAreas": ["full"] });
+        let silent = json!({ "id": "ai", "capabilities": ["paired-server"] });
+        for area in ["files", "settings", "terminal"] {
+            assert!(super::server_grants(&own, area) && super::server_grants(&other, area), "{area}: not a server");
+            assert!(super::server_grants(&full, area), "{area}: full");
+            assert_eq!(super::server_grants(&files, area), area == "files", "{area}");
+            assert!(!super::server_grants(&silent, area), "{area}: it didn't say");
+        }
+        assert!(super::server_grants(&files, "sessions.read") && super::server_grants(&silent, "sessions.read"));
+    }
+
+    /// Scripts see a server's areas as `peer_areas`; any other device has none.
+    #[test]
+    fn a_paired_server_s_areas_reach_the_scripts() {
+        let s = Sessions::default();
+        *s.here.borrow_mut() = Some("here".into());
+        *s.devices.borrow_mut() = json!([
+            { "id": "here", "peerAreas": ["files"] },
+            { "id": "ai", "capabilities": ["paired-server"], "peerAreas": ["sessions.read", "files"] },
+            { "id": "old", "capabilities": ["paired-server"] },
+        ]);
+        let v = s.value();
+        let devices = v.field("devices").unwrap();
+        let areas = |id: &str| {
+            let d = devices.list().iter().find(|d| d.field("id").map(crate::auth::text).as_deref() == Some(id)).unwrap();
+            d.field("peer_areas").map(|a| a.list().iter().map(crate::auth::text).collect::<Vec<_>>())
+        };
+        assert_eq!(areas("ai"), Some(vec!["sessions.read".to_string(), "files".to_string()]));
+        assert_eq!(areas("here"), None);
+        assert_eq!(areas("old"), None);
     }
 
     #[test]
