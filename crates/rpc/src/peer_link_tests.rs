@@ -720,3 +720,22 @@ fn granted_nothing_is_said_once_per_change() {
         .collect();
     assert_eq!(said, [true, false, true, false, false, true, false]);
 }
+
+/// The review's findings (2026-11-26), each where it belongs: a
+/// project's actions and an agent's environment are a shell's; the
+/// account's plugin signing keys and moving a chat to another device are
+/// never a server's; re-signing a plugin on export is `full`'s; `logins`
+/// is the run of the machine (warned of, logged).
+#[test]
+fn what_runs_commands_or_reaches_the_account_is_classed_so() {
+    use crate::{Grant, Scope, methods as m, peer_scope};
+    for method in [m::UPSERT_PROJECT_ACTION, m::DELETE_PROJECT_ACTION, m::RUN_PROJECT_ACTION, m::SET_ACP_AGENT_ENV] {
+        assert_eq!(peer_scope(method, None), Some(Scope::Terminal), "{method}");
+    }
+    assert_eq!(peer_scope(m::PLUGIN_SIGNING_KEY, None), Some(Scope::Never));
+    assert_eq!(peer_scope(m::EXPORT_PLUGIN, None), Some(Scope::Full));
+    assert_eq!(peer_scope(m::MUTATE, Some("setChatHost")), Some(Scope::Never));
+    assert_eq!(peer_scope(m::LIST_PROJECT_ACTIONS, None), Some(Scope::ProjectsManage));
+    assert!(Grant::Logins.is_machine_wide());
+    assert!(Scope::Logins.logged());
+}

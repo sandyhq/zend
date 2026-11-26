@@ -753,18 +753,18 @@ impl PeerView {
         None
     }
 
-    /// Which of this device's own ids the call names (`chatId`, `spaceId`,
-    /// `deviceId`), as words for a refusal: such a call is never a server's.
+    /// Which of this device's own ids the call names, at any depth and by
+    /// any key (`chatId`, `sourceChatId`, `parentChatId`, `spaceId`,
+    /// `requesterDeviceId`, …, [`id_fields`]), as words for a refusal:
+    /// such a call is never a server's.
     fn names_own(&self, params: &Value) -> Option<String> {
         let locals = self.locals.borrow();
-        let text = |key: &str| params.get(key).and_then(Value::as_str).filter(|v| !v.is_empty());
-        if let Some(chat) = text("chatId").filter(|c| locals.chat(c)) {
-            return Some(format!("chat {chat}"));
-        }
-        if let Some(space) = text("spaceId").filter(|s| locals.spaces.contains(*s)) {
-            return Some(format!("project {space}"));
-        }
-        text("deviceId").filter(|d| locals.device(d)).map(|d| format!("device {d}"))
+        id_fields(params).into_iter().find_map(|(kind, id)| match kind {
+            IdKind::Chat if locals.chat(&id) => Some(format!("chat {id}")),
+            IdKind::Space if locals.spaces.contains(&id) => Some(format!("project {id}")),
+            IdKind::Device if locals.device(&id) => Some(format!("device {id}")),
+            _ => None,
+        })
     }
 
     /// This device's own call, answered here or by a paired server; `None`:
@@ -777,7 +777,14 @@ impl PeerView {
         // Aimed at a server (`targetDeviceId`) while naming this device's
         // own chat, project or device: never sent, whichever it means.
         if let Some(key) = &target
-            && let Some(own) = self.names_own(params)
+            && let Some(own) = self.names_own(&{
+                // As it's sent, and the device it was asked to be made on.
+                let mut checked = self.as_sent(key, method, params.clone());
+                if let (Some(map), Some(device)) = (checked.as_object_mut(), params.get("deviceId")) {
+                    map.insert("deviceId".into(), device.clone());
+                }
+                checked
+            })
         {
             tracing::warn!(method, server = %key.get(..12).unwrap_or(key), "peer view: refused a call aimed at a paired server that names this device's own {own}");
             return Some(Err(RpcError::Failed(format!(
@@ -816,6 +823,37 @@ impl PeerView {
         Some(self.forward(&key, method, params.clone()).await)
     }
 
+    /// `params` as they're sent to the server `key`: a `createChat` is
+    /// made at its project's folder there, with none of this side's
+    /// folder, device or (an empty) branch; a worker's is in its one
+    /// project, whatever named it, and is sent its id and config alone.
+    /// What's checked for this device's own ids is this, not what the
+    /// window gave.
+    fn as_sent(&self, key: &str, method: &str, mut params: Value) -> Value {
+        if method != methods::MUTATE || params["op"].as_str() != Some("createChat") {
+            return params;
+        }
+        let worker_project = self.seen.borrow().get(key).and_then(|s| s.worker_project.clone());
+        let chat = params["chatId"].clone();
+        if let Some(map) = params.as_object_mut() {
+            map.remove("cwd");
+            map.remove("deviceId");
+            if map.get("branch").and_then(Value::as_str).is_none_or(str::is_empty) {
+                map.remove("branch");
+            }
+            if let Some(project) = worker_project {
+                let config = map.remove("config").unwrap_or(Value::Null);
+                *map = serde_json::Map::from_iter([
+                    ("op".to_string(), json!("createChat")),
+                    ("chatId".to_string(), chat),
+                    ("spaceId".to_string(), json!(project)),
+                    ("config".to_string(), config),
+                ]);
+            }
+        }
+        params
+    }
+
     async fn forward(&self, key: &str, method: &str, mut params: Value) -> Result<RpcReply, RpcError> {
         let name = self.name(key);
         let client = self.live.lock().unwrap().get(key).map(|l| l.client.clone());
@@ -829,28 +867,9 @@ impl PeerView {
             let s = seen.get(key);
             (s.map(|s| s.device_id.clone()).unwrap_or_default(), s.and_then(|s| s.worker_project.clone()))
         };
+        params = self.as_sent(key, method, params);
         match op.as_deref() {
             Some("createChat") => {
-                // Made at its project's folder, there: none of this side's
-                // folder, device or (an empty) branch.
-                if let Some(map) = params.as_object_mut() {
-                    map.remove("cwd");
-                    map.remove("deviceId");
-                    if map.get("branch").and_then(Value::as_str).is_none_or(str::is_empty) {
-                        map.remove("branch");
-                    }
-                    // A worker's chat is in its one project, whatever named it,
-                    // and is sent its id and config alone.
-                    if let Some(project) = &worker_project {
-                        let config = map.remove("config").unwrap_or(Value::Null);
-                        *map = serde_json::Map::from_iter([
-                            ("op".to_string(), json!("createChat")),
-                            ("chatId".to_string(), json!(chat)),
-                            ("spaceId".to_string(), json!(project)),
-                            ("config".to_string(), config),
-                        ]);
-                    }
-                }
                 self.made.lock().unwrap().insert(chat.clone(), (key.to_string(), params["config"].clone()));
             }
             // Every config is sent, the same one too (the window sets it
@@ -1077,6 +1096,48 @@ enum Kind {
     Sessions,
     /// The projects its grants name (`EngineInfo.peer.projects`).
     Projects,
+}
+
+/// What an id names: a chat, a project, a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdKind {
+    Chat,
+    Space,
+    Device,
+}
+
+/// Every id `params` names, at any depth: each string (or list of
+/// strings) under a key `chatId`/`…ChatId`, `spaceId`/`…SpaceId`,
+/// `deviceId`/`…DeviceId` (and their plurals, `…Ids`). Empty ones aren't ids.
+pub(crate) fn id_fields(params: &Value) -> Vec<(IdKind, String)> {
+    fn kind(key: &str) -> Option<IdKind> {
+        let key = key.strip_suffix('s').filter(|k| k.ends_with("Id")).unwrap_or(key);
+        [("chatId", "ChatId", IdKind::Chat), ("spaceId", "SpaceId", IdKind::Space), ("deviceId", "DeviceId", IdKind::Device)]
+            .into_iter()
+            .find(|(bare, suffix, _)| key == *bare || key.ends_with(suffix))
+            .map(|(_, _, kind)| kind)
+    }
+    fn walk(value: &Value, out: &mut Vec<(IdKind, String)>) {
+        match value {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    if let Some(kind) = kind(key) {
+                        let ids: Vec<&Value> = match value {
+                            Value::Array(items) => items.iter().collect(),
+                            other => vec![other],
+                        };
+                        out.extend(ids.into_iter().filter_map(Value::as_str).filter(|id| !id.is_empty()).map(|id| (kind, id.to_string())));
+                    }
+                    walk(value, out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(params, &mut out);
+    out
 }
 
 /// Why a call of this device's own that names a paired server isn't

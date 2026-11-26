@@ -142,10 +142,11 @@ pub fn mutate_scope(op: &str) -> Option<Scope> {
         "createChat" | "renameChat" | "setChatArchived" | "setChatConfig" | "deleteChat" | "markChatSeen" => SessionsRun,
         "createSpace" | "renameSpace" | "setSpaceIcon" | "deleteSpace" => ProjectsManage,
         "changeSidebarPin" | "renameDevice" => Settings,
-        // Where and when a chat runs, re-homing it: the owner's.
-        "setChatBranch" | "setChatCwd" | "setChatActivity" | "setChatHost" | "setChatSleep" => Full,
-        // Another device out of the account: the account's.
-        "removeDevice" => Never,
+        // Where and when a chat runs: the owner's.
+        "setChatBranch" | "setChatCwd" | "setChatActivity" | "setChatSleep" => Full,
+        // Another device out of the account, a chat moved to another
+        // device: the account's.
+        "removeDevice" | "setChatHost" => Never,
         _ => return None,
     })
 }
@@ -188,9 +189,7 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::RELEASE_HOME_FOLDER_SEARCH
         | m::CREATE_WORKTREE
         | m::DELETE_WORKTREE
-        | m::LIST_PROJECT_ACTIONS
-        | m::UPSERT_PROJECT_ACTION
-        | m::DELETE_PROJECT_ACTION => ProjectsManage,
+        | m::LIST_PROJECT_ACTIONS => ProjectsManage,
 
         // ---- files ----
         m::SEARCH_FILES
@@ -227,8 +226,14 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::RESIZE_TERMINAL
         | m::CLOSE_TERMINAL
         | m::TERMINAL_STATUS
+        // A project's actions are commands it runs (a worktree's setup
+        // too), an agent's environment one it starts with (LD_PRELOAD,
+        // NODE_OPTIONS): a shell's.
+        | m::UPSERT_PROJECT_ACTION
+        | m::DELETE_PROJECT_ACTION
         | m::RUN_PROJECT_ACTION
         | m::TAKE_PROJECT_ACTION_SETUP
+        | m::SET_ACP_AGENT_ENV
         | m::STOP_BACKGROUND_TASK
         | m::READ_BACKGROUND_TASK_OUTPUT
         | m::WATCH_PREVIEWS => Terminal,
@@ -251,7 +256,6 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::STAGE_PLUGIN_PACKAGE
         | m::CHECK_PLUGIN_UPDATES
         | m::UPDATE_PLUGIN
-        | m::EXPORT_PLUGIN
         | m::LIST_PLUGIN_TOOLS
         | m::WATCH_PLUGIN_TOOLS
         | m::PLUGIN_STATUS
@@ -282,7 +286,6 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::ADD_ACP_AGENT
         | m::REMOVE_ACP_AGENT
         | m::GET_ACP_AGENT_ENV
-        | m::SET_ACP_AGENT_ENV
         | m::GET_ACP_AGENT_SIGN_IN
         | m::SIGN_OUT_ACP_AGENT
         | m::SET_ACP_AGENT_KEY
@@ -370,7 +373,8 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::CALL_PLUGIN_SERVICE
         | m::PLUGIN_AGENTS
         | m::WATCH_PLUGIN_CHANNEL
-        | m::PLUGIN_SIGNING_KEY
+        // Re-signs a plugin as this device's.
+        | m::EXPORT_PLUGIN
         | m::PLUGIN_PREVIEW
         | m::PLUGIN_INPUT
         | m::KEEP_PLUGIN_PREVIEW
@@ -449,6 +453,8 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::PHONE_LINK_STATUS
         | m::SET_PHONE_LINK
         | m::NEW_PHONE_LINK_KEY
+        // The account's plugin signing keys (every device's, revoked).
+        | m::PLUGIN_SIGNING_KEY
         // The engine's life.
         | m::STOP_ENGINE
         // This engine's own transport and window: delivery to the edge,

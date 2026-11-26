@@ -13,6 +13,7 @@ impl WorkspaceFiles {
         request: zend_proto::DeleteWorkspaceEntryRequest,
     ) -> Result<WorkspaceMutationOutcome, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.path)?;
         let gate = self
             .mutation_gate(&workspace.checkout_id)
             .write_owned()
@@ -86,6 +87,8 @@ impl WorkspaceFiles {
         request: MoveWorkspaceEntryRequest,
     ) -> Result<WorkspaceMutationOutcome, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.source_path)?;
+        self.data_fence_at(&workspace.root, &request.destination_path)?;
         let gate = self
             .mutation_gate(&workspace.checkout_id)
             .write_owned()
@@ -135,6 +138,7 @@ impl WorkspaceFiles {
         request: CreateWorkspaceEntryRequest,
     ) -> Result<WorkspaceMutationOutcome, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.path)?;
         let gate = self
             .mutation_gate(&workspace.checkout_id)
             .write_owned()

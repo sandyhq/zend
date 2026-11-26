@@ -4,6 +4,32 @@
 //! a mod line here. Only a suite that needs a process of its own (process-wide
 //! state that plain `cargo test` would share) stays a top-level tests/<name>.rs.
 
+/// The worktrees this binary's engines make go into its own temp folder,
+/// never the real `~/.zend/worktrees` (`ZEND_WORKTREES_DIR`, which
+/// `Repos::new` reads). Set as the binary loads, before any test thread,
+/// so every suite's engines get it without a call of their own.
+extern "C" fn isolate_worktrees() {
+    if std::env::var_os("ZEND_WORKTREES_DIR").is_none_or(|dir| dir.is_empty()) {
+        let dir = std::env::temp_dir().join(format!("zend-it-worktrees-{}", std::process::id()));
+        // SAFETY: runs as the binary loads, before main and any other thread.
+        unsafe { std::env::set_var("ZEND_WORKTREES_DIR", dir) };
+    }
+}
+
+#[used]
+#[cfg_attr(any(target_os = "linux", target_os = "android", target_os = "freebsd"), unsafe(link_section = ".init_array"))]
+#[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__mod_init_func"))]
+#[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
+static ISOLATE_WORKTREES: extern "C" fn() = isolate_worktrees;
+
+/// The temp folder [`isolate_worktrees`] gave this binary's worktrees.
+#[test]
+fn worktrees_stay_out_of_the_real_home() {
+    let dir = std::env::var_os("ZEND_WORKTREES_DIR").expect("set as the binary loads");
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    assert!(!std::path::Path::new(&dir).starts_with(home.join(".zend")), "{dir:?}");
+}
+
 mod misc;
 mod acp_registry_rpc;
 mod adapter_chaos_live;

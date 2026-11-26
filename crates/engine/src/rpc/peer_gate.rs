@@ -173,21 +173,30 @@ impl EngineRpc {
         }
     }
 
-    /// A call's `chatId` and `spaceId`, where it names them, of this device:
-    /// a chat hosted here, a project here (or none yet, as `createSpace`
-    /// makes). Nothing of the account's other devices through a server.
+    /// Every chat, project and device id a call names, at any depth and
+    /// by any key (`chatId`, `sourceChatId`, `parentChatId`, `spaceId`,
+    /// `requesterDeviceId`, …, [`id_fields`]), of this device: a chat
+    /// hosted here, a project here (or none yet, as `createSpace` makes),
+    /// this device. Nothing of the account's other devices through a server.
     fn peer_own_ids(&self, method: &str, params: &Value) -> Result<(), RpcError> {
         let own = self.doc_host.device_id();
-        if let Some(chat_id) = params.get("chatId").and_then(Value::as_str) {
-            let here = self.workspace.chat(chat_id).map_err(|e| RpcError::Failed(e.to_string()))?;
-            if !here.is_some_and(|chat| chat.device_id == own) {
-                return Err(refused(format!("{method}: chat {chat_id} isn't one of this device's")));
-            }
-        }
-        if let Some(space_id) = params.get("spaceId").and_then(Value::as_str) {
-            let here = self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?;
-            if here.is_some_and(|space| space.device_id != own) {
-                return Err(refused(format!("{method}: project {space_id} isn't one of this device's")));
+        use crate::peer_view::{IdKind, id_fields};
+        for (kind, id) in id_fields(params) {
+            match kind {
+                IdKind::Chat => {
+                    let here = self.workspace.chat(&id).map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if !here.is_some_and(|chat| chat.device_id == own) {
+                        return Err(refused(format!("{method}: chat {id} isn't one of this device's")));
+                    }
+                }
+                IdKind::Space => {
+                    let here = self.workspace.space(&id).map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if here.is_some_and(|space| space.device_id != own) {
+                        return Err(refused(format!("{method}: project {id} isn't one of this device's")));
+                    }
+                }
+                IdKind::Device if id != own => return Err(refused(format!("{method}: device {id} isn't this device"))),
+                IdKind::Device => {}
             }
         }
         Ok(())
@@ -214,11 +223,31 @@ impl EngineRpc {
                 }
             }
             MutateParams::RenameDevice { device_id, .. } if device_id != &own => return not_here(format!("device {device_id}")),
-            MutateParams::RenameDevice { .. } | MutateParams::ChangeSidebarPin { .. } => {}
+            MutateParams::RenameDevice { .. } => {}
+            // The chats it pins, moves or files, and those it places them
+            // by: hosted here.
+            MutateParams::ChangeSidebarPin { change } => {
+                use zend_proto::{SidebarPinChange as Pin, SidebarSectionChange as Section};
+                let chats: Vec<&String> = match change {
+                    Pin::Pin { session_id, after, before } | Pin::Move { session_id, after, before } => {
+                        [Some(session_id), after.as_ref(), before.as_ref()].into_iter().flatten().collect()
+                    }
+                    Pin::Unpin { session_id } => vec![session_id],
+                    Pin::Section { change: Section::Assign { session_id, after, before, .. } } => {
+                        [Some(session_id), after.as_ref(), before.as_ref()].into_iter().flatten().collect()
+                    }
+                    Pin::Section { .. } => vec![],
+                };
+                for chat_id in chats {
+                    let here = self.workspace.chat(chat_id).map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if !here.is_some_and(|chat| chat.device_id == own) {
+                        return not_here(format!("chat {chat_id}"));
+                    }
+                }
+            }
             MutateParams::SetChatBranch { chat_id, .. }
             | MutateParams::SetChatCwd { chat_id, .. }
             | MutateParams::SetChatActivity { chat_id, .. }
-            | MutateParams::SetChatHost { chat_id, .. }
             | MutateParams::SetChatSleep { chat_id, .. } => {
                 let here = self.workspace.chat(chat_id).map_err(|e| RpcError::Failed(e.to_string()))?;
                 if !here.is_some_and(|chat| chat.device_id == own) {

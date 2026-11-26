@@ -38,6 +38,9 @@ fn loopback() -> Seams {
 /// This engine (A) with its peer link, a second server (B) paired with it,
 /// and B dialled in with \`grants\` given on A's side.
 struct Paired {
+    /// First, so it goes first: every shell a test leaves open is killed,
+    /// a failed one's too (a live terminal held the run up for minutes).
+    _shells: ShellsDown,
     _temp: tempfile::TempDir,
     root: std::path::PathBuf,
     data: std::path::PathBuf,
@@ -96,6 +99,7 @@ async fn paired_with(grants: &[&str], registry: HarnessRegistry) -> Paired {
     .expect("B dials in");
     std::mem::forget(other);
     Paired {
+        _shells: ShellsDown(core.terminals.clone()),
         _temp: temp,
         root,
         data,
@@ -106,6 +110,15 @@ async fn paired_with(grants: &[&str], registry: HarnessRegistry) -> Paired {
         b_node: b_key,
         a_public: a_key.public().to_string(),
         url,
+    }
+}
+
+/// Kills the engine's live shells when dropped.
+struct ShellsDown(zend_engine::Terminals);
+
+impl Drop for ShellsDown {
+    fn drop(&mut self) {
+        self.0.shutdown();
     }
 }
 
@@ -1873,4 +1886,127 @@ async fn an_agent_in_a_peer_chat_gets_nothing_of_full() {
         "op": "createChat", "chatId": "p-child", "spaceId": "p", "deviceId": a.core.device_id,
         "parentChatId": "peer-chat", "childKind": "subagent", "config": config,
     }))).await.expect("its own child in p, as before");
+}
+
+
+/// A project's setup action is a command: a server with `projects.manage`
+/// alone neither sets one (`terminal`'s) nor has the owner's run in the
+/// worktree it makes: the worktree is made, its setup not run, and it's
+/// told so. With `terminal` the setup runs (its terminal closed after).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_worktree_runs_its_setup_only_with_terminal() {
+    let mut a = paired(&["projects.manage"]).await;
+    let repo = a.root.join("p");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(&repo).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "."]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first"]);
+    let marker = a.root.join("setup-ran");
+    a.core
+        .project_actions
+        .upsert(
+            "p",
+            &repo,
+            None,
+            zend_proto::ProjectActionDraft {
+                name: "Setup".into(),
+                command: format!("touch '{}'", marker.display()),
+                icon: zend_proto::ProjectActionIcon::Configure,
+                run_on_worktree_create: true,
+            },
+        )
+        .expect("the owner's setup action");
+    let set = a.b.call(methods::UPSERT_PROJECT_ACTION, json!({ "spaceId": "p", "action": { "name": "x", "command": "id", "icon": "test", "runOnWorktreeCreate": true } })).await;
+    assert!(gated(&set), "an action set with projects.manage: {set:?}");
+    let repo_path = repo.to_string_lossy().into_owned();
+    let made = a.b.call(methods::CREATE_WORKTREE, json!({ "repoPath": repo_path, "branch": "main", "spaceId": "p" })).await.expect("its worktree");
+    assert!(made["setupAction"].is_null(), "{made}");
+    assert!(made["setupError"].as_str().is_some_and(|e| e.contains("isn't granted terminal")), "{made}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!marker.exists(), "the setup ran for a server without terminal");
+
+    regrant(&mut a, &["projects.manage", "terminal"]).await;
+    let made = a.b.call(methods::CREATE_WORKTREE, json!({ "repoPath": repo_path, "branch": "main", "spaceId": "p" })).await.expect("its worktree");
+    let terminal = made["setupAction"]["terminal"]["id"].as_str().unwrap_or_else(|| panic!("no setup terminal: {made}")).to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !marker.exists() {
+        assert!(std::time::Instant::now() < deadline, "the setup never ran with terminal");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = a.core.terminals.close(&terminal);
+    assert!(!a.core.terminals.any_open(), "a shell left open");
+}
+
+/// Zend's own data (the peers and their grants, keys) is never a
+/// server's by path, with `files` or `full`: not read, not written, not
+/// listed, not searched, even through a project that holds it. Other
+/// files of that project are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zends_own_folders_are_never_a_servers_by_path() {
+    let a = paired(&["full"]).await;
+    a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    let root = a.root.to_string_lossy().into_owned();
+    a.b.call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "wide", "deviceId": a.core.device_id, "path": root }))
+        .await
+        .expect("a project holding Zend's data");
+    let peers = a.data.join("peers.json");
+    let before = std::fs::read_to_string(&peers).unwrap();
+    let owner = zend_rpc::memory_client(a.core.rpc_service());
+    let read = owner.call(methods::READ_WORKSPACE_FILE, json!({ "spaceId": "wide", "path": "a-data/peers.json" })).await.expect("the owner reads it");
+    let fenced = |reply: &Result<Value, RpcError>| reply.as_ref().is_err_and(|e| e.to_string().contains("Zend's own data"));
+    let write = a.b
+        .call(
+            methods::WRITE_WORKSPACE_FILE,
+            json!({
+                "spaceId": "wide", "path": "a-data/peers.json", "text": "{\"peers\":[]}",
+                "expectedCheckoutId": read["checkoutId"], "expectedContentHash": read["contentHash"],
+                "encoding": "utf8", "lineEnding": "lf",
+            }),
+        )
+        .await;
+    assert!(fenced(&write), "written: {write:?}");
+    assert_eq!(std::fs::read_to_string(&peers).unwrap(), before);
+    let calls = [
+        (methods::READ_WORKSPACE_FILE, json!({ "spaceId": "wide", "path": "a-data/peers.json" })),
+        (methods::READ_WORKSPACE_FILE, json!({ "chatId": "owner-chat", "path": peers.to_string_lossy() })),
+        (methods::LIST_WORKSPACE_DIRECTORY, json!({ "spaceId": "wide", "directory": "a-data" })),
+        (methods::SEARCH_WORKSPACE_CONTENT, json!({ "spaceId": "wide", "query": "grants" })),
+    ];
+    for (method, params) in calls {
+        let reply = a.b.call(method, params.clone()).await;
+        assert!(fenced(&reply), "{method} {params}: {reply:?}");
+    }
+    let other = a.b.call(methods::READ_WORKSPACE_FILE, json!({ "spaceId": "wide", "path": "outside.txt" })).await.expect("another file of it");
+    assert!(other.to_string().contains("OUTSIDE-SECRET"), "{other}");
+}
+
+/// Every id a server's call names, by any key and at any depth
+/// (`parentChatId`, `requesterDeviceId`, …), is of this device; the
+/// sidebar's pins are of chats hosted here; a chat isn't moved to
+/// another device (`setChatHost`: never).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_ids_are_this_devices_by_any_key() {
+    let a = paired(&["full"]).await;
+    a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    a.core.workspace.create_chat("far-chat", None, Some("device-elsewhere"), None, None).unwrap();
+    let refusals = [
+        (methods::GET_TITLE_SETTINGS, json!({ "parentChatId": "far-chat" }), "chat far-chat isn't one of this device's"),
+        (methods::GET_TITLE_SETTINGS, json!({ "nested": { "sourceChatId": "far-chat" } }), "chat far-chat isn't one of this device's"),
+        (methods::START_AGENT_LOGIN, json!({ "harness": "codex", "requesterDeviceId": "device-elsewhere" }), "device device-elsewhere isn't this device"),
+        (methods::MUTATE, json!({ "op": "changeSidebarPin", "change": { "action": "pin", "sessionId": "far-chat", "after": null, "before": null } }), "chat far-chat isn't this device's"),
+        (methods::MUTATE, json!({ "op": "changeSidebarPin", "change": { "action": "pin", "sessionId": "owner-chat", "after": "far-chat", "before": null } }), "chat far-chat isn't this device's"),
+        (methods::MUTATE, json!({ "op": "setChatHost", "chatId": "owner-chat", "deviceId": "device-elsewhere" }), "never open to another server"),
+    ];
+    for (method, params, said) in refusals {
+        let reply = a.b.call(method, params.clone()).await;
+        assert!(reply.as_ref().is_err_and(|e| e.to_string().contains(said)), "{method} {params}: {reply:?}");
+    }
+    a.b.call(methods::GET_TITLE_SETTINGS, json!({ "parentChatId": "owner-chat" })).await.expect("its own chat named");
+    a.b.call(methods::MUTATE, json!({ "op": "changeSidebarPin", "change": { "action": "pin", "sessionId": "owner-chat", "after": null, "before": null } }))
+        .await
+        .expect("a chat hosted here pinned");
+    assert_eq!(a.core.workspace.chat("owner-chat").unwrap().unwrap().device_id, a.core.device_id);
 }

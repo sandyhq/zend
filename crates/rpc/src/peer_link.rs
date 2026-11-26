@@ -210,9 +210,10 @@ const AREAS: [(&str, Grant); 8] = [
 
 impl Grant {
     /// Whether it gives the run of the whole machine (`zend peer grant`
-    /// says so as it's given).
+    /// says so as it's given): `logins` too (an agent's harness installed,
+    /// its environment read, its logins used: commands as you).
     pub fn is_machine_wide(&self) -> bool {
-        matches!(self, Grant::Files | Grant::Terminal | Grant::Full)
+        matches!(self, Grant::Files | Grant::Terminal | Grant::Logins | Grant::Full)
     }
 
     /// One of the grants before step 6 (all an agent in a server's chat

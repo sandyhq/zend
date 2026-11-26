@@ -770,6 +770,10 @@ async fn an_area_grant_is_served_there_and_this_devices_ids_stay_here() {
         ("settings", methods::MUTATE, json!({ "op": "renameDevice", "deviceId": "device-laptop", "name": "x", "targetDeviceId": "device-server" }), "device device-laptop"),
         ("terminal", methods::OPEN_TERMINAL, json!({ "chatId": "own-chat", "cols": 80, "rows": 24, "targetDeviceId": "device-server" }), "chat own-chat"),
         ("full", methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "own-chat", "cwd": "/x", "targetDeviceId": "device-server" }), "chat own-chat"),
+        // By any key, at any depth.
+        ("settings", methods::GET_TITLE_SETTINGS, json!({ "parentChatId": "own-chat", "targetDeviceId": "device-server" }), "chat own-chat"),
+        ("settings", methods::GET_TITLE_SETTINGS, json!({ "x": { "sourceSpaceId": "lap-p" }, "targetDeviceId": "device-server" }), "project lap-p"),
+        ("logins", methods::LIST_AGENT_ACCOUNTS, json!({ "requesterDeviceId": "device-laptop", "targetDeviceId": "device-server" }), "device device-laptop"),
     ];
     for (area, method, params, what) in own {
         let said = t.window.call(method, params.clone()).await.expect_err(area).to_string();

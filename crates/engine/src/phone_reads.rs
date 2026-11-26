@@ -110,6 +110,74 @@ pub(crate) fn too_wide(folder: &Path, home: Option<&Path>, data: &[PathBuf]) -> 
         .then_some("the folder is the home folder, above it, or holds Zend's data")
 }
 
+/// The refusal a paired server gets for a path in Zend's own folders.
+pub(crate) const DATA_FENCED: &str =
+    "That path is in Zend's own data or settings: a paired server never opens it, whatever it's granted";
+
+/// Zend's own folders, which a paired server never opens by path,
+/// whatever it's granted (`files`, `full`): its data (the peers and
+/// their grants, keys, logins) and its settings. Its chats' working
+/// folders in them (`worktrees`, `scratch`) aren't fenced.
+pub(crate) struct DataFence {
+    protected: Vec<PathBuf>,
+    exempt: Vec<PathBuf>,
+}
+
+impl DataFence {
+    /// The fence for the request being served: `None` unless it's a
+    /// paired server's (read it in the request's own task).
+    pub(crate) fn for_caller(data_dir: &Path) -> Option<DataFence> {
+        if !matches!(zend_rpc::caller(), zend_rpc::Caller::PeerServer { .. }) {
+            return None;
+        }
+        let home = crate::repos::session_home_dir().ok();
+        let mut dirs = vec![data_dir.to_path_buf()];
+        if let Some(home) = &home {
+            dirs.push(home.join(".zend"));
+            dirs.push(home.join(".config").join("zend"));
+        }
+        if let Some(config) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            dirs.push(PathBuf::from(config).join("zend"));
+        }
+        let protected: Vec<PathBuf> = dirs.iter().map(|dir| canonical_lenient(dir)).collect();
+        let exempt = protected.iter().flat_map(|dir| [dir.join("worktrees"), dir.join("scratch")]).map(|dir| canonical_lenient(&dir)).collect();
+        Some(DataFence { protected, exempt })
+    }
+
+    /// Whether `path` (as named; links followed where it exists) is in
+    /// one of Zend's own folders.
+    pub(crate) fn refuses(&self, path: &Path) -> bool {
+        let path = canonical_lenient(path);
+        self.protected.iter().any(|dir| path.starts_with(dir)) && !self.exempt.iter().any(|dir| path.starts_with(dir))
+    }
+
+    /// [`DataFence::refuses`], or `root` holds one of them (a search or
+    /// a watch of it would reach in).
+    pub(crate) fn refuses_tree(&self, root: &Path) -> bool {
+        let canonical = canonical_lenient(root);
+        self.refuses(root)
+            || (!self.exempt.iter().any(|dir| canonical.starts_with(dir)) && self.protected.iter().any(|dir| dir.starts_with(&canonical)))
+    }
+}
+
+/// `path` canonical as far as it exists, the rest as named.
+fn canonical_lenient(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path.to_path_buf();
+    loop {
+        if let Ok(found) = std::fs::canonicalize(&at) {
+            return rest.into_iter().rev().fold(found, |path, part: std::ffi::OsString| path.join(part));
+        }
+        match (at.file_name().map(|n| n.to_os_string()), at.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                at = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// The refusal another Zend gets for a file outside its chat's folder.
 pub(crate) const OUTSIDE: &str =
     "That file is outside the chat's folder: another Zend reads only its chats' folders";

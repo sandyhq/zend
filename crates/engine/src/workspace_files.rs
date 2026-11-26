@@ -284,6 +284,7 @@ impl WorkspaceFiles {
     ) -> Result<ResolvedWorkspace, WorkspaceFilesError> {
         let fenced = crate::phone_reads::fenced();
         let workspace = self.resolve_any_target(target).await?;
+        self.data_fence(&workspace.root, false)?;
         if fenced {
             let home = crate::repos::session_home_dir().ok();
             let data = [self.inner.repos.data_dir().to_path_buf()];
@@ -294,6 +295,25 @@ impl WorkspaceFiles {
             }
         }
         Ok(workspace)
+    }
+
+    /// A paired server's path in Zend's own folders (`tree`: or a folder
+    /// holding one) refused, whatever it's granted
+    /// ([`crate::phone_reads::DataFence`]). Read in the request's task.
+    pub(crate) fn data_fence(&self, path: &Path, tree: bool) -> Result<(), WorkspaceFilesError> {
+        let Some(fence) = crate::phone_reads::DataFence::for_caller(self.inner.repos.data_dir()) else {
+            return Ok(());
+        };
+        if if tree { fence.refuses_tree(path) } else { fence.refuses(path) } {
+            return Err(WorkspaceFilesError::Authorization(crate::phone_reads::DATA_FENCED.into()));
+        }
+        Ok(())
+    }
+
+    /// [`WorkspaceFiles::data_fence`] of `path` as a call names it: an
+    /// absolute path, or one in `root`.
+    fn data_fence_at(&self, root: &Path, path: &str) -> Result<(), WorkspaceFilesError> {
+        if path.starts_with('/') { self.data_fence(Path::new(path), false) } else { self.data_fence(&root.join(path), false) }
     }
 
     async fn resolve_any_target(
@@ -442,6 +462,7 @@ impl WorkspaceFiles {
         request: ListWorkspaceDirectoryRequest,
     ) -> Result<WorkspaceDirectoryPage, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.directory)?;
         let directory = WorkspaceRelativePath::directory(&request.directory)?;
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_on_drop = CancelOnDrop::new(cancel.clone());
@@ -475,6 +496,7 @@ impl WorkspaceFiles {
     ) -> Result<Vec<WorkspaceFileSearchMatch>, WorkspaceFilesError> {
         validate_name_search_query(&request.query, request.include_ignored)?;
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence(&workspace.root, true)?;
         let limit =
             usize::from(request.limit.unwrap_or(MAX_SEARCH_RESULTS as u16)).min(MAX_SEARCH_RESULTS);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -502,6 +524,7 @@ impl WorkspaceFiles {
     ) -> Result<WorkspaceContentSearchResult, WorkspaceFilesError> {
         validate_workspace_search_query(&request.query)?;
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence(&workspace.root, true)?;
         let search = self.inner.repos.workspace_search().clone();
         tokio::task::spawn_blocking(move || {
             search_content_blocking(&search, &workspace.root, &request)
@@ -515,6 +538,7 @@ impl WorkspaceFiles {
         request: WarmWorkspaceSearchRequest,
     ) -> Result<WarmWorkspaceSearchResult, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence(&workspace.root, true)?;
         let search = self.inner.repos.workspace_search().clone();
         let state = tokio::task::spawn_blocking(move || search.warm(&workspace.root))
             .await
@@ -533,6 +557,7 @@ impl WorkspaceFiles {
         request: ReadWorkspaceFileRequest,
     ) -> Result<WorkspaceFileText, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.path)?;
         // Only a chat target may read by absolute path; space targets keep
         // the workspace-relative grammar.
         let absolute = request.target.chat_id.is_some() && request.path.starts_with('/');
@@ -559,6 +584,7 @@ impl WorkspaceFiles {
         request: zend_proto::ReadWorkspaceImageRequest,
     ) -> Result<zend_proto::WorkspaceImageChunk, WorkspaceFilesError> {
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.path)?;
         let absolute = request.target.chat_id.is_some() && request.path.starts_with('/');
         let fenced = crate::phone_reads::fenced();
         if !absolute
@@ -603,6 +629,7 @@ impl WorkspaceFiles {
     ) -> Result<WriteWorkspaceFileOutcome, WorkspaceFilesError> {
         let bytes = encode_write_text(&request)?;
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence_at(&workspace.root, &request.path)?;
         if request.expected_checkout_id.is_empty()
             || request.expected_checkout_id != workspace.checkout_id
         {
@@ -661,6 +688,7 @@ impl WorkspaceFiles {
             ));
         }
         let workspace = self.resolve_target(&request.target).await?;
+        self.data_fence(&workspace.root, true)?;
         {
             let mut watches = lock(&self.inner.watches);
             if let Some(existing) = watches.get(&workspace.checkout_id).cloned() {

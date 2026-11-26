@@ -322,6 +322,9 @@ struct SwitchRefParams {
     ref_name: String,
 }
 
+/// Why a paired server's new worktree has no setup run.
+const PEER_SETUP_NOT_RUN: &str = "The project's setup action didn't run: your server isn't granted terminal here";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateWorktreeParams {
@@ -1525,11 +1528,9 @@ impl EngineRpc {
             space_id: p.space_id.clone(),
             checkout_path: p.path.clone(),
         };
-        self.workspace_files
-            .resolve_target(&target)
-            .await
-            .map(|workspace| workspace.root)
-            .map_err(Into::into)
+        let root = self.workspace_files.resolve_target(&target).await.map(|workspace| workspace.root)?;
+        self.workspace_files.data_fence(&root, true)?;
+        Ok(root)
     }
 
     /// What makes this device's [`crate::phone_reads::Scope`]: its chats'
@@ -1550,6 +1551,8 @@ impl EngineRpc {
     /// dotfiles checkout). Git's own files (a worktree's git dir in its main
     /// repository) aren't the caller's path and aren't fenced.
     async fn scoped_git_path(&self, path: &str) -> Result<(), RpcError> {
+        // Zend's own folders: never a paired server's, whatever it holds.
+        self.workspace_files.data_fence(std::path::Path::new(path), true)?;
         if !crate::phone_reads::fenced() {
             return Ok(());
         }
@@ -5906,6 +5909,17 @@ impl RpcService for EngineRpc {
                     worktree,
                     setup_action: None,
                     setup_error: None,
+                };
+                // A project's setup action is a command: a paired server's
+                // worktree runs it only with `terminal` (or `full`);
+                // otherwise the worktree is made and its setup left unrun.
+                let setup_space = match (setup_space, zend_rpc::caller()) {
+                    (Some(_), zend_rpc::Caller::PeerServer { peer, grants }) if !grants.covers(zend_rpc::Scope::Terminal) => {
+                        tracing::info!(peer = %peer.get(..12).unwrap_or(&peer), worktree = %outcome.worktree.path, "peer link: a paired server's worktree made without its setup action (no terminal grant)");
+                        outcome.setup_error = Some(PEER_SETUP_NOT_RUN.into());
+                        None
+                    }
+                    (setup_space, _) => setup_space,
                 };
                 if let Some((space, project_root)) = setup_space {
                     match self
