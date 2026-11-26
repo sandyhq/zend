@@ -476,13 +476,31 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 			face(),
 		}
 	end
+	-- A row that changes the project on its device: with a paired server that
+	-- doesn't grant projects.manage, shown disabled (nothing is sent); the
+	-- group says why.
+	local function allowed(): boolean
+		return projects.grants(p:get().device, "projects.manage")
+	end
+	local function gated(props: { [string]: any }): Node
+		local off = table.clone(props)
+		off.on_click = nil
+		off.disabled = true
+		return ui.column {
+			w_full = true,
+			ui.show(allowed, Menu.Row(props)),
+			ui.show(function(): boolean
+				return not allowed()
+			end, Menu.Row(off)),
+		}
+	end
 	local menu = ui.menu(Menu.panel {
 		open = menu_open,
 		anchor = more,
 		placement = { side = "bottom", align = "end", offset = 4 },
 		w = 220,
 		Menu.Group {
-			Menu.Row {
+			gated {
 				icon = "pen",
 				label = locale.s("settings.projects.rename"),
 				on_click = function()
@@ -491,7 +509,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 					renaming:set(id)
 				end,
 			},
-			Menu.Row {
+			gated {
 				icon = "palette",
 				label = locale.s("settings.projects.change_icon"),
 				on_click = function()
@@ -519,7 +537,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 		},
 		Menu.Rule {},
 		Menu.Group {
-			Menu.Row {
+			gated {
 				icon = "trash-bin-minimalistic",
 				label = locale.s("settings.projects.remove"),
 				danger = true,
@@ -598,6 +616,37 @@ local function group(_g: Group, _i: number, g: State<Group>): Node
 				return g:get().here
 			end, ds.Badge { ui.t("settings.devices.this_device"), size = "sm" }),
 		},
+		-- A paired server that doesn't grant projects.manage: its projects
+		-- show, and the group says plainly why they can't be changed here.
+		ui.show(function(): boolean
+			return projects.not_granted(g:get().id, "projects.manage") ~= nil
+		end, ui.column {
+			id = "settings-projects-not-granted",
+			role = "status",
+			px = ds.Settings.inset(),
+			gap = "$space.1",
+			ui.text {
+				function(): string
+					local why = projects.not_granted(g:get().id, "projects.manage")
+					return if why then locale.s("shell.add_project.not_granted", why) else ""
+				end,
+				text_size = "$font.size.sm",
+				color = "$text.secondary",
+				wrap = true,
+				w_full = true,
+			},
+			ui.text {
+				function(): string
+					local why = projects.not_granted(g:get().id, "projects.manage")
+					return if why then locale.s("shell.add_project.not_granted_hint", why) else ""
+				end,
+				text_size = "$font.size.xs",
+				color = "$text.tertiary",
+				wrap = true,
+				literal = true,
+				w_full = true,
+			},
+		}),
 		ds.Settings.Each(list, project_row, {
 			key = function(p: Row): string
 				return p.key or p.id

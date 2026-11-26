@@ -158,6 +158,25 @@ pub(crate) async fn install_latest(agent: RegistryAgent, expected: Option<&str>)
     service.add(agent.registry_id()).await.map(drop).map_err(|e| e.to_string())
 }
 
+/// What a paired server is shown of an agent's environment where a value
+/// stands: never the value (it holds keys).
+const MASK: &str = "********";
+
+/// Whether the call came from a paired server over the peer link.
+fn from_server() -> bool {
+    matches!(zend_rpc::caller(), zend_rpc::Caller::PeerServer { .. })
+}
+
+/// An agent's environment as the caller may see it: `KEY=VALUE` lines; for a
+/// paired server `KEY=********` (names only: the values stay on this device).
+fn shown_env(env: &BTreeMap<String, String>) -> String {
+    if from_server() {
+        env.keys().map(|name| format!("{name}={MASK}\n")).collect()
+    } else {
+        reg::env_text(env)
+    }
+}
+
 fn service() -> Result<Arc<AcpRegistry>, RpcError> {
     SERVICE
         .get()
@@ -305,16 +324,32 @@ pub(crate) async fn dispatch(
         methods::GET_ACP_AGENT_ENV => {
             let p: EnvParams = parse(params)?;
             let env = reg::user_env(agent_of(&p.id)?);
-            RpcReply::value(&json!({ "env": reg::env_text(&env) }))
+            RpcReply::value(&json!({ "env": shown_env(&env) }))
         }
         methods::SET_ACP_AGENT_ENV => {
             let p: EnvParams = parse(params)?;
-            let names = reg::parse_env(&p.env).map_err(RpcError::BadParams)?;
+            let mut names = reg::parse_env(&p.env).map_err(RpcError::BadParams)?;
             if let Some(name) = names.keys().find(|name| reg::reserved_env_name(name)) {
                 return Err(RpcError::BadParams(reserved(name)));
             }
-            let env = reg::set_user_env(agent_of(&p.id)?, &p.env).map_err(|e| RpcError::Failed(e.to_string()))?;
-            RpcReply::value(&json!({ "env": reg::env_text(&env) }))
+            let agent = agent_of(&p.id)?;
+            let mut text = p.env.clone();
+            if from_server() {
+                // What a server was shown (names, values masked) comes back
+                // as it was: a masked line keeps the value kept here.
+                let kept = reg::user_env(agent);
+                for (name, value) in names.iter_mut() {
+                    if value == MASK {
+                        *value = kept
+                            .get(name)
+                            .cloned()
+                            .ok_or_else(|| RpcError::BadParams(format!("{name} has no value here to keep")))?;
+                    }
+                }
+                text = reg::env_text(&names);
+            }
+            let env = reg::set_user_env(agent, &text).map_err(|e| RpcError::Failed(e.to_string()))?;
+            RpcReply::value(&json!({ "env": shown_env(&env) }))
         }
         methods::GET_ACP_AGENT_SIGN_IN => {
             let p: SignInParams = parse(params)?;

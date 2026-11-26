@@ -32,6 +32,7 @@ local locale = require("@ds/locale")
 local toast = require("@ds/toast")
 local status = require("@ds/status")
 local sessions = require("@account/sessions")
+local peer_area = require("@app/screens/settings/peer_area")
 local search = require("@app/screens/settings/search")
 local rename = require("@app/screens/settings/rename_row")
 local host = require("@app/screens/settings/host")
@@ -183,7 +184,10 @@ local icon_of = M.icon
 -- choosing one calls `choose` with its id. Built once: its options follow
 -- the devices as they come, go and are renamed, and the choice follows
 -- `shown`.
-function M.picker(shown: () -> string?, choose: (id: string) -> ()): Node
+-- `area`: the paired-server grant the page needs (settings, logins,
+-- updates); a server that doesn't grant it is listed too, as "Not granted"
+-- (choosing it says so on the page, with the command to run there).
+function M.picker(shown: () -> string?, choose: (id: string) -> (), area: string?): Node
 	local function computers(): { sessions.Device }
 		return sessions.computers(sessions.devices:get(), true)
 	end
@@ -219,7 +223,10 @@ function M.picker(shown: () -> string?, choose: (id: string) -> ()): Node
 							value = d.id,
 							label = d.name,
 							icon = icon_of(d.platform),
-							description = if not d.here and d.online == false then ui.t("settings.devices.offline") else nil,
+							description = if area and not peer_area.granted(d, area)
+								then ui.t("settings.peer.not_granted_option")
+								elseif not d.here and d.online == false then ui.t("settings.devices.offline")
+								else nil,
 						})
 					end
 					return options

@@ -205,6 +205,42 @@ async fn registry_agents_are_listed_added_as_harnesses_and_removed() {
     assert_eq!(set["env"], "FAKE_KEY=sk-1\nMODEL=m 1\n");
     let got = client.call(methods::GET_ACP_AGENT_ENV, json!({ "id": "fake-agent" })).await.unwrap();
     assert_eq!(got["env"], set["env"]);
+    // A paired server that holds logins is shown the names, never a value;
+    // what it sends back masked keeps the value here, a new one replaces it.
+    {
+        use zend_rpc::{Caller, Grant, Grants, RpcService};
+        let service = core.rpc_service();
+        // (Setting the whole environment is a terminal-scope call: it
+        // decides what a program is launched with.)
+        let as_server = |method: &'static str, params: Value| {
+            let service = service.clone();
+            async move {
+                let caller = Caller::PeerServer { peer: "server-node".into(), grants: Grants::new([Grant::Logins, Grant::Terminal]) };
+                match zend_rpc::with_caller(caller, service.handle(method, params)).await.expect("a server holding logins may ask") {
+                    zend_rpc::RpcReply::Value(v) => v,
+                    _ => panic!("a value"),
+                }
+            }
+        };
+        let seen = as_server(methods::GET_ACP_AGENT_ENV, json!({ "id": "fake-agent" })).await;
+        assert_eq!(seen["env"], "FAKE_KEY=********\nMODEL=********\n", "{seen}");
+        assert!(!seen.to_string().contains("sk-1") && !seen.to_string().contains("m 1"), "{seen}");
+        let sent = as_server(methods::SET_ACP_AGENT_ENV, json!({ "id": "fake-agent", "env": "FAKE_KEY=********\nMODEL=new model\n" })).await;
+        assert!(!sent.to_string().contains("sk-1") && !sent.to_string().contains("new model"), "{sent}");
+        let here = client.call(methods::GET_ACP_AGENT_ENV, json!({ "id": "fake-agent" })).await.unwrap();
+        assert_eq!(here["env"], "FAKE_KEY=sk-1\nMODEL=new model\n", "a masked line kept its value; a new one replaced it");
+        // (A masked line for a name that has no value here keeps nothing.)
+        let none = zend_rpc::with_caller(
+            Caller::PeerServer { peer: "server-node".into(), grants: Grants::new([Grant::Logins, Grant::Terminal]) },
+            service.handle(methods::SET_ACP_AGENT_ENV, json!({ "id": "fake-agent", "env": "OTHER=********\n" })),
+        )
+        .await;
+        assert!(none.is_err(), "a masked line with nothing to keep is refused");
+        client
+            .call(methods::SET_ACP_AGENT_ENV, json!({ "id": "fake-agent", "env": "FAKE_KEY=sk-1\nMODEL=m 1\n" }))
+            .await
+            .unwrap();
+    }
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(dir.path().join("agents/fake-agent/env")).unwrap().permissions().mode();

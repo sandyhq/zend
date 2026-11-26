@@ -75,16 +75,7 @@ pub fn install(host: &ScriptHost) {
         let device = field(&arg, "device").ok_or("Choose a device")?;
         let path = field(&arg, "path").ok_or("Choose a folder")?;
         let id = crate::sessions::new_id();
-        let mut params = json!({
-            "op": "createSpace",
-            "spaceId": id,
-            "deviceId": device,
-            "path": path,
-            "gitDetected": arg.field("git").is_some_and(Value::truthy),
-        });
-        if let Some(repo) = field(&arg, "repo") {
-            params["githubRepo"] = Json::from(repo);
-        }
+        let params = create_params(&id, &device, &path, arg.field("git").is_some_and(Value::truthy), field(&arg, "repo"));
         engine::get().call("Mutate", params).await?;
         Ok(Value::from(id.as_str()))
     });
@@ -100,13 +91,30 @@ pub fn install(host: &ScriptHost) {
 }
 
 /// `method` on the device `arg` names: through the relay when it's another.
-async fn call(method: &str, mut params: Json, arg: &Value) -> Result<Json, String> {
+async fn call(method: &str, params: Json, arg: &Value) -> Result<Json, String> {
+    engine::get().call(method, aimed(params, arg)).await
+}
+
+/// params aimed at the device arg names when that's another one (remote):
+/// the engine sends it there (a paired server too, under its projects.manage
+/// grant), never to this one's own.
+fn aimed(mut params: Json, arg: &Value) -> Json {
     if arg.field("remote").is_some_and(Value::truthy)
         && let Some(device) = field(arg, "device")
     {
         params["targetDeviceId"] = Json::from(device);
     }
-    engine::get().call(method, params).await
+    params
+}
+
+/// createSpace for a folder on a device: named by its device (the new id is
+/// no server's yet, so the engine routes it by the device).
+fn create_params(id: &str, device: &str, path: &str, git: bool, repo: Option<String>) -> Json {
+    let mut params = json!({ "op": "createSpace", "spaceId": id, "deviceId": device, "path": path, "gitDetected": git });
+    if let Some(repo) = repo {
+        params["githubRepo"] = Json::from(repo);
+    }
+    params
 }
 
 fn field(arg: &Value, key: &str) -> Option<String> {
@@ -119,20 +127,29 @@ fn value(json: &Json) -> Value {
 
 #[cfg(test)]
 mod tests {
-    /// A remote device's calls go through the relay, this one's don't.
+    /// A remote device's calls name it (the engine sends them there: a
+    /// paired server's too), this one's don't.
     #[test]
     fn another_devices_calls_name_it() {
         let arg = |remote: bool| zgx_script::Value::from_json(&format!(r#"{{"device":"box","remote":{remote}}}"#)).unwrap();
-        let target = |arg: &zgx_script::Value| {
-            let mut params = serde_json::json!({});
-            if arg.field("remote").is_some_and(zgx_script::Value::truthy)
-                && let Some(device) = super::field(arg, "device")
-            {
-                params["targetDeviceId"] = serde_json::Value::from(device);
-            }
-            params
-        };
-        assert_eq!(target(&arg(true))["targetDeviceId"], "box");
-        assert!(target(&arg(false)).get("targetDeviceId").is_none());
+        let params = |remote: bool| super::aimed(serde_json::json!({ "path": "/x" }), &arg(remote));
+        assert_eq!(params(true)["targetDeviceId"], "box");
+        assert_eq!(params(true)["path"], "/x");
+        assert!(params(false).get("targetDeviceId").is_none());
+    }
+
+    /// A project made on a server names its device and a new project id,
+    /// never a targetDeviceId (the engine routes createSpace by its device:
+    /// peer_view, plan step 6c).
+    #[test]
+    fn a_project_made_on_a_server_names_its_device() {
+        let params = super::create_params("p1", "srv", "/home/me/notes", true, Some("acme/notes".into()));
+        assert_eq!(params["op"], "createSpace");
+        assert_eq!(params["deviceId"], "srv");
+        assert_eq!(params["spaceId"], "p1");
+        assert_eq!(params["gitDetected"], true);
+        assert_eq!(params["githubRepo"], "acme/notes");
+        assert!(params.get("targetDeviceId").is_none());
+        assert!(super::create_params("p1", "srv", "/x", false, None).get("githubRepo").is_none());
     }
 }

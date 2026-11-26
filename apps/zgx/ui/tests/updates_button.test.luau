@@ -122,6 +122,24 @@ test("another device's Zend says when it updates there, and what stopping costs"
 	expect(app:has('role:button "Update · Zend"')).to_be(true)
 end)
 
+test("Update all names a paired server that doesn't grant updates, with the command", function()
+	local app = open({
+		row("here", "Claude Code", "claude-code", "update"),
+		row("granting", "Grok", "grok", "update"),
+	})
+	app:click("#updates-button")
+	app:frames(10)
+	app:click("#updates-all")
+	app:frames(20)
+	local tree = app:tree("#updates-review")
+	-- (Granting's update is listed; Closed, which doesn't grant, is said.)
+	expect(tree).to_contain("Grok")
+	expect(tree).to_contain("Closed doesn't grant updates")
+	expect(tree).never.to_contain("Granting doesn't grant")
+	-- (The note's own text is longer than the tree's line: the command is
+	-- peer_area.command, which the Plugins test reads in full.)
+end)
+
 test("Update all says what it will do first, and what it can't reach", function()
 	local app = open({
 		row("here", "Claude Code", "claude-code", "update"),

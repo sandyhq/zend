@@ -1000,6 +1000,30 @@ pub(crate) fn other_devices_online() -> Vec<String> {
     })
 }
 
+/// Whether the paired server `device` is known to refuse `area` (a scope
+/// name, e.g. "settings"): in the devices as this window last heard them, a
+/// paired server whose grants don't open it. A device that isn't a paired
+/// server, or isn't listed (yet): no, the engine decides.
+pub(crate) fn refuses(devices: &Json, device: &str, area: &str) -> bool {
+    devices
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|d| d["id"].as_str() == Some(device))
+        .is_some_and(|d| !server_grants(d, area))
+}
+
+/// [`refuses`], by the devices this window has now.
+pub(crate) fn server_refuses(device: &str, area: &str) -> bool {
+    SESSIONS.with(|s| refuses(&s.devices.borrow(), device, area))
+}
+
+/// A test's devices, as the window would have heard them.
+#[cfg(test)]
+pub(crate) fn set_devices_for_tests(devices: Json) {
+    SESSIONS.with(|s| *s.devices.borrow_mut() = devices);
+}
+
 #[derive(Clone, Copy)]
 enum Slot {
     Chats,
@@ -2880,6 +2904,23 @@ mod tests {
             assert!(!super::server_grants(&silent, area), "{area}: it didn't say");
         }
         assert!(super::server_grants(&files, "sessions.read") && super::server_grants(&silent, "sessions.read"));
+    }
+
+    /// A page asks before it sends: only a listed paired server whose grants
+    /// don't open the area is refused.
+    #[test]
+    fn a_listed_server_without_the_grant_is_refused() {
+        let devices = json!([
+            { "id": "here" },
+            { "id": "ai", "capabilities": ["paired-server"], "peerAreas": ["sessions.read", "files"] },
+            { "id": "full", "capabilities": ["paired-server"], "peerAreas": ["full"] },
+            { "id": "old", "capabilities": ["paired-server"] },
+        ]);
+        assert!(super::refuses(&devices, "ai", "settings") && !super::refuses(&devices, "ai", "files"));
+        assert!(!super::refuses(&devices, "full", "updates"));
+        assert!(super::refuses(&devices, "old", "logins") && !super::refuses(&devices, "old", "sessions.read"));
+        assert!(!super::refuses(&devices, "here", "settings"), "not a server");
+        assert!(!super::refuses(&devices, "later", "settings"), "not listed: the engine decides");
     }
 
     /// Scripts see a server's areas as `peer_areas`; any other device has none.

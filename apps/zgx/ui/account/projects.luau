@@ -24,11 +24,74 @@
 --                                       promise; nil when it can't be had)
 --   projects.picture_size(path)         a picture's { w, h }, to crop it
 --
+--   projects.grants(device, area)      whether a paired server grants `area`
+--                                       ("projects.manage"); true for any other
+--                                       device
+--   projects.not_granted(device, area)  nil when granted; else { server, area,
+--                                       device (this one's name), command }, the words of
+--                                       "doesn't grant" and the command to run
+--                                       on the server
+--   projects.refused_area(err)          the area an engine refusal says a server
+--                                       doesn't grant ("peer_refused: …"), or nil
+--
 -- `device` is a device's id.
 
 local sessions = require("@account/sessions")
 
 local M = {}
+
+-- Whether the device record `d` grants `area` (a scope name, crates/rpc
+-- Scope::name), as its `peer_areas` say (src/sessions.rs server_grants): a
+-- device that isn't a paired server does; a server's "full" opens every area;
+-- one that didn't say has only the sessions areas.
+function M.grants_of(d: any, area: string): boolean
+	if not d or not d.paired then
+		return true
+	end
+	local areas = d.peer_areas
+	if type(areas) ~= "table" then
+		return string.sub(area, 1, 9) == "sessions."
+	end
+	for _, a in areas do
+		if a == area or a == "full" then
+			return true
+		end
+	end
+	return false
+end
+local function record(device: string): any
+	for _, d in sessions.devices:get() do
+		if d.id == device then
+			return d
+		end
+	end
+	return nil
+end
+function M.grants(device: string, area: string): boolean
+	return M.grants_of(record(device), area)
+end
+function M.not_granted_of(d: any, area: string): { server: string, area: string, device: string, command: string }?
+	if M.grants_of(d, area) then
+		return nil
+	end
+	local mine = ""
+	local here = sessions.here:get()
+	for _, x in sessions.devices:get() do
+		if x.id == here or x.here then
+			mine = x.name
+		end
+	end
+	local name = if mine ~= "" then mine else "<this device>"
+	return { server = d.name, area = area, device = name, command = `zend peer grant {name} {area}` }
+end
+function M.not_granted(device: string, area: string): { server: string, area: string, device: string, command: string }?
+	return M.not_granted_of(record(device), area)
+end
+-- (The engine's words: "peer_refused: <server>: <server> doesn't grant <area>, so …".)
+function M.refused_area(err: any): string?
+	local text = if type(err) == "string" then err elseif type(err) == "table" and err.message then tostring(err.message) else ""
+	return string.match(text, "doesn't grant ([%w%.]+)")
+end
 
 local function on(device: string): { [string]: any }
 	local here = sessions.now:peek().here

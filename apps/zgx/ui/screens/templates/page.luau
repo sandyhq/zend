@@ -34,6 +34,8 @@ local control = require("@ds/control")
 local state = require("@app/screens/templates/state")
 local words = require("@app/screens/plugins/words")
 local ThemeSwatch = require("@ds/theme_swatch")
+local devices_page = require("@app/screens/settings/devices")
+local peer_looks = require("@app/screens/settings/peer_looks")
 
 local M = {}
 
@@ -579,7 +581,7 @@ local function dialogs(): { Node }
 	}
 end
 
-function M.View(): Node
+local function this_view(): Node
 	-- As it opens: each one from a package checked where it came from.
 	if os.time() - checked_at:peek() > 600 then
 		checked_at:set(os.time())
@@ -591,6 +593,8 @@ function M.View(): Node
 	return ds.Settings.Catalog {
 		title = ui.t("templates.page.title"),
 		description = ui.t("templates.page.description"),
+		trail = devices_page.picker(peer_looks.shown, peer_looks.choose, "settings"),
+		trail_top = true,
 		search = { value = query, placeholder = ui.t("templates.page.search") },
 		tabs = {
 			value = tab,
@@ -624,6 +628,18 @@ function M.View(): Node
 		none = none,
 		overlays = dialogs(),
 	}
+end
+
+-- This computer's own page, or the server chosen's (settings/peer_looks).
+function M.View(): Node
+	return ui.presence(function(): string
+		return if peer_looks.device() then "server" else "this"
+	end, function(which: string): Node
+		if which == "server" then
+			return peer_looks.View("templates")
+		end
+		return this_view()
+	end, { w_full = true, items = "center", enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
 end
 
 return M

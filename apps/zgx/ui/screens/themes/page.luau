@@ -26,6 +26,8 @@ local ThemeSwatch = require("@ds/theme_swatch")
 local state = require("@app/screens/themes/state")
 local templates = require("@app/screens/templates/state")
 local route = require("@app/screens/shell/route")
+local devices_page = require("@app/screens/settings/devices")
+local peer_looks = require("@app/screens/settings/peer_looks")
 -- (Android has no file picker: no Import, its themes are the built-in ones.)
 local can_pick = require("@ds/platform").has("file_picker")
 
@@ -408,7 +410,7 @@ local function dialogs(): { Node }
 	}
 end
 
-function M.View(): Node
+local function this_view(): Node
 	-- The swatches' themes, kept while the page is open.
 	state.swatches()
 	return ui.column {
@@ -424,6 +426,8 @@ function M.View(): Node
 		ds.Settings.Catalog {
 			title = ui.t("themes.page.title"),
 			description = ui.t("themes.page.description"),
+			trail = devices_page.picker(peer_looks.shown, peer_looks.choose, "settings"),
+			trail_top = true,
 			search = { value = query, placeholder = ui.t("themes.page.search") },
 			tabs = {
 				value = tab,
@@ -461,6 +465,18 @@ function M.View(): Node
 			return carrying:get()
 		end, id = "themes-drop", label = ui.t("themes.page.drop") :: any },
 	}
+end
+
+-- This computer's own page, or the server chosen's (settings/peer_looks).
+function M.View(): Node
+	return ui.presence(function(): string
+		return if peer_looks.device() then "server" else "this"
+	end, function(which: string): Node
+		if which == "server" then
+			return peer_looks.View("themes")
+		end
+		return this_view()
+	end, { w_full = true, items = "center", enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
 end
 
 return M

@@ -593,13 +593,17 @@ function M.bind(c: Choices)
 		end
 		-- (Only a repository can make a worktree: in a plain folder the host
 		-- would refuse the run, so the pick waits for the next repository.)
-		if c.checkout:peek() == "worktree" and p.git then
+		-- (On a paired server a run carries no folder or worktree of its own, so
+		-- it runs in the project's folder there: no worktree is planned.)
+		local pd = device_row(p.device)
+		local on_server = pd ~= nil and pd.paired == true
+		if c.checkout:peek() == "worktree" and p.git and not on_server then
 			return { project = p.id, device = p.device, branch = name, cwd = p.path, worktree = true }
 		end
 		-- A local checkout: the folder as it is; a ref checked out in a
 		-- worktree of its own runs there.
 		for _, ref in refs:peek().list do
-			if ref.name == name and ref.worktree then
+			if ref.name == name and ref.worktree and not on_server then
 				return { project = p.id, device = p.device, branch = name, cwd = ref.worktree, worktree = false }
 			end
 		end

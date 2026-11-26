@@ -21,6 +21,8 @@ local ds = require("@ds")
 local host = require("@app/screens/settings/host")
 local search = require("@app/screens/settings/search")
 local locale = require("@ds/locale")
+local peer_area = require("@app/screens/settings/peer_area")
+local devices_page = require("@app/screens/settings/devices")
 
 local M = {}
 
@@ -88,6 +90,42 @@ export type About = {
 }
 
 M.now = ui.shared("about", { app_version = "", available = false } :: About)
+
+-- A paired server's update (src/peer_updates.rs): the server shown ("" this
+-- computer: the page as it is), what its engine said (shared `about_device`),
+-- and what this window is doing there. Asking a server that doesn't grant
+-- `updates` sends nothing: the page says so, with the command to run there.
+local chosen = ui.state("about_device_chosen", "")
+M.device_now = ui.shared("about_device", { device = "", state = "idle", available = false } :: any)
+M.device_doing = ui.state("about_device_doing", "")
+
+function M.device(): string?
+	local d = chosen:get()
+	return if d ~= "" then d else nil
+end
+
+local function here(): string?
+	for _, d in require("@account/sessions").devices:get() or {} do
+		if d.here then
+			return d.id
+		end
+	end
+	return nil
+end
+
+function M.choose(id: string)
+	local next = if id == here() then "" else id
+	if next == chosen:peek() then
+		return
+	end
+	M.device_doing:set("")
+	chosen:set(next)
+	host.invoke("peer_updates.show", next)
+end
+
+local function server_refused(): boolean
+	return peer_area.refused(M.device(), "updates")
+end
 
 -- What this window is doing about an update ("" nothing): "checking",
 -- "updating", "updated" (the engine starting again on `M.version`), or how
@@ -251,6 +289,44 @@ function M.describe(a: About, doing: string): Update
 	}
 end
 
+-- What the update row says for the server shown: the engine's own words
+-- (`describe`) over what that server said.
+local function server_update(): Update
+	local s: any = M.device_now:get()
+	return M.describe({
+		app_version = "",
+		engine_version = s.current,
+		latest = s.latest,
+		available = s.available == true,
+		checked_at = s.checked_at,
+		error = s.error,
+	} :: About, M.device_doing:get())
+end
+
+function M.check_server()
+	local d = M.device()
+	if not d or M.device_doing:peek() == "updating" then
+		return
+	end
+	M.device_doing:set("")
+	host.invoke("peer_updates.show", d)
+end
+
+function M.update_server()
+	local d = M.device()
+	if not d or M.device_doing:peek() == "updating" then
+		return
+	end
+	M.device_doing:set("updating")
+	host.call("peer_updates.apply", { device = d }):after(function(answer: any)
+		updated_to:set(answer and answer.version or "")
+		M.device_doing:set("updated")
+	end, function(err: any)
+		local word = err.message
+		M.device_doing:set(if word == "unmanaged" or word == "current" or word == "offline" then word else "failed")
+	end)
+end
+
 -- The version facts as text, for a bug report (in English, as support
 -- reads them).
 function M.summary(a: About): string
@@ -289,7 +365,55 @@ function M.view(): Node
 	return ds.Settings.Page {
 		title = ui.t("settings.about.title"),
 		description = ui.t("settings.about.description"),
-		ds.Settings.Section {
+		-- Updates are per device: whose (a choice once there's more than this
+		-- computer; the same one as Plugins' and Providers').
+		trail = devices_page.picker(function(): string?
+			return M.device()
+		end, M.choose, "updates"),
+		trail_top = true,
+		ui.show(server_refused, peer_area.Notice(M.device, "updates")),
+		ui.show(function(): boolean
+			return M.device() ~= nil and not server_refused()
+		end, ds.Settings.Section {
+			title = ui.t("settings.about.updates_section"),
+			ds.Settings.Group {
+				row("updates", {
+					label = function(): string
+						return server_update().title
+					end,
+					description = function(): string
+						return server_update().line
+					end,
+					control = ui.row {
+						items = "center",
+						ui.show(function(): boolean
+							return server_update().accent == true
+						end, ds.Button {
+							function(): string
+								return server_update().action or ""
+							end,
+							tone = "accent",
+							size = "sm",
+							on_click = M.update_server,
+						}),
+						ui.show(function(): boolean
+							local u = server_update()
+							return u.action ~= nil and not u.accent
+						end, ds.Button {
+							function(): string
+								return server_update().action or ""
+							end,
+							tone = "secondary",
+							size = "sm",
+							on_click = M.check_server,
+						}),
+					},
+				}),
+			},
+		}),
+		ui.show(function(): boolean
+			return M.device() == nil
+		end, ds.Settings.Section {
 			ds.Settings.Group {
 				row("version", {
 					label = "Zend",
@@ -330,10 +454,10 @@ function M.view(): Node
 					},
 				}),
 			},
-		},
+		}),
 		-- (Android: the store updates the app; no updater here.)
 		ui.show(function(): boolean
-			return require("@ds/platform").has("updates")
+			return M.device() == nil and require("@ds/platform").has("updates")
 		end, ds.Settings.Section {
 			title = ui.t("settings.about.updates_section"),
 			-- (Whether the app updates itself is fixed for the process.)

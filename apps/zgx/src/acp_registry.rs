@@ -118,6 +118,12 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
 }
 
 /// Who wrote it: the registry's authors, an address left as its name part.
+/// Whether `target` (a device's id; none: this one) is a paired server that
+/// doesn't grant the agents' area ([`crate::agents::AREA`]).
+fn target_refuses(target: Option<&str>) -> bool {
+    target.is_some_and(|t| crate::sessions::server_refuses(t, crate::agents::AREA))
+}
+
 fn by(entry: &Json) -> String {
     let authors: Vec<String> = entry["authors"]
         .as_array()
@@ -213,6 +219,13 @@ impl Registry {
             self.agents.borrow_mut().clear();
             self.look.set(Look::Looking);
             self.publish();
+        }
+        // (A paired server that doesn't grant logins: not asked; Providers
+        // says so.)
+        if target_refuses(self.target.borrow().as_deref()) {
+            self.look.set(Look::Unavailable);
+            self.publish();
+            return;
         }
         let params = self.addressed(json!({ "refresh": refresh }));
         match engine::get().call("ListAcpRegistry", params).await {
