@@ -18,6 +18,7 @@ local Menu = require("@ds/menu")
 local toast = require("@ds/toast")
 local status = require("@ds/status")
 local route = require("@app/screens/shell/route")
+local peer_area = require("@app/screens/settings/peer_area")
 
 local M = {}
 
@@ -658,6 +659,12 @@ local function review_list(): Node
 	end
 	if p.here then
 		note(locale.s("shell.updates.plan_here"))
+	end
+	-- A paired server that doesn't grant updates: said, not left out silently.
+	for _, d in sessions.devices:get() or {} do
+		if d.paired and not peer_area.granted(d, "updates") then
+			note(locale.s("shell.updates.not_granted", { device = d.name, command = peer_area.command("updates") }))
+		end
 	end
 	return ui.column {
 		id = "updates-review",

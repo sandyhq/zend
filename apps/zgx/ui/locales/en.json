@@ -2434,7 +2434,24 @@
     "peer": {
       "not_granted_title": "{device} doesn't grant {area}",
       "not_granted_body": "Nothing is sent to {device} for this page. To allow it, run this on {device}:",
-      "not_granted_option": "Not granted"
+      "not_granted_option": "Not granted",
+      "themes_description": "The themes on another computer, worn there and not on this one.",
+      "templates_description": "The templates on another computer, run there and not on this one.",
+      "search_themes": "Search themes",
+      "search_templates": "Search templates",
+      "on_device": "On {device}",
+      "use": "Use",
+      "in_use": "In use",
+      "delete_label": "Delete {name}",
+      "delete_title": "Delete it there?",
+      "delete_body": "{name} is removed from {device}. This computer's own stay as they are.",
+      "none_title": "Nothing of its own there",
+      "none_body": "What this computer's agents or people add there shows here.",
+      "failed_title": "Couldn't ask {device}",
+      "couldnt_use": "Couldn't use it on {device}",
+      "couldnt_delete": "Couldn't delete it on {device}",
+      "themes_hint": "Importing a theme stays on this computer: bring it in here, not there.",
+      "templates_hint": "Installing, allowing and signing a template stay on this computer, never on a server."
     }
   },
   "common": {
@@ -2798,7 +2815,8 @@
       "skipped": "{n, plural, one {Skipped # update} other {Skipped # updates}}",
       "skipped_body": "You'll see it again when there's a newer version",
       "undo": "Undo",
-      "skip_hint": "Hide until there's a newer version"
+      "skip_hint": "Hide until there's a newer version",
+      "not_granted": "{device} doesn't grant updates, so its updates aren't shown here. To allow it, run this on {device}: {command}"
     },
     "activity": {
       "wake": "Wake",

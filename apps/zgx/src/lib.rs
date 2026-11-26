@@ -83,6 +83,7 @@ mod system_sound;
 mod terminal;
 mod tool_details;
 mod tool_open;
+mod peer_looks;
 mod themes;
 mod transparency;
 mod visuals;
@@ -933,6 +934,8 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         links::install(&host);
         // Your imported VS Code themes (src/themes.rs).
         themes::install(cx, &host);
+        // Another device's themes and templates (src/peer_looks.rs).
+        peer_looks::install(&host);
     }
     host
 }
