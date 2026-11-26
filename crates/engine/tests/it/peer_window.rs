@@ -774,6 +774,8 @@ async fn an_area_grant_is_served_there_and_this_devices_ids_stay_here() {
         ("settings", methods::GET_TITLE_SETTINGS, json!({ "parentChatId": "own-chat", "targetDeviceId": "device-server" }), "chat own-chat"),
         ("settings", methods::GET_TITLE_SETTINGS, json!({ "x": { "sourceSpaceId": "lap-p" }, "targetDeviceId": "device-server" }), "project lap-p"),
         ("logins", methods::LIST_AGENT_ACCOUNTS, json!({ "requesterDeviceId": "device-laptop", "targetDeviceId": "device-server" }), "device device-laptop"),
+        ("settings", methods::MUTATE, json!({ "op": "changeSidebarPin", "change": { "action": "unpin", "sessionId": "own-chat" }, "targetDeviceId": "device-server" }), "chat own-chat"),
+        ("settings", methods::GET_TITLE_SETTINGS, json!({ "chats": ["srv-chat", "own-chat"], "targetDeviceId": "device-server" }), "chat own-chat"),
     ];
     for (area, method, params, what) in own {
         let said = t.window.call(method, params.clone()).await.expect_err(area).to_string();

@@ -1108,9 +1108,15 @@ pub(crate) enum IdKind {
 
 /// Every id `params` names, at any depth: each string (or list of
 /// strings) under a key `chatId`/`…ChatId`, `spaceId`/`…SpaceId`,
-/// `deviceId`/`…DeviceId` (and their plurals, `…Ids`). Empty ones aren't ids.
+/// `deviceId`/`…DeviceId` (and their plurals, `…Ids`), and `sessionId`,
+/// `chats` (chats). Empty ones aren't ids. A `checkoutId` isn't one: it
+/// is a checkout's content id, not a chat's.
 pub(crate) fn id_fields(params: &Value) -> Vec<(IdKind, String)> {
     fn kind(key: &str) -> Option<IdKind> {
+        // A sidebar pin's chat, a list of chats.
+        if key == "sessionId" || key == "chats" {
+            return Some(IdKind::Chat);
+        }
         let key = key.strip_suffix('s').filter(|k| k.ends_with("Id")).unwrap_or(key);
         [("chatId", "ChatId", IdKind::Chat), ("spaceId", "SpaceId", IdKind::Space), ("deviceId", "DeviceId", IdKind::Device)]
             .into_iter()

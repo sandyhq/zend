@@ -213,6 +213,21 @@ async fn registry_agents_are_listed_added_as_harnesses_and_removed() {
     let agent = zend_proto::RegistryAgent::new("fake-agent").unwrap();
     let (_, _, env) = zend_harness::acp_registry::launch(agent).unwrap();
     assert!(env.contains(&("FAKE_KEY".to_owned(), "sk-1".to_owned())), "{env:?}");
+    // A key or an environment never sets what changes how programs run
+    // (the loader's, an interpreter's, a shell's, git's); a key is set.
+    for var in ["LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "PYTHONSTARTUP", "PERL5OPT", "BASH_ENV", "PATH", "GIT_SSH_COMMAND"] {
+        let key = client.call(methods::SET_ACP_AGENT_KEY, json!({ "id": "fake-agent", "var": var, "value": "/tmp/evil" })).await;
+        assert!(key.as_ref().is_err_and(|e| e.to_string().contains("changes how programs run")), "key {var}: {key:?}");
+        let env = client.call(methods::SET_ACP_AGENT_ENV, json!({ "id": "fake-agent", "env": format!("FAKE_KEY=sk-1\n{var}=/tmp/evil\n") })).await;
+        assert!(env.as_ref().is_err_and(|e| e.to_string().contains("changes how programs run")), "env {var}: {env:?}");
+    }
+    client
+        .call(methods::SET_ACP_AGENT_KEY, json!({ "id": "fake-agent", "var": "FAKE_API_KEY", "value": "sk-2" }))
+        .await
+        .expect("a key");
+    let (_, _, env) = zend_harness::acp_registry::launch(agent).unwrap();
+    assert!(env.contains(&("FAKE_API_KEY".to_owned(), "sk-2".to_owned())), "{env:?}");
+    assert!(!env.iter().any(|(k, _)| zend_harness::acp_registry::reserved_env_name(k)), "{env:?}");
 
     // One of your own, through the same harness.
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/fixtures/fake-acp.sh");

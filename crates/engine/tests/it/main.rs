@@ -8,12 +8,39 @@
 /// never the real `~/.zend/worktrees` (`ZEND_WORKTREES_DIR`, which
 /// `Repos::new` reads). Set as the binary loads, before any test thread,
 /// so every suite's engines get it without a call of their own.
+/// It's removed as the binary exits (`atexit`, a failed run's too), and a
+/// killed run's is removed by the next one.
 extern "C" fn isolate_worktrees() {
-    if std::env::var_os("ZEND_WORKTREES_DIR").is_none_or(|dir| dir.is_empty()) {
-        let dir = std::env::temp_dir().join(format!("zend-it-worktrees-{}", std::process::id()));
-        // SAFETY: runs as the binary loads, before main and any other thread.
-        unsafe { std::env::set_var("ZEND_WORKTREES_DIR", dir) };
+    if std::env::var_os("ZEND_WORKTREES_DIR").is_some_and(|dir| !dir.is_empty()) {
+        return;
     }
+    let temp = std::env::temp_dir();
+    #[cfg(target_os = "linux")]
+    for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let pid = name.to_str().and_then(|n| n.strip_prefix(WORKTREES_PREFIX)).and_then(|pid| pid.parse::<u32>().ok());
+        if pid.is_some_and(|pid| pid != std::process::id() && !std::path::Path::new("/proc").join(pid.to_string()).exists()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    let dir = temp.join(format!("{WORKTREES_PREFIX}{}", std::process::id()));
+    // SAFETY: runs as the binary loads, before main and any other thread.
+    unsafe {
+        std::env::set_var("ZEND_WORKTREES_DIR", &dir);
+        atexit(remove_worktrees);
+    }
+}
+
+const WORKTREES_PREFIX: &str = "zend-it-worktrees-";
+
+unsafe extern "C" {
+    fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+}
+
+/// This binary's worktrees folder gone as it exits.
+extern "C" fn remove_worktrees() {
+    let dir = std::env::temp_dir().join(format!("{WORKTREES_PREFIX}{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[used]

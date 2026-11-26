@@ -309,6 +309,10 @@ pub(crate) async fn dispatch(
         }
         methods::SET_ACP_AGENT_ENV => {
             let p: EnvParams = parse(params)?;
+            let names = reg::parse_env(&p.env).map_err(RpcError::BadParams)?;
+            if let Some(name) = names.keys().find(|name| reg::reserved_env_name(name)) {
+                return Err(RpcError::BadParams(reserved(name)));
+            }
             let env = reg::set_user_env(agent_of(&p.id)?, &p.env).map_err(|e| RpcError::Failed(e.to_string()))?;
             RpcReply::value(&json!({ "env": reg::env_text(&env) }))
         }
@@ -346,6 +350,9 @@ pub(crate) async fn dispatch(
                 && p.var.len() <= 64
                 && p.var.starts_with(|c: char| c.is_ascii_uppercase())
                 && p.var.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            if valid && reg::reserved_env_name(&p.var) {
+                return Err(RpcError::BadParams(reserved(&p.var)));
+            }
             let value = p.value.trim();
             if !valid || value.chars().any(char::is_control) || value.len() > 4096 {
                 return Err(RpcError::BadParams("not a key".into()));
@@ -371,6 +378,11 @@ pub(crate) async fn dispatch(
         }
         other => Err(RpcError::UnknownMethod(other.to_owned())),
     }
+}
+
+/// The refusal of a variable [`reg::reserved_env_name`] names.
+fn reserved(name: &str) -> String {
+    format!("{name} changes how programs run: it isn't an agent's key or setting")
 }
 
 fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {

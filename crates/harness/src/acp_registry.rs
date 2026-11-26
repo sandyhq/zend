@@ -494,6 +494,19 @@ fn env_file(agent: RegistryAgent) -> Option<PathBuf> {
 
 /// `KEY=VALUE` a line (blank lines and `#` comments skipped, an `export `
 /// before a key allowed), or why a line isn't one.
+/// Whether `name` is a variable that changes how programs run, not a
+/// setting or a key of an agent's: the loader's (`LD_*`, `DYLD_*`), an
+/// interpreter's (`NODE_OPTIONS`, `NODE_PATH`, `PYTHON*`, `PERL5*`,
+/// `RUBYOPT`), a shell's (`BASH_ENV`, `ENV`, `PATH`, `HOME`, `SHELL`)
+/// or git's (`GIT_*`). An agent's key or environment never sets one, from
+/// any caller.
+pub fn reserved_env_name(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    const PREFIXES: [&str; 5] = ["LD_", "DYLD_", "PYTHON", "PERL5", "GIT_"];
+    const NAMES: [&str; 8] = ["NODE_OPTIONS", "NODE_PATH", "RUBYOPT", "BASH_ENV", "ENV", "PATH", "HOME", "SHELL"];
+    PREFIXES.iter().any(|p| name.starts_with(p)) || NAMES.contains(&name.as_str())
+}
+
 pub fn parse_env(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut out = BTreeMap::new();
     for (n, line) in text.lines().enumerate() {
