@@ -75,6 +75,7 @@ mod plugins;
 mod previews;
 mod projects;
 mod relaunch;
+mod server_route;
 mod session_home;
 mod sessions;
 mod settings;

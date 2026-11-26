@@ -24,6 +24,7 @@ local M = {}
 -- Where the terminal runs (as the files pane works): the session's chat on
 -- its device, or a project's folder with none open.
 local target_of = files_paths.target_of
+local not_granted_words = files_paths.not_granted_words
 
 -- zgx's session for a tab (looked up, not started).
 local function session_of(tab_id: string): any?
@@ -78,7 +79,7 @@ M.Terminal = ui.component(function(props: Props): Node
 	end
 	-- Why it didn't open: one of ours (a message key), or the engine's own
 	-- words. (Plain strings: state holds no messages.)
-	local failed = ui.use_state(nil :: { key: string?, text: string? }?)
+	local failed = ui.use_state(nil :: { key: string?, text: string?, title: string? }?)
 	-- Opened once: its engine terminal and command kept with the tab. (A
 	-- beat after it's made: nothing is written while it's built.)
 	local t0 = tab()
@@ -96,7 +97,11 @@ M.Terminal = ui.component(function(props: Props): Node
 		else
 			local function fail(err: any)
 				local m = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
-				if m == "offline" then
+				local denied = not_granted_words(err)
+				if denied then
+					-- (A paired server that doesn't grant terminal: what it needs.)
+					failed:set({ title = denied.title, text = denied.body })
+				elseif m == "offline" then
 					failed:set({ key = "panel.terminal.offline" })
 				elseif string.find(string.lower(m), "unknown method", 1, true) then
 					-- (An engine from before terminals: what to do, not why.)
@@ -178,7 +183,7 @@ M.Terminal = ui.component(function(props: Props): Node
 					icon = "terminal",
 					size = "sm",
 					fill = true,
-					title = ui.t("panel.terminal.failed") :: any,
+					title = (if why and why.title then why.title else ui.t("panel.terminal.failed")) :: any,
 					body = (if why and why.key then ui.t(why.key) else (if why then why.text else nil) or "") :: any,
 				}
 			elseif which == "opening" then

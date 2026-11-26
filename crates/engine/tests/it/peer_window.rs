@@ -826,6 +826,24 @@ async fn an_area_grant_is_served_there_and_this_devices_ids_stay_here() {
     let heard: Vec<(String, Value)> = t.heard.lock().unwrap()[before..].to_vec();
     assert!(heard.iter().all(|(_, p)| !p.to_string().contains("own-chat") && !p.to_string().contains("lap-p") && !p.to_string().contains("device-laptop")), "the server heard: {heard:?}");
     assert_eq!(t.laptop.workspace.space("lap-p").unwrap().unwrap().name, None);
+
+    // A project's terminal with no chat (`space-canvas:<project>`, as the
+    // window opens it) is the server's project's: served there, not
+    // refused as a chat that isn't its own (plan step 6d).
+    let opened = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        t.window.call(methods::OPEN_TERMINAL, json!({ "chatId": "space-canvas:p", "cols": 80, "rows": 24, "targetDeviceId": "device-server" })),
+    )
+    .await
+    .expect("the project's terminal never answered");
+    let terminal = opened.expect("a project's terminal, served by the server");
+    assert!(terminal["cwd"].as_str().is_some_and(|cwd| cwd.ends_with("server-data-projects/p")), "{terminal}");
+    // (Its shell ended, or the test's engines wait on it at the end.)
+    t.window
+        .call(methods::CLOSE_TERMINAL, json!({ "terminalId": terminal["id"], "targetDeviceId": "device-server" }))
+        .await
+        .expect("the terminal, closed on the server");
+    assert!(t.heard.lock().unwrap().iter().any(|(m, _)| m == methods::OPEN_TERMINAL), "the server never heard the project's terminal");
 }
 
 /// What the window does to a server's chat (its config before the first

@@ -70,7 +70,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
     host.async_action("terminal.start", |arg| async move { crate::plugins::preview::refuse("terminal.start")?; start(arg).await });
     host.async_action("terminal.claimed", |arg| async move { claimed(arg).await });
     host.async_action("terminal.command", |arg| async move { crate::plugins::preview::refuse("terminal.command")?;
-        let device = crate::files::route_to(opt_text(arg.field("device"))).await;
+        let device = crate::server_route::route(opt_text(arg.field("device")), "terminal").await?;
         command(arg, device)
     });
     host.async_action("terminal.status", |arg| async move {
@@ -107,7 +107,12 @@ fn opt_text(value: Option<&Value>) -> Option<String> {
 /// be reached, what to do when it's from before terminals, else what it
 /// said.
 fn said(error: String) -> String {
-    if engine::outcome(&error) == "offline" {
+    // (A server that doesn't grant terminal: a refusal the panel says in
+    // words, src/server_route.rs.)
+    let error = crate::server_route::said(error);
+    if error.starts_with(crate::server_route::NOT_GRANTED) {
+        error
+    } else if engine::outcome(&error) == "offline" {
         "offline".into()
     } else if error.to_ascii_lowercase().contains("unknown method") {
         "Update Zend to use terminals here.".into()
@@ -119,7 +124,7 @@ fn said(error: String) -> String {
 /// A call about terminal `arg.id`, routed to `arg.device`.
 async fn call_for(method: &str, arg: &Value, mut params: Map<String, Json>) -> Result<Json, String> {
     params.insert("terminalId".into(), Json::String(text(arg.field("id"))));
-    if let Some(device) = crate::files::route_to(opt_text(arg.field("device"))).await {
+    if let Some(device) = crate::server_route::route(opt_text(arg.field("device")), "terminal").await? {
         params.insert("targetDeviceId".into(), Json::String(device));
     }
     engine::get().call(method, Json::Object(params)).await.map_err(said)
@@ -140,7 +145,7 @@ async fn open_params(target: &Value) -> Result<Map<String, Json>, String> {
     } else {
         return Err("no session or project".into());
     }
-    if let Some(device) = crate::files::route_to(opt_text(target.field("device"))).await {
+    if let Some(device) = crate::server_route::route(opt_text(target.field("device")), "terminal").await? {
         params.insert("targetDeviceId".into(), Json::String(device));
     }
     Ok(params)

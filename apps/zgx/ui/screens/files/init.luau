@@ -540,10 +540,22 @@ local function folder(w: Workspace, v: View, props: Props, here: () -> Where?): 
 		-- which shows; reading again brings the pane).
 		ui.presence(function(): string
 			local s = w.status:get()
-			return if s == "offline" or s == "failed" then s else "pane"
+			return if s == "offline" or s == "failed" or paths.not_granted(s) then s else "pane"
 		end, function(kind: string): Node
 			if kind == "pane" then
 				return pane
+			end
+			local denied = paths.not_granted_words(kind)
+			if denied then
+				-- A paired server that doesn't grant files: said plainly, with
+				-- the command that opens them (no retry: it needs the grant).
+				return ds.EmptyState {
+					icon = "folder",
+					size = "sm",
+					fill = true,
+					title = denied.title :: any,
+					body = denied.body :: any,
+				}
 			end
 			return ds.EmptyState {
 				icon = "folder",

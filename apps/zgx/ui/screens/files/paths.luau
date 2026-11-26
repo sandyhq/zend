@@ -32,6 +32,30 @@ function M.target_of(project: unknown, session: unknown): Target?
 	return nil
 end
 
+-- A paired server that doesn't grant the area a call is in: the host sends
+-- no call then and says "not_granted|<area>|<server>|<this device>"
+-- (src/server_route.rs). Where an error is one: { area, server, device }.
+function M.not_granted(err: unknown): { area: string, server: string, device: string }?
+	local m = if type(err) == "table" and (err :: any).message then tostring((err :: any).message) else tostring(err)
+	local area, server, device = string.match(m, "not_granted|([^|]*)|([^|]*)|([^|]*)$")
+	if area == nil or server == nil or device == nil then
+		return nil
+	end
+	return { area = area, server = server, device = device }
+end
+
+-- What such a page says, plainly and with the way on: the server doesn't
+-- grant the area, and the command to run on the server. Nil for any other
+-- error. (Words of the moment they're asked for.)
+function M.not_granted_words(err: unknown): { title: string, body: string }?
+	local g = M.not_granted(err)
+	if not g then
+		return nil
+	end
+	local p = { server = g.server, area = g.area, device = g.device }
+	return { title = ui.t("files.not_granted.title", p):get(), body = ui.t("files.not_granted.body", p):get() }
+end
+
 -- A path's last part (a file's name).
 function M.base_name(path: string): string
 	return string.match(path, "[^/]+$") or path

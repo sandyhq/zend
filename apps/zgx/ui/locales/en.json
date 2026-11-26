@@ -3415,6 +3415,10 @@
       "title": "Can't reach these files",
       "body": "The device this session runs on isn't answering."
     },
+    "not_granted": {
+      "title": "{server} doesn't grant {area}",
+      "body": "{server} hasn't opened {area} to this device. On {server}, run: zend peer grant {device} {area}"
+    },
     "unreadable": {
       "title": "These files couldn't be read",
       "body": "Zend couldn't list this folder."

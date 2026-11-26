@@ -24,7 +24,12 @@ local busy = ui.state("test_term_busy", false)
 local opened = 0
 local sessions: { [string]: any } = {}
 -- A new one: its bridge opens it (term-N), its id claimed after.
-tapi.start = function(_target: any): any
+tapi.start = function(target: any): any
+	-- A paired server that doesn't grant terminal: nothing opens, the host
+	-- says so (src/server_route.rs).
+	if target and target.device == "server-no-terminal" then
+		return settle(nil, "not_granted|terminal|AI|Laptop")
+	end
 	opened += 1
 	term_note(`open:term-{opened}`)
 	return settle({ command = `bridge term-{opened}`, claim = `claim-{opened}` })

@@ -1738,6 +1738,12 @@ pub(crate) fn server_grants(d: &Json, area: &str) -> bool {
     }
 }
 
+/// The devices the window knows (the engine's rows) and this device's id,
+/// for a page's call to a paired server (src/server_route.rs).
+pub(crate) fn with_devices<R>(f: impl FnOnce(&Json, Option<&str>) -> R) -> R {
+    SESSIONS.with(|s| f(&s.devices.borrow(), s.here.borrow().as_deref()))
+}
+
 /// Why the engine didn't remove a device, as a word for the page.
 fn removal_refused(error: &str) -> Outcome {
     if error.contains("this_device") {

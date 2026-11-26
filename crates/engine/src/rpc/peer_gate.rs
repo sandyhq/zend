@@ -183,6 +183,16 @@ impl EngineRpc {
         use crate::peer_view::{IdKind, id_fields};
         for (kind, id) in id_fields(params) {
             match kind {
+                // A project's terminal with no chat of its own is named by
+                // the project (`space-canvas:<project>`): held to the
+                // project, as any project id is.
+                IdKind::Chat if super::canvas_space_id(&id).is_some() => {
+                    let space = super::canvas_space_id(&id).unwrap_or_default();
+                    let here = self.workspace.space(space).map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if here.is_some_and(|space| space.device_id != own) {
+                        return Err(refused(format!("{method}: project {space} isn't one of this device's")));
+                    }
+                }
                 IdKind::Chat => {
                     let here = self.workspace.chat(&id).map_err(|e| RpcError::Failed(e.to_string()))?;
                     if !here.is_some_and(|chat| chat.device_id == own) {

@@ -117,7 +117,8 @@ end
 local function parent_of(path: string): string
 	return string.match(path, "^(.*)/[^/]*$") or ""
 end
-local base_name = require("@app/screens/files/paths").base_name
+local paths = require("@app/screens/files/paths")
+local base_name = paths.base_name
 local function under(path: string, dir: string): boolean
 	return path == dir or string.sub(path, 1, #dir + 1) == dir .. "/"
 end
@@ -130,6 +131,10 @@ local function said(err: any): string
 	local m = message(err)
 	if m == "offline" then
 		return ui.t("files.workspace.offline"):get()
+	end
+	local denied = paths.not_granted_words(err)
+	if denied then
+		return denied.body
 	end
 	return m
 end
@@ -687,7 +692,9 @@ function M.load(w: Workspace, dir: string)
 	end, function(err: any)
 		w.inflight[dir] = nil
 		if dir == "" and w.status:peek() ~= "ready" then
-			w.status:set(if message(err) == "offline" then "offline" else "failed")
+			-- (A server that doesn't grant files keeps the refusal as its status:
+			-- the pane says it plainly, screens/files/init.)
+			w.status:set(if message(err) == "offline" then "offline" elseif paths.not_granted(err) then message(err) else "failed")
 		end
 	end)
 end

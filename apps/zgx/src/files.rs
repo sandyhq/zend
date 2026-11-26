@@ -547,7 +547,12 @@ fn list(items: Vec<Value>) -> Value {
 /// be reached, what to do when it's from before this call, else what it
 /// said.
 fn said(error: String) -> String {
-    if engine::outcome(&error) == "offline" {
+    // (A server that doesn't grant files: a refusal the pane says in words,
+    // src/server_route.rs.)
+    let error = crate::server_route::said(error);
+    if error.starts_with(crate::server_route::NOT_GRANTED) {
+        error
+    } else if engine::outcome(&error) == "offline" {
         "offline".into()
     } else if error.to_ascii_lowercase().contains("unknown method") {
         "Update Zend to use this here.".into()
@@ -680,10 +685,13 @@ impl Files {
         } else {
             return Err("no session or project".into());
         }
-        if let Some(device) = opt_text(target.field("device"))
-            && self.local_device().await.is_none_or(|local| local != device)
-        {
-            out.insert("targetDeviceId".into(), Json::String(device));
+        if let Some(device) = opt_text(target.field("device")) {
+            // A paired server that doesn't grant files hears nothing: the
+            // pane says so (src/server_route.rs).
+            crate::server_route::gate(Some(&device), "files")?;
+            if self.local_device().await.is_none_or(|local| local != device) {
+                out.insert("targetDeviceId".into(), Json::String(device));
+            }
         }
         Ok(out)
     }

@@ -348,6 +348,11 @@ local function actions(props: Props, sid: string): Node
 			actions_by:set_key(c.slot, { state = "ready", snapshot = snapshot })
 		end, function(err: any)
 			local m = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
+			-- (A paired server that doesn't grant it: said plainly.)
+			local denied = require("@app/screens/files/paths").not_granted_words(err)
+			if denied then
+				m = denied.body
+			end
 			local before = actions_by:peek()[c.slot]
 			actions_by:set_key(c.slot, {
 				state = if m == "unsupported" then "unsupported" else "failed",

@@ -137,6 +137,11 @@ local stub = api :: any
 local away = ui.state("test_files_away", false)
 stub.list = function(target: api.Target, dir: string): any
 	note(`list:{dir}`)
+	-- A paired server that doesn't grant files: the host sends nothing and
+	-- says so (src/server_route.rs).
+	if target.device == "server-no-files" then
+		return settle(nil, "not_granted|files|AI|Laptop")
+	end
 	local base = root_of(target)
 	local prefix = base .. (if dir == "" then "" else dir .. "/")
 	local seen: { [string]: boolean } = {}

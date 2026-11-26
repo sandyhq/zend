@@ -66,10 +66,14 @@ pub fn install(host: &ScriptHost) {
 
 /// `method` on the session's device (through the relay when it's another).
 async fn call(method: &str, mut params: Json, arg: &Value) -> Result<Json, String> {
-    if let Some(device) = crate::files::route_to(field(arg, "device")).await {
+    // (On a paired server by its grants: projects.manage lists the actions,
+    // terminal sets and runs them; without one nothing is sent and the
+    // panel says so, src/server_route.rs.)
+    let area = crate::server_route::area_of(method).unwrap_or("terminal");
+    if let Some(device) = crate::server_route::route(field(arg, "device"), area).await? {
         params["targetDeviceId"] = Json::from(device);
     }
-    engine::get().call(method, params).await.map_err(said)
+    engine::get().call(method, params).await.map_err(|e| said(crate::server_route::said(e)))
 }
 
 /// An engine from before the call: "unsupported"; else its own words.

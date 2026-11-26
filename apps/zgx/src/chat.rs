@@ -3418,6 +3418,11 @@ async fn stop_task(args: Value) -> Result<Value, Outcome> {
     let chats = CHATS.with(Rc::clone);
     let mut params = json!({ "chatId": id, "taskId": task });
     if let Some(t) = chats.chat(&id).and_then(|c| chats.target(&c)) {
+        // (A paired server that doesn't grant terminal hears nothing:
+        // the task stays, src/server_route.rs.)
+        if crate::server_route::gate(Some(&t), "terminal").is_err() {
+            return Err("failed");
+        }
         params["targetDeviceId"] = json!(t);
     }
     let answer = engine::get()
