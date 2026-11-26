@@ -21,6 +21,11 @@ fn a_server_without_the_settings_grant_is_said_not_asked() {
 }
 
 #[test]
+fn a_server_without_the_logins_grant_is_said_on_providers() {
+    run("providers: a server that doesn't grant logins", 1);
+}
+
+#[test]
 fn update_all_names_a_server_that_doesnt_grant_updates() {
     run("Update all names a paired server", 1);
 }
