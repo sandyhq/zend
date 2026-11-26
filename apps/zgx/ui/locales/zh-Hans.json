@@ -2724,8 +2724,6 @@
       "devices": "设备",
       "offline": "离线",
       "paired_hint": "已配对的服务器",
-      "paired_unavailable": "无法在已配对的服务器上添加项目",
-      "paired_unavailable_hint": "请在该服务器上添加：它授权给你的项目会显示在这里。",
       "title": "新建项目",
       "search_devices": "搜索设备…",
       "no_devices": "未找到设备",
@@ -2747,7 +2745,9 @@
       "private": "私有",
       "on_device": "在 {device} 上",
       "from_github": "来自 GitHub",
-      "add_cloud_project": "添加项目"
+      "add_cloud_project": "添加项目",
+      "not_granted": "{server} doesn't grant {area}",
+      "not_granted_hint": "On {server}, run: zend peer grant {device} {area}"
     },
     "updates": {
       "available": "有可用更新",

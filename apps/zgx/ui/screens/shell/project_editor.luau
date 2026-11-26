@@ -85,6 +85,24 @@ local function project(): sessions.Project?
 	return nil
 end
 
+-- Why this project can't be changed from here: it's on a paired server that
+-- doesn't grant projects.manage (nothing is sent; the dialog says so).
+local function ungranted(): { server: string, area: string, device: string }?
+	local ids: { string } = { editing:get() :: any }
+	for _, other in also:get() do
+		table.insert(ids, other)
+	end
+	for _, q in sessions.projects:get() do
+		if table.find(ids, q.id) then
+			local why = projects.not_granted(q.device, "projects.manage")
+			if why then
+				return why
+			end
+		end
+	end
+	return nil
+end
+
 -- The colour shown: the one chosen, else the project's own.
 local function shown_hue(): string
 	local h = hue:get()
@@ -616,6 +634,10 @@ local function save()
 		open:set(false)
 		return
 	end
+	-- (A server that doesn't grant it: the dialog says so; nothing is sent.)
+	if ungranted() then
+		return
+	end
 	local new_name = string.match(name:peek(), "^%s*(.-)%s*$") or ""
 	if new_name == "" then
 		unnamed:set(true)
@@ -739,6 +761,41 @@ function M.Dialog(): Node
 				default = default_panel(),
 				emoji = emoji_panel(),
 				image = image_panel(),
+			}),
+			ui.show(function(): boolean
+				return ungranted() ~= nil
+			end, ui.column {
+				id = "project-edit-not-granted",
+				role = "status",
+				w_full = true,
+				gap = "$space.1",
+				ui.row {
+					w_full = true,
+					gap = "$space.2",
+					items = "center",
+					color = "$warning",
+					ds.Icon { name = "danger-triangle", size = 14 },
+					ui.text {
+						function(): string
+							local why = ungranted()
+							return if why then locale.s("shell.add_project.not_granted", why) else ""
+						end,
+						text_size = "$font.size.sm",
+						wrap = true,
+						grow = 1,
+					},
+				},
+				ui.text {
+					function(): string
+						local why = ungranted()
+						return if why then locale.s("shell.add_project.not_granted_hint", why) else ""
+					end,
+					text_size = "$font.size.xs",
+					color = "$text.tertiary",
+					wrap = true,
+					literal = true,
+					w_full = true,
+				},
 			}),
 			ui.show(function(): boolean
 				return failed:get() ~= nil

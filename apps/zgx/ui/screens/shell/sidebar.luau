@@ -1330,10 +1330,15 @@ local function project_menu(id: string): { any }?
 	if not p then
 		return nil
 	end
+	-- (On a paired server that doesn't grant projects.manage, a reason in
+	-- words, as the menu's other disabled rows: nothing is sent.)
+	local why = project_calls.not_granted(p.device, "projects.manage")
+	local reason = if why then locale.s("shell.add_project.not_granted", why) else nil
 	return {
 		{
 			label = locale.s("shell.sidebar.menu.edit_project"),
 			icon = "pen",
+			disabled = reason,
 			on_select = function()
 				M.edit_project(id)
 			end,
@@ -1342,6 +1347,7 @@ local function project_menu(id: string): { any }?
 			label = locale.s("shell.sidebar.menu.remove"),
 			icon = "trash-bin-minimalistic",
 			danger = true,
+			disabled = reason,
 			on_select = function()
 				-- (Of a repository on several devices: this device's, to begin with.)
 				local now = sessions.now:peek()
@@ -1432,6 +1438,11 @@ local function project_dialogs(): Node
 						end
 					end
 					for _, gone in going do
+						-- (Nothing is sent to a server that doesn't grant it.)
+						local at = project_of(gone)
+						if at and project_calls.not_granted(at.device, "projects.manage") then
+							continue
+						end
 						-- (Showing it, or one of its sessions: a new chat instead.)
 						local shown = route.session:peek()
 						if route.chat:peek().project == gone or (shown and shown.project == gone) then
@@ -1466,6 +1477,8 @@ local function project_dialogs(): Node
 					ui.each(ui.computed(acting_checkouts), function(q: any): Node
 						return ds.Checkbox {
 							label = device_of(q),
+							-- (A paired server that doesn't grant projects.manage: not removed from here.)
+							disabled = project_calls.not_granted(q.device, "projects.manage") ~= nil,
 							description = locale.s("shell.sidebar.project.checkout", { n = chats_in(q.id), path = q.path }),
 							value = function(): boolean
 								return project_remove_chosen:get()[q.id] == true

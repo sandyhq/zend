@@ -139,6 +139,8 @@ mod drop_tests;
 #[cfg(test)]
 mod picker_settle_tests;
 #[cfg(test)]
+mod peer_projects_tests;
+#[cfg(test)]
 mod fit_tests;
 #[cfg(test)]
 mod access_mode_tests;

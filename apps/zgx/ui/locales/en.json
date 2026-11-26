@@ -2724,8 +2724,6 @@
       "devices": "Devices",
       "offline": "Offline",
       "paired_hint": "Paired server",
-      "paired_unavailable": "Adding a project isn't available on a paired server",
-      "paired_unavailable_hint": "Add it on that server: a project it grants you shows here.",
       "title": "New project",
       "search_devices": "Search devices…",
       "no_devices": "No devices found",
@@ -2747,7 +2745,9 @@
       "private": "Private",
       "on_device": "On {device}",
       "from_github": "From GitHub",
-      "add_cloud_project": "Add project"
+      "add_cloud_project": "Add project",
+      "not_granted": "{server} doesn't grant {area}",
+      "not_granted_hint": "On {server}, run: zend peer grant {device} {area}"
     },
     "updates": {
       "available": "Update available",

@@ -62,7 +62,11 @@ type Page = any
 -- The engine's refusal, as the flow says it (production's own words).
 local function says(err: any, path: string?): string
 	local text = if type(err) == "string" then err elseif type(err) == "table" and err.message then tostring(err.message) else locale.s("shell.add_project.something_went_wrong")
-	if string.find(text, "not connected", 1, true) or text == "offline" then
+	local area = projects.refused_area(err)
+	if area then
+		-- (A server's grants changed meanwhile: said as the page says it.)
+		return locale.s("shell.add_project.not_granted", { server = string.match(text, "peer_refused: ([^:]+):") or "", area = area })
+	elseif string.find(text, "not connected", 1, true) or text == "offline" then
 		return locale.s("shell.add_project.not_connected")
 	elseif path and (string.find(text, "os error 2)", 1, true) or string.find(text, "os error 3)", 1, true)) then
 		return locale.s("shell.add_project.no_folder_at", { path = path })
@@ -846,16 +850,17 @@ local function cloud_page(): Page
 	return page
 end
 
--- A paired server's page: its folders aren't browsed from here (the peer
--- link carries none of its folders), so it says so instead of failing.
-local function paired_page(name: string): Page
+-- A paired server that doesn't grant `projects.manage`: its folders aren't
+-- browsed (nothing is sent), and the page says why, and what to run on the
+-- server, instead of failing.
+local function not_granted_page(name: string, why: { server: string, area: string, device: string }): Page
 	return {
 		id = `paired:{name}`,
 		title = name,
 		load = function(done: ({ Item }) -> ())
 			done({})
 		end,
-		empty = { title = locale.s("shell.add_project.paired_unavailable"), hint = locale.s("shell.add_project.paired_unavailable_hint") },
+		empty = { title = locale.s("shell.add_project.not_granted", why), hint = locale.s("shell.add_project.not_granted_hint", why) },
 	}
 end
 
@@ -874,8 +879,11 @@ local function devices(): { Item }
 			hint = if d.online == false and not here then locale.s("shell.add_project.offline") elseif d.paired then locale.s("shell.add_project.paired_hint") else nil,
 			verb = locale.s("shell.add_project.open"),
 			page = function(): Page
-				if d.paired and not here then
-					return paired_page(d.name)
+				-- (A paired server browses like any device, its calls sent there
+				-- (targetDeviceId) when it grants projects.manage.)
+				local why = if here then nil else projects.not_granted(d.id, "projects.manage")
+				if why then
+					return not_granted_page(d.name, why)
 				end
 				return locations_page(d.id, d.name)
 			end,

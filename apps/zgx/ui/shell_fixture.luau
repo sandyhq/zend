@@ -620,7 +620,7 @@ local function answer(value: any): any
 		end,
 	}
 end
-local HOMES = { mac = "/Users/me", box = "/home/me" }
+local HOMES = { mac = "/Users/me", box = "/home/me", srv = "/home/srv", lock = "/home/lock", quiet = "/home/quiet" }
 projects_stub.folders = function(device: string, path: string?): any
 	note(`folders:{device}:{path or "~"}`)
 	local at = path or HOMES[device]
@@ -861,6 +861,22 @@ ui.command {
 		table.insert(model.projects, { id = "cartography", name = "Cartography", device = "studio", path = "/Users/ada/src/cartography", git = true })
 		table.insert(model.projects, { id = "notes", name = "notes", device = "mac", path = "/Users/ada/Documents/notes", git = false })
 		table.insert(model.projects, { id = "thesis", name = "Thesis", device = "air", path = "/Users/ada/thesis", git = true })
+		publish()
+	end,
+}
+
+-- Paired servers (src/sessions.rs: `paired`, `peer_areas`): one whose grants
+-- open projects.manage (and files), one that grants files only, one that
+-- didn't say what it grants; each with a project (tests/peer_projects).
+ui.command {
+	id = "fixture.paired_servers",
+	title = "Fixture: three paired servers",
+	run = function()
+		table.insert(model.devices, { id = "srv", name = "ai-server", platform = "linux", here = false, online = true, paired = true, peer_areas = { "sessions.read", "projects.manage", "files" } })
+		table.insert(model.devices, { id = "lock", name = "locked-server", platform = "linux", here = false, online = true, paired = true, peer_areas = { "sessions.read", "files" } })
+		table.insert(model.devices, { id = "quiet", name = "quiet-server", platform = "linux", here = false, online = true, paired = true })
+		table.insert(model.projects, { id = "srv-p", name = "Served", device = "srv", path = "/srv/served", git = true })
+		table.insert(model.projects, { id = "lock-p", name = "Locked", device = "lock", path = "/srv/locked", git = true })
 		publish()
 	end,
 }
