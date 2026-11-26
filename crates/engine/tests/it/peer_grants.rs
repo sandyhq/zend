@@ -1754,6 +1754,16 @@ fn every_method() -> Vec<&'static str> {
 /// chat of another device is no server's, whatever it holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_area_grant_opens_its_area_and_nothing_without_it() {
+    let logged = Logged::default();
+    let capturing = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .with_writer({
+            let logged = logged.clone();
+            move || logged.clone()
+        })
+        .try_init()
+        .is_ok();
     let mut a = paired(&[]).await;
     a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
     a.core.workspace.create_chat("far-chat", None, Some("device-elsewhere"), None, None).unwrap();
@@ -1783,6 +1793,16 @@ async fn each_area_grant_opens_its_area_and_nothing_without_it() {
     regrant(&mut a, &["files"]).await;
     let read = a.b.call(methods::READ_WORKSPACE_FILE, json!({ "chatId": "owner-chat", "path": outside })).await.expect("read with files");
     assert!(read.to_string().contains("OUTSIDE-SECRET"), "{read}");
+    // On the record at INFO: the call and the server, never what it read.
+    // (Only where this test's subscriber is the process's: run alone.)
+    if capturing {
+        let log = String::from_utf8_lossy(&logged.0.lock().unwrap()).into_owned();
+        let line = log.lines().find(|l| l.contains("a paired server's call") && l.contains("ReadWorkspaceFile")).unwrap_or_else(|| panic!("no INFO line: {log}"));
+        assert!(line.contains(" INFO ") && line.contains("scope=\"files\"") && line.contains(&a.b_key[..12]), "{line}");
+        assert!(!log.contains("OUTSIDE-SECRET"), "the log holds what was read");
+    } else {
+        eprintln!("each_area_grant: another test's log subscriber is the process's; the INFO line isn't checked here");
+    }
     assert_eq!(a.core.workspace.space("p").unwrap().unwrap().name.as_deref(), Some("Renamed by B"));
     // Another device's chat: not this server's to reach, with `files` or `full`.
     for grants in [&["files"][..], &["full"][..]] {

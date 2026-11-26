@@ -627,13 +627,13 @@ async fn the_phone_link_gets_no_paired_server() {
     assert!(t.server.workspace.chat("phone-made").unwrap().is_none());
 }
 
-/// The window's calls that name a server and that no grant ever opens
-/// there (stopping its Zend, signing it out, its vault, removing it):
-/// said no to here, and the server hears nothing of them. A call some
-/// grant opens goes there (plan step 6b), and with today's grants (no
-/// `logins`, `workers.manage`, `full`) comes back refused in the
-/// server's words, changing nothing there; what a server takes still goes
-/// (control: its harnesses).
+/// The window's calls that name a server and that it doesn't grant this
+/// side: never a server's (stopping its Zend, signing it out, its vault,
+/// removing it), or of an area it didn't grant (`logins`: a key typed
+/// into its settings; `workers.manage` (`full`'s): a worker with its keys; `full`:
+/// an upload, a queued message, a chat's folder): said no to here, and
+/// the server hears nothing of them, the secrets in them least of all.
+/// What it grants still goes (control: its harnesses).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn calls_no_server_takes_never_leave_this_device() {
     let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
@@ -642,35 +642,90 @@ async fn calls_no_server_takes_never_leave_this_device() {
     let never = [
         (methods::STOP_ENGINE, json!({ "targetDeviceId": "device-server" })),
         (methods::SIGN_OUT, json!({ "targetDeviceId": "device-server" })),
-        (methods::VAULT_CONNECT_CODEX, json!({ "token": "secret-peer", "targetDeviceId": "device-server" })),
+        (methods::VAULT_CONNECT_CODEX, json!({ "token": "secret-token-0", "targetDeviceId": "device-server" })),
         (methods::MUTATE, json!({ "op": "removeDevice", "deviceId": "device-server" })),
     ];
     for (method, params) in never {
         let said = t.window.call(method, params).await.expect_err(method).to_string();
         assert!(said.contains("peer_refused") && said.contains("isn't sent to a paired server"), "{method}: {said}");
     }
+    let ungranted = [
+        (methods::SET_ACP_AGENT_KEY, json!({ "agentId": "gemini", "value": "secret-key-1", "targetDeviceId": "device-server" }), "logins"),
+        (methods::CREATE_WORKER, json!({ "name": "w", "keys": { "anthropic": "secret-key-2" }, "targetDeviceId": "device-server" }), "workers.manage"),
+        (methods::UPLOAD_CHUNK, json!({ "uploadId": "u1", "seq": 0, "data": "c2VjcmV0", "targetDeviceId": "device-server" }), "full"),
+        (methods::QUEUE_MESSAGE, json!({ "chatId": "srv-chat", "text": "secret words 3" }), "full"),
+        (methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "srv-chat", "cwd": "/home/laptop/secret" }), "full"),
+    ];
+    for (method, params, area) in ungranted {
+        let said = t.window.call(method, params).await.expect_err(method).to_string();
+        assert!(said.starts_with(zend_engine::peer_view::REFUSED_PREFIX) && said.contains(&format!("doesn't grant {area}")), "{method}: {said}");
+    }
     let heard: Vec<String> = t.heard.lock().unwrap().iter().map(|(m, p)| format!("{m} {p}")).collect();
-    for word in ["StopEngine", "SignOut", "VaultConnectCodex", "secret-peer", "removeDevice"] {
+    for word in ["secret", "StopEngine", "SignOut", "VaultConnectCodex", "removeDevice", "SetAcpAgentKey", "CreateWorker", "UploadChunk", "QueueMessage", "setChatCwd"] {
         assert!(!heard.iter().any(|h| h.contains(word)), "the server heard {word}: {heard:?}");
     }
-    let cwd_before = t.server.workspace.chat("srv-chat").unwrap().unwrap().cwd;
-    let ungranted = [
-        (methods::SET_ACP_AGENT_KEY, json!({ "agentId": "gemini", "value": "secret-key-1", "targetDeviceId": "device-server" })),
-        (methods::CREATE_WORKER, json!({ "name": "w", "keys": { "anthropic": "secret-key-2" }, "targetDeviceId": "device-server" })),
-        (methods::UPLOAD_CHUNK, json!({ "uploadId": "u1", "seq": 0, "data": "c2VjcmV0", "targetDeviceId": "device-server" })),
-        (methods::QUEUE_MESSAGE, json!({ "chatId": "srv-chat", "text": "secret words 3" })),
-        (methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "srv-chat", "cwd": "/home/laptop/secret" })),
-    ];
-    for (method, params) in ungranted {
-        let said = t.window.call(method, params).await.expect_err(method).to_string();
-        assert!(said.contains("peer_refused") && said.contains("isn't open to your server"), "{method}: {said}");
-    }
-    assert_eq!(t.server.workspace.chat("srv-chat").unwrap().unwrap().cwd, cwd_before);
     t.window
         .call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-server" }))
         .await
         .expect("its harnesses, asked there");
     assert!(t.heard.lock().unwrap().iter().any(|(m, _)| m == methods::LIST_HARNESSES));
+}
+
+/// A server that doesn't say what it grants (a Zend from before step 6)
+/// is sent only what the grants before step 6 open, whatever it holds;
+/// one that said more than it grants is heard again at its first refusal
+/// and sent no more of it; one granted more since is sent it once it
+/// redials.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_a_server_grants_is_heard_from_it_and_heard_again() {
+    // Says nothing of its grants (it holds `settings`).
+    let quiet: Lie = Arc::new(|method, mut v| {
+        if method == methods::ENGINE_INFO
+            && let Some(peer) = v["peer"].as_object_mut()
+        {
+            peer.remove("areas");
+        }
+        v
+    });
+    let t = pair_with(&["sessions.read", "sessions.run.unconfined:p", "settings"], quiet, |_, _| {}).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let said = t.window.call(methods::GET_TITLE_SETTINGS, json!({ "targetDeviceId": "device-server" })).await.expect_err("held back").to_string();
+    assert!(said.contains("doesn't grant settings (it doesn't say what it grants)"), "{said}");
+    t.window.call(methods::LIST_HARNESSES, json!({ "targetDeviceId": "device-server" })).await.expect("before step 6: harnesses");
+    assert!(!t.heard.lock().unwrap().iter().any(|(m, _)| m == methods::GET_TITLE_SETTINGS));
+    drop(t);
+
+    // Says `settings` at first, grants it never.
+    let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let boast: Lie = Arc::new(move |method, mut v| {
+        if method == methods::ENGINE_INFO && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            v["peer"]["areas"].as_array_mut().unwrap().push(json!("settings"));
+        }
+        v
+    });
+    let t = pair_with(&["sessions.read", "sessions.run.unconfined:p"], boast, |_, _| {}).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let asked = || t.heard.lock().unwrap().iter().filter(|(m, _)| m == methods::GET_TITLE_SETTINGS).count();
+    // (Its peer listener refuses it before its service hears it.)
+    let there = t.window.call(methods::GET_TITLE_SETTINGS, json!({ "targetDeviceId": "device-server" })).await.expect_err("refused there").to_string();
+    assert!(there.contains("isn't open to your server"), "{there}");
+    let here = t.window.call(methods::GET_TITLE_SETTINGS, json!({ "targetDeviceId": "device-server" })).await.expect_err("held back now").to_string();
+    assert!(here.contains("doesn't grant settings") && !here.contains("isn't open to your server"), "sent again after the server said it doesn't grant it: {here}");
+
+    // Granted since: sent once it redialled.
+    let laptop_key = t.laptop_link.node_key().unwrap().public().to_string();
+    t.server_link.set_grants(&laptop_key, &["sessions.read".into(), "sessions.run.unconfined:p".into(), "settings".into()]).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match t.window.call(methods::GET_TITLE_SETTINGS, json!({ "targetDeviceId": "device-server" })).await {
+            Ok(_) => break,
+            Err(e) => assert!(std::time::Instant::now() < deadline, "never sent after the grant: {e}"),
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(asked(), 1);
 }
 
 /// With area grants the window's calls aimed at the server are served

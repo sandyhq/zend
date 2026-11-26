@@ -76,6 +76,29 @@ impl Scope {
         }
     }
 
+    /// Every scope a grant can open (all but [`Scope::Never`]).
+    pub const GRANTABLE: [Scope; 13] = [
+        Scope::Info,
+        Scope::Sessions,
+        Scope::SessionsRead,
+        Scope::SessionsRun,
+        Scope::ProjectsShare,
+        Scope::WorkersManage,
+        Scope::ProjectsManage,
+        Scope::Files,
+        Scope::Settings,
+        Scope::Logins,
+        Scope::Updates,
+        Scope::Terminal,
+        Scope::Full,
+    ];
+
+    /// The grantable scope called `name` ([`Scope::name`]); never
+    /// [`Scope::Never`].
+    pub fn from_name(name: &str) -> Option<Scope> {
+        Self::GRANTABLE.into_iter().find(|scope| scope.name() == name)
+    }
+
     /// One of the areas step 6 added (`projects.manage` … `full`).
     pub fn is_area(self) -> bool {
         matches!(

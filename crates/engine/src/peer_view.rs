@@ -114,6 +114,10 @@ struct Seen {
     configs: HashMap<String, Value>,
     /// A worker's: its one project's id.
     worker_project: Option<String>,
+    /// What its grants open for this side, as it said
+    /// (`EngineInfo.peer.areas`, plan step 6b); `None`: not said (a Zend
+    /// from before step 6, or a worker).
+    areas: Option<HashSet<zend_rpc::Scope>>,
 }
 
 impl Seen {
@@ -545,6 +549,7 @@ impl PeerView {
             None => info["peer"]["projects"].clone(),
         };
         let projects = self.admit(key, &device_id, Kind::Projects, &projects, None).unwrap_or_default();
+        let areas = if worker_project.is_some() { None } else { areas_of(&info) };
         let since = chrono::Utc::now().to_rfc3339();
         let created_at = chrono::DateTime::from_timestamp_millis(paired_at).map(|t| t.to_rfc3339());
         let capabilities = if worker_project.is_some() { json!([PAIRED_SERVER, WORKER]) } else { json!([PAIRED_SERVER]) };
@@ -577,6 +582,7 @@ impl PeerView {
                 since: was.as_ref().map_or_else(|| since.clone(), |w| w.since.clone()),
                 paired_at,
                 worker_project: worker_project.clone(),
+                areas,
                 // Unreadable now: none shown.
                 chats: if chats.is_some() { was.as_ref().map(|w| w.chats.clone()).unwrap_or_default() } else { Vec::new() },
                 sessions: if sessions.is_some() { was.as_ref().map(|w| w.sessions.clone()).unwrap_or_default() } else { Vec::new() },
@@ -779,14 +785,21 @@ impl PeerView {
                 self.name(key)
             ))));
         }
-        if let Some(key) = &target
-            && !(if key.starts_with(WORKER_PREFIX) { forwarded_to_worker(method, params) } else { forwarded(method, params) })
-        {
-            // Names a server, but isn't one a server takes from here: said
-            // no to here, and nothing of it leaves this device.
-            tracing::warn!(method, server = %key.get(..12).unwrap_or(key), "peer view: refused a call naming a paired server that no server takes");
-            let what = if key.starts_with(WORKER_PREFIX) { "a worker: do it in its chat" } else { "a paired server: do it on that server" };
-            return Some(Err(RpcError::Failed(format!("{REFUSED_PREFIX} {}: {method} isn't sent to {what}", self.name(key)))));
+        if let Some(key) = &target {
+            // Names a server, but isn't one it takes from here (never one
+            // a server takes, or not granted by it): said no to here, and
+            // nothing of it leaves this device.
+            let name = self.name(key);
+            let held = if key.starts_with(WORKER_PREFIX) {
+                (!forwarded_to_worker(method, params)).then(|| format!("{method} isn't sent to a worker: do it in its chat"))
+            } else {
+                let areas = self.seen.borrow().get(key.as_str()).and_then(|s| s.areas.clone());
+                held_back(method, params, areas.as_ref(), &name)
+            };
+            if let Some(why) = held {
+                tracing::warn!(method, server = %key.get(..12).unwrap_or(key), "peer view: held back a call naming a paired server: {why}");
+                return Some(Err(RpcError::Failed(format!("{REFUSED_PREFIX} {name}: {why}"))));
+            }
         }
         let Some(key) = target else {
             if method == methods::MUTATE
@@ -871,6 +884,21 @@ impl PeerView {
         };
         if reply.is_err() && op.as_deref() == Some("createChat") {
             self.made.lock().unwrap().remove(&chat);
+        }
+        // Refused for its grants: they changed since it said them, so hear
+        // them again (a grant change also ends its connection: redialled).
+        if worker_project.is_none()
+            && let Err(e) = &reply
+            && !matches!(e, RpcError::Transport(_) | RpcError::Closed)
+            && e.to_string().contains("isn't open to your server")
+            && let Ok(info) = client.call(methods::ENGINE_INFO, json!({})).await
+        {
+            let areas = areas_of(&info);
+            self.seen.send_modify(|seen| {
+                if let Some(s) = seen.get_mut(key) {
+                    s.areas = areas;
+                }
+            });
         }
         // What it runs with now (a worker's turn picks its login by it).
         if reply.is_ok()
@@ -1051,17 +1079,59 @@ enum Kind {
     Projects,
 }
 
-/// Whether a call of this device's own that names a paired server is sent
-/// to it (plan step 6b): every call [`zend_rpc::peer_scope`] knows (of
-/// `Mutate`, by its op) and doesn't keep [`zend_rpc::Scope::Never`],
-/// streams and chunk calls with them. Whether the server takes it is its
-/// grants' (`zend_rpc::peer_server_allowed` there): its refusal comes back
-/// as [`REFUSED_PREFIX`]. Pairing, grants, the account, Cloud, billing,
-/// vault, GitHub, the phone link and stopping Zend stay here, refused, and
-/// so does a call naming this device's own chat, project or device
-/// ([`PeerView::route`], first).
-fn forwarded(method: &str, params: &Value) -> bool {
-    zend_rpc::peer_scope(method, zend_rpc::mutate_op(method, params)).is_some_and(|scope| scope != zend_rpc::Scope::Never)
+/// Why a call of this device's own that names a paired server isn't
+/// sent to it (plan step 6b), or `None`: it goes. Every call
+/// [`zend_rpc::peer_scope`] knows (of `Mutate`, by its op), streams and
+/// chunk calls with them, goes when the server said its grants open that
+/// scope here (`EngineInfo.peer.areas`, [`Seen::areas`]); one that didn't
+/// say (a Zend from before step 6) gets only what the grants before step 6
+/// open ([`before_step6`]). Never sent, whatever it grants: pairing,
+/// grants, the account, Cloud, billing, vault, GitHub, the phone link,
+/// stopping Zend (`Scope::Never`), and a call naming this device's own
+/// chat, project or device ([`PeerView::route`], first). Whether the
+/// server takes it stays its grants' (`zend_rpc::peer_server_allowed`
+/// there): its refusal comes back as [`REFUSED_PREFIX`].
+fn held_back(method: &str, params: &Value, areas: Option<&HashSet<zend_rpc::Scope>>, name: &str) -> Option<String> {
+    let scope = match zend_rpc::peer_scope(method, zend_rpc::mutate_op(method, params)) {
+        None | Some(zend_rpc::Scope::Never) => return Some(format!("{method} isn't sent to a paired server: do it on that server")),
+        Some(scope) => scope,
+    };
+    match areas {
+        Some(areas) if areas.contains(&scope) => None,
+        Some(_) => Some(format!("{name} doesn't grant {}, so {method} isn't sent", scope.name())),
+        None if before_step6(method, params) => None,
+        None => Some(format!("{name} doesn't grant {} (it doesn't say what it grants), so {method} isn't sent", scope.name())),
+    }
+}
+
+/// The areas a server's `EngineInfo` says its grants open here.
+fn areas_of(info: &Value) -> Option<HashSet<zend_rpc::Scope>> {
+    let areas = info["peer"]["areas"].as_array()?;
+    Some(areas.iter().filter_map(Value::as_str).filter_map(zend_rpc::Scope::from_name).collect())
+}
+
+/// What the grants before step 6 open, sent to a server that doesn't say
+/// what it grants: `EngineInfo`, harnesses, models, `Mutate` `createChat`
+/// and `setChatConfig`, `setChatArchived`, `markChatSeen`, `renameChat`,
+/// `deleteChat`, `QueueCommand`, `WatchDocMessages`, project files.
+fn before_step6(method: &str, params: &Value) -> bool {
+    if zend_rpc::local_only(method) || !zend_rpc::peer_link::PEER_METHODS.contains(&method) {
+        return false;
+    }
+    match method {
+        methods::ENGINE_INFO
+        | methods::LIST_HARNESSES
+        | methods::LIST_MODELS
+        | methods::QUEUE_COMMAND
+        | methods::WATCH_DOC_MESSAGES
+        | methods::PEER_LIST_PROJECT_FILES
+        | methods::PEER_READ_PROJECT_FILE => true,
+        methods::MUTATE => matches!(
+            params["op"].as_str(),
+            Some("createChat" | "setChatConfig" | "setChatArchived" | "markChatSeen" | "renameChat" | "deleteChat")
+        ),
+        _ => false,
+    }
 }
 
 /// Whether a call of this device's own that names one of its workers is

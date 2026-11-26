@@ -568,7 +568,10 @@ impl EngineRpc {
             })
             .collect();
         let mut info = serde_json::to_value(&self.engine_info).map_err(|e| RpcError::Failed(e.to_string()))?;
-        info["peer"] = json!({ "reads": grants.reads(), "projects": projects });
+        // What its grants open here, by scope: the caller holds back the
+        // rest, so nothing it isn't granted (a key, an upload) is sent.
+        let areas: Vec<&str> = zend_rpc::Scope::GRANTABLE.into_iter().filter(|scope| grants.covers(*scope)).map(zend_rpc::Scope::name).collect();
+        info["peer"] = json!({ "reads": grants.reads(), "projects": projects, "areas": areas });
         Ok(RpcReply::Value(info))
     }
 
