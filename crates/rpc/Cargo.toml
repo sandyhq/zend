@@ -23,6 +23,11 @@ getrandom = "0.4"
 # The phone link's challenge (src/link_proof.rs): both already in the tree.
 hmac = "0.12"
 sha2.workspace = true
+# Servers' node keys (src/peer_link.rs): Ed25519, already in the tree
+# (zend-engine signs plugins and the Cloud runner's identity with it).
+ring = "0.17"
+# A worker's socket opened O_PATH | O_NOFOLLOW (src/peer_link.rs): already in the tree.
+libc.workspace = true
 
 [dev-dependencies]
 zend-doc.workspace = true

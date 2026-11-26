@@ -34,6 +34,7 @@ async fn main() {
         steering,
         interrupt: CancellationToken::new(),
         turn: Default::default(),
+        sandbox: None,
     };
     let request = RunRequest {
         mcp: None,

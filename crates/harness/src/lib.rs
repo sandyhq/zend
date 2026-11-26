@@ -42,6 +42,10 @@ pub enum HarnessError {
     /// nothing connected for it). The message says where to sign in.
     #[error("{0}")]
     NotSignedIn(String),
+    /// A run that must be sandboxed ([`RunControls::sandbox`]) couldn't
+    /// be: it was refused, never started without it. Says why.
+    #[error("{0}")]
+    Sandbox(String),
 }
 
 /// A steer prompt pushed into a live run; delivered at the harness's steering boundary.
@@ -258,6 +262,11 @@ pub struct RunControls {
     pub interrupt: CancellationToken,
     /// Turn-level stop and background-work reporting (see [`TurnControl`]).
     pub turn: TurnControl,
+    /// Confine every process this run starts to one project folder
+    /// ([`sandbox`]). Set by the host for a chat it must sandbox
+    /// ([`zend_proto::ChatSandbox`]), only for a driver that
+    /// [`Harness::runs_sandboxed`]; `None` runs as every run did before.
+    pub sandbox: Option<sandbox::Sandbox>,
 }
 
 /// Catalog provenance stays internal; RPC clients retain the Vec<Model> shape.
@@ -376,6 +385,13 @@ pub trait Harness: Send + Sync {
     /// ([`AccessMode::honored_by`]).
     fn access_modes(&self) -> &[AccessMode] {
         &[AccessMode::FullAccess]
+    }
+    /// Whether this driver starts every process of a run through
+    /// [`RunControls::sandbox`] when it is set ([`sandbox::Launch`]). The
+    /// host refuses a sandboxed chat on a driver that doesn't: it would run
+    /// unconfined.
+    fn runs_sandboxed(&self) -> bool {
+        false
     }
     /// Whether this driver honors [`RunRequest::plan`].
     fn supports_plan(&self) -> bool {
@@ -503,11 +519,13 @@ pub(crate) mod jsonl_tail;
 pub(crate) mod jsonrpc;
 pub(crate) mod lossy_lines;
 pub mod mock;
+pub(crate) mod node_entry;
 pub mod muse;
 mod model_context;
 pub mod opencode;
 pub mod pi;
 pub mod process;
+pub mod sandbox;
 mod scratch;
 pub mod shell_env;
 pub(crate) mod skills;

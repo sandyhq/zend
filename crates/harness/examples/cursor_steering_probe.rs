@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
                     rx
                 }),
                 turn: Default::default(),
+                sandbox: None,
             },
         )
         .await?;

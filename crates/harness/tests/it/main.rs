@@ -27,5 +27,6 @@ mod pi_live;
 mod pi_rpc;
 mod real_acp_lifecycle;
 mod real_quiet_survey;
+mod sandbox;
 mod shell_env_resolution;
 mod windows_native;

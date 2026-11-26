@@ -10,6 +10,8 @@ pub mod auth_cli;
 pub mod background;
 pub mod engine_commands;
 pub mod ipc_cli;
+pub mod peer_cli;
+pub mod worker_cli;
 pub mod plugin_cli;
 
 pub use engine_commands::run_engine_command;

@@ -82,6 +82,7 @@ async fn real_pi_mock_lifecycle() {
                 rx
             }),
             turn: Default::default(),
+            sandbox: None,
         };
         let request = RunRequest {
             prompt: prompt.into(),
@@ -188,6 +189,7 @@ async fn real_pi_mock_lifecycle() {
         interrupt: CancellationToken::new(),
         request_input: Box::new(|_| oneshot::channel().1),
         turn: Default::default(),
+        sandbox: None,
     };
     let request = RunRequest {
         prompt: "after loss".into(),
@@ -277,6 +279,7 @@ fn open_controls() -> (mpsc::Sender<SteerMessage>, RunControls) {
         interrupt: CancellationToken::new(),
         request_input: Box::new(|_| oneshot::channel().1),
         turn: Default::default(),
+        sandbox: None,
     };
     (tx, controls)
 }
@@ -455,6 +458,7 @@ async fn real_pi_steering_bursts_share_the_next_model_call() {
         interrupt: CancellationToken::new(),
         request_input: Box::new(|_| oneshot::channel().1),
         turn: Default::default(),
+        sandbox: None,
     };
     let request = RunRequest {
         prompt: "burst hold".into(),

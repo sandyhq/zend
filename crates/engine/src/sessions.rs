@@ -360,6 +360,14 @@ struct Inner {
     turn_listener: OnceLock<TurnListener>,
     /// Plugins whose native MCP servers local runs get (absent in bare tests).
     plugins: OnceLock<crate::plugins::Plugins>,
+    /// The data folder whose `peers.json` says what each paired server may
+    /// run here now ([`SessionsEngine::set_peers_data_dir`]). Unset, no
+    /// chat a server made runs ([`Inner::peer_may_run`]).
+    peers_data_dir: OnceLock<std::path::PathBuf>,
+    /// Where this device's pi login is, to lend to a server's chats
+    /// ([`crate::peer_logins`]); unset: the engine's own
+    /// ([`crate::peer_logins::HostLogin::current`]).
+    host_login: OnceLock<crate::peer_logins::HostLogin>,
     /// Where the chats' visuals are kept: a visual the person closed
     /// without answers is told to its agent as a line on the next prompt
     /// into its chat (live_visuals `with_dismissals`). Absent in bare tests.
@@ -536,6 +544,8 @@ impl SessionsEngine {
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 plugins: OnceLock::new(),
+                peers_data_dir: OnceLock::new(),
+                host_login: OnceLock::new(),
                 visuals: OnceLock::new(),
                 warm: Mutex::new(HashMap::new()),
                 warm_leases: Mutex::new(None),
@@ -646,6 +656,69 @@ impl SessionsEngine {
         let _ = self.inner.plugins.set(plugins);
     }
 
+    /// Wire where paired servers' grants are kept (`{data_dir}/peers.json`):
+    /// a chat a server made runs only while it holds a grant that lets it
+    /// ([`Inner::peer_may_run`]), and when a grant changes or a server is
+    /// unpaired, the runs it lost end ([`Self::end_ungranted_peer_runs`]).
+    pub fn set_peers_data_dir(&self, data_dir: &std::path::Path) {
+        if self.inner.peers_data_dir.set(data_dir.to_path_buf()).is_err() {
+            return;
+        }
+        // No run is live yet: a login kept for one (a crash's) goes now.
+        let swept = crate::peer_logins::sweep(data_dir);
+        if swept > 0 {
+            tracing::info!(files = swept, "peer link: logins kept for runs before this start removed");
+        }
+        // A working copy isn't read or applied while a run of a chat in it
+        // is live (crate::peer_copies).
+        let held = Arc::downgrade(&self.inner);
+        crate::peer_copies::on_held(data_dir, move |root| {
+            let inner = held.upgrade()?;
+            let live: Vec<String> = lock(&inner.runs).keys().cloned().collect();
+            live.into_iter().find(|chat| {
+                inner.journal.sandbox(chat).and_then(|mark| mark.root).is_some_and(|r| {
+                    r == root || std::fs::canonicalize(&r).is_ok_and(|r| r == root)
+                })
+            })
+        });
+        let weak = Arc::downgrade(&self.inner);
+        crate::peer_link::on_grants_changed(data_dir, move || {
+            let Some(inner) = weak.upgrade() else { return false };
+            let sessions = SessionsEngine { inner };
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                // The login file first (gone at once), then the runs.
+                sessions.inner.take_back_lent_logins();
+                rt.spawn(async move { sessions.end_ungranted_peer_runs().await });
+            } else {
+                sessions.inner.take_back_lent_logins();
+            }
+            true
+        });
+    }
+
+    /// Where this device's pi login is read and refreshed for the servers'
+    /// chats allowed to use it (tests point it at a stand-in).
+    pub fn set_host_login(&self, login: crate::peer_logins::HostLogin) {
+        let _ = self.inner.host_login.set(login);
+    }
+
+    /// End (as a Stop does: the runtime and all it runs) every live run of a
+    /// chat a server made that its server may no longer run
+    /// ([`Inner::peer_may_run`]). The chats this ended.
+    pub async fn end_ungranted_peer_runs(&self) -> Vec<String> {
+        let live: Vec<String> = lock(&self.inner.runs).keys().cloned().collect();
+        let mut ended = Vec::new();
+        for chat_id in live {
+            if let Err(why) = self.inner.peer_may_run(&chat_id) {
+                tracing::info!(chat = %chat_id, %why, "peer link: a server lost the grant its chat ran under: its run ends");
+                if self.interrupt(&chat_id).await.is_ok() {
+                    ended.push(chat_id);
+                }
+            }
+        }
+        ended
+    }
+
     /// Wire where visuals are kept: the next prompt into a chat carries a
     /// line for each of its visuals the person closed without answers.
     pub fn set_visuals(&self, uploads: crate::uploads::Uploads) {
@@ -715,6 +788,11 @@ impl SessionsEngine {
                 let Some(inner) = weak.upgrade() else { return };
                 let sessions = SessionsEngine { inner };
                 for gone in known.difference(&now) {
+                    // A login kept for its run goes with it now (the run,
+                    // ended below, holds what its sandbox mounted).
+                    if let Some(dir) = sessions.inner.peers_data_dir.get() {
+                        crate::peer_logins::take_back(dir, gone);
+                    }
                     if !sessions.has_run(gone) {
                         continue;
                     }
@@ -1057,6 +1135,12 @@ impl SessionsEngine {
         Ok((replay, rx))
     }
 
+    /// Which chats here a paired server created ([`crate::peer_chats`]),
+    /// kept beside the run journal.
+    pub fn peer_chats(&self) -> crate::peer_chats::PeerChats {
+        crate::peer_chats::PeerChats::new(self.inner.journal.dir())
+    }
+
     /// Local experimental bootstrap. No Submit, empty user entry or title request.
     pub async fn start_idle(
         &self,
@@ -1227,6 +1311,13 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zend_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // A chat this host must confine (`ChatSandbox`, marked by
+        // [`SessionsEngine::sandbox_chat`]): its confinement, or no run at
+        // all, decided before anything of the turn is recorded or routed.
+        // A chat a server made: only while that server may still run it.
+        self.inner.peer_may_run(chat_id)?;
+        request.cwd = self.inner.copy_cwd(chat_id, &request.cwd);
+        let sandbox = self.inner.run_sandbox(chat_id, harness_id, &request.cwd, request.model.as_deref())?;
         // What this host's plugins tell the chat's agent
         // (`session.instructions`), never what a sender put here. Stamped
         // before routing, so a live runtime is compared with what holds now:
@@ -1563,6 +1654,7 @@ impl SessionsEngine {
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
             turn: turn.clone(),
+            sandbox: sandbox.clone(),
         };
 
         // A revival whose message is no longer the transcript's latest: the
@@ -1581,6 +1673,7 @@ impl SessionsEngine {
         // registered (a Stop acting now notes what it claims first, then
         // looks for the run under the run lock). Revivals come here too.
         let gate = (!idle).then(|| self.stop_gate(chat_id, &user_id));
+        let confined_root = self.inner.journal.sandbox(chat_id).and_then(|mark| mark.root);
         // Under the run lock, where a Stop looks for the run to stop and a
         // message sent meanwhile registers its own: a retry the user stopped
         // (or the shutdown overtook) while no run was live, and a revival a
@@ -1607,6 +1700,15 @@ impl SessionsEngine {
         // run lock: a delete after this finds the run below and ends it, see
         // `follow_chat_deletions`.)
         let deleted = self.inner.workspace().is_some_and(|ws| ws.chat_deleted(chat_id));
+        // A working copy its owner is reading or applying now: no run of a
+        // chat in it starts meanwhile (under the run lock, where that read
+        // looks for live runs after marking the copy: crate::peer_copies).
+        if confined_root.as_deref().is_some_and(crate::peer_copies::reviewing) {
+            drop(runs);
+            return Err(EngineError::Other(format!(
+                "chat {chat_id}: its working copy is being read or applied by its owner now: try again in a moment"
+            )));
+        }
         if deleted {
             drop(runs);
             tracing::info!(chat = %chat_id, "run not started: the chat was deleted");
@@ -1684,7 +1786,9 @@ impl SessionsEngine {
         // skips titled chats; the Done-time call below stays as the retry
         // for a failed generation). Not before the agent's first output:
         // the titling agent's own startup competed with this one's.
-        let title = (!idle)
+        // Never for a sandboxed chat: the titling run isn't confined, and its
+        // prompt came from whoever started the chat.
+        let title = (!idle && sandbox.is_none())
             .then(|| self.inner.titles.get().cloned())
             .flatten()
             .map(|titles| {
@@ -1887,6 +1991,8 @@ impl SessionsEngine {
         };
         zend_proto::invocation::validate_harness_invocations(prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // Into a live run of a server's chat: only while it may still run it.
+        self.inner.peer_may_run(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
         // Checked under the ledger lock below, as it is handed over.
         let gate = self.stop_gate(chat_id, &user_id);
@@ -2280,6 +2386,95 @@ impl SessionsEngine {
     /// settlement. Background work the runtime held dies with it.
     pub async fn terminate(&self, chat_id: &str) -> Result<bool, EngineError> {
         self.terminate_run(chat_id, None).await
+    }
+
+    /// Confine every run of `chat_id` on this host from now on to `root`,
+    /// the project folder it was granted: its agent under bubblewrap, in
+    /// that folder only ([`zend_proto::ChatSandbox`], [`zend_harness::sandbox`]),
+    /// each turn's folder inside it, and no host git in it
+    /// ([`crate::confined`]). For a chat another server starts here (step
+    /// 4d, piece A calls it with the registered project's root before the
+    /// chat's first message). Returns the root, canonical.
+    ///
+    /// A root [`zend_harness::sandbox::check_root`] refuses (outside the
+    /// home, the home itself, in a hidden folder, Zend's data) is an error,
+    /// and the chat is marked all the same, with no root: none of its runs
+    /// starts. Kept on this host only and never taken off. Holds the chat's
+    /// gate, so a dispatch already on its way finishes first, then ends a
+    /// live runtime: the next message starts confined. Off unless called:
+    /// every other chat runs as before.
+    pub async fn sandbox_chat(
+        &self,
+        chat_id: &str,
+        root: &std::path::Path,
+    ) -> Result<std::path::PathBuf, EngineError> {
+        let host = self.inner.sandbox_host();
+        // A working copy in Zend's data (a server's chat's, step 4d-2) is
+        // checked as one; any other root as a project folder.
+        let checked = match self.inner.copies().filter(|copies| copies.holds(root)) {
+            Some(copies) => zend_harness::sandbox::check_copy_root(root, copies.dir(), &host.home, &host.hidden),
+            None => zend_harness::sandbox::check_root(root, &host.home, &host.hidden),
+        };
+        let marked = checked.as_ref().ok().map(std::path::PathBuf::as_path);
+        // The mark first: a dispatch from here on reads it.
+        self.inner
+            .journal
+            .note_sandbox(chat_id, zend_proto::ChatSandbox::Project, marked)?;
+        if let Some(root) = marked {
+            crate::confined::add(root);
+        }
+        // Then alone with the chat: one that read no mark yet finishes, and
+        // its runtime goes.
+        let gate = self.inner.chat_gate(chat_id);
+        let _alone = tokio::time::timeout(std::time::Duration::from_secs(30), gate.write())
+            .await
+            .map_err(|_| {
+                EngineError::Other(
+                    "A message is still on its way to this chat; it is marked sandboxed, stop its turn".into(),
+                )
+            })?;
+        self.terminate(chat_id).await?;
+        Ok(checked?)
+    }
+
+    /// The sandbox [`Self::sandbox_chat`] marked `chat_id` with, if any.
+    pub fn chat_sandbox(&self, chat_id: &str) -> Option<crate::run_journal::SandboxMark> {
+        self.inner.journal.sandbox(chat_id)
+    }
+
+    /// The working copies of servers' chats ([`crate::peer_copies`]), once
+    /// the data dir is wired.
+    pub fn peer_copies(&self) -> Option<crate::peer_copies::Copies> {
+        self.inner.copies()
+    }
+
+    /// The servers' API keys ([`crate::peer_keys`]), once the data dir is wired.
+    pub fn peer_keys(&self) -> Option<crate::peer_keys::PeerKeys> {
+        self.inner.peer_keys().ok()
+    }
+
+    /// The servers allowed this device's logins ([`crate::peer_logins`]).
+    pub fn peer_logins(&self) -> Option<crate::peer_logins::PeerLogins> {
+        self.inner.peer_logins().ok()
+    }
+
+    /// Why a run of `chat_id` on `harness` won't start here, said before
+    /// it is queued (a paired server's QueueCommand, `rpc::peer_gate`, gets
+    /// it as its answer): what [`Inner::peer_may_run`] says (its grants, its
+    /// working copy, a key for its model's provider), or a harness that
+    /// can't run sandboxed for a sandboxed chat. None: nothing known stops it
+    /// (dispatch checks again, and a refusal there lands in the chat).
+    pub(crate) fn run_refusal(&self, chat_id: &str, harness: HarnessId) -> Option<String> {
+        if let Err(why) = self.inner.peer_may_run(chat_id) {
+            return Some(why.to_string());
+        }
+        if self.inner.journal.sandbox(chat_id).is_some()
+            && let Ok(driver) = self.inner.registry.resolve(harness)
+            && !driver.runs_sandboxed()
+        {
+            return Some(format!("chat {chat_id}: {}", cant_run_sandboxed(harness)));
+        }
+        None
     }
 
     /// [`Self::terminate`], of the run `run_id` only when given.
@@ -3219,6 +3414,260 @@ impl Inner {
         self.doc_host()
             .and_then(|host| host.open(chat_id).ok())
             .is_some_and(|handle| handle.continues_with_sent_message())
+    }
+
+    /// Whether a turn of `chat_id` may start or be fed now: always for a
+    /// chat no server made ([`crate::peer_chats`]); for one a server made,
+    /// only while that server holds, now, `sessions.run.unconfined` for the
+    /// chat's project, or `sessions.run` for it and the chat is sandboxed
+    /// (marked). Unpaired, ungranted, a chat moved out of the project or
+    /// grants not wired: refused.
+    fn peer_may_run(&self, chat_id: &str) -> Result<(), EngineError> {
+        let Some(peer) = crate::peer_chats::PeerChats::new(self.journal.dir()).peer(chat_id) else {
+            return Ok(());
+        };
+        let grants = self
+            .peers_data_dir
+            .get()
+            .and_then(|dir| crate::peer_link::kept_grants(dir, &peer))
+            .unwrap_or_default();
+        let project = self
+            .doc_host()
+            .and_then(|host| host.workspace().and_then(|w| w.chat(chat_id).ok().flatten()))
+            .and_then(|chat| chat.space_id);
+        let mark = self.journal.sandbox(chat_id);
+        let marked = mark.is_some();
+        // Confined: in a working copy that is still there, on a key its
+        // server still has (step 4d-2, 4d-3). Checked here too so a copy
+        // thrown away or a key taken away ends its live runs.
+        if let Some(mark) = &mark {
+            let root = mark.root.as_deref();
+            if !root.is_some_and(|root| self.copies().is_some_and(|c| c.holds(root)) && root.is_dir()) {
+                return Err(EngineError::Other(format!(
+                    "chat {chat_id}: a paired server's chat, and its working copy is gone (or it was started before chats of servers got one): it doesn't run"
+                )));
+            }
+            let config = self
+                .doc_host()
+                .and_then(|host| host.workspace().and_then(|w| w.chat(chat_id).ok().flatten()))
+                .and_then(|chat| chat.config);
+            if let Some(config) = config {
+                let provider = crate::peer_keys::provider_of(config.harness, config.model.as_deref());
+                let usable = self.peer_credential(&peer, provider.as_deref()).and_then(|credential| match credential {
+                    PeerCredential::Login(provider) if !self.host_login().has(&provider) => {
+                        Err(format!("this device's pi has no {provider} login to lend: sign in on this device (pi, /login)"))
+                    }
+                    _ => Ok(()),
+                });
+                if let Err(why) = usable {
+                    let told = no_credential(chat_id, &peer, provider.as_deref(), &why);
+                    return Err(EngineError::Other(format!("chat {chat_id}: a paired server's chat: {told}: it doesn't run")));
+                }
+            }
+        }
+        let why = match project.as_deref().and_then(|p| grants.runs_in(p)) {
+            Some(true) => return Ok(()),
+            Some(false) if marked => return Ok(()),
+            Some(false) => "it started unconfined, and its server may now run sessions in its project only sandboxed",
+            None => "its server may no longer run sessions in its project here",
+        };
+        Err(EngineError::Other(format!("chat {chat_id}: a paired server's chat, and {why}: it doesn't run")))
+    }
+
+    /// The confinement a run of `chat_id` in `cwd` gets: `None` for a chat
+    /// that isn't sandboxed (every chat unless [`SessionsEngine::sandbox_chat`]
+    /// marked it), else its sandbox: its marked root, with its own state
+    /// folder. Or an error that refuses the run: a mark with no valid root,
+    /// a folder outside that root, an agent whose driver can't run
+    /// sandboxed, no bubblewrap or pasta. Never `None` for a marked chat.
+    fn run_sandbox(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        cwd: &str,
+        model: Option<&str>,
+    ) -> Result<Option<zend_harness::sandbox::Sandbox>, EngineError> {
+        let Some(mark) = self.journal.sandbox(chat_id) else {
+            return Ok(None);
+        };
+        let refuse = |why: String| -> EngineError {
+            zend_harness::HarnessError::Sandbox(format!(
+                "This session must run sandboxed and was not started: {why}"
+            ))
+            .into()
+        };
+        let Some(root) = mark.root else {
+            return Err(refuse("its sandbox has no valid project folder".into()));
+        };
+        let folder = std::fs::canonicalize(cwd)
+            .map_err(|e| refuse(format!("its folder {cwd}: {e}")))?;
+        if !folder.starts_with(&root) {
+            return Err(refuse(format!(
+                "its folder {} is outside its project {}",
+                folder.display(),
+                root.display()
+            )));
+        }
+        let harness = self.registry.resolve(harness_id)?;
+        if !harness.runs_sandboxed() {
+            return Err(refuse(cant_run_sandboxed(harness_id)));
+        }
+        // A server's chat: in its working copy (never the owner's folder),
+        // on its server's own key for the model's provider, none of this
+        // device's logins (steps 4d-2, 4d-3).
+        let peer = crate::peer_chats::PeerChats::new(self.journal.dir()).peer(chat_id);
+        let copies = self.copies().filter(|copies| copies.holds(&root));
+        let state = self.journal.sandbox_state_dir(chat_id);
+        let sandbox = match (&peer, copies) {
+            // On a key kept for its server and provider, else (4d-4) on
+            // this device's login for that provider, when its server is
+            // allowed it: the key wins. Only the login's access token, fresh,
+            // kept in Zend's data for this run and shown to it read-only.
+            (Some(peer), Some(copies)) => {
+                let provider = crate::peer_keys::provider_of(harness_id, model);
+                let credential = self
+                    .peer_credential(peer, provider.as_deref())
+                    .map_err(|why| refuse(no_credential(chat_id, peer, provider.as_deref(), &why)))?;
+                let copy = zend_harness::sandbox::Sandbox::working_copy(&root, copies.dir(), self.sandbox_host())?;
+                match credential {
+                    PeerCredential::Key(var, key) => copy.with_keys([(var, key)].into_iter().collect())?.with_state(&state)?,
+                    PeerCredential::Login(provider) => {
+                        // Kept in Zend's data for this run only, shown to
+                        // it read-only as auth.json in its agent folder:
+                        // nothing is written or removed by a path the
+                        // sandbox can change.
+                        let data_dir = self.peers_data_dir.get().ok_or_else(|| refuse("this engine lends no logins to servers".into()))?;
+                        let lent = self
+                            .host_login()
+                            .sandbox_auth(&provider)
+                            .and_then(|auth| crate::peer_logins::lend(data_dir, chat_id, &auth))
+                            .map_err(|why| refuse(no_credential(chat_id, peer, Some(&provider), &why)))?;
+                        let sandbox = copy
+                            .with_keys(Default::default())?
+                            .with_state(&state)?
+                            .with_agent_dir(crate::peer_logins::AGENT_DIR)?
+                            .with_agent_file(crate::peer_logins::AUTH_FILE, lent)?;
+                        tracing::info!(chat = %chat_id, peer = %peer, %provider, "peer link: a server's chat runs on this device's login (its access token only)");
+                        sandbox
+                    }
+                }
+            }
+            (Some(_), None) => {
+                return Err(refuse(
+                    "a paired server's chat runs only in a working copy of its own, and it has none (it was started before they had one)".into(),
+                ));
+            }
+            // Only a server's chats work in a copy: any other chat there
+            // would run on this device's logins in a server's folder.
+            (None, Some(_)) => {
+                return Err(refuse("its folder is a paired server's working copy, and it isn't that server's chat".into()));
+            }
+            (None, None) => zend_harness::sandbox::Sandbox::project(&root, self.sandbox_host())?,
+        };
+        let sandbox = sandbox.with_state(&state)?;
+        Ok(Some(sandbox))
+    }
+
+    /// What a chat of `peer`'s on a `provider` model runs on: a key kept for
+    /// them ([`crate::peer_keys`]), which wins, else this device's login when
+    /// `peer` is allowed it ([`crate::peer_logins`]), else why neither.
+    fn peer_credential(&self, peer: &str, provider: Option<&str>) -> Result<PeerCredential, String> {
+        let keys = self.peer_keys()?;
+        let no_key = match keys.for_run(peer, provider) {
+            Ok((var, key)) => return Ok(PeerCredential::Key(var, key)),
+            Err(why) => why,
+        };
+        let Some(provider) = provider.filter(|p| crate::peer_logins::lendable(p)) else {
+            return Err(no_key);
+        };
+        if self.peer_logins()?.allowed(peer, provider) {
+            return Ok(PeerCredential::Login(provider.to_string()));
+        }
+        let login = format!("allow it this device's {provider} login with `zend peer login allow {peer} {provider}`");
+        Err(match zend_harness::sandbox::provider_key_var(provider) {
+            Some(_) => format!("no API key is kept for {peer} and {provider}: set one with `zend peer key set {peer} {provider}`, or {login}"),
+            None => format!("{provider} has no API key to run on and {peer} may not use this device's login for it: {login}"),
+        })
+    }
+
+    fn peer_logins(&self) -> Result<crate::peer_logins::PeerLogins, String> {
+        self.peers_data_dir
+            .get()
+            .map(|dir| crate::peer_logins::PeerLogins::new(dir))
+            .ok_or_else(|| "this engine lends no logins to servers".to_string())
+    }
+
+    fn host_login(&self) -> crate::peer_logins::HostLogin {
+        self.host_login.get().cloned().unwrap_or_else(crate::peer_logins::HostLogin::current)
+    }
+
+    /// Take the login kept for the runs of every server's chat that may no
+    /// longer use it (allowance taken back, server unpaired, a key kept now,
+    /// its model changed): its file in Zend's data goes at once (its live
+    /// runs end next, and with them what their sandboxes mounted).
+    fn take_back_lent_logins(&self) {
+        let Some(data_dir) = self.peers_data_dir.get() else { return };
+        let lent = crate::peer_logins::lent_chats(data_dir);
+        let peers: HashMap<String, String> = crate::peer_chats::PeerChats::new(self.journal.dir()).list().into_iter().collect();
+        for chat_id in lent {
+            let Some(peer) = peers.get(&chat_id).cloned() else {
+                crate::peer_logins::take_back(data_dir, &chat_id);
+                continue;
+            };
+            let config = self
+                .doc_host()
+                .and_then(|host| host.workspace().and_then(|w| w.chat(&chat_id).ok().flatten()))
+                .and_then(|chat| chat.config);
+            let provider = config.and_then(|c| crate::peer_keys::provider_of(c.harness, c.model.as_deref()));
+            if !matches!(self.peer_credential(&peer, provider.as_deref()), Ok(PeerCredential::Login(_))) {
+                crate::peer_logins::take_back(data_dir, &chat_id);
+                tracing::info!(chat = %chat_id, "peer link: a server's chat may no longer use this device's login: taken back");
+            }
+        }
+    }
+
+    /// The working copies of servers' chats, once the data dir is wired.
+    fn copies(&self) -> Option<crate::peer_copies::Copies> {
+        self.peers_data_dir.get().map(|dir| crate::peer_copies::Copies::new(dir))
+    }
+
+    /// The servers' API keys, once the data dir is wired.
+    fn peer_keys(&self) -> Result<crate::peer_keys::PeerKeys, String> {
+        self.peers_data_dir
+            .get()
+            .map(|dir| crate::peer_keys::PeerKeys::new(dir))
+            .ok_or_else(|| "this engine keeps no servers' API keys".to_string())
+    }
+
+    /// `cwd` of a run of `chat_id` in its working copy: a folder of the
+    /// owner's project the copy was made of is taken to the same folder in
+    /// the copy. Any other `cwd` as given.
+    fn copy_cwd(&self, chat_id: &str, cwd: &str) -> String {
+        let Some(root) = self.journal.sandbox(chat_id).and_then(|mark| mark.root) else {
+            return cwd.to_string();
+        };
+        let Some(copies) = self.copies().filter(|copies| copies.holds(&root)) else {
+            return cwd.to_string();
+        };
+        let Some(meta) = root.file_name().and_then(|name| copies.meta(&name.to_string_lossy()).ok()) else {
+            return cwd.to_string();
+        };
+        let path = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+        match path.strip_prefix(&meta.owner) {
+            Ok(rest) if rest.as_os_str().is_empty() => root.to_string_lossy().into_owned(),
+            Ok(rest) => root.join(rest).to_string_lossy().into_owned(),
+            Err(_) => cwd.to_string(),
+        }
+    }
+
+    /// This host, for a sandbox: its home, and this engine's data
+    /// (`~/.zend-dev` and the like, beyond `~/.zend`) hidden too.
+    fn sandbox_host(&self) -> zend_harness::sandbox::Host {
+        let mut host = zend_harness::sandbox::Host::current();
+        host.hidden.extend(self.journal.dir().parent().map(std::path::Path::to_path_buf));
+        host.hidden.extend(self.scratch_root.get().cloned());
+        host.hidden.extend(self.peers_data_dir.get().cloned());
+        host
     }
 
     /// Whether a run of `chat_id` launches without its provider's own
@@ -4360,6 +4809,31 @@ fn next_commit(last: Option<tokio::time::Instant>) -> tokio::time::Instant {
         Some(at) => (at + std::time::Duration::from_millis(STREAM_COMMIT_MS)).max(now),
         None => now,
     }
+}
+
+/// What a server is told when its chat has no key and may not or can't use
+/// this device's login: only that there is no credential for the provider
+/// here. Why (and how the owner would allow it) is logged on this device.
+fn no_credential(chat_id: &str, peer: &str, provider: Option<&str>, why: &str) -> String {
+    tracing::warn!(chat = %chat_id, peer = %peer, provider = provider.unwrap_or("-"), %why, "peer link: a server's chat has no credential to run on");
+    match provider {
+        Some(provider) => format!("no credential for {provider} on this device"),
+        None => "no credential for its model on this device".to_string(),
+    }
+}
+
+/// What a paired server's chat runs on ([`Inner::peer_credential`]).
+enum PeerCredential {
+    /// A key kept for its server: its variable and the key.
+    Key(String, String),
+    /// This device's login for this provider, lent.
+    Login(String),
+}
+
+/// Why `harness` doesn't run a sandboxed chat (a paired server's, or one in
+/// a project sandbox).
+fn cant_run_sandboxed(harness: HarnessId) -> String {
+    format!("{} can't run sandboxed here; only pi does", harness.as_str())
 }
 
 /// Test-only instrumentation: how often `drive_run`'s coalesced commit branch
@@ -6648,6 +7122,7 @@ async fn drive_run(
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
             if *status == DoneStatus::Completed
+                && inner.journal.sandbox(&chat_id).is_none()
                 && let Some(titles) = inner.titles.get()
             {
                 titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);

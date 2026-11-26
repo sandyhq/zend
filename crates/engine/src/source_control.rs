@@ -1601,6 +1601,11 @@ impl GitCheckoutInspector {
     }
 
     async fn git(&self, cwd: &Path, args: &[&str]) -> Option<String> {
+        // A sandboxed chat's project: its agent may have changed its git
+        // configuration (crate::confined).
+        if crate::confined::holds(cwd) {
+            return None;
+        }
         let output = self
             .runner
             .run(ProcessRequest {

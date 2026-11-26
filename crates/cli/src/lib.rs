@@ -93,6 +93,18 @@ enum Command {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+    /// Pair this Zend with your other Zend servers and say what each may do
+    /// here (through the running Zend, this device only).
+    Peer {
+        #[command(subcommand)]
+        command: PeerCommand,
+    },
+    /// Podman containers this server runs agents in, each answering it alone
+    /// (through the running Zend, this device only).
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommand,
+    },
     /// Manage `zend headless` as a background service (launchd / systemd --user).
     Daemon {
         #[command(subcommand)]
@@ -124,6 +136,239 @@ enum DaemonCommand {
     Restart,
     /// Show the service manager's view of the daemon.
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum PeerCommand {
+    /// Print a one-time pairing code (good for 10 minutes) for the other
+    /// server's `zend peer join`.
+    Pair,
+    /// Pair with the server whose `zend peer pair` printed this code.
+    Join {
+        /// The code (zend-peer:1:…).
+        code: String,
+    },
+    /// This server's key and the servers paired with it, with their grants.
+    List,
+    /// Set what a paired server may do here, replacing what it had: none
+    /// takes everything away. Grants: sessions.read, sessions.run:<project>,
+    /// sessions.run.unconfined:<project>, projects.share:<project>,
+    /// workers.manage. sessions.run.unconfined is full trust: an agent it
+    /// runs works as you on this server and can read Zend's IPC token.
+    /// sessions.run:<project> runs the server's chats sandboxed in a working
+    /// copy of that project in Zend's data (a detached git worktree, or a
+    /// copy), never in your folder, on the server's own API key (zend peer
+    /// key set); what they change reaches your folder only through zend
+    /// peer changes apply. In the copy the server's agent can write
+    /// AGENTS.md, build scripts and code: applying is a review step, not a
+    /// filter. Read the patch before you apply it, and what you apply as if
+    /// you had written it yourself.
+    Grant {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        grants: Vec<String>,
+    },
+    /// Forget a paired server: its connections end, it can't dial in again.
+    Unpair {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+    },
+    /// What the chats paired servers run here changed in their working
+    /// copies, and bringing it into your project folder.
+    #[command(subcommand)]
+    Changes(PeerChangesCommand),
+    /// The API keys a paired server's sandboxed chats run on, one per model
+    /// provider. A key wins over a login allowed with `zend peer login`.
+    #[command(subcommand)]
+    Key(PeerKeyCommand),
+    /// Let a paired server's sandboxed chats use this device's own pi
+    /// login (subscription) for a provider: each turn gets only its access
+    /// token, never the refresh token, which stays here.
+    #[command(subcommand)]
+    Login(PeerLoginCommand),
+}
+
+#[derive(Subcommand)]
+pub enum WorkerCommand {
+    /// Make a worker: a rootless Podman container running Zend's engine with
+    /// one project, /work (a volume of its own), answering only this server
+    /// over a socket in Zend's data. It reaches the internet, never this
+    /// host, its LAN, docker or Podman networks or the tailnet.
+    Create {
+        /// Its name: lowercase letters, digits and -.
+        name: String,
+        /// The image (default localhost/zend-worker:latest, infra/worker/build.sh).
+        #[arg(long)]
+        image: Option<String>,
+        /// A model provider whose API key (read from stdin) its agents run on
+        /// (anthropic, openai, …); kept as a Podman secret, given as the
+        /// provider's variable. No login of yours goes in.
+        #[arg(long = "key", value_name = "PROVIDER")]
+        key: Option<String>,
+        /// Its memory, swap none (default 4g).
+        #[arg(long)]
+        memory: Option<String>,
+        /// Its CPUs (default 2).
+        #[arg(long)]
+        cpus: Option<String>,
+        /// Its processes and threads (default 512).
+        #[arg(long)]
+        pids: Option<u32>,
+    },
+    /// This server's workers and their containers' state.
+    List,
+    /// Start a stopped worker (its networks blocked again before it runs).
+    Start { name: String },
+    /// Stop a running worker (the logins lent to it taken away first).
+    Stop { name: String },
+    /// Let a worker's Pi turns use this server's own pi login
+    /// (subscription) for a provider: each turn gets only its access token,
+    /// never the refresh token, which stays here.
+    #[command(subcommand)]
+    Login(WorkerLoginCommand),
+    /// Start a chat in a running worker's /work with `prompt`, and print its
+    /// reply (or, past --timeout, the chat's id and where to read it). The
+    /// chat shows in this server's window under the worker's device.
+    Run {
+        name: String,
+        prompt: String,
+        /// The agent (default pi; mock for a scripted run).
+        #[arg(long)]
+        harness: Option<String>,
+        /// Its model (default: the agent's).
+        #[arg(long)]
+        model: Option<String>,
+        /// How long to wait for the reply, in seconds.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// Remove a worker: its container, key secrets and folders, and its
+    /// volumes (/work's files with them) unless --keep-volumes.
+    Rm {
+        name: String,
+        #[arg(long)]
+        keep_volumes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorkerLoginCommand {
+    /// Allow a worker's Pi turns on a provider's models (anthropic,
+    /// openai-codex) this server's pi login for it. Before each turn the
+    /// worker gets that provider's access token alone, read-only; this
+    /// server refreshes the login itself. The agent can read the token
+    /// while it runs. An API key the worker was made with wins.
+    Allow {
+        /// The worker's name.
+        name: String,
+        /// anthropic or openai-codex, as in Pi's model ids.
+        provider: String,
+    },
+    /// Take the login back: its file leaves the worker at once, its next
+    /// turn on that provider is refused.
+    Rm { name: String, provider: String },
+    /// The providers each worker may use this server's login for.
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum PeerChangesCommand {
+    /// Every working copy: its chat, server, project and changed files.
+    List,
+    /// What a working copy changed since it was made (or last applied), as a patch.
+    Show {
+        /// The chat the copy was made for.
+        chat: String,
+    },
+    /// Write exactly the changes you were shown (by their tree, from show or
+    /// list) into your project folder: all or nothing, refused when the
+    /// copy changed since, or a chat in it runs. Applying is a review step,
+    /// not a filter: AGENTS.md, build scripts and code are applied as you
+    /// read them, so read the patch first. Always refused: .git and the
+    /// agents' and tools' settings folders (.pi, .claude, .vscode, …), files
+    /// your tools run on their own (.gitattributes, .gitmodules, hook
+    /// managers, flake.nix, shell.nix, .mcp.json, opencode.json, .zed,
+    /// .devcontainer, .github/workflows), symbolic links, paths through a
+    /// link in your folder, and files you changed since the copy was made.
+    /// Files that instruct your agents (AGENTS.md, CLAUDE.md, GEMINI.md,
+    /// .cursorrules, .windsurfrules) only with --allow <path>.
+    Apply {
+        /// The chat the copy was made for.
+        chat: String,
+        /// The tree you were shown (zend peer changes show prints it).
+        tree: String,
+        /// A flagged path (AGENTS.md and the like) to apply too; repeat it.
+        #[arg(long = "allow", value_name = "PATH")]
+        allow: Vec<String>,
+    },
+    /// Throw a working copy away: its chats stop running.
+    Discard {
+        /// The chat the copy was made for.
+        chat: String,
+    },
+}
+
+/// `text` safe to print to a terminal: control characters (escape
+/// sequences, carriage returns, …) and the characters that reorder text
+/// (bidirectional overrides and isolates) shown as `\u{…}`; newlines and
+/// tabs kept when `lines` is true.
+pub fn terminal_safe(text: &str, lines: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let reorders = matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+        if (lines && (c == '\n' || c == '\t')) || !(c.is_control() || reorders) {
+            out.push(c);
+        } else {
+            out.push_str(&format!("\\u{{{:04x}}}", c as u32));
+        }
+    }
+    out
+}
+
+#[derive(Subcommand)]
+pub enum PeerLoginCommand {
+    /// Allow a server's chats on a provider's models (anthropic,
+    /// openai-codex) this device's pi login for it. Before each of their
+    /// turns their sandbox gets that provider's access token alone; this
+    /// device refreshes the login itself. The agent can read the token while
+    /// it runs.
+    Allow {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        /// anthropic or openai-codex, as in Pi's model ids.
+        provider: String,
+    },
+    /// Take the login back: its chats' runs on it end, the token leaves
+    /// their sandboxes.
+    Rm {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        provider: String,
+    },
+    /// The providers each server may use this device's login for.
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum PeerKeyCommand {
+    /// Keep the API key (read from stdin) a server's chats use for a
+    /// provider (anthropic, openai, google, openrouter, …). Kept owner-only
+    /// in Zend's data, never synced, never sent anywhere but into those
+    /// chats' sandbox, as the provider's variable (ANTHROPIC_API_KEY, …).
+    Set {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        /// The model provider, as in Pi's model ids (anthropic/claude-…).
+        provider: String,
+    },
+    /// Forget a server's key for a provider: its runs on it stop.
+    Rm {
+        /// The server: its key, a key prefix (8+) or its name.
+        peer: String,
+        provider: String,
+    },
+    /// The providers each server has a key for (names only).
+    List,
 }
 
 #[derive(Subcommand)]
@@ -251,6 +496,8 @@ pub enum EngineCommand {
     Mcp,
     Plugin(PluginCommand),
     Template(TemplateCommand),
+    Peer(PeerCommand),
+    Worker(WorkerCommand),
 }
 
 /// Where this binary runs [`EngineCommand`]s.
@@ -337,7 +584,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         init_logging(
             long_running,
             mode,
-            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. })),
+            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. } | Command::Peer { .. } | Command::Worker { .. })),
         );
     }
     if long_running {
@@ -360,6 +607,8 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         Some(Command::Mcp) => engine(EngineCommand::Mcp),
         Some(Command::Plugin { command }) => engine(EngineCommand::Plugin(command)),
         Some(Command::Template { command }) => engine(EngineCommand::Template(command)),
+        Some(Command::Peer { command }) => engine(EngineCommand::Peer(command)),
+        Some(Command::Worker { command }) => engine(EngineCommand::Worker(command)),
         #[cfg(target_os = "linux")]
         Some(Command::Appshot) => Launch::Appshot,
         Some(Command::Update { check }) => Launch::Done(
@@ -396,7 +645,9 @@ impl Command {
             | Self::Quiesce
             | Self::Mcp
             | Self::Plugin { .. }
-            | Self::Template { .. } => true,
+            | Self::Template { .. }
+            | Self::Peer { .. }
+            | Self::Worker { .. } => true,
             #[cfg(target_os = "linux")]
             Self::Appshot => false,
             Self::Update { .. } | Self::UpdateWatchdog | Self::Daemon { .. } => false,
@@ -465,6 +716,21 @@ pub fn help_for(version: &'static str, path: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_in_a_servers_changes_cant_drive_the_terminal() {
+        // A file name an agent chose: an escape sequence that clears the
+        // screen and retitles the window, a carriage return that hides the
+        // start of the line, and a right-to-left override that shows
+        // "evil.sh" as something else.
+        let name = "a\u{1b}[2J\u{1b}]0;owned\u{7}\rb\u{202e}hs.live\u{2066}x\u{200f}.txt";
+        let shown = terminal_safe(name, false);
+        assert!(!shown.chars().any(|c| c.is_control() || ('\u{2066}'..='\u{2069}').contains(&c) || ('\u{202a}'..='\u{202e}').contains(&c) || c == '\u{200f}'), "{shown}");
+        assert_eq!(shown, "a\\u{001b}[2J\\u{001b}]0;owned\\u{0007}\\u{000d}b\\u{202e}hs.live\\u{2066}x\\u{200f}.txt");
+        // A patch keeps its lines and tabs, nothing else.
+        assert_eq!(terminal_safe("+x\t1\n+\u{1b}[31my\n", true), "+x\t1\n+\\u{001b}[31my\n");
+        assert_eq!(terminal_safe("a\nb", false), "a\\u{000a}b");
+    }
 
     #[test]
     fn the_command_line_is_well_formed() {

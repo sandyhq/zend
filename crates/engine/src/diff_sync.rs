@@ -1151,6 +1151,7 @@ async fn capture_git_in<S: AsRef<OsStr>>(
     max_bytes: usize,
     snapshot: Option<&TreeSnapshot>,
 ) -> Result<Capture, EngineError> {
+    crate::confined::refuse_git(cwd)?;
     let mut cmd = tokio::process::Command::new("git");
     #[cfg(windows)]
     {
@@ -1840,6 +1841,7 @@ async fn run_git_for_path_batch(
     fixed_args: &[OsString],
     paths: &[Vec<u8>],
 ) -> Result<(), EngineError> {
+    crate::confined::refuse_git(root)?;
     let mut command = tokio::process::Command::new("git");
     #[cfg(windows)]
     {

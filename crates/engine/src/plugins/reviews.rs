@@ -61,7 +61,10 @@ impl Origin {
         match caller {
             zend_rpc::Caller::Local => Some(Origin::Local),
             zend_rpc::Caller::Peer { device: Some(device) } if !device.is_empty() => Some(Origin::Peer(device.clone())),
-            zend_rpc::Caller::Peer { device: _ } | zend_rpc::Caller::Agent { .. } | zend_rpc::Caller::Remote => None,
+            zend_rpc::Caller::Peer { device: _ }
+            | zend_rpc::Caller::Agent { .. }
+            | zend_rpc::Caller::Remote
+            | zend_rpc::Caller::PeerServer { .. } => None,
         }
     }
 }

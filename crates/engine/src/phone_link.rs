@@ -128,6 +128,28 @@ pub fn tailnet_peer(ip: IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Out
     })
 }
 
+/// The stable id of the tailnet node holding `ip` (`tailscale whois`), the
+/// one a paired server is pinned to ([`crate::peer_link`]).
+pub fn tailnet_node(ip: IpAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+    Box::pin(async move {
+        if !zend_rpc::in_tailnet(ip) {
+            return None;
+        }
+        let ip_text = ip.to_string();
+        whois_node(&tailscale(&["whois", "--json", &ip_text]).await?, ip)
+    })
+}
+
+/// The `StableID` of the node `tailscale whois --json` output names, when
+/// that node holds `ip`.
+pub(crate) fn whois_node(out: &str, ip: IpAddr) -> Option<String> {
+    if !whois_names(out, ip) {
+        return None;
+    }
+    let answer: Value = serde_json::from_str(out).ok()?;
+    answer["Node"]["StableID"].as_str().filter(|id| !id.is_empty()).map(str::to_string)
+}
+
 /// Whether `tailscale whois --json` output names a node that holds `ip`.
 pub(crate) fn whois_names(out: &str, ip: IpAddr) -> bool {
     let Ok(answer) = serde_json::from_str::<Value>(out) else {

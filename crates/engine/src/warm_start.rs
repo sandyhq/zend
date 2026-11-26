@@ -182,7 +182,14 @@ impl SessionsEngine {
         }
         // Only a new chat: none the workspace knows, none with a run (its
         // send came first), none whose run is made as it's sent (a worktree).
-        if self.inner.chat_known(chat_id) || request.worktree.is_some() {
+        // Nor a sandboxed one, or one in a sandboxed chat's project: a warm
+        // start runs its agent unconfined.
+        if self.inner.chat_known(chat_id)
+            || request.worktree.is_some()
+            || self.chat_sandbox(chat_id).is_some()
+            || self.peer_chats().peer(chat_id).is_some()
+            || crate::confined::holds(std::path::Path::new(&request.cwd))
+        {
             self.warm_stop(chat_id).await;
             return Ok(WarmOutcome::Unsupported);
         }

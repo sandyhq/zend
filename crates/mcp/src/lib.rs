@@ -26,7 +26,7 @@ mod zend;
 pub use jsonrpc::serve_stdio;
 pub use tools::{ListedTool, ToolDef, Tools};
 pub use transcript::{RenderOptions, RenderedMessage, render_entries};
-pub use zend::{Origin, Zend};
+pub use zend::{Origin, TurnOutcome, Zend};
 
 /// How `zend mcp` finds the engine and who it speaks for.
 #[derive(Debug, Clone)]

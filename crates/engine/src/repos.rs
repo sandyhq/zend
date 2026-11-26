@@ -274,6 +274,9 @@ impl Repos {
 
     /// Run `git <args>` (optionally under `cwd`), returning trimmed stdout.
     async fn git(&self, args: &[&str], cwd: Option<&Path>) -> Result<String, EngineError> {
+        if let Some(cwd) = cwd {
+            crate::confined::refuse_git(cwd)?;
+        }
         let mut cmd = tokio::process::Command::new("git");
         #[cfg(windows)]
         {
@@ -314,6 +317,9 @@ impl Repos {
         args: &[&str],
         cwd: Option<&Path>,
     ) -> Result<Option<String>, EngineError> {
+        if let Some(cwd) = cwd {
+            crate::confined::refuse_git(cwd)?;
+        }
         let mut cmd = tokio::process::Command::new("git");
         #[cfg(windows)]
         {

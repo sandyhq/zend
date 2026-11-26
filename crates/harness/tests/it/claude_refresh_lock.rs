@@ -108,6 +108,7 @@ async fn a_run_is_torn_down_only_once_no_login_refresh_is_in_flight() {
         interrupt: CancellationToken::new(),
         request_input: Box::new(|_| tokio::sync::oneshot::channel().1),
         turn: Default::default(),
+        sandbox: None,
     };
     let stream = ClaudeHarness::new()
         .with_executable(&script)

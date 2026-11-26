@@ -9,7 +9,7 @@ mod ui;
 
 use crate::{
     Harness, HarnessError, RunControls,
-    process::{Command, Stdio, owned::Child},
+    process::{Stdio, owned::Child},
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
@@ -121,6 +121,7 @@ impl PiHarness {
             &[],
             None,
             &Default::default(),
+            None,
         )?;
         let (mut tx, rx) = tokio::sync::oneshot::channel();
         let grace = self.kill_grace;
@@ -147,8 +148,29 @@ impl PiHarness {
         // Plugins' instructions; `None` (a discovery probe) loads none.
         instructions: Option<&[zend_proto::SessionInstruction]>,
         run_env: &std::collections::BTreeMap<String, String>,
+        // A sandboxed run's confinement ([`RunControls::sandbox`]): Pi
+        // under bubblewrap, without Zend's or the plugins' MCP servers and
+        // instructions (their files and tokens stay outside).
+        sandbox: Option<&crate::sandbox::Sandbox>,
     ) -> Result<Process, HarnessError> {
         let exe = self.resolve_executable()?;
+        let launch = match sandbox {
+            Some(sandbox) => {
+                let agent_dir = self.agent_dir.clone();
+                let logins = crate::sandbox::logins(HarnessId::Pi, &sandbox.host().home, &|key| {
+                    match (key, &agent_dir) {
+                        ("PI_CODING_AGENT_DIR", Some(dir)) => Some(dir.clone().into_os_string()),
+                        _ => std::env::var_os(key),
+                    }
+                });
+                Some(crate::sandbox::Launch::new(sandbox, HarnessId::Pi, &exe, cwd, &logins)?)
+            }
+            None => None,
+        };
+        let (mcp, extra_mcp, instructions) = match launch {
+            Some(_) => (None, &[][..], None),
+            None => (mcp, extra_mcp, instructions),
+        };
         if self.executable.is_none() {
             if let Some(version) = crate::executable::binary_version(&exe) {
                 if version < semver::Version::new(0, 85, 1) {
@@ -158,7 +180,7 @@ impl PiHarness {
                 }
             }
         }
-        let mut cmd = Command::new(&exe);
+        let mut cmd = crate::sandbox::command(launch.as_ref(), &exe);
         // Process group plus the same env scrubbing the ACP launch applied.
         crate::process::owned::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
@@ -177,7 +199,7 @@ impl PiHarness {
         let instructions = instructions
             .map(|list| self::instructions::configure(&mut cmd, &mut scratch, list))
             .transpose()?;
-        let child = crate::process::spawn_agent(&mut cmd).map_err(|e| {
+        let child = crate::sandbox::spawn(launch.as_ref(), &mut cmd).map_err(|e| {
             crate::executable::spawn_error(e, Some(cwd), || crate::executable::binary_hint(&exe))
         })?;
         let mut child = Child::new(child);
@@ -312,6 +334,9 @@ impl Harness for PiHarness {
     fn deterministic_turn_end(&self) -> bool {
         true
     }
+    fn runs_sandboxed(&self) -> bool {
+        true
+    }
     /// `set_model` and `set_thinking_level` change the live process. Clearing
     /// either back to the default cannot be expressed that way.
     /// The default, and the same plugins' instructions: different ones are
@@ -395,9 +420,18 @@ impl Harness for PiHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let mut request = request;
-        let store = sessions::Store::new(self.session_store.clone(), self.agent_dir.clone());
+        let sandbox = controls.sandbox.clone();
+        let mut store = sessions::Store::new(self.session_store.clone(), self.agent_dir.clone());
+        if let Some(state) = sandbox.as_ref().and_then(|s| s.state()) {
+            // A sandboxed chat's sessions live in its own state folder, the
+            // only one it can write that outlives its process.
+            store = store.confined(state);
+        }
+        if let Some(sandbox) = &sandbox {
+            request.attachments = readable(Some(sandbox), &request.attachments);
+        }
         let mut lost_context = None;
-        let args = match &request.resume {
+        let mut args = match &request.resume {
             Some(id) => match store.resume_args(id, Path::new(&request.cwd)) {
                 Ok(args) => args,
                 // Like every other harness, a session that can no longer be
@@ -415,6 +449,12 @@ impl Harness for PiHarness {
         if lost_context.is_some() {
             request.resume = None;
         }
+        if let Some(dir) = store.session_dir()
+            && !args.iter().any(|a| a == "--session" || a == "--session-dir")
+        {
+            std::fs::create_dir_all(&dir)?;
+            args.extend(["--session-dir".into(), dir.display().to_string()]);
+        }
         let process = self.spawn(
             Path::new(&request.cwd),
             &args,
@@ -422,6 +462,7 @@ impl Harness for PiHarness {
             &request.extra_mcp,
             Some(&request.instructions),
             &request.env,
+            controls.sandbox.as_ref(),
         )?;
         let (tx, rx) = mpsc::channel(256);
         let kill_grace = self.kill_grace;
@@ -429,6 +470,7 @@ impl Harness for PiHarness {
         let idle_queue_timeout = self.idle_queue_timeout;
         tokio::spawn(async move {
             let mut runner = Runner {
+                sandbox,
                 store,
                 interrupted: false,
                 extension_commands: HashSet::new(),
@@ -461,6 +503,7 @@ impl Harness for PiHarness {
                 mut steering,
                 interrupt,
                 turn: _,
+                sandbox: _,
             } = controls;
             runner.process.dialogs.input = Some(std::sync::Arc::from(request_input));
             let consumer = runner.tx.clone();
@@ -512,6 +555,8 @@ struct Delivery {
     opens_turn: bool,
 }
 struct Runner {
+    /// A sandboxed run's confinement: attachments it may inline.
+    sandbox: Option<crate::sandbox::Sandbox>,
     extension_commands: HashSet<String>,
     auto_compaction: bool,
     interrupted: bool,
@@ -763,7 +808,8 @@ impl Runner {
         for frame in backlog {
             self.frame(frame).await?;
         }
-        let images = load_images(&self.request.attachments).await;
+        let images =
+            load_images_in(self.sandbox.as_ref().map(|s| s.root()), &self.request.attachments).await;
         self.prompt(self.request.prompt.clone(), images)?;
         let mut open = true;
         loop {
@@ -820,7 +866,11 @@ impl Runner {
                         self.active = true;
                         // Atomic Pi operation: queue at a step boundary if busy, start if idle.
                         // A separate get_state + steer pair would strand an input on the idle race.
-                        let images = load_images(&steer.attachments).await;
+                        let images = load_images_in(
+                            self.sandbox.as_ref().map(|s| s.root()),
+                            &readable(self.sandbox.as_ref(), &steer.attachments),
+                        )
+                        .await;
                         self.submit(steer.prompt.clone(), images, true)?;
                         self.deliveries.push_back(Delivery {
                             epoch: self.epoch,
@@ -1171,34 +1221,59 @@ impl Runner {
         Ok(())
     }
 }
+/// The attachments the host may read for a run: all of them, or for a
+/// sandboxed run only files inside its project (symlinks resolved). Zend
+/// inlines images itself, outside the sandbox: a path elsewhere would hand
+/// the agent a file it can't see.
+fn readable(sandbox: Option<&crate::sandbox::Sandbox>, paths: &[String]) -> Vec<String> {
+    match sandbox {
+        None => paths.to_vec(),
+        Some(sandbox) => paths
+            .iter()
+            .filter(|path| {
+                let ok = sandbox.may_read(Path::new(path));
+                if !ok {
+                    tracing::warn!(%path, "attachment outside a sandboxed chat's project; dropped");
+                }
+                ok
+            })
+            .cloned()
+            .collect(),
+    }
+}
 /// Inline attachments as native image blocks, best-effort like the Claude
 /// driver: the path refs already ride the prompt text, so an unreadable,
 /// oversized or non-inlinable file (SVG, HEIC, TIFF, ...) must not fail the turn.
 /// The blocks are ACP's image content shape, so the ACP driver shares them.
 pub(crate) async fn load_images(paths: &[String]) -> Value {
-    load_images_capped(paths, 20 * 1024 * 1024, u64::MAX).await
+    load_images_in(None, paths).await
+}
+
+/// [`load_images`] for a run confined to `root` (a sandboxed run's
+/// project): each file is opened beneath it and read from what was opened
+/// ([`open_beneath`]), so one swapped for a link out of the project after
+/// [`readable`] let it through is never read.
+async fn load_images_in(root: Option<&Path>, paths: &[String]) -> Value {
+    load_images_capped_in(root, paths, 20 * 1024 * 1024, u64::MAX).await
 }
 
 /// [`load_images`] under a cap per file and a cap on all inlined files
 /// together, in bytes. A file over either rides as its path ref only.
 pub(crate) async fn load_images_capped(paths: &[String], each: u64, total: u64) -> Value {
+    load_images_capped_in(None, paths, each, total).await
+}
+
+async fn load_images_capped_in(root: Option<&Path>, paths: &[String], each: u64, total: u64) -> Value {
     use base64::Engine;
     let mut images = vec![];
     let mut inlined = 0u64;
     for path in paths {
-        match tokio::fs::metadata(path).await {
-            Ok(meta) if meta.len() <= each && meta.len() <= total - inlined => {}
-            Ok(_) => {
+        let bytes = match read_attachment(root, path, each.min(total - inlined)).await {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
                 tracing::debug!(%path, "Pi attachment over inline cap; path ref only");
                 continue;
             }
-            Err(error) => {
-                tracing::warn!(%path, %error, "Pi attachment unreadable; path ref only");
-                continue;
-            }
-        }
-        let bytes = match tokio::fs::read(path).await {
-            Ok(bytes) => bytes,
             Err(error) => {
                 tracing::warn!(%path, %error, "Pi attachment unreadable; path ref only");
                 continue;
@@ -1227,9 +1302,145 @@ pub(crate) async fn load_images_capped(paths: &[String], each: u64, total: u64) 
     Value::Array(images)
 }
 
+/// The bytes of attachment `path`, or `None` when it holds more than
+/// `room`. Confined to `root`: only a plain file, opened beneath it.
+async fn read_attachment(root: Option<&Path>, path: &str, room: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let Some(root) = root else {
+        if tokio::fs::metadata(path).await?.len() > room {
+            return Ok(None);
+        }
+        let bytes = tokio::fs::read(path).await?;
+        return Ok((bytes.len() as u64 <= room).then_some(bytes));
+    };
+    let (root, path) = (root.to_path_buf(), std::path::PathBuf::from(path));
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read as _;
+        use std::os::unix::fs::MetadataExt as _;
+        let file = open_beneath(&root, &path)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(std::io::Error::other("not a file"));
+        }
+        if meta.nlink() > 1 {
+            return Err(std::io::Error::other("it has other names (a hard link)"));
+        }
+        if meta.len() > room {
+            return Ok(None);
+        }
+        let mut bytes = Vec::new();
+        file.take(room + 1).read_to_end(&mut bytes)?;
+        Ok((bytes.len() as u64 <= room).then_some(bytes))
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+/// `path` opened for reading if, as it is opened, it lies beneath `root`
+/// (canonical): resolved by the kernel relative to the root's own fd with
+/// `openat2(RESOLVE_BENEATH)`, so a link or a folder swapped in meanwhile
+/// can't lead out of it. Without `openat2` (Linux before 5.6), opened
+/// without following a last link and judged by where the open file is.
+#[cfg(target_os = "linux")]
+fn open_beneath(root: &Path, path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let outside = || std::io::Error::other("outside the sandboxed project");
+    let relative = match path.strip_prefix(root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => {
+            let folder = std::fs::canonicalize(path.parent().ok_or_else(outside)?)?;
+            folder.join(path.file_name().ok_or_else(outside)?).strip_prefix(root).map_err(|_| outside())?.to_path_buf()
+        }
+    };
+    if relative.as_os_str().is_empty() {
+        return Err(outside());
+    }
+    let dir = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)?;
+    let name = std::ffi::CString::new(relative.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
+    let flags = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC;
+    // SAFETY: zeroed is a valid open_how (no flags, no resolve rules).
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = flags as u64;
+    how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS;
+    // SAFETY: a live dir fd, a NUL-ended path and an open_how of the size given.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: the kernel just handed over this fd.
+        return Ok(unsafe { std::fs::File::from_raw_fd(fd as i32) });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::ENOSYS) {
+        return Err(error);
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags | libc::O_NOFOLLOW)
+        .open(root.join(&relative))?;
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+    if !at.starts_with(root) {
+        return Err(outside());
+    }
+    Ok(file)
+}
+
+/// No sandbox runs off Linux; checked as [`readable`] does.
+#[cfg(not(target_os = "linux"))]
+fn open_beneath(root: &Path, path: &Path) -> std::io::Result<std::fs::File> {
+    let canonical = std::fs::canonicalize(path)?;
+    if !canonical.starts_with(root) {
+        return Err(std::io::Error::other("outside the sandboxed project"));
+    }
+    std::fs::File::open(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{load_images, load_images_capped};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_run_inlines_only_attachments_inside_its_project() {
+        use std::path::{Path, PathBuf};
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("p");
+        std::fs::create_dir_all(project.join("img")).unwrap();
+        std::fs::create_dir_all(home.path().join(".ssh")).unwrap();
+        let inside = project.join("img/a.png");
+        let secret = home.path().join(".ssh/id.png");
+        let elsewhere = home.path().join("b.png");
+        for file in [&inside, &secret, &elsewhere] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        // A link in the project to a file outside it: judged by its target.
+        let link = project.join("img/link.png");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let host = crate::sandbox::Host {
+            home: home.path().into(),
+            bwrap: Some(PathBuf::from("/bin/sh")),
+            pasta: Some(PathBuf::from("/bin/sh")),
+            hidden: vec![],
+        };
+        let sandbox = crate::sandbox::Sandbox::project(&project, host).unwrap();
+        let paths: Vec<String> = [&inside, &secret, &elsewhere, &link]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        assert_eq!(super::readable(Some(&sandbox), &paths), [inside.display().to_string()]);
+        assert_eq!(super::readable(None, &paths), paths);
+        assert!(!sandbox.may_read(Path::new("/etc/passwd")));
+    }
 
     #[tokio::test]
     async fn unsupported_or_missing_attachments_do_not_fail_the_turn() {
@@ -1282,5 +1493,77 @@ mod tests {
             })
             .collect();
         assert_eq!(lengths, [8, 4]);
+    }
+
+    /// A sandboxed run inlines an attachment from what it opened beneath
+    /// the project: one swapped back and forth with a link to a file
+    /// outside (RENAME_EXCHANGE) while it's read is never read from there;
+    /// a link out, a hard link and a fifo aren't read at all.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sandboxed_run_reads_attachments_only_from_beneath_its_project() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let home = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(home.path()).unwrap().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = root.parent().unwrap().join("secret.png");
+        std::fs::write(&outside, b"\x89PNG\r\n\x1a\nOUTSIDE").unwrap();
+        let inside = root.join("a.png");
+        std::fs::write(&inside, b"\x89PNG\r\n\x1a\ninside").unwrap();
+        let decoded = |images: &serde_json::Value| -> Vec<Vec<u8>> {
+            use base64::Engine;
+            images.as_array().unwrap().iter().map(|i| base64::engine::general_purpose::STANDARD.decode(i["data"].as_str().unwrap()).unwrap()).collect()
+        };
+        let one = |path: &std::path::Path| vec![path.display().to_string()];
+        assert_eq!(decoded(&super::load_images_in(Some(&root), &one(&inside)).await), [b"\x89PNG\r\n\x1a\ninside".to_vec()]);
+        // Not read beneath the project: a link out, a hard link, a fifo.
+        let link = root.join("link.png");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let hard = root.join("hard.png");
+        std::fs::hard_link(&inside, &hard).unwrap();
+        let fifo = root.join("fifo.png");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        for path in [&link, &hard, &fifo] {
+            assert_eq!(decoded(&super::load_images_in(Some(&root), &one(path)).await).len(), 0, "{}", path.display());
+        }
+        // Control: unconfined, the link is read (it's the owner's own run).
+        assert_eq!(decoded(&super::load_images_in(None, &one(&link)).await), [b"\x89PNG\r\n\x1a\nOUTSIDE".to_vec()]);
+        std::fs::remove_file(&hard).unwrap();
+        // The swap: a.png and link.png trade places as fast as they can.
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stop, a, b) = (stop.clone(), inside.clone(), link.clone());
+            std::thread::spawn(move || {
+                let a = std::ffi::CString::new(a.as_os_str().as_encoded_bytes()).unwrap();
+                let b = std::ffi::CString::new(b.as_os_str().as_encoded_bytes()).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    unsafe { libc::renameat2(libc::AT_FDCWD, a.as_ptr(), libc::AT_FDCWD, b.as_ptr(), libc::RENAME_EXCHANGE) };
+                }
+            })
+        };
+        let sandbox = crate::sandbox::Sandbox::project(&root, crate::sandbox::Host {
+            home: home.path().into(),
+            bwrap: Some(std::path::PathBuf::from("/bin/sh")),
+            pasta: Some(std::path::PathBuf::from("/bin/sh")),
+            hidden: vec![],
+        })
+        .unwrap();
+        let (mut outside_reads, mut inside_reads, mut naive_outside) = (0, 0, 0);
+        for _ in 0..2000 {
+            let paths = super::readable(Some(&sandbox), &one(&inside));
+            for bytes in decoded(&super::load_images_in(Some(&root), &paths).await) {
+                if bytes.ends_with(b"OUTSIDE") { outside_reads += 1 } else { inside_reads += 1 }
+            }
+            // As before: checked, then read by path.
+            if !paths.is_empty() && std::fs::read(&inside).is_ok_and(|b| b.ends_with(b"OUTSIDE")) {
+                naive_outside += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+        println!("swap: {inside_reads} inside reads, {outside_reads} outside; checked-then-read by path: {naive_outside} outside");
+        assert_eq!(outside_reads, 0);
+        assert!(inside_reads > 0, "the swap left nothing to read");
     }
 }

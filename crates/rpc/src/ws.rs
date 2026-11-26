@@ -20,12 +20,17 @@ const FRAGMENT_BYTES: usize = 1 << 20;
 /// accept. Local IPC behind the bearer token: the cap only stops runaways.
 const MAX_MESSAGE_BYTES: usize = 512 << 20;
 
+/// Largest message a server takes from one of its workers. A worker is as
+/// trusted as its agent: everything from it is hostile input.
+pub(crate) const WORKER_MAX_MESSAGE_BYTES: usize = 16 << 20;
+
 pub(crate) fn config() -> WebSocketConfig {
-    WebSocketConfig {
-        max_message_size: Some(MAX_MESSAGE_BYTES),
-        max_frame_size: Some(MAX_MESSAGE_BYTES),
-        ..WebSocketConfig::default()
-    }
+    config_capped(MAX_MESSAGE_BYTES)
+}
+
+/// [`config`] with `max` as the largest message and frame taken in.
+pub(crate) fn config_capped(max: usize) -> WebSocketConfig {
+    WebSocketConfig { max_message_size: Some(max), max_frame_size: Some(max), ..WebSocketConfig::default() }
 }
 
 /// Shuttle frames between `ws` and the string channels until either side

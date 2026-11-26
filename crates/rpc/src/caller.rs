@@ -13,6 +13,9 @@
 //!   ([`crate::peer_refused`] keeps decisions and credentials local).
 //! - [`Caller::Remote`]: a linked phone's window over the tailnet
 //!   ([`crate::remote`]).
+//! - [`Caller::PeerServer`]: another Zend server paired with this one,
+//!   over the tailnet ([`crate::peer_link`]), with the grants this side
+//!   gave it.
 //!
 //! The gates that matter are enforced by method at the transport guards
 //! themselves (the WS server's agent guard, the relay's guard), so they
@@ -36,6 +39,12 @@ pub enum Caller {
     /// ([`crate::remote`]): it reaches only [`crate::remote_allowed`]
     /// methods. Which phone isn't known: treated as an unverified peer.
     Remote,
+    /// A paired server over the tailnet ([`crate::peer_link`]): its node
+    /// key (proved on this connection) and what this side grants it, read
+    /// as the call arrived. It reached only
+    /// [`crate::peer_link::peer_server_allowed`] methods; the engine checks
+    /// which project each call touches against `grants`.
+    PeerServer { peer: String, grants: crate::peer_link::Grants },
 }
 
 impl Caller {
@@ -51,6 +60,7 @@ impl Caller {
             Caller::Agent { chat } => Some(serde_json::json!({ "agent": true, "chat": chat })),
             Caller::Peer { device } => Some(serde_json::json!({ "peer": true, "device": device })),
             Caller::Remote => Some(serde_json::json!({ "remote": true })),
+            Caller::PeerServer { peer, .. } => Some(serde_json::json!({ "server": true, "peer": peer })),
         }
     }
 }

@@ -366,6 +366,12 @@ async fn snapshot_git(
     args: &[&str],
     stdin: Option<Vec<u8>>,
 ) -> std::io::Result<std::process::Output> {
+    if crate::confined::holds(root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "no turn snapshot in a sandboxed chat's project: git doesn't run there",
+        ));
+    }
     let mut cmd = tokio::process::Command::new("git");
     #[cfg(windows)]
     {

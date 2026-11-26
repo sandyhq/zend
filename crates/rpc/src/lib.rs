@@ -23,6 +23,7 @@ mod client;
 pub mod device_room;
 pub mod ipc_auth;
 pub mod link_proof;
+pub mod peer_link;
 pub mod remote;
 mod server;
 mod ws;
@@ -35,6 +36,7 @@ pub use device_room::{
     NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenError, TokenSource,
     decode_device_frame, device_room_ws_url, encode_device_frame, is_liveness_probe,
 };
+pub use peer_link::{Grant, Grants, NodeKey, connect_peer, peer_server_allowed};
 pub use remote::{bind_remote, in_tailnet, remote_allowed, serve_remote_listener};
 pub use server::{
     agent_service, serve_connection, serve_ws_listener, serve_ws_listener_scoped, serve_ws_streams,
@@ -787,6 +789,83 @@ pub mod methods {
     /// `{}` → as `PhoneLinkStatus`: a new key; phones holding the old one
     /// are cut and refused.
     pub const NEW_PHONE_LINK_KEY: &str = "NewPhoneLinkKey";
+    /// Server to server ([`crate::peer_link`]): `{}` → `{code, expiresAt}`,
+    /// a pairing code (this engine's key, tailnet address, peer port and a
+    /// one-time secret) good for 10 minutes, once. Starts the peer listener.
+    pub const PEER_PAIR: &str = "PeerPair";
+    /// `{code, name?}` → `{peer}`: pair with the server that showed `code`;
+    /// both sides then hold each other's key (no grants yet).
+    pub const PEER_JOIN: &str = "PeerJoin";
+    /// `{}` → `{key, port, listening, peers: [{key, name?, host?, port?,
+    /// grants, pairedAt}]}`: this engine's key and its paired servers.
+    pub const LIST_PEERS: &str = "ListPeers";
+    /// `{peer, grants: [..]}` → the peer: what this side lets that server
+    /// do here (replaced whole). Its open connections end.
+    pub const SET_PEER_GRANTS: &str = "SetPeerGrants";
+    /// `{peer}` → `{removed}`: forget a paired server; its connections end.
+    pub const UNPAIR_PEER: &str = "UnpairPeer";
+    /// `{}` → `{copies: [{chat, peer, project, owner, kind, tree,
+    /// changes: [{path, status, flag?, refused?, modeOnly?}] | error}]}`: the working copies of
+    /// servers' chats here and what each changed since its base.
+    pub const LIST_PEER_CHANGES: &str = "ListPeerChanges";
+    /// `{chat}` → `{chat, tree, changes, patch}`: what that copy changed,
+    /// as a patch, and the tree it is (what ApplyPeerChanges takes).
+    pub const SHOW_PEER_CHANGES: &str = "ShowPeerChanges";
+    /// `{chat, tree, allow?: [path]}` → `{chat, applied: [path]}`: write
+    /// exactly the tree the owner was shown into the project's folder (all
+    /// or nothing; refused if the copy moved since). `allow` lets flagged
+    /// paths (AGENTS.md and the like) through.
+    pub const APPLY_PEER_CHANGES: &str = "ApplyPeerChanges";
+    /// `{chat}` → `{chat, discarded}`: throw that copy away; the chats
+    /// working in it no longer run.
+    pub const DISCARD_PEER_CHANGES: &str = "DiscardPeerChanges";
+    /// `{peer, provider, key}` → `{peer, provider, variable}`: the API key a
+    /// server's confined chats run on for that provider.
+    pub const SET_PEER_KEY: &str = "SetPeerKey";
+    /// `{peer, provider}` → `{peer, provider, removed}`.
+    pub const REMOVE_PEER_KEY: &str = "RemovePeerKey";
+    /// `{}` → `{keys: [{peer, name?, providers: [..]}]}`: names only.
+    pub const LIST_PEER_KEYS: &str = "ListPeerKeys";
+    /// `{peer, provider}` → `{peer, provider, keyWins, hostSignedIn}`: a
+    /// server's sandboxed chats on that provider's models may run on this
+    /// device's pi login for it (its access token only, step 4d-4).
+    pub const ALLOW_PEER_LOGIN: &str = "AllowPeerLogin";
+    /// `{peer, provider}` → `{peer, provider, removed}`.
+    pub const REMOVE_PEER_LOGIN: &str = "RemovePeerLogin";
+    /// `{}` → `{logins: [{peer, name?, providers: [..]}]}`.
+    pub const LIST_PEER_LOGINS: &str = "ListPeerLogins";
+    /// A paired server's (`projects.share:<project>`): `{project, path?}` →
+    /// `{entries: [{name, kind, size?}]}`, a folder of that project by a
+    /// path from its root.
+    pub const PEER_LIST_PROJECT_FILES: &str = "PeerListProjectFiles";
+    /// A paired server's (`projects.share:<project>`): `{project, path}` →
+    /// `{path, size, text?}` (`text` for UTF-8 files up to 1 MiB), a file of
+    /// that project by a path from its root.
+    pub const PEER_READ_PROJECT_FILE: &str = "PeerReadProjectFile";
+    /// Workers (`zend worker`): `{name, image?, keys?: {provider: key}}` →
+    /// the worker `{name, key, image, container, providers, createdAt}`,
+    /// a Podman container this server made, started and answering it alone.
+    pub const CREATE_WORKER: &str = "CreateWorker";
+    /// `{}` → `{workers: [{name, key, image, container, providers, createdAt, state}]}`.
+    pub const LIST_WORKERS: &str = "ListWorkers";
+    /// `{name}` → `{name, state}`: start a stopped worker (its networks
+    /// blocked again first).
+    pub const START_WORKER: &str = "StartWorker";
+    /// `{name, keepVolumes?}` → `{name, removed}`: its container, secrets
+    /// and folders, and its volumes unless kept.
+    pub const REMOVE_WORKER: &str = "RemoveWorker";
+    /// `{name}` → `{name, state}`: stop a running worker (the logins lent
+    /// to it taken away first).
+    pub const STOP_WORKER: &str = "StopWorker";
+    /// `{name, provider}` → `{name, provider, keyWins, hostSignedIn}`: a
+    /// worker's Pi turns on that provider's models may run on this device's
+    /// pi login for it (its access token only, put in the worker's
+    /// read-only `conf` before each turn).
+    pub const ALLOW_WORKER_LOGIN: &str = "AllowWorkerLogin";
+    /// `{name, provider}` → `{name, provider, removed}`: its file goes at once.
+    pub const REMOVE_WORKER_LOGIN: &str = "RemoveWorkerLogin";
+    /// `{}` → `{logins: [{name, providers: [..]}]}`.
+    pub const LIST_WORKER_LOGINS: &str = "ListWorkerLogins";
 }
 
 /// Methods answered only over this device's own local IPC, never to a peer
@@ -848,6 +927,32 @@ pub fn local_only(method: &str) -> bool {
             | methods::PHONE_LINK_STATUS
             | methods::SET_PHONE_LINK
             | methods::NEW_PHONE_LINK_KEY
+            // Pairing servers and what each may do here: this device's own.
+            | methods::PEER_PAIR
+            | methods::PEER_JOIN
+            | methods::LIST_PEERS
+            | methods::SET_PEER_GRANTS
+            | methods::UNPAIR_PEER
+            // Servers' chats' working copies and their API keys: the owner's.
+            | methods::LIST_PEER_CHANGES
+            | methods::SHOW_PEER_CHANGES
+            | methods::APPLY_PEER_CHANGES
+            | methods::DISCARD_PEER_CHANGES
+            | methods::SET_PEER_KEY
+            | methods::REMOVE_PEER_KEY
+            | methods::LIST_PEER_KEYS
+            | methods::ALLOW_PEER_LOGIN
+            | methods::REMOVE_PEER_LOGIN
+            | methods::LIST_PEER_LOGINS
+            // Workers: this server's containers.
+            | methods::CREATE_WORKER
+            | methods::LIST_WORKERS
+            | methods::START_WORKER
+            | methods::REMOVE_WORKER
+            | methods::STOP_WORKER
+            | methods::ALLOW_WORKER_LOGIN
+            | methods::REMOVE_WORKER_LOGIN
+            | methods::LIST_WORKER_LOGINS
     )
 }
 

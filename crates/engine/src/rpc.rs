@@ -61,6 +61,7 @@
 
 mod agent_gate;
 mod device_stats;
+mod peer_gate;
 mod remote_plugins;
 mod voice_chat;
 mod voice_remote;
@@ -2946,7 +2947,7 @@ fn forwardable(method: &str) -> bool {
 }
 
 /// Forwardable methods whose reply is a stream (proxied item-by-item).
-fn is_stream_method(method: &str) -> bool {
+pub(crate) fn is_stream_method(method: &str) -> bool {
     if method == methods::OWN_VOICE_V2 {
         return true;
     }
@@ -2985,12 +2986,12 @@ where
 
 /// Whether a watch asked for changes only (`{"changes": true}`): opt-in,
 /// so older viewports keep the whole list on every change.
-fn wants_changes(params: &serde_json::Value) -> bool {
+pub(crate) fn wants_changes(params: &serde_json::Value) -> bool {
     params.get("changes").and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 /// What a keyed list stream last sent: its keys in order, and each row.
-type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Value>);
+pub(crate) type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Value>);
 
 /// A list of rows keyed by `key` (`id`, or a session's `chatId`) as change
 /// frames: the whole list first, as [`watch_stream`] sends it; then, per
@@ -3028,7 +3029,7 @@ where
 
 /// `rows` as the frame that follows `last` (`None`: nothing changed), and
 /// what's been sent once it is. No `last`: the whole list.
-fn keyed_frame(rows: Vec<serde_json::Value>, key: &str, last: Option<SentRows>) -> (Option<serde_json::Value>, SentRows) {
+pub(crate) fn keyed_frame(rows: Vec<serde_json::Value>, key: &str, last: Option<SentRows>) -> (Option<serde_json::Value>, SentRows) {
     let keys: Vec<String> = rows
         .iter()
         .map(|row| row.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_owned())
@@ -3545,6 +3546,17 @@ impl crate::remote_terminals::Relay for EngineRpc {
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        // An agent in a chat a paired server started calls as that server
+        // (rpc/peer_gate.rs), never with its token's reach.
+        if let Some(as_peer) = self.peer_agent(method) {
+            return self.as_peer_agent(as_peer, method, params).await;
+        }
+        // A paired server's calls: held to its grants, chat by chat and
+        // project by project (rpc/peer_gate.rs). Before anything else.
+        let params = match self.peer_gate(method, params).await? {
+            peer_gate::PeerGate::Pass(params) => params,
+            peer_gate::PeerGate::Reply(reply) => return Ok(reply),
+        };
         // An agent's chats: capped at its own access, runs as the chat is
         // set, attributed by Zend (rpc/agent_gate.rs). Before forwarding.
         let params = self.agent_gate(method, params)?;
@@ -4121,6 +4133,28 @@ impl RpcService for EngineRpc {
                             continuation_of: None,
                         })
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
+                }
+                // A copy of a paired server's chat stays that server's, under
+                // the same grant check, and confined to the same folder, before
+                // its row is published: it never runs as the owner's own.
+                let peers = self.sessions.peer_chats();
+                if let Some(peer) = peers.peer(&source.id) {
+                    peers
+                        .note(&chat.id, &peer)
+                        .map_err(|e| RpcError::Failed(format!("fork: {e}")))?;
+                }
+                if let Some(mark) = self.sessions.chat_sandbox(&source.id) {
+                    let marked = match mark.root {
+                        Some(root) => self.sessions.sandbox_chat(&chat.id, &root).await.map(drop),
+                        None => Err(crate::EngineError::Other(
+                            "the source's sandbox has no folder".into(),
+                        )),
+                    };
+                    if let Err(error) = marked {
+                        return Err(RpcError::Failed(format!(
+                            "fork: the copy can't run sandboxed as its source does: {error}"
+                        )));
+                    }
                 }
                 self.doc_host.persist_fork(&target).map_err(failed)?;
                 self.workspace.import_chat_row(&chat).map_err(failed)?;

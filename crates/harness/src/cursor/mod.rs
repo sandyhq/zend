@@ -678,6 +678,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn,
+        sandbox: _,
     } = controls;
 
     let mut assistant_message_id = new_message_id();

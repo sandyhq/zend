@@ -349,6 +349,7 @@ impl TurnWire {
                 steering,
                 interrupt: interrupt.clone(),
                 turn: turn.clone(),
+                sandbox: None,
             },
             request: serde_json::from_value(request).unwrap(),
             interrupt_grace: Duration::from_secs(2),
@@ -3671,6 +3672,7 @@ http.createServer((req, res) => {
         steering,
         interrupt: tokio_util::sync::CancellationToken::new(),
         turn: Default::default(),
+        sandbox: None,
     };
     let request: RunRequest = serde_json::from_value(json!({
         "prompt": "hi", "cwd": fixture.path().to_str().unwrap(),
@@ -3832,6 +3834,7 @@ async fn scripted_run(
         steering,
         interrupt: tokio_util::sync::CancellationToken::new(),
         turn: turn.clone(),
+        sandbox: None,
     };
     let request: RunRequest = serde_json::from_value(json!({
         "prompt": "hi", "cwd": cwd.to_str().unwrap(),
@@ -4017,6 +4020,7 @@ async fn wedged_run(base: String, timeouts: BusTimeouts) -> (Option<String>, Don
             steering,
             interrupt: tokio_util::sync::CancellationToken::new(),
             turn: Default::default(),
+            sandbox: None,
         },
         request: serde_json::from_value(request).unwrap(),
         interrupt_grace: Duration::from_secs(2),
@@ -4117,6 +4121,7 @@ async fn a_stopped_server_process_fails_the_turn_and_is_torn_down() {
         steering,
         interrupt: tokio_util::sync::CancellationToken::new(),
         turn: Default::default(),
+        sandbox: None,
     };
     let request: RunRequest = serde_json::from_value(json!({
         "prompt": "hi", "cwd": fixture.path().to_str().unwrap(),

@@ -96,8 +96,9 @@ export type Message = {
 	waiting: ("sending" | "working" | "failed")?,
 	since: number?,
 	-- A failed one: why, when it is known ("too_large": `count` files over
-	-- `limit` MB, the largest `name` at `size` MB; "unreadable": `name`).
-	failure: { kind: string, count: number?, name: string?, size: number?, limit: number? }?,
+	-- `limit` MB, the largest `name` at `size` MB; "unreadable": `name`;
+	-- "refused": a paired server's words, `text`).
+	failure: { kind: string, count: number?, name: string?, size: number?, limit: number?, text: string? }?,
 	-- Its blocks laid out compact (Settings' compact transcript): its work
 	-- folded into one group, the reply it ends on shown.
 	compact: { Block }?,
@@ -628,6 +629,8 @@ local function waiting_line(row: State<Message>, on_retry: ((id: string) -> ())?
 				line = locale.t("ds.transcript.failed_too_large", { count = why.count, name = why.name, size = why.size, limit = why.limit })
 			elseif why and why.kind == "unreadable" then
 				line = locale.t("ds.transcript.failed_unreadable", { name = why.name })
+			elseif why and why.kind == "refused" and why.text then
+				line = why.text
 			end
 			return ui.column {
 				w_full = true,

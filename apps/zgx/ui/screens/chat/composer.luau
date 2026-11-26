@@ -1151,6 +1151,16 @@ local function Composer(): Node
 				branch = plan.branch,
 				cwd = if plan.worktree then nil else plan.cwd,
 				cloud = plan.cloud,
+				-- (Made with the pick: a paired server runs it as made.)
+				pick = {
+					model = req.model,
+					harness = req.harness,
+					effort = req.effort,
+					access = req.access,
+					plan = req.plan,
+					fast = req.fast,
+					options = req.options,
+				},
 			})
 			:after(function(made: any)
 				local id = if plan.cloud and type(made) == "table" then made.id else made
@@ -1182,8 +1192,9 @@ local function Composer(): Node
 				route.open_session(id)
 				store.send(req):after(function() end, function(_e: any) end)
 			end, function(e: any)
-				-- (A Cloud chat's reason is said in words; an outcome word isn't.)
-				local why = if plan.cloud and type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
+				-- (A Cloud chat's or a paired server's reason is said in words;
+				-- an outcome word isn't.)
+				local why = if type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
 					then e.message
 					else nil
 				failed(why)

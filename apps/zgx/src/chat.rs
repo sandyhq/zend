@@ -653,6 +653,8 @@ enum Why {
     TooLarge(Vec<(String, u64)>),
     /// A file that couldn't be read: its name.
     Unreadable(String),
+    /// A paired server refused it: its words.
+    Refused(String),
 }
 
 impl Why {
@@ -671,6 +673,9 @@ impl Why {
             }
             Why::Unreadable(name) => {
                 Value::record([("kind", Value::from("unreadable")), ("name", Value::from(name.as_str()))])
+            }
+            Why::Refused(words) => {
+                Value::record([("kind", Value::from("refused")), ("text", Value::from(words.as_str()))])
             }
         }
     }
@@ -2813,15 +2818,16 @@ impl View {
             });
         }
         let run = json!({ "kind": "run", "messageId": message_id, "request": request });
-        let sent = command_with(&id, run.clone(), &transfers).await;
-        if sent.is_err() {
+        let said = command_said(&id, run.clone(), &transfers).await;
+        let sent = said.as_ref().map(|_| ()).map_err(|(outcome, _)| *outcome);
+        if let Err((_, words)) = &said {
             // Not delivered: the prompt stays, failed, to send again.
             if let Some(pending) = self.pending.borrow_mut().get_mut(&id)
                 && let Some(p) = pending.iter_mut().find(|p| p.id == message_id)
             {
                 p.transfers = transfers;
             }
-            self.mark_failed(&id, &message_id, Some(run));
+            self.fail_with(&id, &message_id, Some(run), refusal(words));
         } else if !fresh && runs_otherwise(&chat["config"], &config) {
             // Sent with another agent, model or effort than the chat had (the
             // composer's pick, kept as a draft until now): the chat takes
@@ -3044,9 +3050,10 @@ impl View {
             };
             return Box::pin(self.send(req)).await;
         };
-        let sent = command_with(&id, run.clone(), &transfers).await;
-        if sent.is_err() {
-            self.mark_failed(&id, &message_id, Some(run));
+        let said = command_said(&id, run.clone(), &transfers).await;
+        let sent = said.as_ref().map(|_| ()).map_err(|(outcome, _)| *outcome);
+        if let Err((_, words)) = &said {
+            self.fail_with(&id, &message_id, Some(run), refusal(words));
         }
         self.publish_messages();
         sent
@@ -3444,6 +3451,11 @@ async fn command(chat: &str, command: Json) -> Result<(), Outcome> {
 
 /// [`command`], with the files the engine delivers for it.
 async fn command_with(chat: &str, command: Json, transfers: &[Json]) -> Result<(), Outcome> {
+    command_said(chat, command, transfers).await.map_err(|(outcome, _)| outcome)
+}
+
+/// [`command_with`], with the engine's words when it wasn't taken.
+async fn command_said(chat: &str, command: Json, transfers: &[Json]) -> Result<(), (Outcome, String)> {
     let mut params = json!({ "chatId": chat, "command": command });
     if !transfers.is_empty() {
         params["transfers"] = json!(transfers);
@@ -3454,8 +3466,14 @@ async fn command_with(chat: &str, command: Json, transfers: &[Json]) -> Result<(
         .map(|_| ())
         .map_err(|e| {
             eprintln!("zend-zgx: chat: {} for {chat} wasn't taken: {e}", command["kind"]);
-            engine::outcome(&e)
+            (engine::outcome(&e), e.to_string())
         })
+}
+
+/// Why a send failed, when a paired server refused it: its words, said
+/// under the prompt (`crate::sessions::peer_words`).
+fn refusal(error: &str) -> Option<Why> {
+    crate::sessions::peer_words(error).map(Why::Refused)
 }
 
 /// A file uploaded to the device the chat runs on: its path there.
@@ -3588,7 +3606,7 @@ fn runs_otherwise(chat: &Json, run: &Json) -> bool {
     })
 }
 
-fn merged_config(config: &Json, args: &Value) -> Json {
+pub(crate) fn merged_config(config: &Json, args: &Value) -> Json {
     let mut c = if config.is_object() { config.clone() } else { json!({}) };
     if c.get("sandbox").is_none() {
         c["sandbox"] = json!("workspace-write");
@@ -6517,6 +6535,17 @@ mod stream_tests;
 
 #[cfg(test)]
 mod tests {
+    /// A send a paired server refused says its words under the prompt; any
+    /// other failure says none.
+    #[test]
+    fn a_send_a_server_refused_says_why() {
+        let why = super::refusal("failed: peer_refused: ai-server: no API key is kept for k and anthropic").expect("its words");
+        let value = why.value();
+        assert_eq!(value.field("kind").map(super::text).as_deref(), Some("refused"));
+        assert_eq!(value.field("text").map(super::text).as_deref(), Some("Ai-server: no API key is kept for k and anthropic"));
+        assert!(super::refusal("offline").is_none());
+    }
+
     /// Opening a chat marks it seen only while that changes something any
     /// viewport reads (its last message, its terminal's report, the end of
     /// its sleep): a chat looked at already writes nothing, so its devices'
