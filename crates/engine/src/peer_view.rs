@@ -453,22 +453,31 @@ impl PeerView {
         let mut wait = RETRY_MIN;
         // Since when it isn't reached (its first failed redial).
         let mut quiet: Option<tokio::time::Instant> = None;
+        // Why it last refused, said once: it's asked again every
+        // [`REFUSED_RETRY`], and says the same until something changes.
+        let mut refusal = Refusal::default();
         loop {
             match self.follow_once(&key).await {
                 Ok(()) => {
                     wait = RETRY_MIN;
                     quiet = None;
+                    refusal.clear();
                 }
                 Err(Quiet::Gone) => return,
                 // Unpaired there (its handshake refused), or granted nothing:
                 // nothing of it stays.
                 Err(Quiet::Refused(why)) => {
-                    tracing::info!(peer = %key, %why, "peer view: the server shows nothing to this side");
+                    if refusal.first(&why) {
+                        tracing::info!(peer = %key, %why, "peer view: the server shows nothing to this side (said once, until that changes)");
+                    } else {
+                        tracing::debug!(peer = %key, %why, "peer view: the server shows nothing to this side, still");
+                    }
                     self.forget(&key);
                     wait = REFUSED_RETRY;
                     quiet = None;
                 }
                 Err(Quiet::Unreachable(why)) => {
+                    refusal.clear();
                     tracing::debug!(peer = %key, %why, "peer view: the server isn't reached");
                     let since = *quiet.get_or_insert_with(|| {
                         // Shown offline now, not once its last beat is old.
@@ -814,8 +823,10 @@ impl PeerView {
             }
             _ => {}
         }
-        // A worker's device is its server's name for it, not its own.
-        if worker_project.is_some()
+        // A worker's device is its server's name for it, not its own; a
+        // chat's op names its chat, which says where it goes there.
+        let chat_op = method == methods::MUTATE && op.as_deref().is_some_and(|op| op != "createChat");
+        if (worker_project.is_some() || chat_op)
             && let Some(map) = params.as_object_mut()
         {
             map.remove("targetDeviceId");
@@ -971,6 +982,27 @@ impl PeerView {
     }
 }
 
+/// What a server last refused this side with, so a refusal is said once
+/// per change, not at every redial.
+#[derive(Debug, Default)]
+struct Refusal(Option<String>);
+
+impl Refusal {
+    /// Whether `why` is new (not what it refused with last).
+    fn first(&mut self, why: &str) -> bool {
+        if self.0.as_deref() == Some(why) {
+            return false;
+        }
+        self.0 = Some(why.to_string());
+        true
+    }
+
+    /// It answered, or wasn't reached: a refusal after is news again.
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
 enum Quiet {
     /// Unpaired, or the engine is going.
     Gone,
@@ -991,7 +1023,8 @@ enum Kind {
 /// Whether a call of this device's own that names a paired server is sent
 /// to it: only what a paired server can ever take
 /// ([`zend_rpc::peer_link::peer_server_allowed`], and of `Mutate` only
-/// making a chat and setting its config), never this device's own
+/// making a chat and what a server takes of one it may run: its config,
+/// archiving, seen, title, deleting it), never this device's own
 /// ([`zend_rpc::local_only`]). Anything else (keys, workers, settings,
 /// uploads) stays here, refused.
 fn forwarded(method: &str, params: &Value) -> bool {
@@ -1006,7 +1039,10 @@ fn forwarded(method: &str, params: &Value) -> bool {
         | methods::WATCH_DOC_MESSAGES
         | methods::PEER_LIST_PROJECT_FILES
         | methods::PEER_READ_PROJECT_FILE => true,
-        methods::MUTATE => matches!(params["op"].as_str(), Some("createChat" | "setChatConfig")),
+        methods::MUTATE => matches!(
+            params["op"].as_str(),
+            Some("createChat" | "setChatConfig" | "setChatArchived" | "markChatSeen" | "renameChat" | "deleteChat")
+        ),
         _ => false,
     }
 }
@@ -1233,6 +1269,18 @@ fn merge(list: List, local: Value, seen: &BTreeMap<String, Seen>) -> Vec<Value> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server refusing this side the same way at every redial is said
+    /// once; a new reason, or a refusal after it answered or wasn't
+    /// reached, is said again.
+    #[test]
+    fn a_refusal_is_said_once_per_change() {
+        let mut r = Refusal::default();
+        let said: Vec<bool> = ["granted nothing", "granted nothing", "granted nothing", "unpaired", "unpaired"].iter().map(|why| r.first(why)).collect();
+        assert_eq!(said, [true, false, false, true, false]);
+        r.clear();
+        assert!(r.first("unpaired"));
+    }
 
     #[test]
     fn the_engines_own_rows_win_and_the_servers_follow() {

@@ -405,7 +405,13 @@ impl RpcService for PeerGuard {
             return Err(RpcError::Failed("this device isn't paired with your server any more".into()));
         };
         if let Err(why) = peer_server_allowed(method, &grants) {
-            tracing::warn!(method, peer = %short(&self.peer), "rpc: refused a paired server's call outside its grants");
+            // (Granted nothing, it redials and is refused all along: said
+            // once as it connects, [`granted_nothing`].)
+            if grants.is_empty() {
+                tracing::debug!(method, peer = %short(&self.peer), "rpc: refused a paired server's call: it is granted nothing here");
+            } else {
+                tracing::warn!(method, peer = %short(&self.peer), "rpc: refused a paired server's call outside its grants");
+            }
             return Err(RpcError::Failed(why));
         }
         let caller = crate::Caller::PeerServer { peer: self.peer.clone(), grants };
@@ -415,6 +421,24 @@ impl RpcService for PeerGuard {
 
 fn short(key: &str) -> &str {
     key.get(..12).unwrap_or(key)
+}
+
+/// The paired servers that connected granted nothing here, said once:
+/// such a server redials every few seconds and is refused each time.
+static GRANTED_NOTHING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether `peer`, connecting granted nothing (`nothing`), is news: it
+/// wasn't so at its last connection. One granted something is forgotten,
+/// so being granted nothing again is said again.
+fn granted_nothing(peer: &str, nothing: bool) -> bool {
+    let mut said = GRANTED_NOTHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if nothing {
+        said.insert(peer.to_string())
+    } else {
+        said.remove(peer);
+        false
+    }
 }
 
 /// Serve paired servers on `listener` (from [`crate::bind_remote`]) as
@@ -585,15 +609,26 @@ async fn serve_peer_socket<S>(
         let _ = ws.close(None).await;
         return;
     };
-    tracing::info!(peer = %short(&expected.caller), "rpc: peer link: connection");
-    let mut changes = book.changes();
     let peer = expected.caller.clone();
+    let nothing = granted.is_empty();
+    if granted_nothing(&peer, nothing) {
+        tracing::info!(peer = %short(&peer), "rpc: peer link: a paired server connects, granted nothing here: its calls are refused (said once, until its grants change)");
+    } else if nothing {
+        tracing::debug!(peer = %short(&peer), "rpc: peer link: connection, granted nothing");
+    } else {
+        tracing::info!(peer = %short(&peer), "rpc: peer link: connection");
+    }
+    let mut changes = book.changes();
     let guard: Arc<dyn RpcService> = Arc::new(PeerGuard { inner: service, book: book.clone(), peer: peer.clone() });
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     let mut pump = tokio::spawn(async move {
         if let Some(reason) = crate::ws::pump(ws, out_rx, in_tx).await {
-            tracing::info!(%reason, "rpc: peer link: connection lost");
+            if nothing {
+                tracing::debug!(%reason, "rpc: peer link: connection lost");
+            } else {
+                tracing::info!(%reason, "rpc: peer link: connection lost");
+            }
         }
     });
     struct AbortOnDrop(tokio::task::AbortHandle);

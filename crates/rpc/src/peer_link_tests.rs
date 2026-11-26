@@ -510,3 +510,16 @@ async fn a_workers_socket_takes_5_mib_from_its_server() {
     client.call(methods::ENGINE_INFO, serde_json::json!({ "pad": "x".repeat(5 << 20) })).await.expect("5 MiB");
     assert_eq!(echo.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// A server that connects granted nothing, again and again (it redials),
+/// is said once; granted something, then nothing again, it's said again.
+/// Each peer on its own.
+#[test]
+fn granted_nothing_is_said_once_per_change() {
+    let (a, b) = ("granted-nothing-test-a", "granted-nothing-test-b");
+    let said: Vec<bool> = [(a, true), (a, true), (b, true), (a, true), (a, false), (a, true), (a, true)]
+        .iter()
+        .map(|(peer, nothing)| granted_nothing(peer, *nothing))
+        .collect();
+    assert_eq!(said, [true, false, true, false, false, true, false]);
+}

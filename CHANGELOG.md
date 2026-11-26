@@ -2,6 +2,13 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-26
+
+### Fixed
+- Paired servers, using a chat made there: the first message to a new chat on a paired server showed "Not delivered" and its chats couldn't be archived, since the server refused every `Mutate` op but `createChat` and this side sent only `createChat`/`setChatConfig`. A server now takes `setChatConfig`, `setChatArchived`, `markChatSeen`, `renameChat` and `deleteChat` of a chat it may run (its own, or any chat of a project granted `sessions.run.unconfined`), checked against its grants now; a confined chat's config keeps this side's sandbox, access and plan mode, and unlisted model options are refused, as for `createChat`; a delete only when every chat going with it is reachable too; any other chat or op stays refused. The window sends those ops to the chat's server without `targetDeviceId` (`crates/engine/src/rpc/peer_gate.rs`, `crates/engine/src/peer_view.rs`).
+- Paired servers, New project: picking a paired server's device said "something went wrong"; it now says adding a project isn't available there (`apps/zgx/src/sessions.rs` `paired`, `apps/zgx/ui/screens/shell/add_project.luau`).
+- Paired servers, log noise: a server granting this side nothing was logged at every 10 s redial (and its refused calls as warnings); now once per change at INFO, on both sides (`crates/engine/src/peer_view.rs`, `crates/rpc/src/peer_link.rs`).
+
 ## 2026-11-25
 
 ### Added

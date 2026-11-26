@@ -3,7 +3,7 @@
 //! the methods its grants open (`zend_rpc::peer_server_allowed`); here each
 //! call's chat or project is held to those grants:
 //!
-//! - `Mutate`: `createChat` only, in a project of this device it may run in
+//! - `Mutate`: `createChat`, in a project of this device it may run in
 //!   (`sessions.run:<p>` or `sessions.run.unconfined:<p>`), at the project's
 //!   folder: no cwd, host, parent, branch or Cloud of its own. The chat is
 //!   kept as that server's (`crate::peer_chats`) and, without `.unconfined`,
@@ -13,6 +13,13 @@
 //!   A confined chat's sandbox, access and plan mode are this side's
 //!   (workspace-write, supervised, no plan), whatever the server sends; its
 //!   model options must be ones its model lists.
+//!   And `setChatConfig`, `setChatArchived`, `markChatSeen`, `renameChat`,
+//!   `deleteChat` of a chat it may run, as `QueueCommand` (its own, or any
+//!   chat of a project it may run unconfined), under its grants as they are
+//!   now: a confined chat's config keeps this side's pins, as `createChat`'s;
+//!   a chat is deleted only with every child that goes with it reachable too.
+//!   (An agent in a server's chat, as any agent, only renames, archives and
+//!   marks seen.) No other op.
 //! - `QueueCommand`: its own chats (`sessions.run`), or any chat of a project
 //!   it may run unconfined. A run is built here from the chat's row with
 //!   only the sender's prompt (no cwd, MCP servers, env or files of its own).
@@ -55,6 +62,12 @@ tokio::task_local! {
 
 /// The most entries one listing returns.
 const MAX_ENTRIES: usize = 5000;
+
+/// The `Mutate` ops a server may send of a chat it may run.
+pub(super) const CHAT_OPS: [&str; 5] = ["setChatConfig", "setChatArchived", "markChatSeen", "renameChat", "deleteChat"];
+
+const MUTATE_REFUSED: &str =
+    "Mutate: a server may only create a chat (op createChat) or change one it may run (setChatConfig, setChatArchived, markChatSeen, renameChat, deleteChat)";
 
 pub(super) enum PeerGate {
     /// Served as any call is, with these params.
@@ -123,7 +136,10 @@ impl EngineRpc {
                 Ok(PeerGate::Pass(params))
             }
             methods::QUEUE_COMMAND => self.peer_queue_command(&peer, &grants, params).map(PeerGate::Pass),
-            methods::MUTATE => self.peer_create_chat(&peer, &grants, params).await.map(PeerGate::Reply),
+            methods::MUTATE => match params.get("op").and_then(Value::as_str) {
+                Some(op) if CHAT_OPS.contains(&op) => self.peer_change_chat(&peer, &grants, params).await.map(PeerGate::Pass),
+                _ => self.peer_create_chat(&peer, &grants, params).await.map(PeerGate::Reply),
+            },
             methods::PEER_LIST_PROJECT_FILES => self.peer_list_files(&grants, params).map(PeerGate::Reply),
             methods::PEER_READ_PROJECT_FILE => self.peer_read_file(&grants, params).map(PeerGate::Reply),
             _ => Err(refused(format!("{method} isn't open to your server"))),
@@ -150,6 +166,48 @@ impl EngineRpc {
             Some(false) if own => Ok(chat),
             _ => Err(not_yours()),
         }
+    }
+
+    /// A `Mutate` of [`CHAT_OPS`] on a chat the server may run, as it is
+    /// served: a confined chat's config under this side's pins.
+    async fn peer_change_chat(&self, peer: &str, grants: &Grants, mut params: Value) -> Result<Value, RpcError> {
+        let p: MutateParams = zend_rpc::parse_params(params.clone())?;
+        let (op, chat_id) = match &p {
+            MutateParams::SetChatConfig { chat_id, .. } => ("setChatConfig", chat_id),
+            MutateParams::SetChatArchived { chat_id, .. } => ("setChatArchived", chat_id),
+            MutateParams::MarkChatSeen { chat_id, .. } => ("markChatSeen", chat_id),
+            MutateParams::RenameChat { chat_id, .. } => ("renameChat", chat_id),
+            MutateParams::DeleteChat { chat_id } => ("deleteChat", chat_id),
+            _ => return Err(refused(MUTATE_REFUSED)),
+        };
+        // An agent in a server's chat changes no more than any agent may.
+        if PEER_AGENT_CHAT.try_with(|_| ()).is_ok() && matches!(op, "setChatConfig" | "deleteChat") {
+            return Err(refused(format!("An agent can't {op}: only create, rename or archive chats (the person changes the rest in Zend)")));
+        }
+        let chat = self.peer_reaches(peer, grants, chat_id, false).map_err(|e| refused(format!("{op}: {e}")))?;
+        match p {
+            MutateParams::SetChatConfig { config, .. } => {
+                // Confined: marked so, or no longer granted unconfined.
+                let unconfined = chat.space_id.as_deref().and_then(|space| grants.runs_in(space)) == Some(true);
+                if self.sessions.chat_sandbox(&chat.id).is_some() || !unconfined {
+                    let config = self.peer_confined_config(config, op).await?;
+                    params["config"] = serde_json::to_value(config).map_err(|e| RpcError::Failed(e.to_string()))?;
+                }
+            }
+            MutateParams::DeleteChat { .. } => {
+                // What goes with it (its children, theirs in turn) must be
+                // the server's to reach too.
+                let chats = self.workspace.read_chats().map_err(|e| RpcError::Failed(e.to_string()))?;
+                for (child, _) in super::chat_descendants(&chats, &chat.id, false) {
+                    if self.peer_reaches(peer, grants, &child, false).is_err() {
+                        return Err(refused(format!("deleteChat: chat {}: its chat {child}, which would go with it, isn't one your server may reach here", chat.id)));
+                    }
+                }
+            }
+            _ => {}
+        }
+        tracing::info!(peer = %peer.get(..12).unwrap_or(peer), chat = %chat.id, op, "peer link: a paired server changes a chat");
+        Ok(params)
     }
 
     fn peer_queue_command(&self, peer: &str, grants: &Grants, params: Value) -> Result<Value, RpcError> {
@@ -199,7 +257,7 @@ impl EngineRpc {
 
     async fn peer_create_chat(&self, peer: &str, grants: &Grants, params: Value) -> Result<RpcReply, RpcError> {
         if params.get("op").and_then(Value::as_str) != Some("createChat") {
-            return Err(refused("Mutate: a server may only create a chat (op createChat)"));
+            return Err(refused(MUTATE_REFUSED));
         }
         let p: MutateParams = zend_rpc::parse_params(params)?;
         let MutateParams::CreateChat {
@@ -215,7 +273,7 @@ impl EngineRpc {
             cloud,
         } = p
         else {
-            return Err(refused("Mutate: a server may only create a chat (op createChat)"));
+            return Err(refused(MUTATE_REFUSED));
         };
         let own_device = self.doc_host.device_id().to_string();
         let Some(space_id) = space_id else {
@@ -295,7 +353,7 @@ impl EngineRpc {
         // None would run with the row's fallback (full access): a confined
         // chat gets this device's default harness under this side's pins.
         let config = match config {
-            Some(config) if confined => self.peer_confined_config(config).await.map(Some),
+            Some(config) if confined => self.peer_confined_config(config, "createChat").await.map(Some),
             None if confined => self
                 .peer_confined_config(ChatConfig {
                     harness: self.doc_host.harness_for(&chat_id),
@@ -305,7 +363,7 @@ impl EngineRpc {
                     sandbox: SandboxLevel::WorkspaceWrite,
                     access: AccessMode::Supervised,
                     plan: false,
-                })
+                }, "createChat")
                 .await
                 .map(Some),
             other => Ok(other),
@@ -360,14 +418,14 @@ impl EngineRpc {
 
     /// A confined chat's config: this side's sandbox, access and plan mode;
     /// the server's harness and model, with model options its model lists.
-    async fn peer_confined_config(&self, mut config: ChatConfig) -> Result<ChatConfig, RpcError> {
+    async fn peer_confined_config(&self, mut config: ChatConfig, op: &str) -> Result<ChatConfig, RpcError> {
         config.sandbox = SandboxLevel::WorkspaceWrite;
         config.access = AccessMode::Supervised;
         config.plan = false;
         if config.model_options.is_empty() {
             return Ok(config);
         }
-        let bad = |why: String| refused(format!("createChat: modelOptions: {why}"));
+        let bad = |why: String| refused(format!("{op}: modelOptions: {why}"));
         let listed = zend_rpc::RpcService::handle(self, methods::LIST_MODELS, json!({ "harness": config.harness }))
             .await
             .map_err(|e| bad(format!("couldn't list the harness's models to check them: {e}")))?;

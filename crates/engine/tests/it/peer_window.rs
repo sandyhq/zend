@@ -641,7 +641,7 @@ async fn calls_no_server_takes_never_leave_this_device() {
         (methods::CREATE_WORKER, json!({ "name": "w", "keys": { "anthropic": "secret-key-2" }, "targetDeviceId": "device-server" })),
         (methods::UPLOAD_CHUNK, json!({ "uploadId": "u1", "seq": 0, "data": "c2VjcmV0", "targetDeviceId": "device-server" })),
         (methods::QUEUE_MESSAGE, json!({ "chatId": "srv-chat", "text": "secret words 3" })),
-        (methods::MUTATE, json!({ "op": "setChatArchived", "chatId": "srv-chat", "archived": true })),
+        (methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "srv-chat", "cwd": "/home/laptop/secret" })),
     ];
     for (method, params) in calls {
         let refused = t.window.call(method, params).await.expect_err(method);
@@ -649,7 +649,7 @@ async fn calls_no_server_takes_never_leave_this_device() {
         assert!(said.contains("peer_refused") && said.contains("isn't sent to a paired server"), "{method}: {said}");
     }
     let heard: Vec<String> = t.heard.lock().unwrap().iter().map(|(m, p)| format!("{m} {p}")).collect();
-    for word in ["secret", "SetAcpAgentKey", "CreateWorker", "UploadChunk", "QueueMessage", "setChatArchived"] {
+    for word in ["secret", "SetAcpAgentKey", "CreateWorker", "UploadChunk", "QueueMessage", "setChatCwd"] {
         assert!(!heard.iter().any(|h| h.contains(word)), "the server heard {word}: {heard:?}");
     }
     t.window
@@ -657,6 +657,48 @@ async fn calls_no_server_takes_never_leave_this_device() {
         .await
         .expect("its harnesses, asked there");
     assert!(t.heard.lock().unwrap().iter().any(|(m, _)| m == methods::LIST_HARNESSES));
+}
+
+/// What the window does to a server's chat (its config before the first
+/// message, renaming, seen, archiving, deleting) goes to that server, with
+/// no `targetDeviceId` of this side's; the same on this device's own chat
+/// stays here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_servers_chat_is_changed_there() {
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut chats = Watched::open(&t.window, methods::WATCH_CHATS, json!({}), "id").await;
+    chats.until("the server's chat", |rows| has(rows, "id", "srv-chat")).await;
+    let config = json!({ "harness": "mock", "model": null, "reasoning": null, "modelOptions": {}, "sandbox": "read-only" });
+    let ops = |chat: &str| {
+        let mut set = json!({ "op": "setChatConfig", "chatId": chat, "config": config });
+        if chat == "srv-chat" {
+            set["targetDeviceId"] = json!("device-server");
+        }
+        [
+            set,
+            json!({ "op": "renameChat", "chatId": chat, "title": "Renamed from the laptop" }),
+            json!({ "op": "markChatSeen", "chatId": chat }),
+            json!({ "op": "setChatArchived", "chatId": chat, "archived": true }),
+        ]
+    };
+    for params in ops("own-chat") {
+        t.window.call(methods::MUTATE, params.clone()).await.unwrap_or_else(|e| panic!("{params}: {e}"));
+    }
+    assert!(t.server_heard_of("own-chat").is_empty(), "{:?}", t.server_heard_of("own-chat"));
+    for params in ops("srv-chat") {
+        t.window.call(methods::MUTATE, params.clone()).await.unwrap_or_else(|e| panic!("{params}: {e}"));
+    }
+    let heard = t.server_heard_of("srv-chat");
+    let sent: Vec<&str> = heard.iter().filter_map(|(_, p)| p["op"].as_str()).collect();
+    assert_eq!(sent, ["setChatConfig", "renameChat", "markChatSeen", "setChatArchived"], "{heard:?}");
+    assert!(heard.iter().all(|(_, p)| p.get("targetDeviceId").is_none()), "{heard:?}");
+    let there = t.server.workspace.chat("srv-chat").unwrap().unwrap();
+    assert_eq!((there.title.as_deref(), there.archived), (Some("Renamed from the laptop"), true));
+    assert_eq!(there.config.map(|c| c.sandbox), Some(SandboxLevel::ReadOnly));
+    let here = t.laptop.workspace.chat("own-chat").unwrap().unwrap();
+    assert_eq!((here.title.as_deref(), here.archived), (Some("Renamed from the laptop"), true));
+    t.window.call(methods::MUTATE, json!({ "op": "deleteChat", "chatId": "srv-chat" })).await.expect("deleted there");
+    assert!(t.server.workspace.chat("srv-chat").unwrap().is_none());
 }
 
 /// This device's archived chat is still its own: a server claiming its id

@@ -846,6 +846,19 @@ local function cloud_page(): Page
 	return page
 end
 
+-- A paired server's page: its folders aren't browsed from here (the peer
+-- link carries none of its folders), so it says so instead of failing.
+local function paired_page(name: string): Page
+	return {
+		id = `paired:{name}`,
+		title = name,
+		load = function(done: ({ Item }) -> ())
+			done({})
+		end,
+		empty = { title = locale.s("shell.add_project.paired_unavailable"), hint = locale.s("shell.add_project.paired_unavailable_hint") },
+	}
+end
+
 -- Your devices, this Mac first (never Cloud's machines: they're its
 -- sessions'); then Cloud, while it's on.
 local function devices(): { Item }
@@ -858,9 +871,12 @@ local function devices(): { Item }
 			label = d.name,
 			section = locale.s("shell.add_project.devices"),
 			icon = if here then "laptop" else "remote-server",
-			hint = if d.online == false and not here then locale.s("shell.add_project.offline") else nil,
+			hint = if d.online == false and not here then locale.s("shell.add_project.offline") elseif d.paired then locale.s("shell.add_project.paired_hint") else nil,
 			verb = locale.s("shell.add_project.open"),
 			page = function(): Page
+				if d.paired and not here then
+					return paired_page(d.name)
+				end
 				return locations_page(d.id, d.name)
 			end,
 		}

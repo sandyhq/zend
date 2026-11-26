@@ -1630,3 +1630,84 @@ async fn a_run_refused_here_says_why() {
     assert!(prompts.lock().unwrap().is_empty(), "it never ran");
 }
 
+
+/// The chat ops a server takes of a chat it may run, under sessions.run:p:
+/// its own chat's config (this side's sandbox, access and plan kept; model
+/// options its model doesn't list refused), title, seen, archived, and
+/// deleting it all go; of the owner's chat in p, none does, and nothing of
+/// it changes. A chat of its own whose child it may not reach isn't deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_changes_its_own_chats_only_and_keeps_this_sides_pins() {
+    let a = paired(&["sessions.run:p"]).await;
+    a.core.workspace.create_chat("owner-chat", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    let mock = json!({ "harness": HarnessId::Mock, "sandbox": "workspace-write" });
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "mine", "spaceId": "p", "config": mock })).await.expect("create");
+    let mutate = |op: &str, chat: &str| {
+        let mut p = json!({ "op": op, "chatId": chat });
+        match op {
+            "setChatConfig" => p["config"] = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access", "plan": true }),
+            "setChatArchived" => p["archived"] = json!(true),
+            "renameChat" => p["title"] = json!("Named by the server"),
+            _ => {}
+        }
+        p
+    };
+    let ops = ["setChatConfig", "renameChat", "markChatSeen", "setChatArchived", "deleteChat"];
+
+    // The owner's chat: none of them.
+    let before = a.core.workspace.chat("owner-chat").unwrap().unwrap();
+    for op in ops {
+        let reply = a.b.call(methods::MUTATE, mutate(op, "owner-chat")).await;
+        assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("not one your server may reach")), "{op} of the owner's chat: {reply:?}");
+    }
+    let after = a.core.workspace.chat("owner-chat").unwrap().expect("the owner's chat stays");
+    assert_eq!((after.title, after.archived, after.config, after.last_seen_at), (before.title, before.archived, before.config, before.last_seen_at));
+
+    // Its own: each goes, the config under this side's pins.
+    for op in &ops[..4] {
+        a.b.call(methods::MUTATE, mutate(op, "mine")).await.unwrap_or_else(|e| panic!("{op} of its own chat: {e}"));
+    }
+    let mine = a.core.workspace.chat("mine").unwrap().unwrap();
+    let config = mine.config.clone().unwrap();
+    assert_eq!((config.harness, config.sandbox, config.access, config.plan), (HarnessId::Mock, SandboxLevel::WorkspaceWrite, zend_proto::AccessMode::Supervised, false));
+    assert_eq!((mine.title.as_deref(), mine.archived, mine.last_seen_at.is_some()), (Some("Named by the server"), true, true));
+    let odd = json!({ "op": "setChatConfig", "chatId": "mine", "config": { "harness": HarnessId::Mock, "sandbox": "workspace-write", "modelOptions": { "bogus": "x" } } });
+    let reply = a.b.call(methods::MUTATE, odd).await;
+    assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("setChatConfig: modelOptions")), "{reply:?}");
+    assert_eq!(a.core.workspace.chat("mine").unwrap().unwrap().config, Some(config));
+    // Any other op, of its own chat too: refused.
+    let cwd = a.b.call(methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "mine", "cwd": "/" })).await;
+    assert!(cwd.is_err(), "{cwd:?}");
+
+    // A child of its chat that isn't its own (the owner's, in q): not
+    // deleted with it, so its chat isn't either.
+    a.core.workspace.create_chat_with_parent("owners-child", Some("q"), Some(&a.core.device_id), None, None, Some("mine".into())).unwrap();
+    let reply = a.b.call(methods::MUTATE, mutate("deleteChat", "mine")).await;
+    assert!(reply.as_ref().is_err_and(|e| e.to_string().contains("owners-child")), "{reply:?}");
+    assert!(a.core.workspace.chat("mine").unwrap().is_some() && a.core.workspace.chat("owners-child").unwrap().is_some());
+    a.core.workspace.delete_chat("owners-child").unwrap();
+    a.b.call(methods::MUTATE, mutate("deleteChat", "mine")).await.expect("its own chat deleted");
+    assert!(a.core.workspace.chat("mine").unwrap().is_none());
+}
+
+/// sessions.run.unconfined:p: any chat in p, the owner's too, takes the
+/// chat ops, its config as sent (unconfined); a chat in q doesn't.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unconfined_grant_changes_any_chat_of_its_project() {
+    let a = paired(&["sessions.run.unconfined:p"]).await;
+    a.core.workspace.create_chat("owner-p", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    a.core.workspace.create_chat("owner-q", Some("q"), Some(&a.core.device_id), None, None).unwrap();
+    let config = json!({ "harness": HarnessId::Mock, "sandbox": "danger-full-access", "access": "full-access" });
+    for chat in ["owner-p", "owner-q"] {
+        let set = a.b.call(methods::MUTATE, json!({ "op": "setChatConfig", "chatId": chat, "config": config })).await;
+        let archive = a.b.call(methods::MUTATE, json!({ "op": "setChatArchived", "chatId": chat, "archived": true })).await;
+        assert_eq!((set.is_ok(), archive.is_ok()), (chat == "owner-p", chat == "owner-p"), "{chat}: {set:?} {archive:?}");
+    }
+    let p = a.core.workspace.chat("owner-p").unwrap().unwrap();
+    assert_eq!((p.archived, p.config.map(|c| c.sandbox)), (true, Some(SandboxLevel::DangerFullAccess)));
+    let q = a.core.workspace.chat("owner-q").unwrap().unwrap();
+    assert_eq!((q.archived, q.config), (false, None));
+    a.b.call(methods::MUTATE, json!({ "op": "deleteChat", "chatId": "owner-p" })).await.expect("deleted");
+    assert!(a.core.workspace.chat("owner-p").unwrap().is_none());
+}
+

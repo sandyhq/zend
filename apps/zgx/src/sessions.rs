@@ -1310,6 +1310,9 @@ impl Sessions {
                     // `cloud-session`/`cloud-account` capabilities): never a
                     // place to pick in a device list.
                     ("cloud", Value::Bool(is_cloud(d))),
+                    // A paired server (crates/engine peer_view): its folders
+                    // aren't browsed from here (New project says so).
+                    ("paired", Value::Bool(is_paired_server(d))),
                     ("here", Value::Bool(here.as_deref() == Some(id))),
                     ("online", Value::Bool(online)),
                 ];
@@ -1706,6 +1709,12 @@ pub(crate) fn is_cloud(d: &Json) -> bool {
         || d["capabilities"]
             .as_array()
             .is_some_and(|c| c.iter().any(|c| matches!(c.as_str(), Some("cloud-session" | "cloud-account"))))
+}
+
+/// A paired server's device row, as this device's engine shows it (its one
+/// capability `paired-server`, crates/engine `peer_view::PAIRED_SERVER`).
+pub(crate) fn is_paired_server(d: &Json) -> bool {
+    d["capabilities"].as_array().is_some_and(|c| c.iter().any(|c| c.as_str() == Some("paired-server")))
 }
 
 /// Why the engine didn't remove a device, as a word for the page.
@@ -2806,6 +2815,26 @@ mod tests {
     }
 
     use super::rfc3339 as iso;
+
+    /// A paired server's device says so (its `paired-server` capability):
+    /// New project doesn't browse its folders. Another device doesn't.
+    #[test]
+    fn a_paired_server_s_device_says_it_is_one() {
+        let s = Sessions::default();
+        *s.here.borrow_mut() = Some("here".into());
+        *s.devices.borrow_mut() = json!([
+            { "id": "here" },
+            { "id": "laptop", "capabilities": ["agent-updates"] },
+            { "id": "ai", "platform": "linux", "capabilities": ["paired-server"] },
+        ]);
+        let v = s.value();
+        let paired = |id: &str| {
+            v.field("devices").unwrap().list().iter().find(|d| d.field("id").map(crate::auth::text).as_deref() == Some(id)).unwrap().field("paired").cloned()
+        };
+        for (id, is) in [("here", false), ("laptop", false), ("ai", true)] {
+            assert_eq!(paired(id), Some(zgx_script::Value::Bool(is)), "{id}");
+        }
+    }
 
     #[test]
     fn running_subagents_go_quiet_with_their_row() {
