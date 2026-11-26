@@ -63,13 +63,13 @@ mv ~/.local/opt/zend ~/.local/opt/zend.failed && mv ~/.local/opt/zend.bak-<date>
 Data written by the newer build stays in `~/.zend`. Whether an older build reads all of it is untested.
 
 ## Development mode with no edge
-A development install (\`~/.config/zend/edge-token\`, a bearer \`u-<id>@<org>\`) turns the edge on whenever the token is non-empty, and shows "Reconnecting…" when that edge is gone. The token also names the profile (data folder \`~/.zend/orgs/<org>/u-<id>\`), so deleting it moves the data. To keep the identity and drop the edge, make \`edge-url\` say \`none\` (or set \`ZEND_EDGE_URL=none\`):
+A development install (`~/.config/zend/edge-token`, a bearer `u-<id>@<org>`) turns the edge on whenever the token is non-empty, and shows "Reconnecting…" when that edge is gone. The token also names the profile (data folder `~/.zend/orgs/<org>/u-<id>`), so deleting it moves the data. To keep the identity and drop the edge, make `edge-url` say `none` (or set `ZEND_EDGE_URL=none`):
 
-\`\`\`sh
+```sh
 echo none > ~/.config/zend/edge-url   # keep edge-token as it is; restart Zend (engine and window)
-\`\`\`
+```
 
-The engine then opens no room, relay or pull/push, connectivity is \`Disabled\` (no pill) and the registry counts as synced, as for a local profile. Release checks still go to the default edge address. A token with no \`edge-url\` is not read at all; an edge that is set behaves as before. To go back, write the edge's URL into \`edge-url\`. Production (WorkOS) installs ignore both files.
+The engine then opens no room, relay or pull/push, connectivity is `Disabled` (no pill) and the registry counts as synced, as for a local profile. Release checks still go to the default edge address. A token with no `edge-url` is not read at all; an edge that is set behaves as before. To go back, write the edge's URL into `edge-url`. Production (WorkOS) installs ignore both files.
 
 ## Not covered
 - The AI VM's engine is built and installed separately (owner's home repo, `infra/ai-vm`) and was not updated with the 2026-11-15 build.
