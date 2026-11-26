@@ -219,7 +219,25 @@ impl EngineConfig {
     /// The edge's base URL for calls that are not edge transports (auth
     /// probes, the release feed): never the sentinel.
     pub fn edge_base(&self) -> &str {
-        if self.edge_off() { OFF_EDGE_URL } else { &self.edge_url }
+        edge_base_of(&self.edge_url)
+    }
+}
+
+/// `edge_url` as every call that is not a development edge transport takes
+/// it: the sentinel ([`EDGE_NONE`]) means something only to development
+/// mode's transports; elsewhere (synced, runner, the window's updater) it is
+/// the default edge.
+pub fn edge_base_of(edge_url: &str) -> &str {
+    if edge_url.trim().eq_ignore_ascii_case(EDGE_NONE) { OFF_EDGE_URL } else { edge_url }
+}
+
+#[cfg(test)]
+mod edge_base_tests {
+    #[test]
+    fn the_sentinel_is_never_a_base() {
+        assert_eq!(super::edge_base_of("none"), "https://edge.zend.invalid");
+        assert_eq!(super::edge_base_of(" None "), "https://edge.zend.invalid");
+        assert_eq!(super::edge_base_of("http://100.64.0.1:27640"), "http://100.64.0.1:27640");
     }
 }
 
@@ -1174,7 +1192,7 @@ impl Engine {
         }
         let device_id = load_or_create_device_id(profile.device_root())?;
         let edge = edge_enabled.then(|| {
-            EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())).with_device(device_id)
+            EdgeConfig::new(config.edge_base().to_string(), Arc::new(auth.clone())).with_device(device_id)
         });
 
         let preview_org = profile.org_id().to_string();
@@ -1470,10 +1488,10 @@ impl Engine {
         }
         // Cloud runner: runner.json wins; else ZEND_RUNNER_ENROLL enrolls
         // first (retrying network failures; a rejected code is fatal).
-        let enrolled = if daemon { runner::bootstrap(&config.data_dir, &config.edge_url).await? } else { None };
+        let enrolled = if daemon { runner::bootstrap(&config.data_dir, config.edge_base()).await? } else { None };
         if let Some(identity) = enrolled {
             wake_trace::enable(&config.data_dir);
-            if identity.edge_url() != config.edge_url.trim_end_matches('/') {
+            if identity.edge_url() != config.edge_base().trim_end_matches('/') {
                 tracing::info!(edge = %identity.edge_url(), "runner: using the edge this device enrolled with");
                 config.edge_url = identity.edge_url().to_string();
             }

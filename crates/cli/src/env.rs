@@ -81,10 +81,14 @@ pub fn restore_edge_record(dir: &std::path::Path, before: Option<&(String, Strin
 /// The edge and bearer kept in `dir`, read as one: the record, else the
 /// older two files (the edge none: nothing kept).
 pub fn edge_config_in(dir: &std::path::Path) -> Option<(String, Option<String>)> {
-    if dir.join(EDGE_RECORD).exists() {
-        return edge_record_in(dir).map(|(url, token)| (url, Some(token)));
-    }
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    if dir.join(EDGE_RECORD).exists() {
+        // An `edge-url` saying "none" wins over the record's edge (the
+        // record's bearer stays): how an install with a record switches the
+        // edge off.
+        let off = read("edge-url").filter(|url| is_none(url));
+        return edge_record_in(dir).map(|(url, token)| (off.unwrap_or(url), Some(token)));
+    }
     Some((read("edge-url")?, read("edge-token")))
 }
 
@@ -304,6 +308,21 @@ mod tests {
         // A record that isn't one is nothing: not half of it, not the old files.
         std::fs::write(config.join("edge"), "zend-edge 1\nhttp://x\n").unwrap();
         assert_eq!(super::edge_config_in(config), None);
+    }
+
+    /// An `edge-url` of `none` beats the url of an `edge` record and keeps
+    /// the record's token; any other `edge-url` leaves the record as it is.
+    #[test]
+    fn edge_url_none_wins_over_the_record_keeping_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path();
+        super::store_edge_config(config, "http://100.64.0.1:27640", "u-rec@zend").unwrap();
+        std::fs::write(config.join("edge-url"), "http://other:1
+").unwrap();
+        assert_eq!(super::edge_config_in(config), Some(("http://100.64.0.1:27640".into(), Some("u-rec@zend".into()))));
+        std::fs::write(config.join("edge-url"), "none
+").unwrap();
+        assert_eq!(super::edge_config_in(config), Some(("none".into(), Some("u-rec@zend".into()))));
     }
 
     /// "No edge" in development mode: `edge-url` is `none` beside the
