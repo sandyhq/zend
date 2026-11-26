@@ -55,6 +55,9 @@ sessions.now:set({
 		{ id = "mac", name = "MacBook Pro", platform = "macos", here = true, online = true },
 		{ id = "devbox", name = "devbox", platform = "linux", here = false, online = true },
 		{ id = "laptop", name = "Old laptop", platform = "macos", here = false, online = false },
+		-- Paired servers: one that grants nothing but sessions, one that grants settings.
+		{ id = "ai", name = "AI", platform = "linux", here = false, online = true, paired = true, peer_areas = { "sessions.read" } },
+		{ id = "granting", name = "Granting", platform = "linux", here = false, online = true, paired = true, peer_areas = { "settings" } },
 	},
 	projects = {},
 	chats = {},
@@ -93,6 +96,11 @@ local function publish_remote(device: string?)
 			table.insert(list, table.clone(p))
 		end
 		state.remote:set({ device = device, state = "ready", list = list } :: any)
+	elseif device == "ai" then
+		-- (The host asks nothing of a server that doesn't grant settings.)
+		state.remote:set({ device = device, state = "refused", list = {} } :: any)
+	elseif device == "granting" then
+		state.remote:set({ device = device, state = "ready", list = { table.clone(DEVBOX[1]) } } :: any)
 	else
 		state.remote:set({ device = device, state = "offline", list = {} } :: any)
 	end

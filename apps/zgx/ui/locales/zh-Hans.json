@@ -2430,6 +2430,28 @@
         "description": "Parakeet v3 · {total} MB",
         "remove": "移除"
       }
+    },
+    "peer": {
+      "not_granted_title": "{device} 未授予 {area}",
+      "not_granted_body": "此页面不会向 {device} 发送任何内容。要允许，请在 {device} 上运行：",
+      "not_granted_option": "未授予",
+      "themes_description": "另一台电脑上的主题：在那台电脑上使用，不影响这台。",
+      "templates_description": "另一台电脑上的模板：在那台电脑上运行，不影响这台。",
+      "search_themes": "搜索主题",
+      "search_templates": "搜索模板",
+      "on_device": "在 {device} 上",
+      "use": "使用",
+      "in_use": "使用中",
+      "delete_label": "删除 {name}",
+      "delete_title": "在那里删除吗？",
+      "delete_body": "{name} 将从 {device} 上移除。这台电脑自己的内容不受影响。",
+      "none_title": "那里没有它自己的内容",
+      "none_body": "这台电脑的智能体或用户在那里添加的内容会显示在这里。",
+      "failed_title": "无法询问 {device}",
+      "couldnt_use": "无法在 {device} 上使用",
+      "couldnt_delete": "无法在 {device} 上删除",
+      "themes_hint": "导入主题仍在这台电脑上进行：请在这里导入，而不是在那里。",
+      "templates_hint": "安装、允许和签名模板仍在这台电脑上进行，绝不在服务器上。"
     }
   },
   "common": {
@@ -2793,7 +2815,8 @@
       "skipped": "{n, plural, other {已跳过 # 项更新}}",
       "skipped_body": "有更新的版本时会再次显示",
       "undo": "撤销",
-      "skip_hint": "有新版本之前不再显示"
+      "skip_hint": "有新版本之前不再显示",
+      "not_granted": "{device} 未授予更新，因此这里不显示它的更新。要允许，请在 {device} 上运行：{command}"
     },
     "activity": {
       "wake": "唤醒",

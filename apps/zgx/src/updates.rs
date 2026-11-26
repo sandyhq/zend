@@ -184,13 +184,7 @@ impl Updates {
                 .as_array()
                 .into_iter()
                 .flatten()
-                // (A paired server's updates are done on that server: its
-                // engine never takes UpdateStatus from this one.)
-                .filter(|d| {
-                    !crate::sessions::is_cloud(d)
-                        && !crate::sessions::is_paired_server(d)
-                        && d["id"].as_str().is_some()
-                })
+                .filter(|d| watched(d))
                 .collect();
             let before = devices.len();
             devices.retain(|id, _| wanted.iter().any(|d| d["id"].as_str() == Some(id)));
@@ -204,7 +198,10 @@ impl Updates {
                 let was = (device.name.clone(), device.platform.clone(), device.reports_agents, device.online, device.connected);
                 device.name = d["name"].as_str().unwrap_or("Device").to_owned();
                 device.platform = d["platform"].as_str().unwrap_or_default().to_owned();
+                // (A server that grants `updates` is a step-6 engine: it takes
+                // WatchHarnessUpdates, though its row carries no capability.)
                 device.reports_agents = here.as_deref() == Some(id)
+                    || crate::sessions::is_paired_server(d)
                     || d["capabilities"].as_array().is_some_and(|c| {
                         c.iter().any(|c| c.as_str() == Some(zend_proto::capabilities::HARNESS_UPDATES_V1))
                     });
@@ -495,6 +492,15 @@ fn wait_reasons_of(item: &Json) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Whether device d's updates are watched: not a Cloud machine, and not a
+/// paired server unless it grants `updates` (a server that doesn't refuses
+/// UpdateStatus from here, and the log said so every few seconds).
+fn watched(d: &Json) -> bool {
+    d["id"].as_str().is_some()
+        && !crate::sessions::is_cloud(d)
+        && (!crate::sessions::is_paired_server(d) || crate::sessions::server_grants(d, "updates"))
+}
+
 fn method_of(action: &str) -> Option<&'static str> {
     Some(match action {
         "update" | "retry" => "ApplyHarnessUpdate",
@@ -699,6 +705,41 @@ mod tests {
         assert!(!updates.devices.borrow()["box"].online);
         updates.heard_devices(&json!([{ "id": "mac", "name": "Mac", "platform": "macos", "lastSeenAt": at(now) }]));
         assert_eq!(updates.published.get(), first + 3, "gone");
+    }
+
+    /// A paired server is watched for updates when its grants open them
+    /// (and then reports its agents too); one that doesn't say, or grants
+    /// other areas only, is left alone, and a grant taken away drops it.
+    #[test]
+    fn a_paired_server_is_watched_only_where_it_grants_updates() {
+        let updates = Rc::new(Updates::default());
+        *updates.here.borrow_mut() = Some("mac".into());
+        let now = crate::sessions::now_seconds();
+        let at = crate::sessions::rfc3339(now);
+        let server = |id: &str, areas: Option<Json>| {
+            let mut d = json!({ "id": id, "name": id, "platform": "linux", "lastSeenAt": at, "capabilities": ["paired-server"] });
+            if let Some(areas) = areas {
+                d["peerAreas"] = areas;
+            }
+            d
+        };
+        let list = |ai: Json| json!([
+            { "id": "mac", "name": "Mac", "platform": "macos", "lastSeenAt": at },
+            ai,
+            server("silent", None),
+            server("files", Some(json!(["sessions.read", "files"]))),
+        ]);
+        updates.heard_devices(&list(server("ai", Some(json!(["updates"])))));
+        {
+            let devices = updates.devices.borrow();
+            assert!(devices.contains_key("ai"), "it grants updates");
+            assert!(devices["ai"].reports_agents, "so its agents are watched too");
+            assert!(!devices.contains_key("silent") && !devices.contains_key("files"), "those don't");
+        }
+        updates.heard_devices(&list(server("ai", Some(json!(["full"])))));
+        assert!(updates.devices.borrow().contains_key("ai"), "full opens it");
+        updates.heard_devices(&list(server("ai", Some(json!(["files"])))));
+        assert!(!updates.devices.borrow().contains_key("ai"), "the grant taken away");
     }
 
     #[test]

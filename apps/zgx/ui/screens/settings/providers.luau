@@ -17,6 +17,7 @@ local agents = require("@account/agents")
 local toast = require("@ds/toast")
 local search = require("@app/screens/settings/search")
 local devices_page = require("@app/screens/settings/devices")
+local peer_area = require("@app/screens/settings/peer_area")
 local sessions = require("@account/sessions")
 local visits = require("@app/screens/settings/visits")
 local prefs = require("@app/screens/settings/prefs")
@@ -148,6 +149,10 @@ local function by_id(a: agents.Agent): string
 end
 
 local function kind(): string
+	-- A paired server that doesn't grant logins: nothing is asked of it.
+	if (now() :: any).refused == true or peer_area.refused(shown_device(), "logins") then
+		return "refused"
+	end
 	local s = now().state
 	if s == "looking" or s == "unavailable" then
 		return s
@@ -160,7 +165,22 @@ local open_settings = ui.state("settings_agent_open", "")
 -- The engine's native subagent settings: those it can switch, and those off.
 local subagents = ui.state("settings_subagents", nil :: { switchable: { string }, off: { string } }?)
 
+-- Whether the device shown is a paired server that doesn't grant `settings`
+-- (native subagents' area) or `updates` (the update policy's): live, so a
+-- grant taken back while the page is open says so at once.
+local function settings_refused(): boolean
+	return peer_area.refused(shown_device(), "settings")
+end
+local function updates_refused(): boolean
+	return peer_area.refused(shown_device(), "updates")
+end
+
 local function load_subagents()
+	-- (Nothing is asked of a server that doesn't grant it.)
+	if settings_refused() then
+		subagents:set(nil)
+		return
+	end
 	host.call("settings.engine", { method = "GetNativeSubagents", params = {} }):after(function(v: any)
 		subagents:set({ switchable = v.switchable or {}, off = v.off or {} })
 	end, function() end)
@@ -453,6 +473,8 @@ end
 local function body(k: string): Node
 	if k == "looking" then
 		return ds.ProviderCard.Loading()
+	elseif k == "refused" then
+		return peer_area.Notice(shown_device, "logins")
 	elseif k == "unavailable" then
 		return ds.ProviderCard.Unavailable(function()
 			return device_name()
@@ -617,6 +639,7 @@ local function settings_dialog(): Node
 		cancel = false,
 		confirm = { label = ui.t("settings.providers.done") :: any },
 		ds.Settings.Group {
+			ui.show(settings_refused, peer_area.Notice(shown_device, "settings")),
 			ui.div {
 				w_full = true,
 				opacity = function()
@@ -659,7 +682,10 @@ local function settings_dialog(): Node
 				control = ds.Switch { value = separate, label = ui.t("settings.providers.skills_separate.label"), on_change = completion("separate") },
 			},
 			ui.show(function()
-				return not own()
+				return not own() and updates_refused()
+			end, peer_area.Notice(shown_device, "updates")),
+			ui.show(function()
+				return not own() and not updates_refused()
 			end, ds.Settings.Row {
 				label = ui.t("settings.providers.updates"),
 				description = function()
@@ -727,7 +753,7 @@ local function agents_page(): Node
 		-- Agents are per device: which one's (a choice once there's more
 		-- than this one).
 		-- (The same choice as Plugins': screens/settings/devices.)
-		trail = devices_page.picker(shown_device, choose_device),
+		trail = devices_page.picker(shown_device, choose_device, "logins"),
 		-- (At the top right, on the title's line, as Plugins' is.)
 		trail_top = true,
 		ui.presence(kind, body, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
@@ -757,6 +783,16 @@ function M.view(): Node
 		if view:peek() ~= "agents" then
 			view:set("agents")
 		end
+	end)
+	-- A server shown that grants logins now (it didn't): looked at.
+	local was_refused = false
+	ui.effect(function()
+		local refused = peer_area.refused(shown_device(), "logins")
+		if was_refused and not refused then
+			agents.load()
+			registry.load()
+		end
+		was_refused = refused
 	end)
 	return ui.column {
 		w_full = true,

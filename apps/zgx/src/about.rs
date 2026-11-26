@@ -601,7 +601,7 @@ impl About {
 }
 
 /// The engine's refusal, as what happened.
-fn apply_outcome(error: &str) -> &'static str {
+pub(crate) fn apply_outcome(error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase();
     if lower.contains("not update-managed") {
         "unmanaged"
