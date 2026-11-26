@@ -137,6 +137,8 @@ mod chip_copy_tests;
 #[cfg(test)]
 mod drop_tests;
 #[cfg(test)]
+mod peer_area_tests;
+#[cfg(test)]
 mod picker_settle_tests;
 #[cfg(test)]
 mod fit_tests;

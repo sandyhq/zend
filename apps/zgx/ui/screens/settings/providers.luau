@@ -17,6 +17,7 @@ local agents = require("@account/agents")
 local toast = require("@ds/toast")
 local search = require("@app/screens/settings/search")
 local devices_page = require("@app/screens/settings/devices")
+local peer_area = require("@app/screens/settings/peer_area")
 local sessions = require("@account/sessions")
 local visits = require("@app/screens/settings/visits")
 local prefs = require("@app/screens/settings/prefs")
@@ -148,6 +149,10 @@ local function by_id(a: agents.Agent): string
 end
 
 local function kind(): string
+	-- A paired server that doesn't grant logins: nothing is asked of it.
+	if (now() :: any).refused == true then
+		return "refused"
+	end
 	local s = now().state
 	if s == "looking" or s == "unavailable" then
 		return s
@@ -453,6 +458,8 @@ end
 local function body(k: string): Node
 	if k == "looking" then
 		return ds.ProviderCard.Loading()
+	elseif k == "refused" then
+		return peer_area.Notice(shown_device, "logins")
 	elseif k == "unavailable" then
 		return ds.ProviderCard.Unavailable(function()
 			return device_name()
@@ -727,7 +734,7 @@ local function agents_page(): Node
 		-- Agents are per device: which one's (a choice once there's more
 		-- than this one).
 		-- (The same choice as Plugins': screens/settings/devices.)
-		trail = devices_page.picker(shown_device, choose_device),
+		trail = devices_page.picker(shown_device, choose_device, "logins"),
 		-- (At the top right, on the title's line, as Plugins' is.)
 		trail_top = true,
 		ui.presence(kind, body, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
@@ -757,6 +764,16 @@ function M.view(): Node
 		if view:peek() ~= "agents" then
 			view:set("agents")
 		end
+	end)
+	-- A server shown that grants logins now (it didn't): looked at.
+	local was_refused = false
+	ui.effect(function()
+		local refused = peer_area.refused(shown_device(), "logins")
+		if was_refused and not refused then
+			agents.load()
+			registry.load()
+		end
+		was_refused = refused
 	end)
 	return ui.column {
 		w_full = true,

@@ -33,6 +33,7 @@ local state = require("@app/screens/plugins/state")
 local words = require("@app/screens/plugins/words")
 local plugin_settings = require("@app/screens/plugins/settings")
 local devices_page = require("@app/screens/settings/devices")
+local peer_area = require("@app/screens/settings/peer_area")
 local visits = require("@app/screens/settings/visits")
 local platform = require("@ds/platform")
 
@@ -209,6 +210,10 @@ end
 local function check_updates()
 	local at = checked_at:peek()
 	local on = device_now()
+	-- (A server that doesn't grant settings is asked nothing.)
+	if on and peer_area.refused(on, "settings") then
+		return
+	end
 	local key = on or ""
 	if os.time() - (at[key] or 0) <= 600 then
 		return
@@ -670,10 +675,20 @@ function M.View(): Node
 		end
 		was_online = if id then online else nil
 	end)
+	-- A server shown that grants settings now (it didn't): asked.
+	local was_refused = false
+	ui.effect(function()
+		local id = device()
+		local refused = id ~= nil and peer_area.refused(id, "settings")
+		if id and was_refused and not refused then
+			state.target(id)
+		end
+		was_refused = refused
+	end)
 	return ds.Settings.Catalog {
 		title = ui.t("plugins.page.title"),
 		description = ui.t("plugins.page.description"),
-		trail = devices_page.picker(device, choose),
+		trail = devices_page.picker(device, choose, "settings"),
 		-- (At the top right, on the title's line, as Providers' is.)
 		trail_top = true,
 		search = { value = query, placeholder = ui.t("plugins.page.search") },
@@ -695,6 +710,10 @@ function M.View(): Node
 		},
 		status = function(): string
 			if device() then
+				-- A paired server that doesn't grant settings: said, not asked.
+				if peer_area.refused(device(), "settings") then
+					return "refused"
+				end
 				if away() then
 					return "away"
 				end
@@ -720,6 +739,9 @@ function M.View(): Node
 				}
 			end,
 			away = away_notice,
+			refused = function(): Node
+				return peer_area.Notice(device, "settings")
+			end,
 		},
 		found = found,
 		row = row,

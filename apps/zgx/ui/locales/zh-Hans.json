@@ -2430,6 +2430,11 @@
         "description": "Parakeet v3 · {total} MB",
         "remove": "移除"
       }
+    },
+    "peer": {
+      "not_granted_title": "{device} 未授予 {area}",
+      "not_granted_body": "此页面不会向 {device} 发送任何内容。要允许，请在 {device} 上运行：",
+      "not_granted_option": "未授予"
     }
   },
   "common": {

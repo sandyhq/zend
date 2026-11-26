@@ -5,8 +5,12 @@
 //! shown and published as `plugins.remote`, never as `plugins` (that is what
 //! this window loads, and another device's list must never load here):
 //!
-//!   { device = id?, state = "idle" | "loading" | "ready" | "offline",
-//!     list = { PluginItem } }   (the engine's items: their `icon_svg` its own)
+//!   { device = id?, state = "idle" | "loading" | "ready" | "offline" | "refused",
+//!     list = { PluginItem } }
+//!
+//! `refused`: the device is a paired server whose grants don't open
+//! `settings`; nothing is asked of it (the page says so, with the command to
+//! run on the server).   (the engine's items: their `icon_svg` its own)
 //!
 //! `plugins.target(id | nil)` chooses it (nil: this device, the page's own
 //! list). Asked again for the same device, it looks again with the list
@@ -46,6 +50,19 @@ fn value(device: Option<&str>, state: &str, items: &[Item]) -> Value {
 
 /// An engine error that says the device can't be reached (its link, or
 /// this Mac's engine), not that the call itself failed.
+/// The area a device's plugins, themes and templates are under.
+pub const AREA: &str = "settings";
+
+/// What showing `target` starts as: nothing (this device's own list), a
+/// paired server that doesn't grant [`AREA`] (said, never asked), or loading.
+fn first_state(target: Option<&str>) -> &'static str {
+    match target {
+        None => "idle",
+        Some(device) if crate::sessions::server_refuses(device, AREA) => "refused",
+        Some(_) => "loading",
+    }
+}
+
 pub fn unreachable(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     engine::outcome(error) == "offline" || lower.contains("cannot reach") || lower.contains("timed out") || lower.contains("timeout")
@@ -118,7 +135,7 @@ pub fn retarget(bridge: &Rc<Bridge>, target: Option<String>) {
     if !same {
         *r.target.borrow_mut() = target.clone();
         r.items.borrow_mut().clear();
-        r.state.set(if target.is_some() { "loading" } else { "idle" });
+        r.state.set(first_state(target.as_deref()));
         r.publish();
         if let Some(c) = &*bridge.consent.borrow() {
             c.follow(bridge);
@@ -131,6 +148,13 @@ pub fn retarget(bridge: &Rc<Bridge>, target: Option<String>) {
 /// connection to the engine).
 pub fn load(bridge: &Rc<Bridge>) {
     let Some(device) = bridge.remote.target() else { return };
+    // (A grant taken away, or given, since it was chosen: said, or asked now.)
+    if crate::sessions::server_refuses(&device, AREA) {
+        bridge.remote.items.borrow_mut().clear();
+        bridge.remote.state.set("refused");
+        bridge.remote.publish();
+        return;
+    }
     let run = bridge.remote.generation.get();
     let weak = Rc::downgrade(bridge);
     engine::get().spawn(async move {
@@ -239,6 +263,25 @@ pub fn id_and_device(arg: &Value) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paired server that doesn't grant settings is never asked for its
+    /// plugins: the page starts as `refused`; with the grant, or for any
+    /// other device, it loads as before.
+    #[test]
+    fn a_server_without_the_settings_grant_is_not_asked() {
+        crate::sessions::set_devices_for_tests(json!([
+            { "id": "here", "name": "Mac" },
+            { "id": "ai", "capabilities": ["paired-server"], "peerAreas": ["sessions.read", "files"] },
+            { "id": "granted", "capabilities": ["paired-server"], "peerAreas": ["settings"] },
+            { "id": "other", "capabilities": ["agent-updates"] },
+        ]));
+        assert_eq!(first_state(None), "idle");
+        assert_eq!(first_state(Some("ai")), "refused");
+        assert_eq!(first_state(Some("granted")), "loading");
+        assert_eq!(first_state(Some("other")), "loading");
+        // (A device not listed yet is the engine's to answer.)
+        assert_eq!(first_state(Some("later")), "loading");
+    }
 
     #[test]
     fn calls_are_addressed_only_to_another_device() {

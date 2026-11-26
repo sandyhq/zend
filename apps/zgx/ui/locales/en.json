@@ -2430,6 +2430,11 @@
         "description": "Parakeet v3 · {total} MB",
         "remove": "Remove"
       }
+    },
+    "peer": {
+      "not_granted_title": "{device} doesn't grant {area}",
+      "not_granted_body": "Nothing is sent to {device} for this page. To allow it, run this on {device}:",
+      "not_granted_option": "Not granted"
     }
   },
   "common": {
