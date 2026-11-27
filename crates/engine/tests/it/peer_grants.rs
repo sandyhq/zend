@@ -1940,6 +1940,48 @@ async fn a_servers_worktree_runs_its_setup_only_with_terminal() {
     assert!(!a.core.terminals.any_open(), "a shell left open");
 }
 
+/// A server with `projects.manage` makes and renames branches in a
+/// project here (plans/branch-naming K7), and never in a repository kept in
+/// Zend's own data: not switched, not branched, not renamed, not moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_names_branches_here_but_never_in_zends_data() {
+    let a = paired(&["projects.manage"]).await;
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let repo = a.root.join("p");
+    for dir in [repo.clone(), a.data.join("inside")] {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), "x\n").unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["add", "."]);
+        git(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first"]);
+        git(&dir, &["branch", "other"]);
+    }
+    let made = a.b.call(methods::CREATE_BRANCH, json!({ "repoPath": repo, "name": "topic", "base": "main" })).await.expect("a branch in its project");
+    assert_eq!(made["branch"], "topic");
+    let renamed = a.b.call(methods::RENAME_BRANCH, json!({ "cwd": repo, "name": "topic-2" })).await.expect("renamed");
+    assert_eq!(renamed["branch"], "topic-2");
+    assert_eq!(git(&repo, &["branch", "--show-current"]), "topic-2");
+
+    let inside = a.data.join("inside");
+    let fenced = |reply: &Result<Value, RpcError>| reply.as_ref().is_err_and(|e| e.to_string().contains("Zend's own data"));
+    let calls = [
+        (methods::SWITCH_REF, json!({ "repoPath": inside, "refName": "other" })),
+        (methods::CREATE_BRANCH, json!({ "repoPath": inside, "name": "planted", "base": "main" })),
+        (methods::RENAME_BRANCH, json!({ "cwd": inside, "name": "planted" })),
+        (methods::RENAME_WORKTREE, json!({ "worktreePath": inside, "name": "planted" })),
+    ];
+    for (method, params) in calls {
+        let reply = a.b.call(method, params.clone()).await;
+        assert!(fenced(&reply), "{method} {params}: {reply:?}");
+    }
+    assert_eq!(git(&inside, &["branch", "--show-current"]), "main");
+    assert!(!git(&inside, &["branch", "--list"]).contains("planted"));
+}
+
 /// Zend's own data (the peers and their grants, keys) is never a
 /// server's by path, with `files` or `full`: not read, not written, not
 /// listed, not searched, even through a project that holds it. Other
