@@ -115,6 +115,9 @@ test("Fork chat opens a Forking… tab at once, then its chat", function()
 	app:frames(30)
 	expect(app:tree()).never.to_contain("Forking…")
 	expect(calls(app)).to_contain(`watch:{id}`)
+	-- The panel's fork is a side chat, under the chat it forks.
+	expect(calls(app)).to_contain("under:chat-1")
+	expect(calls(app)).never.to_contain("standalone:")
 end)
 
 test("a fork that fails says why in its tab, and Retry is the same fork again", function()

@@ -137,8 +137,10 @@ stub_sessions.link = function(id: string): any
 	note(`link:{id}`)
 	return settled(true, `https://zend.invalid/c/{id}`)
 end
-stub_sessions.fork = function(source: string, _parent: string?, id: string?, message: string?): any
+stub_sessions.fork = function(source: string, parent: string?, id: string?, message: string?, standalone: boolean?): any
 	note(if message then `fork:{source}:{id}:{message}` else `fork:{source}:{id}`)
+	-- (Under whom, or a session of its own: the panel's forks are side chats.)
+	note(if standalone then `standalone:{id}` else `under:{parent or source}`)
 	if fork_fails:peek() then
 		return settled(false, { message = "Wait for a completed response before starting a side chat" })
 	end

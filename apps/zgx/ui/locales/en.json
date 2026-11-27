@@ -3003,7 +3003,10 @@
       "need_conversation": "Start a conversation before creating a side chat.",
       "new_side_chat": "New side chat",
       "side_chat": "Side chat",
-      "couldnt_create": "Couldn't create the side chat."
+      "couldnt_create": "Couldn't create the side chat.",
+      "forking": "Forking…",
+      "couldnt_fork": "Couldn't fork this chat",
+      "retry": "Retry"
     },
     "zend_commands": {
       "model": "Zend: choose agent, model, and reasoning",

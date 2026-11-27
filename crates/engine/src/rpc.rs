@@ -4145,13 +4145,20 @@ impl RpcService for EngineRpc {
                     /// through it for a reply, before it for a prompt.
                     #[serde(default)]
                     message_id: Option<String>,
+                    /// A session of its own instead of a side chat (a fork
+                    /// from the main session's transcript): no parent, no
+                    /// kind, its own sidebar row and page. `parentChatId` is
+                    /// ignored then.
+                    #[serde(default)]
+                    standalone: bool,
                 }
                 let p: ForkParams = parse_params(params)?;
-                let parent_chat_id = p
-                    .parent_chat_id
-                    .clone()
-                    .filter(|id| !id.trim().is_empty())
-                    .unwrap_or_else(|| p.source_chat_id.clone());
+                let parent_chat_id = (!p.standalone).then(|| {
+                    p.parent_chat_id
+                        .clone()
+                        .filter(|id| !id.trim().is_empty())
+                        .unwrap_or_else(|| p.source_chat_id.clone())
+                });
                 let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
                 let source = self
                     .workspace
@@ -4168,7 +4175,27 @@ impl RpcService for EngineRpc {
                     .chat(&p.chat_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?
                 {
-                    if existing.parent_chat_id.as_deref() == Some(parent_chat_id.as_str()) {
+                    // The same fork: under the same parent, or, standalone,
+                    // with no parent and this source's seam for its id (a
+                    // chat of its own that is no fork is never taken for one).
+                    let same = match &parent_chat_id {
+                        Some(parent) => existing.parent_chat_id.as_deref() == Some(parent.as_str()),
+                        None => {
+                            existing.parent_chat_id.is_none()
+                                && existing.child_kind.is_none()
+                                && self.doc_host.open(&p.chat_id).ok().is_some_and(|doc| {
+                                    doc.doc().read_entries().unwrap_or_default().iter().any(|entry| {
+                                        entry.id == format!("fork:{}", p.chat_id)
+                                            && entry.parts.iter().any(|part| matches!(
+                                                part,
+                                                zend_doc::MessagePart::Fork { source_chat_id, .. }
+                                                    if *source_chat_id == p.source_chat_id
+                                            ))
+                                    })
+                                })
+                        }
+                    };
+                    if same {
                         // A retry whose reply was lost: the same answer, the
                         // prompt's words for the box included.
                         let draft = p
@@ -4219,12 +4246,22 @@ impl RpcService for EngineRpc {
                 };
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
-                chat.parent_chat_id = Some(parent_chat_id);
                 // A fork is a side chat, a child session's or a subagent's too:
                 // the source's kind isn't copied. Kept as a session or a
                 // subagent it would never hand its copied history to its
-                // provider (`fork_history_prompt`).
-                chat.child_kind = zend_proto::ChildKind::of_a_copy(chat.child_kind);
+                // provider (`fork_history_prompt`). A standalone fork is a
+                // chat of its own (no parent, no kind): its provider finds
+                // the history it owes by its seam instead.
+                chat.child_kind = match parent_chat_id {
+                    Some(_) => zend_proto::ChildKind::of_a_copy(chat.child_kind),
+                    None => None,
+                };
+                // (A chat of its own shows its sleep in the sidebar: a fork
+                // starts awake, whatever its source was.)
+                if parent_chat_id.is_none() {
+                    chat.sleep = None;
+                }
+                chat.parent_chat_id = parent_chat_id;
                 chat.title = None; // First side-chat turn receives its own generated title.
                 chat.archived = false;
                 chat.created_at = chrono::Utc::now();

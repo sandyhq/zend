@@ -177,14 +177,18 @@ lost the bind) gets no Zend tools rather than a dead server.
 
 ### Forks and the session card
 
-`ForkSideChat { chatId, sourceChatId, parentChatId? }` copies a chat's
+`ForkSideChat { chatId, sourceChatId, parentChatId?, messageId?, standalone? }` copies a chat's
 history through its latest completed response into a new chat and appends
 a `fork` part (a system entry: `sourceChatId`, `sourceTitle`) as the seam;
 the transcript draws it as "This chat was forked from <title>". The copy
 settles what only the source's runtime could finish: open questions copy
 answered, and a spawn chip still `running` in the source copies `failed`
 (its `subagentRef` intact). `parentChatId` defaults to the source; a side
-chat's own fork button passes its parent so the copy lists as a sibling. The lanes card, under the session card, draws
+chat's own fork button passes its parent so the copy lists as a sibling.
+With `standalone: true` (Fork from here in the main session) the copy is a
+chat of its own instead: no parent, no kind, `parentChatId` ignored; its
+provider is handed the copied history on its first turn, known by its seam
+(`fork:<chatId>`), and a retry with the same id and source returns it. The lanes card, under the session card, draws
 a chat as a main line with its **side chats** (its children: forks and
 `kind: "side"` spawns) and **subagents** (its spawn chips) branching off it,
 and opens either in the right pane.

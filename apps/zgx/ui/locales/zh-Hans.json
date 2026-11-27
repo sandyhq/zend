@@ -3003,7 +3003,10 @@
       "need_conversation": "开始对话后才能创建侧边对话。",
       "new_side_chat": "新建侧边对话",
       "side_chat": "侧边对话",
-      "couldnt_create": "无法创建侧边对话。"
+      "couldnt_create": "无法创建侧边对话。",
+      "forking": "正在分叉…",
+      "couldnt_fork": "无法分叉此对话",
+      "retry": "重试"
     },
     "zend_commands": {
       "model": "Zend：选择智能体、模型和推理强度",

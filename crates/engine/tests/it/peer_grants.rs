@@ -1592,9 +1592,18 @@ async fn a_copy_of_a_servers_chat_stays_its_and_sandboxed_alike() {
     assert_eq!(peers.peer("theirs-copy").as_deref(), Some(a.b_key.as_str()));
     let root = a.core.sessions.chat_sandbox("theirs").and_then(|m| m.root).expect("the source is confined");
     assert_eq!(root, a.data.join("peer-copies/theirs"), "its working copy, never the owner's folder");
-    assert_eq!(a.core.sessions.chat_sandbox("theirs-copy").and_then(|m| m.root), Some(root));
+    assert_eq!(a.core.sessions.chat_sandbox("theirs-copy").and_then(|m| m.root), Some(root.clone()));
     assert_eq!(peers.peer("own-copy"), None);
     assert!(a.core.sessions.chat_sandbox("own-copy").is_none());
+    // A fork into a session of its own (no parent) is the server's alike,
+    // confined alike: what it may do comes from its source, never its parent.
+    owner
+        .call(methods::FORK_SIDE_CHAT, json!({ "chatId": "theirs-session", "sourceChatId": "theirs", "standalone": true }))
+        .await
+        .expect("standalone fork");
+    assert_eq!(a.core.workspace.chat("theirs-session").unwrap().unwrap().parent_chat_id, None);
+    assert_eq!(a.core.sessions.peer_chats().peer("theirs-session").as_deref(), Some(a.b_key.as_str()));
+    assert_eq!(a.core.sessions.chat_sandbox("theirs-session").and_then(|m| m.root), Some(root));
 }
 
 /// A run a server sends that won't start here is refused to it at once, in

@@ -16,7 +16,10 @@
 --                          engine's words for why not; with `message`
 --                          (`sessions.fork(source, parent, id, message)`)
 --                          the copy ends there, a promise of { id, draft? }
---                          (a prompt's words, for the fork's composer)
+--                          (a prompt's words, for the fork's composer);
+--                          with `standalone` (`sessions.fork(source, nil, id,
+--                          message, true)`) a session of its own instead,
+--                          no parent (a fork in the main session)
 --   sessions.rewind(id, message)  chat `id` without `message` and all after
 --                          it (an edited prompt, sent again next): a promise
 --                          of how many went, or why not
@@ -185,8 +188,8 @@ function M.create(req: { [string]: any }): any
 	return ui.call("sessions.create", req)
 end
 
-function M.fork(source: string, parent: string?, id: string?, message: string?): any
-	return ui.call("sessions.fork", { source = source, parent = parent, id = id, message = message })
+function M.fork(source: string, parent: string?, id: string?, message: string?, standalone: boolean?): any
+	return ui.call("sessions.fork", { source = source, parent = parent, id = id, message = message, standalone = standalone })
 end
 
 function M.rewind(id: string, message: string): any

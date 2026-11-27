@@ -396,16 +396,50 @@ ui.command {
 }
 -- A message's Fork from here and an edited prompt's rewind, as the engine
 -- answers them: a fork at a prompt gives its words back; a rewind takes the
--- message and all after it out of the transcript.
+-- message and all after it out of the transcript. A standalone fork (a
+-- session of its own) is noted `standalone:<id>` and made here as the
+-- engine makes it: the copy up to there, untitled, in the source's project.
+-- `fork_fails`: the engine refuses the next fork.
+local FORK_FAILS = ui.state("fixture_fork_fails", false)
+ui.command {
+	id = "fork_fails",
+	title = "The next fork is refused",
+	run = function()
+		FORK_FAILS:set(true)
+	end,
+}
 do
 	local stub_sessions = sessions :: any
-	stub_sessions.fork = function(source: string, _parent: string?, id: string?, message: string?): any
+	stub_sessions.fork = function(source: string, _parent: string?, id: string?, message: string?, standalone: boolean?): any
 		note(`fork:{source}:{message or "-"}`)
+		if standalone then
+			note(`standalone:{id}`)
+		end
+		if FORK_FAILS:peek() then
+			FORK_FAILS:set(false)
+			return {
+				after = function(_self: any, _ok: any, err: (any) -> ())
+					err({ message = "Source chat no longer exists" })
+				end,
+			}
+		end
 		local draft: string? = nil
+		local copy = {}
 		for _, m in TRANSCRIPTS[source] or {} do
 			if m.id == message and m.role == "user" then
 				draft = m.text
+				break
 			end
+			table.insert(copy, m)
+			if m.id == message then
+				break
+			end
+		end
+		if standalone and id then
+			TRANSCRIPTS[id] = copy
+			local meta = table.clone(META[source] or {})
+			meta.title = nil
+			META[id] = meta
 		end
 		return settled(if message then { id = id, draft = draft } else id)
 	end
