@@ -108,11 +108,10 @@ pub(crate) fn expand_home(cwd: &str) -> Result<String, &'static str> {
 /// folder under `scratch_root`, created on first use — createChat only names
 /// it, possibly on another device.
 pub(crate) fn resolve_chat_cwd(cwd: &str, scratch_root: &Path) -> Result<String, String> {
+    let folder = chat_cwd_folder(cwd, scratch_root)?;
     if !zend_proto::projectless::is_scratch_cwd(cwd) {
-        return expand_home(cwd).map_err(str::to_string);
+        return Ok(folder.to_string_lossy().into_owned());
     }
-    let name = cwd.trim().rsplit('/').next().unwrap_or_default();
-    let folder = scratch_root.join(name);
     std::fs::create_dir_all(&folder).map_err(|error| {
         format!(
             "could not create the chat's folder {}: {error}",
@@ -120,6 +119,16 @@ pub(crate) fn resolve_chat_cwd(cwd: &str, scratch_root: &Path) -> Result<String,
         )
     })?;
     Ok(folder.to_string_lossy().into_owned())
+}
+
+/// The folder a chat cwd names on this host, as [`resolve_chat_cwd`] reads
+/// it (`~` expanded, a scratch name as its folder), nothing created.
+pub(crate) fn chat_cwd_folder(cwd: &str, scratch_root: &Path) -> Result<PathBuf, String> {
+    if !zend_proto::projectless::is_scratch_cwd(cwd) {
+        return expand_home(cwd).map(PathBuf::from).map_err(str::to_string);
+    }
+    let name = cwd.trim().rsplit('/').next().unwrap_or_default();
+    Ok(scratch_root.join(name))
 }
 
 /// Resolve the host user's home for a session that explicitly uses `~`.

@@ -70,10 +70,23 @@ end
 function M.grants(device: string, area: string): boolean
 	return M.grants_of(record(device), area)
 end
+-- `word` as one shell argument (the server's `zend peer grant` takes this
+-- device as one): as it is when it has nothing a shell reads, or is already
+-- quoted (src/server_route.rs) or a placeholder (`<this device>`); else in
+-- single quotes.
+function M.shell_word(word: string): string
+	if string.match(word, "^[%w%._%-%+:@/=,]+$") or string.match(word, "^'.*'$") or string.match(word, "^<[^>]*>$") then
+		return word
+	end
+	return "'" .. (string.gsub(word, "'", "'\\''")) .. "'"
+end
 function M.not_granted_of(d: any, area: string): { server: string, area: string, device: string, command: string }?
 	if M.grants_of(d, area) then
 		return nil
 	end
+	-- The key this device is paired as there (its first 16 digits, as
+	-- `zend peer list` shows it), else its name.
+	local key = if type(d.paired_as) == "string" then string.match(d.paired_as, "^(%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x)") else nil
 	local mine = ""
 	local here = sessions.here:get()
 	for _, x in sessions.devices:get() do
@@ -81,7 +94,7 @@ function M.not_granted_of(d: any, area: string): { server: string, area: string,
 			mine = x.name
 		end
 	end
-	local name = if mine ~= "" then mine else "<this device>"
+	local name = key or M.shell_word(if mine ~= "" then mine else "<this device>")
 	return { server = d.name, area = area, device = name, command = `zend peer grant {name} {area}` }
 end
 function M.not_granted(device: string, area: string): { server: string, area: string, device: string, command: string }?

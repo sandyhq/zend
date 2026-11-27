@@ -4,6 +4,7 @@
 
 local control = require("@ds/control")
 local api = require("@app/screens/files/api")
+local projects = require("@account/projects")
 
 type Target = api.Target
 
@@ -53,7 +54,7 @@ function M.not_granted_words(err: unknown): { title: string, body: string }?
 		return nil
 	end
 	-- (The command is an argument, not words to translate.)
-	local p = { server = g.server, area = g.area, command = `zend peer grant {g.device} {g.area}` }
+	local p = { server = g.server, area = g.area, command = `zend peer grant {projects.shell_word(g.device)} {g.area}` }
 	return { title = ui.t("files.not_granted.title", p):get(), body = ui.t("files.not_granted.body", p):get() }
 end
 
@@ -71,7 +72,7 @@ function M.run_not_granted_words(err: unknown, project: string?, name: string?):
 	local area = if g.area == "sessions.run" and project then `sessions.run:{project}` else g.area
 	local id = string.match(area, "^sessions%.run:(.+)$") or project or ""
 	-- (The command is an argument, not words to translate.)
-	local p = { server = g.server, project = name or id, command = `zend peer grant {g.device} {area}` }
+	local p = { server = g.server, project = name or id, command = `zend peer grant {projects.shell_word(g.device)} {area}` }
 	return ui.t("chat.composer.not_granted", p):get()
 end
 

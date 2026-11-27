@@ -527,6 +527,10 @@ impl PeerView {
         let _ = self.locals.subscribe().wait_for(Locals::ready).await;
         let link = self.link.upgrade().ok_or(Quiet::Gone)?;
         let data_dir = link.data_dir().to_path_buf();
+        // The key this device is paired as there: what `zend peer grant`
+        // takes on the server for it, whatever its name (the window's
+        // "On <server>, run: …").
+        let paired_as = link.node_key().ok().map(|key| key.public().to_string());
         let quiet = |e: RpcError| match e {
             RpcError::Transport(_) | RpcError::Closed => Quiet::Unreachable(e.to_string()),
             other => Quiet::Refused(other.to_string()),
@@ -582,6 +586,9 @@ impl PeerView {
                 "capabilities": capabilities,
             });
             set_peer_areas(&mut row, shown_areas.as_ref());
+            if let Some(key) = paired_as.as_deref().filter(|_| worker_project.is_none()) {
+                row["pairedAs"] = json!(key);
+            }
             row
         };
         let only_in = worker_project.as_deref();

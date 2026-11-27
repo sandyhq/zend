@@ -744,9 +744,12 @@ async fn the_servers_device_row_says_which_areas_it_grants() {
     for row in rows.iter().filter(|d| d["id"] != "device-server") {
         assert!(row.get("peerAreas").is_none(), "only a paired server's row has it: {row}");
     }
+    // The key this device is paired as there: what `zend peer grant`
+    // takes for it on the server, whatever its name.
+    let laptop_key = t.laptop_link.node_key().unwrap().public().to_string();
+    assert_eq!(server_row(&rows).unwrap()["pairedAs"], json!(laptop_key), "{rows:?}");
 
     // Granted more: the new list, once it redialled.
-    let laptop_key = t.laptop_link.node_key().unwrap().public().to_string();
     t.server_link.set_grants(&laptop_key, &["sessions.read".into(), "sessions.run.unconfined:p".into(), "files".into(), "settings".into()]).unwrap();
     let rows = devices
         .until("settings, granted since", |rows| server_row(rows).is_some_and(|d| names(&d).contains(&"settings".to_string())))

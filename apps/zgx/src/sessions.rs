@@ -1357,6 +1357,11 @@ impl Sessions {
                 if let Some(areas) = d["peerAreas"].as_array().filter(|_| is_paired_server(d)) {
                     fields.push(("peer_areas", Value::List(areas.iter().filter_map(|a| a.as_str().map(Value::from)).collect())));
                 }
+                // The key this device is paired as there (paired_as): what
+                // the server's `zend peer grant` takes for it.
+                if let Some(key) = d["pairedAs"].as_str().filter(|_| is_paired_server(d)) {
+                    fields.push(("paired_as", Value::from(key)));
+                }
                 Some(Value::record(fields))
             })
             .collect();
@@ -2378,7 +2383,7 @@ mod tests {
     #[test]
     fn a_refused_new_chat_names_the_projects_grant() {
         let error = "failed: peer_refused: AI: createChat: your server may not run sessions in project 51fa";
-        assert_eq!(super::create_failure(error), "not_granted|sessions.run:51fa|AI|this device");
+        assert_eq!(super::create_failure(error), "not_granted|sessions.run:51fa|AI|<this device>");
         assert_eq!(super::create_failure("peer_refused: AI: AI is unreachable: closed"), "AI: AI is unreachable: closed");
     }
 

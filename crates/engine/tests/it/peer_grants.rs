@@ -2137,3 +2137,39 @@ async fn full_creates_a_chat_as_the_window_here_does() {
     }
 }
 
+/// 6g review (P2): Zend's own folders are fenced by the folder a chat runs
+/// in, as this host reads it: `~` expanded, the project's folder when no
+/// folder is sent, a new worktree's source, a chat's folder moved; and a
+/// server doesn't make a project inside them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_is_fenced_from_zends_data_by_any_name() {
+    let a = paired(&["full"]).await;
+    let device = a.core.device_id.clone();
+    let fenced = |reply: &Result<Value, RpcError>| reply.as_ref().is_err_and(|e| e.to_string().contains("Zend's own data"));
+    let tilde = a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "t1", "deviceId": device, "cwd": "~/.zend" })).await;
+    assert!(fenced(&tilde), "~/.zend: {tilde:?}");
+    assert!(a.core.workspace.chat("t1").unwrap().is_none());
+    let inside = a.data.join("inside");
+    std::fs::create_dir_all(&inside).unwrap();
+    let inside_text = inside.to_string_lossy().into_owned();
+    let space = a.b.call(methods::MUTATE, json!({ "op": "createSpace", "spaceId": "inside", "deviceId": device, "path": inside_text })).await;
+    assert!(fenced(&space), "a project in Zend's data: {space:?}");
+    assert!(a.core.workspace.space("inside").unwrap().is_none());
+    // One the owner made there: not a server's to run in.
+    a.core.workspace.create_space("inside", &device, &inside_text, None, false).unwrap();
+    let no_cwd = a.b.call(methods::MUTATE, create("t2", "inside")).await;
+    assert!(fenced(&no_cwd), "its folder, no cwd sent: {no_cwd:?}");
+    assert!(a.core.workspace.chat("t2").unwrap().is_none());
+    a.core.workspace.create_chat("owner-inside", Some("inside"), Some(&device), None, None).unwrap();
+    let plain = a.b.call(methods::QUEUE_COMMAND, run("owner-inside", "/")).await;
+    assert!(fenced(&plain), "a run there: {plain:?}");
+    let mut queued = run("owner-inside", "/");
+    queued["command"]["request"]["worktree"] = json!({ "repoPath": "/", "base": "HEAD", "spaceId": "inside" });
+    let worktree = a.b.call(methods::QUEUE_COMMAND, queued).await;
+    assert!(fenced(&worktree), "a worktree of it: {worktree:?}");
+    a.core.workspace.create_chat("owner-loose", None, Some(&device), None, None).unwrap();
+    let before = a.core.workspace.chat("owner-loose").unwrap().unwrap().cwd;
+    let moved = a.b.call(methods::MUTATE, json!({ "op": "setChatCwd", "chatId": "owner-loose", "cwd": "~/.zend" })).await;
+    assert!(fenced(&moved), "setChatCwd ~/.zend: {moved:?}");
+    assert_eq!(a.core.workspace.chat("owner-loose").unwrap().unwrap().cwd, before);
+}

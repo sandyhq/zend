@@ -290,6 +290,8 @@ test("a chat a server refuses to run says why and the command, not that it didn'
 	pick_in(app, "Device", "Build box")
 	send(app, "Sync it")
 	expect(app:has('~"Build box doesn\'t let this device run chats in Borealis"')).to_be(true)
-	expect(app:has('~"zend peer grant MacBook Pro sessions.run:borealis"')).to_be(true)
+	-- (A name of more than one word, quoted for the shell: the server's
+	-- `zend peer grant` takes one argument.)
+	expect(app:has("~\"zend peer grant 'MacBook Pro' sessions.run:borealis\"")).to_be(true)
 	expect(app:has('~"The chat didn\'t start"')).to_be(false)
 end)

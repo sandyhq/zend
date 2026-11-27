@@ -13,8 +13,8 @@ use serde_json::Value as Json;
 /// What a refusal starts with, as scripts read it (`paths.not_granted`).
 pub(crate) const NOT_GRANTED: &str = "not_granted";
 
-/// The words for a page: the area, the server, and this device (the name
-/// `zend peer grant` is given on the server).
+/// The words for a page: the area, the server, and this device as the
+/// server's `zend peer grant` takes it ([`grant_arg`]).
 pub(crate) fn refusal(area: &str, server: &str, device: &str) -> String {
     let clean = |s: &str| s.replace('|', "/");
     format!("{NOT_GRANTED}|{}|{}|{}", clean(area), clean(server), clean(device))
@@ -39,23 +39,51 @@ pub(crate) fn check(devices: &Json, here: Option<&str>, device: &str, area: &str
     if crate::sessions::server_grants(server, area) {
         return Ok(());
     }
-    Err(refusal(area, server["name"].as_str().unwrap_or("The server"), &here_name(devices, here)))
+    Err(refusal(area, server["name"].as_str().unwrap_or("The server"), &grant_arg(Some(server), devices, here)))
+}
+
+/// This device as the server's `zend peer grant` takes it (one argument):
+/// the key it's paired as there (`pairedAs`, its first 16 digits, as `zend
+/// peer list` shows it), else its name, quoted for the shell where it needs
+/// it; `<this device>` when neither is known.
+fn grant_arg(server: Option<&Json>, devices: &Json, here: Option<&str>) -> String {
+    let key = server.and_then(|s| s["pairedAs"].as_str()).filter(|k| k.len() >= 16 && k.bytes().all(|b| b.is_ascii_hexdigit()));
+    if let Some(key) = key {
+        return key[..16].to_string();
+    }
+    match here_name(devices, here) {
+        Some(name) => shell_word(&name),
+        None => "<this device>".to_string(),
+    }
+}
+
+/// `word` as one shell argument: as it is when it has nothing a shell
+/// reads, else in single quotes.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty() && word.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+:@/=,".contains(&b));
+    if plain { word.to_string() } else { format!("'{}'", word.replace('\'', "'\\''")) }
 }
 
 /// The engine's own refusal (`peer_refused: <server>: <server> doesn't grant
 /// <area>, …`) as [`refusal`], and the server's gate refusing a chat in a
 /// project (`… may not run sessions in project <id>`) as the refusal of
 /// that project's run (`sessions.run:<id>`); `None` for any other error.
-pub(crate) fn from_engine(error: &str, here_name: &str) -> Option<String> {
+pub(crate) fn from_engine(error: &str, devices: &Json, here: Option<&str>) -> Option<String> {
     let said = error.split_once("peer_refused:")?.1.trim();
     let (server, rest) = said.split_once(": ")?;
+    let row = devices
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|d| d["name"].as_str() == Some(server) && crate::sessions::is_paired_server(d));
+    let arg = || grant_arg(row, devices, here);
     if let Some((_, project)) = rest.split_once("may not run sessions in project ") {
         let project = project.trim();
-        return (!project.is_empty() && !project.contains(' ')).then(|| refusal(&format!("sessions.run:{project}"), server, here_name));
+        return (!project.is_empty() && !project.contains(' ')).then(|| refusal(&format!("sessions.run:{project}"), server, &arg()));
     }
     let area = rest.strip_prefix(server)?.strip_prefix(" doesn't grant ")?;
     let area = area.split([',', '(']).next()?.trim();
-    (!area.is_empty() && !area.contains(' ')).then(|| refusal(area, server, here_name))
+    (!area.is_empty() && !area.contains(' ')).then(|| refusal(area, server, &arg()))
 }
 
 /// [`check`] against the devices the window knows now.
@@ -69,8 +97,7 @@ pub(crate) fn gate(device: Option<&str>, area: &str) -> Result<(), String> {
 /// An engine error as a page reads it: a refusal for grants in the words of
 /// [`refusal`], else as it is.
 pub(crate) fn said(error: String) -> String {
-    let here = crate::sessions::with_devices(|devices, here| here_name(devices, here));
-    from_engine(&error, &here).unwrap_or(error)
+    crate::sessions::with_devices(|devices, here| from_engine(&error, devices, here)).unwrap_or(error)
 }
 
 /// An engine error as an outcome word (`offline`, `failed`, …) for a call
@@ -81,12 +108,11 @@ pub(crate) fn failure(error: String) -> String {
     if error.starts_with(NOT_GRANTED) { error } else { crate::engine::outcome(&error).to_string() }
 }
 
-fn here_name(devices: &Json, here: Option<&str>) -> String {
+fn here_name(devices: &Json, here: Option<&str>) -> Option<String> {
     here.and_then(|id| devices.as_array()?.iter().find(|d| d["id"].as_str() == Some(id)))
         .and_then(|d| d["name"].as_str())
         .filter(|name| !name.is_empty())
-        .unwrap_or("this device")
-        .to_string()
+        .map(str::to_string)
 }
 
 /// The device a call goes to (`targetDeviceId`): none for this one, and an
@@ -145,11 +171,12 @@ mod tests {
     #[test]
     fn the_engines_refusal_reads_like_ours() {
         let said = "peer_refused: AI: AI doesn't grant terminal, so OpenTerminal isn't sent";
-        assert_eq!(from_engine(said, "Laptop"), Some("not_granted|terminal|AI|Laptop".to_string()));
+        let (d, lap) = (devices(), Some("lap"));
+        assert_eq!(from_engine(said, &d, lap), Some("not_granted|terminal|AI|Laptop".to_string()));
         let silent = "peer_refused: Old: Old doesn't grant files (it doesn't say what it grants), so ReadWorkspaceFile isn't sent";
-        assert_eq!(from_engine(silent, "Laptop"), Some("not_granted|files|Old|Laptop".to_string()));
-        assert_eq!(from_engine("peer_refused: AI: AI is unreachable: closed", "Laptop"), None);
-        assert_eq!(from_engine("offline", "Laptop"), None);
+        assert_eq!(from_engine(silent, &d, lap), Some("not_granted|files|Old|Laptop".to_string()));
+        assert_eq!(from_engine("peer_refused: AI: AI is unreachable: closed", &d, lap), None);
+        assert_eq!(from_engine("offline", &d, lap), None);
     }
 
     /// A chat a server won't run in a project (its gate: "your server may
@@ -158,14 +185,37 @@ mod tests {
     #[test]
     fn a_refused_run_reads_as_the_projects_grant() {
         let said = "peer_refused: AI: createChat: your server may not run sessions in project 51faf7a2-aa";
-        assert_eq!(from_engine(said, "Laptop"), Some("not_granted|sessions.run:51faf7a2-aa|AI|Laptop".to_string()));
+        assert_eq!(from_engine(said, &devices(), Some("lap")), Some("not_granted|sessions.run:51faf7a2-aa|AI|Laptop".to_string()));
+    }
+
+    /// The command names this device as the server knows it: by the key
+    /// it's paired as there (`pairedAs`, its first 16 digits, as `zend peer
+    /// list` shows it), else by its name quoted for the shell (6g review).
+    #[test]
+    fn the_grant_names_this_device_by_its_key_or_its_name_quoted() {
+        let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let d = json!([
+            { "id": "lap", "name": "MacBook Pro" },
+            { "id": "ai", "name": "AI", "capabilities": ["paired-server"], "peerAreas": ["files"], "pairedAs": key },
+            { "id": "old", "name": "Old", "capabilities": ["paired-server"] },
+        ]);
+        assert_eq!(check(&d, Some("lap"), "ai", "terminal"), Err("not_granted|terminal|AI|0123456789abcdef".to_string()));
+        assert_eq!(check(&d, Some("lap"), "old", "files"), Err("not_granted|files|Old|'MacBook Pro'".to_string()));
+        // The engine's refusal, read the same way.
+        let said = "peer_refused: AI: createChat: your server may not run sessions in project p1";
+        assert_eq!(from_engine(said, &d, Some("lap")), Some("not_granted|sessions.run:p1|AI|0123456789abcdef".to_string()));
+        let said = "peer_refused: Old: Old doesn't grant files, so ReadWorkspaceFile isn't sent";
+        assert_eq!(from_engine(said, &d, Some("lap")), Some("not_granted|files|Old|'MacBook Pro'".to_string()));
+        assert_eq!(check(&d, None, "old", "files"), Err("not_granted|files|Old|<this device>".to_string()));
+        let d = json!([{ "id": "lap", "name": "Ana's Mac" }, { "id": "old", "name": "Old", "capabilities": ["paired-server"] }]);
+        assert_eq!(check(&d, Some("lap"), "old", "files"), Err("not_granted|files|Old|'Ana'\\''s Mac'".to_string()));
     }
 
     /// A call that has only outcome words keeps a grant's refusal whole.
     #[test]
     fn a_failure_keeps_the_refusal_and_names_any_other_by_outcome() {
         let refused = "peer_refused: AI: AI doesn't grant terminal, so StopBackgroundTask isn't sent";
-        assert_eq!(failure(refused.to_string()), "not_granted|terminal|AI|this device");
+        assert_eq!(failure(refused.to_string()), "not_granted|terminal|AI|<this device>");
         assert_eq!(failure("offline".to_string()), "offline");
         assert_eq!(failure("something broke".to_string()), "failed");
     }
@@ -173,9 +223,9 @@ mod tests {
     /// This device's name, for the command to run on the server.
     #[test]
     fn this_devices_name_is_the_one_the_row_says() {
-        assert_eq!(here_name(&devices(), Some("lap")), "Laptop");
-        assert_eq!(here_name(&devices(), Some("nope")), "this device");
-        assert_eq!(here_name(&devices(), None), "this device");
+        assert_eq!(here_name(&devices(), Some("lap")).as_deref(), Some("Laptop"));
+        assert_eq!(here_name(&devices(), Some("nope")), None);
+        assert_eq!(here_name(&devices(), None), None);
     }
 
     /// A refusal's words survive a name with the separator in it.

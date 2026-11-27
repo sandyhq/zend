@@ -215,6 +215,21 @@ impl EngineRpc {
         Ok(())
     }
 
+    /// Whether the folder `cwd` names, as this host runs it
+    /// ([`crate::repos::chat_cwd_folder`]: `~` expanded, a scratch name as
+    /// its folder), is in Zend's own folders, fenced from a paired server
+    /// ([`crate::phone_reads::DataFence`]). A home that can't be read
+    /// fences it.
+    fn peer_fences_cwd(&self, cwd: &str) -> bool {
+        let Some(fence) = crate::phone_reads::DataFence::for_caller(self.repos.data_dir()) else {
+            return false;
+        };
+        match crate::repos::chat_cwd_folder(cwd, &self.repos.scratch_root()) {
+            Ok(folder) => fence.refuses(&folder),
+            Err(_) => true,
+        }
+    }
+
     /// A `Mutate` an area grant opens: a project of this device (made
     /// here, or one here renamed, given an icon, deleted), this device's
     /// own name, the sidebar, a chat hosted here (`full`).
@@ -224,9 +239,13 @@ impl EngineRpc {
         let not_here = |what: String| Err(refused(format!("Mutate: {what} isn't this device's")));
         match &p {
             MutateParams::CreateSpace { device_id, .. } if device_id != &own => return not_here(format!("device {device_id}")),
-            MutateParams::CreateSpace { space_id, .. } => {
+            MutateParams::CreateSpace { space_id, path, .. } => {
                 if self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?.is_some() {
                     return Err(refused(format!("Mutate createSpace: project {space_id} exists")));
+                }
+                // Not a project inside Zend's own folders (its chats would run there).
+                if self.peer_fences_cwd(path) {
+                    return Err(refused(format!("Mutate createSpace: {}", crate::phone_reads::DATA_FENCED)));
                 }
             }
             MutateParams::RenameSpace { space_id, .. } | MutateParams::SetSpaceIcon { space_id, .. } | MutateParams::DeleteSpace { space_id } => {
@@ -257,6 +276,9 @@ impl EngineRpc {
                         return not_here(format!("chat {chat_id}"));
                     }
                 }
+            }
+            MutateParams::SetChatCwd { cwd, .. } if self.peer_fences_cwd(cwd) => {
+                return Err(refused(format!("Mutate setChatCwd: {}", crate::phone_reads::DATA_FENCED)));
             }
             MutateParams::SetChatBranch { chat_id, .. }
             | MutateParams::SetChatCwd { chat_id, .. }
@@ -365,6 +387,11 @@ impl EngineRpc {
                     .doc_host
                     .request_from_chat_row(&chat.id, &sent.prompt)
                     .ok_or_else(|| refused(format!("chat {}: no row to run", chat.id)))?;
+                // `full` runs the owner's chats too: none in Zend's own
+                // folders, by the folder it runs in here.
+                if grants.covers(zend_rpc::Scope::Full) && self.peer_fences_cwd(&request.cwd) {
+                    return Err(refused(format!("chat {}: {}", chat.id, crate::phone_reads::DATA_FENCED)));
+                }
                 // `full`: a new worktree as the window here asks one (6g),
                 // made at drain time on this device, of the chat's project
                 // folder here (not the sender's idea of it), off its ref.
@@ -381,6 +408,9 @@ impl EngineRpc {
                         .flatten()
                         .filter(|space| space.device_id == self.doc_host.device_id())
                         .ok_or_else(|| refused(format!("chat {}: a new worktree needs a project of this device", chat.id)))?;
+                    if self.peer_fences_cwd(&space.path) {
+                        return Err(refused(format!("chat {}: {}", chat.id, crate::phone_reads::DATA_FENCED)));
+                    }
                     request.worktree = Some(zend_proto::WorktreeSpec { repo_path: space.path.clone(), base: spec.base, space_id: Some(space.id) });
                 }
                 SessionCommandPayload::Run { request, message_id }
@@ -595,11 +625,16 @@ impl EngineRpc {
         if let Some(device) = device_id.as_deref().filter(|d| *d != own_device) {
             return Err(refused(format!("createChat: device {device} isn't this device")));
         }
-        if let Some(space_id) = &space_id
-            && !self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?.is_some_and(|space| space.device_id == own_device)
-        {
-            return Err(refused(format!("createChat: no project {space_id} on this device")));
-        }
+        let space = match &space_id {
+            Some(space_id) => Some(
+                self.workspace
+                    .space(space_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .filter(|space| space.device_id == own_device)
+                    .ok_or_else(|| refused(format!("createChat: no project {space_id} on this device")))?,
+            ),
+            None => None,
+        };
         if let Some(parent) = &parent_chat_id
             && !self.workspace.chat(parent).map_err(|e| RpcError::Failed(e.to_string()))?.is_some_and(|chat| chat.device_id == own_device)
         {
@@ -608,8 +643,10 @@ impl EngineRpc {
         if child_kind.is_some() && parent_chat_id.is_none() {
             return Err(refused("createChat: childKind needs a parentChatId"));
         }
-        if let Some(cwd) = cwd.as_deref()
-            && crate::phone_reads::DataFence::for_caller(self.repos.data_dir()).is_some_and(|fence| fence.refuses(std::path::Path::new(cwd)))
+        // The folder it will run in, as this host reads it: the one sent,
+        // else its project's (none: home or a scratch folder of its own).
+        if let Some(cwd) = cwd.as_deref().or(space.as_ref().map(|space| space.path.as_str()))
+            && self.peer_fences_cwd(cwd)
         {
             return Err(refused(format!("createChat: {}", crate::phone_reads::DATA_FENCED)));
         }
