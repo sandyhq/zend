@@ -20,15 +20,39 @@ local ds = require("@ds")
 
 local M = {}
 
--- What a new chat is to be named (empty: as Zend names it).
-export type Names = { new_branch: string, worktree_name: string, worktree_branch: string }
+-- What a new chat is to be named (empty: as Zend names it). `folder` and
+-- `device`: where a new branch was named for (its warning was about the chats
+-- there); a send that would make it elsewhere drops it (composer).
+export type Names = { new_branch: string, worktree_name: string, worktree_branch: string, folder: string?, device: string? }
 M.names = ui.shared("chat.names", { new_branch = "", worktree_name = "", worktree_branch = "" } :: Names)
 
 -- What the dialog asks: `kind` one of new_branch, worktree (a new chat's),
 -- rename_branch, rename_worktree, switch (an open chat's). `path` the folder
 -- (an open chat's own), `device` its device when it isn't this one, `chat`
 -- the open chat, `ref` the branch to switch to, `current` the branch now.
-export type Ask = { kind: string, path: string?, device: string?, chat: string?, ref: string?, current: string? }
+-- `locate` (a new chat's): where it would work as its choices stand now,
+-- read live (a project or ref picked meanwhile moves the warning with it).
+export type Located = { path: string?, device: string? }
+export type Ask = {
+	kind: string,
+	path: string?,
+	device: string?,
+	chat: string?,
+	ref: string?,
+	current: string?,
+	locate: (() -> Located)?,
+}
+
+-- The asking one's `locate` (state holds no functions: kept here).
+local locating: (() -> Located)? = nil
+
+-- Where `a` works: its `locate` as it stands, else its path and device.
+local function place(a: Ask): Located
+	if locating then
+		return locating()
+	end
+	return { path = a.path, device = a.device }
+end
 M.asking = ui.shared("chat.naming.asking", nil :: Ask?)
 
 local function trim(s: string?): string
@@ -124,7 +148,10 @@ function M.ask(a: Ask)
 		end
 		failed:set(nil)
 		working:set(false)
-		M.asking:set(a)
+		locating = a.locate
+		local kept = table.clone(a)
+		kept.locate = nil
+		M.asking:set(kept)
 		open:set(true)
 	end)
 end
@@ -165,7 +192,8 @@ local function confirm()
 	end
 	local n, b = trim(name:peek()), trim(branch:peek())
 	if a.kind == "new_branch" then
-		M.names:set({ new_branch = n, worktree_name = "", worktree_branch = "" })
+		local at = place(a)
+		M.names:set({ new_branch = n, worktree_name = "", worktree_branch = "", folder = at.path, device = at.device })
 		open:set(false)
 		return
 	elseif a.kind == "worktree" then
@@ -226,7 +254,8 @@ local function body(): string
 	end
 	-- (A new worktree has no one else in it yet.)
 	if a.kind ~= "worktree" then
-		local warn = M.warning(a.path, a.device, a.chat)
+		local at = place(a)
+		local warn = M.warning(at.path, at.device, a.chat)
 		if warn then
 			table.insert(lines, warn)
 		end

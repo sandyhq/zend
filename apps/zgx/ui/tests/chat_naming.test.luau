@@ -187,3 +187,40 @@ test("a worktree's chat renames its worktree from its chip", function()
 	settle(app)
 	expect(app:state("calls")).to_contain("renameworktree:/tmp/atlas-wt/pr|readme|-|here")
 end)
+
+-- Review round 1 (P2): a new branch in a local checkout names the other
+-- chats in the folder it is made in.
+test("a new branch in a local checkout names the other chats in its folder", function()
+	local app = mount("chat_fixture.luau")
+	open_in_checkout(app)
+	home(app)
+	pick_in(app, "Checkout", "Local checkout Work in")
+	panel(app)
+	app:click('~"New branch…"')
+	settle(app)
+	expect(app:wait('~"Long chat"', { timeout_ms = 2000 })).to_be(true)
+end)
+
+-- Review round 1 (P2): a name given for the project's folder isn't made in
+-- another: a ref picked after it, checked out in a worktree of its own, runs
+-- there, and the name (warned about the chats in the project's folder) is
+-- dropped, not made in the worktree.
+test("a new branch named for one folder isn't made in another", function()
+	local app = mount("chat_fixture.luau")
+	home(app)
+	pick_in(app, "Checkout", "Local checkout Work in")
+	panel(app)
+	app:click('~"New branch…"')
+	settle(app)
+	app:fill('role:textbox "Branch"', "fix/login")
+	app:click('role:button "Use"')
+	settle(app)
+	panel(app)
+	app:click('role:option ~"fix/render-loop"')
+	settle(app)
+	send(app, "Fix the loop")
+	local calls = app:state("calls")
+	expect(calls).never.to_contain("newbranch:")
+	expect(calls).to_contain("run:/tmp/atlas-wt/render-loop|local|fix/render-loop")
+	expect(app:error()).to_be(nil)
+end)

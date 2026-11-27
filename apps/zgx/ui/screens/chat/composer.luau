@@ -574,6 +574,19 @@ local function Composer(): Node
 		checkout:get()
 		naming.clear()
 	end)
+	-- (A new branch is for the folder it was named for, whose chats its
+	-- warning named: a ref picked since that runs elsewhere, in a worktree
+	-- of its own, drops it.)
+	ui.effect(function()
+		branch:get()
+		local n = naming.names:get()
+		if n.new_branch ~= "" and n.folder ~= nil then
+			local p = where.plan()
+			if p.cwd ~= n.folder then
+				naming.clear()
+			end
+		end
+	end)
 	-- (A new chat's project, for what follows the route: its panel.)
 	ui.effect(function()
 		if new_chat() then
@@ -1465,7 +1478,19 @@ local function Composer(): Node
 					end,
 					icon = "git-branch",
 					on_click = function()
-						naming.ask({ kind = "new_branch" })
+						naming.ask({
+							kind = "new_branch",
+							-- (Where the branch would be made, as the choices
+							-- stand: the chats there are named.)
+							locate = function()
+								project:get()
+								device:get()
+								checkout:get()
+								branch:get()
+								local p = where.plan()
+								return { path = p.cwd, device = p.device }
+							end,
+						})
 					end,
 					shown = function(): boolean
 						-- (Followed: the plan reads its choices as they stand.)

@@ -479,3 +479,145 @@ async fn switching_a_checkouts_branch_moves_its_chats_and_never_forces() {
     assert_eq!(std::fs::read_to_string(f.repo.join("a.txt")).unwrap(), "uncommitted\n");
     assert_eq!(f.row("chat-a").branch.as_deref(), Some("other"));
 }
+
+
+/// A reference-transaction hook in `repo`: `script` (sh) runs as a ref
+/// update is prepared (a branch renamed), before it is done; its exit
+/// status is the hook's.
+#[cfg(unix)]
+fn ref_hook(repo: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = repo.join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let file = hooks.join("reference-transaction");
+    std::fs::write(&file, format!("#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n{script}\n")).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A hook that stops a branch rename half way until `dir`/go exists, saying
+/// so in `dir`/reached.
+#[cfg(unix)]
+fn ref_hook_waiting(repo: &Path, dir: &Path) {
+    let d = dir.display();
+    ref_hook(
+        repo,
+        &format!("touch '{d}/reached'; i=0; while [ ! -e '{d}/go' ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; exit 0"),
+    );
+}
+
+/// Review round 1 (P1): a worktree rename that fails after its folder
+/// moved isn't left half done. A branch in the way (`topic` for
+/// `topic/sub`, `topic/sub` for `topic`) is refused before anything
+/// moves; a branch rename git refuses after the move (a ref locked) moves
+/// the folder back; and when it can't go back, its chats follow it where it
+/// is and the error says so.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worktree_rename_that_fails_after_the_move_is_not_left_half_done() {
+    let f = fixture().await;
+    let made = f.create_worktree(serde_json::json!({ "name": "before" })).await.unwrap();
+    let old = PathBuf::from(made["path"].as_str().unwrap());
+    f.chat("chat-wt", Some(&old)).await;
+    git(&f.repo, &["branch", "topic"]);
+    git(&f.repo, &["branch", "deep/inner"]);
+    let rename = |name: &str| {
+        f.client
+            .call(methods::RENAME_WORKTREE, serde_json::json!({ "worktreePath": old, "name": name }))
+    };
+
+    // A branch it would sit under, and one under it: refused, nothing moved.
+    for (name, other) in [("topic/sub", "topic"), ("deep", "deep/inner")] {
+        let error = rename(name).await.unwrap_err().to_string();
+        assert!(error.contains(&format!("Branch {other} is in the way of {name}")), "{error}");
+        assert!(old.is_dir(), "{name}: the folder stays");
+        assert_eq!(git_out(&old, &["branch", "--show-current"]), "before");
+        assert_eq!(PathBuf::from(f.row("chat-wt").cwd.unwrap()), old);
+    }
+
+    // Git refuses the branch after the move (its ref locked): moved back.
+    let lock = f.repo.join(".git/refs/heads/after.lock");
+    std::fs::write(&lock, "").unwrap();
+    let error = rename("after").await.unwrap_err().to_string();
+    assert!(error.contains("after.lock"), "git's words: {error}");
+    assert!(old.is_dir(), "moved back");
+    assert!(!f.worktrees.join("after").exists());
+    assert_eq!(git_out(&old, &["branch", "--show-current"]), "before");
+    assert!(git_out(&f.repo, &["worktree", "list"]).contains(&*old.to_string_lossy()));
+    assert_eq!(PathBuf::from(f.row("chat-wt").cwd.unwrap()), old);
+    std::fs::remove_file(&lock).unwrap();
+
+    // And it can't go back (its old place taken meanwhile): the chat works
+    // where the folder is, and the error says so.
+    ref_hook(&f.repo, &format!("mkdir -p '{0}' && touch '{0}/in-the-way'; exit 1", old.display()));
+    let error = rename("after").await.unwrap_err().to_string();
+    let new = f.worktrees.join("after");
+    assert!(error.contains("it is at") && error.contains(&*new.to_string_lossy()), "{error}");
+    assert!(error.contains("its chats work there now"), "{error}");
+    assert!(new.join(".git").is_file());
+    assert_eq!(PathBuf::from(f.row("chat-wt").cwd.unwrap()), new);
+    assert_ne!(f.row("chat-wt").branch.as_deref(), Some("after"), "the branch wasn't renamed");
+    assert_eq!(git_out(&new, &["branch", "--show-current"]), "before");
+}
+
+/// Review round 1 (P2): a branch rename holds the checkout: a turn sent to
+/// a chat there while git renames it, and one in a chat made there
+/// meanwhile, starts only once the rename and the chats' branch are done.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn no_turn_starts_in_a_checkout_while_its_branch_is_renamed() {
+    let f = fixture().await;
+    f.chat("chat-a", None).await;
+    let signal = f.root.join("signal");
+    std::fs::create_dir_all(&signal).unwrap();
+    ref_hook_waiting(&f.repo, &signal);
+    let cwd = f.repo.to_string_lossy().into_owned();
+    let rename = f.client.call(methods::RENAME_BRANCH, serde_json::json!({ "cwd": f.repo, "name": "renamed" }));
+    let probe = async {
+        wait_for(|| signal.join("reached").exists(), "the rename half way").await;
+        let before = f.seen.lock().unwrap().len();
+        f.run("chat-a", "m-1", "words", &cwd, None);
+        f.chat("chat-new", Some(&f.repo)).await;
+        f.run("chat-new", "m-2", "more words", &cwd, None);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let started = f.seen.lock().unwrap().len() - before;
+        std::fs::write(signal.join("go"), "").unwrap();
+        started
+    };
+    let (renamed, started) = tokio::join!(rename, probe);
+    assert_eq!(renamed.expect("RenameBranch")["branch"], "renamed");
+    assert_eq!(started, 0, "no turn started while the branch was renamed");
+    wait_for(|| f.replies("chat-a") == 1 && f.replies("chat-new") == 1, "both turns, after").await;
+    assert_eq!(f.row("chat-a").branch.as_deref(), Some("renamed"));
+}
+
+/// Review round 1 (P2): a chat made in a worktree while it moves, its turn
+/// sent meanwhile: it waits, and runs in the new folder.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_sent_while_its_worktree_moves_runs_in_the_new_folder() {
+    let f = fixture().await;
+    let made = f.create_worktree(serde_json::json!({ "name": "wt-old" })).await.unwrap();
+    let old = PathBuf::from(made["path"].as_str().unwrap());
+    let signal = f.root.join("signal");
+    std::fs::create_dir_all(&signal).unwrap();
+    ref_hook_waiting(&f.repo, &signal);
+    let rename = f
+        .client
+        .call(methods::RENAME_WORKTREE, serde_json::json!({ "worktreePath": old, "name": "wt-new" }));
+    let probe = async {
+        wait_for(|| signal.join("reached").exists(), "the move half way").await;
+        f.chat("chat-new", Some(&old)).await;
+        f.run("chat-new", "m-1", "words", &old.to_string_lossy(), None);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let started = f.seen.lock().unwrap().len();
+        std::fs::write(signal.join("go"), "").unwrap();
+        started
+    };
+    let (moved, started) = tokio::join!(rename, probe);
+    let new = f.worktrees.join("wt-new");
+    assert_eq!(PathBuf::from(moved.expect("RenameWorktree")["path"].as_str().unwrap()), new);
+    assert_eq!(started, 0, "no turn started while the folder moved");
+    wait_for(|| f.replies("chat-new") == 1, "its turn, after").await;
+    assert_eq!(PathBuf::from(&f.seen.lock().unwrap()[0].cwd), new);
+    assert_eq!(PathBuf::from(f.row("chat-new").cwd.unwrap()), new);
+}

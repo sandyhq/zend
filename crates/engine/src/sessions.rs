@@ -18,6 +18,7 @@
 //! spawn failure, stream error, engine-restart recovery).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use chrono::Utc;
@@ -293,6 +294,10 @@ struct Inner {
     /// Test hook ([`SessionsEngine::hold_after_handover`]): a routed message
     /// held between its handover and its row write.
     handover_hold: Mutex<Option<HandoverHold>>,
+    /// Checkouts whose branch is being renamed or whose folder is moving
+    /// ([`SessionsEngine::hold_checkout`]), by their root: a run starting
+    /// in one waits for it, any chat's, a new one's too.
+    held_checkouts: Mutex<Vec<(PathBuf, CheckoutGate)>>,
     /// Per chat: how many Stops the user has sent, counted before each one
     /// looks for the run to stop. A retry re-dispatching a failed start
     /// compares it with the count its run started under: a Stop that landed
@@ -519,6 +524,7 @@ impl SessionsEngine {
                 chat_gates: Mutex::new(HashMap::new()),
                 cancelled_sends: Mutex::new(HashMap::new()),
                 handover_hold: Mutex::new(None),
+                held_checkouts: Mutex::new(Vec::new()),
                 user_stops: Mutex::new(HashMap::new()),
                 ipc_port: std::sync::atomic::AtomicU16::new(0),
                 ipc_ready: tokio::sync::Notify::new(),
@@ -1270,7 +1276,31 @@ impl SessionsEngine {
         idle: bool,
     ) -> Result<String, EngineError> {
         let gate = self.inner.chat_gate(chat_id);
-        let _shared = gate.read().await;
+        let mut request = request;
+        // A checkout being changed (its branch renamed, its folder moving):
+        // the run waits it out, its gate let go meanwhile (the change takes
+        // each chat's gate after holding the checkout), and starts where the
+        // folder is then.
+        let _shared = loop {
+            let shared = gate.clone().read_owned().await;
+            let Some((rest, held)) = self.inner.checkout_held(&request.cwd) else {
+                break shared;
+            };
+            drop(shared);
+            let moved = tokio::time::timeout(CHECKOUT_WAIT, held.read_owned())
+                .await
+                .map_err(|_| EngineError::Other("Its checkout's branch or folder is still being changed; send again".into()))?
+                .clone();
+            if let Some(to) = moved {
+                let cwd = to.join(rest).to_string_lossy().into_owned();
+                if let Some(ws) = self.inner.workspace()
+                    && let Err(error) = ws.set_chat_cwd(chat_id, &cwd)
+                {
+                    tracing::warn!(chat = %chat_id, %error, "a run after its worktree moved: chat cwd not moved");
+                }
+                request.cwd = cwd;
+            }
+        };
         self.dispatch_ungated(
             chat_id,
             harness_id,
@@ -2579,6 +2609,40 @@ impl SessionsEngine {
         self.turn_in_flight(chat_id) || self.turn_starting(chat_id) || self.revival_pending(chat_id)
     }
 
+    /// Hold the checkout rooted at `root` while its branch is renamed or its
+    /// folder moves: a run starting in it from now on (any chat's, a new
+    /// one's too) waits until the hold drops, and starts in the folder it
+    /// was moved to ([`CheckoutHold::moved_to`]). Take it before each
+    /// chat's gate ([`Self::hold_chat`], [`Self::leave_folder`]). Refused
+    /// while another change holds it.
+    pub fn hold_checkout(&self, root: &Path) -> Result<CheckoutHold, EngineError> {
+        let gate = CheckoutGate::default();
+        let guard = gate.clone().try_write_owned().expect("a new gate is free");
+        let mut held = lock(&self.inner.held_checkouts);
+        if held.iter().any(|(other, _)| other.starts_with(root) || root.starts_with(other)) {
+            return Err(EngineError::Other("Its branch or folder is being changed already; try again".into()));
+        }
+        held.push((root.to_path_buf(), gate.clone()));
+        Ok(CheckoutHold { inner: self.inner.clone(), gate, guard: Some(guard) })
+    }
+
+    /// Alone with the chat while its checkout's branch is renamed: a message
+    /// on its way finishes first, none starts until the guard drops, and
+    /// refused when a turn runs (or is on its way) there then.
+    pub async fn hold_chat(
+        &self,
+        chat_id: &str,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, EngineError> {
+        let gate = self.inner.chat_gate(chat_id);
+        let alone = tokio::time::timeout(std::time::Duration::from_secs(10), gate.write_owned())
+            .await
+            .map_err(|_| EngineError::Other("A message is on its way to this chat; try again".into()))?;
+        if self.turn_busy(chat_id) {
+            return Err(EngineError::Other("A turn is running in this chat".into()));
+        }
+        Ok(alone)
+    }
+
     /// The chat's folder is about to move (its worktree renamed): alone with
     /// it, refused while a turn runs, its idle runtime (whose process works
     /// in the old folder) ended, and its provider session given up, since
@@ -2590,13 +2654,7 @@ impl SessionsEngine {
         &self,
         chat_id: &str,
     ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, EngineError> {
-        let gate = self.inner.chat_gate(chat_id);
-        let alone = tokio::time::timeout(std::time::Duration::from_secs(10), gate.write_owned())
-            .await
-            .map_err(|_| EngineError::Other("A message is on its way to this chat; try again".into()))?;
-        if self.turn_busy(chat_id) {
-            return Err(EngineError::Other("A turn is running in this chat".into()));
-        }
+        let alone = self.hold_chat(chat_id).await?;
         self.terminate(chat_id).await?;
         if let Ok(handle) = self.doc_handle(chat_id) {
             handle.doc().mark_history_moved()?;
@@ -4113,6 +4171,23 @@ impl Inner {
     /// Whether the provider has said it no longer has `chat_id`'s session
     /// `session_id` (see [`Self::reject_resume`]).
     /// The chat's dispatch/rewind gate ([`Inner::chat_gates`]).
+    /// The held checkout ([`SessionsEngine::hold_checkout`]) a run in `cwd`
+    /// would work in: the path below its root, and its gate.
+    fn checkout_held(&self, cwd: &str) -> Option<(PathBuf, CheckoutGate)> {
+        let held = lock(&self.held_checkouts);
+        if held.is_empty() || zend_proto::projectless::is_scratch_cwd(cwd) {
+            return None;
+        }
+        let folder = PathBuf::from(crate::repos::expand_home(cwd).ok()?);
+        let real = std::fs::canonicalize(&folder).ok();
+        held.iter().find_map(|(root, gate)| {
+            let below = |f: &Path| f.strip_prefix(root).ok().map(Path::to_path_buf);
+            below(&folder)
+                .or_else(|| real.as_deref().and_then(below))
+                .map(|rest| (rest, gate.clone()))
+        })
+    }
+
     fn chat_gate(&self, chat_id: &str) -> Arc<tokio::sync::RwLock<()>> {
         lock(&self.chat_gates)
             .entry(chat_id.to_string())
@@ -4682,6 +4757,37 @@ impl StopGate {
     /// no Stop claimed it, on disk or in this engine's life.
     fn lets_through(&self, inner: &Inner) -> bool {
         !self.on_disk && !inner.send_cancelled(&self.chat_id, &self.message_id)
+    }
+}
+
+/// A held checkout's gate: `Some(folder)` once its worktree moved there.
+type CheckoutGate = Arc<tokio::sync::RwLock<Option<PathBuf>>>;
+
+/// How long a run waits for a held checkout (a worktree move waits for
+/// each of its chats' agents to stop).
+const CHECKOUT_WAIT: std::time::Duration = std::time::Duration::from_secs(150);
+
+/// A checkout held while its branch is renamed or its folder moves
+/// ([`SessionsEngine::hold_checkout`]); let go as it drops.
+pub struct CheckoutHold {
+    inner: Arc<Inner>,
+    gate: CheckoutGate,
+    guard: Option<tokio::sync::OwnedRwLockWriteGuard<Option<PathBuf>>>,
+}
+
+impl CheckoutHold {
+    /// Its worktree is at `folder` now: a run that waited starts there.
+    pub fn moved_to(&mut self, folder: PathBuf) {
+        if let Some(guard) = self.guard.as_mut() {
+            **guard = Some(folder);
+        }
+    }
+}
+
+impl Drop for CheckoutHold {
+    fn drop(&mut self) {
+        lock(&self.inner.held_checkouts).retain(|(_, gate)| !Arc::ptr_eq(gate, &self.gate));
+        self.guard.take();
     }
 }
 

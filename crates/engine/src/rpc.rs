@@ -357,6 +357,11 @@ struct RenameWorktreeParams {
 
 /// Whether `folder` is in the checkout rooted at `root` and not in another
 /// one nested inside it (a worktree kept in the repository's folder).
+/// A chat's own refusal, named by its title.
+fn chat_failed(chat: &zend_proto::Chat, error: crate::EngineError) -> RpcError {
+    RpcError::Failed(format!("{}: {error}", chat.title.clone().unwrap_or_else(|| chat.id.clone())))
+}
+
 fn in_own_checkout(folder: &std::path::Path, root: &std::path::Path) -> bool {
     folder.starts_with(root)
         && !folder
@@ -1641,6 +1646,55 @@ impl EngineRpc {
                     .is_some_and(|folder| in_own_checkout(&folder, root))
             })
             .collect()
+    }
+
+    /// The chats of a worktree moved from `root` to `moved` follow it:
+    /// `here` (those found in it before) and any whose folder still names
+    /// the old one (made meanwhile), each in the same place below the new
+    /// root, its voice retired, and on `branch` when it was renamed.
+    /// Returns their ids.
+    fn follow_folder(
+        &self,
+        here: &[zend_proto::Chat],
+        root: &std::path::Path,
+        moved: &std::path::Path,
+        branch: Option<&str>,
+    ) -> Vec<String> {
+        let device = self.doc_host.device_id().to_string();
+        let scratch = self.repos.scratch_root();
+        let folder_of = |chat: &zend_proto::Chat| {
+            chat.cwd
+                .as_deref()
+                .and_then(|cwd| crate::repos::chat_cwd_folder(cwd, &scratch).ok())
+        };
+        let mut all: Vec<zend_proto::Chat> = here.to_vec();
+        for chat in self.workspace.read_chats().unwrap_or_default() {
+            if chat.device_id == device
+                && !all.iter().any(|known| known.id == chat.id)
+                && folder_of(&chat).is_some_and(|folder| folder.starts_with(root))
+            {
+                all.push(chat);
+            }
+        }
+        let mut ids = Vec::new();
+        for chat in &all {
+            let cwd = folder_of(chat)
+                .and_then(|cwd| std::fs::canonicalize(&cwd).ok().or(Some(cwd)))
+                .and_then(|cwd| cwd.strip_prefix(root).ok().map(|rest| moved.join(rest)))
+                .unwrap_or_else(|| moved.to_path_buf());
+            self.voice.retire_chat(&chat.id);
+            let cwd = cwd.to_string_lossy().into_owned();
+            if let Err(error) = self.workspace.set_chat_cwd(&chat.id, &cwd) {
+                tracing::warn!(chat = %chat.id, %error, "renameWorktree: chat cwd not moved");
+            }
+            if let Some(branch) = branch
+                && let Err(error) = self.workspace.set_chat_branch(&chat.id, branch)
+            {
+                tracing::warn!(chat = %chat.id, %error, "renameWorktree: chat branch not set");
+            }
+            ids.push(chat.id.clone());
+        }
+        ids
     }
 
     /// Refused while a turn runs (or is on its way) in one of `chats`,
@@ -5826,14 +5880,24 @@ impl RpcService for EngineRpc {
                 let p: RenameBranchParams = parse_params(params)?;
                 self.scoped_git_path(&p.cwd).await?;
                 let root = self.checkout_root(&p.cwd).await?;
+                // The checkout held first (a run starting in it now, a new
+                // chat's too, waits), then each chat there alone, busy asked
+                // again under its gate: no turn starts until the chats say
+                // the new branch.
+                let _checkout = self.sessions.hold_checkout(&root).map_err(|e| RpcError::Failed(e.to_string()))?;
                 let here = self.chats_in_checkout(&root);
                 self.refuse_while_busy(&here)?;
+                let mut held = Vec::new();
+                for chat in &here {
+                    held.push(self.sessions.hold_chat(&chat.id).await.map_err(|error| chat_failed(chat, error))?);
+                }
                 let (_, branch) = self
                     .repos
                     .rename_current_branch(&root, &p.name)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let chats = self.follow_branch(&p.cwd, &branch).await;
+                drop(held);
                 RpcReply::value(&serde_json::json!({ "branch": branch, "chats": chats }))
             }
             methods::RENAME_WORKTREE => {
@@ -5849,46 +5913,30 @@ impl RpcService for EngineRpc {
                 if let Some(parent) = root.parent() {
                     self.workspace_files.data_fence(&parent.join(&folder), true)?;
                 }
+                // The checkout held first (a run starting in it now, a new
+                // chat's too, waits, and starts where the folder is then),
+                // then each chat alone while its folder moves: no run starts
+                // in the old folder, none was running.
+                let mut checkout = self.sessions.hold_checkout(&root).map_err(|e| RpcError::Failed(e.to_string()))?;
                 let here = self.chats_in_checkout(&root);
                 self.refuse_while_busy(&here)?;
-                // Each chat alone while its folder moves: no run starts in
-                // the old folder, none was running.
                 let mut held = Vec::new();
                 for chat in &here {
-                    match self.sessions.leave_folder(&chat.id).await {
-                        Ok(guard) => held.push(guard),
-                        Err(error) => {
-                            return Err(RpcError::Failed(format!(
-                                "{}: {error}",
-                                chat.title.clone().unwrap_or_else(|| chat.id.clone())
-                            )));
-                        }
-                    }
+                    held.push(self.sessions.leave_folder(&chat.id).await.map_err(|error| chat_failed(chat, error))?);
                 }
-                let (moved, branch) = self
-                    .repos
-                    .rename_worktree(&root, &p.name, p.branch.as_deref())
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let mut chats = Vec::new();
-                for chat in &here {
-                    let cwd = chat
-                        .cwd
-                        .as_deref()
-                        .and_then(|cwd| crate::repos::chat_cwd_folder(cwd, &self.repos.scratch_root()).ok())
-                        .and_then(|cwd| std::fs::canonicalize(&cwd).ok().or(Some(cwd)))
-                        .and_then(|cwd| cwd.strip_prefix(&root).ok().map(|rest| moved.join(rest)))
-                        .unwrap_or_else(|| moved.clone());
-                    self.voice.retire_chat(&chat.id);
-                    let cwd = cwd.to_string_lossy().into_owned();
-                    if let Err(error) = self.workspace.set_chat_cwd(&chat.id, &cwd) {
-                        tracing::warn!(chat = %chat.id, %error, "renameWorktree: chat cwd not moved");
+                let (moved, branch) = match self.repos.rename_worktree(&root, &p.name, p.branch.as_deref()).await {
+                    Ok(done) => done,
+                    // Moved and not moved back: the chats follow the folder
+                    // where it is, and the error says so.
+                    Err(crate::repos::WorktreeRenameFailed { error, stranded_at: Some(at) }) => {
+                        checkout.moved_to(at.clone());
+                        self.follow_folder(&here, &root, &at, None);
+                        return Err(RpcError::Failed(format!("{error}; its chats work there now")));
                     }
-                    if let Err(error) = self.workspace.set_chat_branch(&chat.id, &branch) {
-                        tracing::warn!(chat = %chat.id, %error, "renameWorktree: chat branch not set");
-                    }
-                    chats.push(chat.id.clone());
-                }
+                    Err(failed) => return Err(RpcError::Failed(failed.error.to_string())),
+                };
+                checkout.moved_to(moved.clone());
+                let chats = self.follow_folder(&here, &root, &moved, Some(&branch));
                 drop(held);
                 RpcReply::value(&serde_json::json!({
                     "path": moved.to_string_lossy(),

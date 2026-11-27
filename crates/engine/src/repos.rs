@@ -1458,7 +1458,7 @@ impl Repos {
             check_worktree_name(folder)?;
         }
         if let Some(chosen) = branch_name {
-            self.check_new_branch(repo_path, chosen).await?;
+            self.check_new_branch(repo_path, chosen, None).await?;
         }
         let name = folder.as_deref();
         let repo_name = repo_path
@@ -1668,8 +1668,10 @@ impl Repos {
     }
 
     /// A branch the person names: one git takes (`check-ref-format
-    /// --branch`) and that isn't there yet.
-    async fn check_new_branch(&self, repo_path: &Path, name: &str) -> Result<(), EngineError> {
+    /// --branch`), that isn't there yet, and that no branch is in the way
+    /// of (see [`Self::branch_in_the_way`]); `renaming`: the branch it is
+    /// now, which isn't in its own way.
+    async fn check_new_branch(&self, repo_path: &Path, name: &str, renaming: Option<&str>) -> Result<(), EngineError> {
         check_branch_name(name)?;
         if self
             .git(&["check-ref-format", "--branch", name], Some(repo_path))
@@ -1681,7 +1683,38 @@ impl Repos {
         if self.branch_exists(repo_path, name).await {
             return Err(EngineError::Other(format!("Branch {name} already exists")));
         }
+        if let Some(other) = self.branch_in_the_way(repo_path, name, renaming).await {
+            return Err(EngineError::Other(format!(
+                "Branch {other} is in the way of {name}: git can't keep a branch both as a name and as a folder of others"
+            )));
+        }
         Ok(())
+    }
+
+    /// A branch git won't have beside `name`: one it would sit under
+    /// (`topic` for `topic/sub`) or one under it (`topic/sub` for
+    /// `topic`), but `except` (a branch renamed into or out of itself).
+    async fn branch_in_the_way(&self, path: &Path, name: &str, except: Option<&str>) -> Option<String> {
+        let mut at = 0;
+        while let Some(slash) = name[at..].find('/') {
+            let above = &name[..at + slash];
+            if Some(above) != except && self.branch_exists(path, above).await {
+                return Some(above.to_owned());
+            }
+            at += slash + 1;
+        }
+        let under = self
+            .git(
+                &["for-each-ref", "--format=%(refname:short)", &format!("refs/heads/{name}/")],
+                Some(path),
+            )
+            .await
+            .ok()?;
+        under
+            .lines()
+            .map(str::trim)
+            .find(|branch| !branch.is_empty() && Some(*branch) != except)
+            .map(str::to_owned)
     }
 
     /// `git switch -c <name> <base>` in `cwd`: a new branch off `base`,
@@ -1689,7 +1722,7 @@ impl Repos {
     /// own reason when it won't (changes in the way). Returns the branch.
     pub async fn create_branch(&self, cwd: &Path, name: &str, base: &str) -> Result<String, EngineError> {
         let name = name.trim();
-        self.check_new_branch(cwd, name).await?;
+        self.check_new_branch(cwd, name, None).await?;
         let base = if base.trim().is_empty() { "HEAD" } else { base.trim() };
         self.git(&["switch", "-c", name, base], Some(cwd)).await?;
         self.current_branch(cwd).await
@@ -1706,7 +1739,7 @@ impl Repos {
         if current == name {
             return Ok((current.clone(), current));
         }
-        self.check_new_branch(cwd, name).await?;
+        self.check_new_branch(cwd, name, Some(&current)).await?;
         self.git(&["branch", "-m", "--", &current, name], Some(cwd)).await?;
         Ok((current, self.current_branch(cwd).await?))
     }
@@ -1714,53 +1747,86 @@ impl Repos {
     /// Move the linked worktree at `worktree` to a sibling folder `name`
     /// (`git worktree move`, from its main repository) and rename its branch
     /// to `branch` (default: `name`). Checked before anything moves: the
-    /// folder and branch free, the names git's. Returns the new folder and
+    /// folder and branch free, the names git's. A branch rename that fails
+    /// after the move moves the folder back; when that fails too, the error
+    /// says where it is now (`stranded_at`). Returns the new folder and
     /// branch.
     pub async fn rename_worktree(
         &self,
         worktree: &Path,
         name: &str,
         branch: Option<&str>,
-    ) -> Result<(PathBuf, String), EngineError> {
+    ) -> Result<(PathBuf, String), WorktreeRenameFailed> {
+        let refused = |error: EngineError| WorktreeRenameFailed { error, stranded_at: None };
         let given = name.trim();
         let folder = worktree_folder(given);
-        check_worktree_name(&folder)?;
+        check_worktree_name(&folder).map_err(refused)?;
         let main = crate::workspace_host::linked_worktree_root(worktree)
             .map(PathBuf::from)
-            .ok_or_else(|| EngineError::Other(format!("{} isn't a worktree", worktree.display())))?;
+            .ok_or_else(|| refused(EngineError::Other(format!("{} isn't a worktree", worktree.display()))))?;
         let parent = worktree
             .parent()
-            .ok_or_else(|| EngineError::Other("A worktree needs a parent folder".into()))?;
+            .ok_or_else(|| refused(EngineError::Other("A worktree needs a parent folder".into())))?;
         let target = parent.join(&folder);
-        let current = self.current_branch(worktree).await?;
+        let current = self.current_branch(worktree).await.map_err(refused)?;
         let branch = branch.map(str::trim).filter(|b| !b.is_empty()).unwrap_or(given);
         let name = folder.as_str();
         let moves = target != worktree;
         if moves && target.exists() {
-            return Err(EngineError::Other(format!(
+            return Err(refused(EngineError::Other(format!(
                 "A worktree named {name} already exists at {}",
                 target.display()
-            )));
+            ))));
         }
         let renames = branch != current;
         if renames {
-            self.check_new_branch(worktree, branch).await?;
+            let renaming = Some(current.as_str()).filter(|c| !c.is_empty());
+            self.check_new_branch(worktree, branch, renaming).await.map_err(refused)?;
         }
         if moves {
             self.git(
                 &["worktree", "move", &worktree.to_string_lossy(), &target.to_string_lossy()],
                 Some(&main),
             )
-            .await?;
+            .await
+            .map_err(refused)?;
         }
         if renames {
-            if current.is_empty() {
-                self.git(&["switch", "-c", branch], Some(&target)).await?;
+            let renamed = if current.is_empty() {
+                self.git(&["switch", "-c", branch], Some(&target)).await
             } else {
-                self.git(&["branch", "-m", "--", &current, branch], Some(&target)).await?;
+                self.git(&["branch", "-m", "--", &current, branch], Some(&target)).await
+            };
+            if let Err(error) = renamed {
+                // Not half done: the folder goes back where it was. (Not
+                // into a folder made there meanwhile: git would move it
+                // inside that one.)
+                let back = if !moves {
+                    Ok(String::new())
+                } else if worktree.exists() {
+                    Err(EngineError::Other(format!("{} is taken", worktree.display())))
+                } else {
+                    self.git(
+                        &["worktree", "move", &target.to_string_lossy(), &worktree.to_string_lossy()],
+                        Some(&main),
+                    )
+                    .await
+                };
+                if let Err(back) = back {
+                    return Err(WorktreeRenameFailed {
+                        error: EngineError::Other(format!(
+                            "{error}; moving the worktree back to {} failed too ({back}), so it is at {} now, on branch {current}",
+                            worktree.display(),
+                            target.display()
+                        )),
+                        stranded_at: Some(target),
+                    });
+                }
+                return Err(refused(error));
             }
         }
-        Ok((target.clone(), self.current_branch(&target).await?))
+        let now = self.current_branch(&target).await.unwrap_or_else(|_| branch.to_owned());
+        Ok((target, now))
     }
 
     /// Rename a zend-created worktree branch after its chat's generated title
@@ -2807,6 +2873,14 @@ pub(crate) fn check_worktree_name(name: &str) -> Result<(), EngineError> {
         )));
     }
     Ok(())
+}
+
+/// A worktree rename that didn't happen ([`Repos::rename_worktree`]):
+/// why, and, when its folder moved and couldn't be moved back, where it is.
+#[derive(Debug)]
+pub struct WorktreeRenameFailed {
+    pub error: EngineError,
+    pub stranded_at: Option<PathBuf>,
 }
 
 /// The folder a worktree named `name` gets: its slashes made dashes.
