@@ -51,6 +51,123 @@ test("message actions: Fork from here on a prompt forks before it", function()
 	expect(calls(app)).to_contain("fork:s2:x1")
 end)
 
+-- The owner's split (2026-11-27): a fork below a message in the main
+-- session is a session of its own, opened as a page; no side chat tab.
+local function forked_id(app: any): string?
+	return calls(app):match("standalone:([%w%-]+)")
+end
+
+test("message actions: Fork from here in the main session makes a session of its own and opens it", function()
+	local app = mount("chat_fixture.luau")
+	open_s2(app)
+	app:hover('~"What shall we work on"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	expect(calls(app)).to_contain("fork:s2:x2")
+	local id = forked_id(app)
+	expect(id).never.to_be(nil)
+	-- Opened as a page: the route moved to it, the host watches it.
+	expect(calls(app)).to_contain(`open:{id}`)
+	expect(app:state("shell_route_path")).to_be(`/session/{id}`)
+	expect(app:has('~"Forking…"')).to_be(false)
+end)
+
+test("message actions: Fork from here on a prompt in the main session leaves its words in the new chat's box", function()
+	local app = mount("chat_fixture.luau")
+	open_s2(app)
+	app:hover('~"Hello there"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	local id = forked_id(app)
+	expect(id).never.to_be(nil)
+	expect(app:state("shell_route_path")).to_be(`/session/{id}`)
+	expect(app:text('role:textbox "Message"')).to_be("Hello there")
+end)
+
+test("message actions: a fork the engine refuses says why in a toast, and Retry is the same fork again", function()
+	local app = mount("chat_fixture.luau")
+	open_s2(app)
+	app:command("fork_fails")
+	app:hover('~"What shall we work on"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	local id = forked_id(app)
+	expect(id).never.to_be(nil)
+	expect(app:has('~"Couldn\'t fork this chat"')).to_be(true)
+	expect(app:has('~"Source chat no longer exists"')).to_be(true)
+	-- Still on the source.
+	expect(app:state("shell_route_path")).to_be("/session/s2")
+	app:click('role:button "Retry"')
+	settle(app)
+	local n = 0
+	for _ in calls(app):gmatch(`standalone:{(id :: string):gsub("%-", "%%-")}`) do
+		n += 1
+	end
+	expect(n).to_be(2)
+	expect(app:state("shell_route_path")).to_be(`/session/{id}`)
+end)
+
+-- Each fork in flight has its own toasts (review round 1, P2): toasts with
+-- the same words are one by default, so two forks shared one.
+local function forks_made(app: any): { string }
+	local ids = {}
+	for id in calls(app):gmatch("standalone:([%w%-]+)") do
+		if not table.find(ids, id) then
+			table.insert(ids, id)
+		end
+	end
+	return ids
+end
+
+local function times_forked(app: any, id: string): number
+	local n = 0
+	for _ in calls(app):gmatch(`standalone:{id:gsub("%-", "%%-")}`) do
+		n += 1
+	end
+	return n
+end
+
+local function fork_twice(app: any)
+	open_s2(app)
+	app:command("fork_hold")
+	app:hover('~"What shall we work on"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	app:hover('~"Hello there"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	expect(#forks_made(app)).to_be(2)
+end
+
+test("message actions: two forks in flight each say Forking…, and one finishing leaves the other's", function()
+	local app = mount("chat_fixture.luau")
+	fork_twice(app)
+	expect(app:count('~"Forking…"')).to_be(2)
+	app:command("fork_settle_one")
+	settle(app)
+	expect(app:count('~"Forking…"')).to_be(1)
+end)
+
+test("message actions: two forks refused in the same words each get a toast whose Retry is that fork again", function()
+	local app = mount("chat_fixture.luau")
+	fork_twice(app)
+	local ids = forks_made(app)
+	app:command("fork_fail_held")
+	settle(app)
+	expect(app:count('~"Couldn\'t fork this chat"')).to_be(2)
+	app:click('role:button "Retry"[1]')
+	settle(app)
+	app:click('role:button "Retry"')
+	settle(app)
+	expect(times_forked(app, ids[1])).to_be(2)
+	expect(times_forked(app, ids[2])).to_be(2)
+end)
+
 test("message editor: Edit opens the prompt in place; Save & send asks once, then rewinds and sends", function()
 	local app = mount("chat_fixture.luau")
 	open_s2(app)

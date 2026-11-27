@@ -4496,12 +4496,13 @@ impl Inner {
     }
 
     /// `prompt` with the conversation this provider session lacks in front of
-    /// it, or `None` when it lacks nothing. Two kinds of chat owe their
+    /// it, or `None` when it lacks nothing. Three kinds of chat owe their
     /// provider session a history: a side chat (its transcript was copied
-    /// from the parent) and a chat that switched provider (the earlier turns
-    /// ran on another harness). A child session owes none: it inherits no
-    /// transcript. A fresh session gets the whole transcript
-    /// (`current` excluded). A continued one that a switched chat recorded
+    /// from the parent), a standalone fork (a chat of its own, no parent,
+    /// copied from its source: known by its own seam, `fork:<its id>`), and
+    /// a chat that switched provider (the earlier turns ran on another
+    /// harness). A child session owes none: it inherits no transcript. A
+    /// fresh session gets the whole transcript (`current` excluded). A continued one that a switched chat recorded
     /// gets only what came after the last entry it saw: its own turns are
     /// already in its native history, and the catch-up rides after them so
     /// the provider's cached prefix stays valid. Any other continued session
@@ -4528,7 +4529,22 @@ impl Inner {
         // A rewound chat (an edited prompt) owes a fresh session what's kept;
         // so does one whose folder moved (its worktree renamed).
         let rewound = doc.history_rewound() || doc.history_moved();
-        if native_command(prompt, harness_id) || !(side_chat || switched || rewound) {
+        if native_command(prompt, harness_id) {
+            return None;
+        }
+        // A standalone fork has no parent to tell it by: its own seam does
+        // (read shared, not copied: most chats owe nothing).
+        let forked = || {
+            let seam = format!("fork:{chat_id}");
+            doc.read_entries_shared().unwrap_or_default().iter().any(|entry| {
+                entry.id == seam
+                    && entry
+                        .parts
+                        .iter()
+                        .any(|part| matches!(part, zend_doc::MessagePart::Fork { .. }))
+            })
+        };
+        if !(side_chat || switched || rewound || forked()) {
             return None;
         }
         let mut entries = doc.read_entries().unwrap_or_default();

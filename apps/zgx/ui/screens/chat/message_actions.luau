@@ -1,6 +1,8 @@
 -- A chat's message actions for its transcript (ds/transcript's `on_fork`,
--- `on_edit`, `edit_blocked`): Fork from here opens a side chat starting at
--- that message (screens/chat/lanes); an edited prompt goes again, the
+-- `on_edit`, `edit_blocked`): Fork from here starts a copy at that message
+-- (screens/chat/lanes): in the main session a session of its own, opened
+-- as a page (`lanes.fork_chat`); in a side chat's tab in the panel
+-- (`home`) a side chat beside it (`lanes.fork`); an edited prompt goes again, the
 -- engine first removing it and everything below it (`RewindChat`), then
 -- the new words sent as a prompt. Not while a turn runs: that's why not.
 --
@@ -38,7 +40,11 @@ function M.of(chat: () -> string?, session: () -> any, home: (() -> string?)?): 
 	return {
 		on_fork = function(id: string)
 			local c = chat()
-			local h = if home then home() else nil
+			if not home then
+				lanes.fork_chat(c, id)
+				return
+			end
+			local h = home()
 			if h and c then
 				lanes.fork(h, id, c)
 			else

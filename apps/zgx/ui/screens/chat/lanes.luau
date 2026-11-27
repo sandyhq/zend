@@ -32,6 +32,11 @@
 --                         ({ project?, device? }) where its composer's place
 --                         starts instead of its parent's (the panel home's
 --                         group "+")
+--   lanes.fork_chat(source, message?)  a message's "Fork from here" in the
+--                         main session: a session of its own (no parent,
+--                         its own sidebar row), opened as a page once made;
+--                         a toast says "Forking…" meanwhile, and why not
+--                         with Retry (the same fork again)
 
 local ds = require("@ds")
 local locale = require("@ds/locale")
@@ -386,6 +391,83 @@ function M.retry_fork(id: string)
 		start_fork(id, f.source, f.message, f.parent)
 	end
 end
+
+-- Forks into a session of their own, by the new chat's id: { source,
+-- message?, state = "forking" | "failed", error? }. No tab: a toast says
+-- so meanwhile.
+M.chat_forks = ui.state("chat_lanes_chat_forks", {} :: { [string]: any })
+-- (Each one's toast, keyed by its id: toasts in the same words are one
+-- otherwise, and two forks would share a "Forking…", or a Retry. Its
+-- "Forking…" is put away as it settles.)
+local forking_toasts: { [string]: number } = {}
+local failed_toasts: { [string]: number } = {}
+
+local function start_chat_fork(id: string, source: string, message: string?)
+	set_in(M.chat_forks, id, { source = source, message = message, state = "forking" })
+	-- (Its earlier failure, if still up, goes.)
+	local failed = failed_toasts[id]
+	failed_toasts[id] = nil
+	if failed then
+		ds.toast.dismiss(failed)
+	end
+	forking_toasts[id] = ds.toast.show { key = `fork:{id}`, title = locale.s("chat.lanes.forking"), tone = "info", duration = 0 }
+	local function settled()
+		local toast = forking_toasts[id]
+		forking_toasts[id] = nil
+		if toast then
+			ds.toast.dismiss(toast)
+		end
+	end
+	sessions.fork(source, nil, id, message, true):after(function(made: any)
+		settled()
+		set_in(M.chat_forks, id, nil)
+		-- (Forked at a prompt: its words wait, unsent, in the new chat's box,
+		-- put there before it opens so its composer starts with them.)
+		if type(made) == "table" and type(made.draft) == "string" and made.draft ~= "" then
+			Shared.set_draft_of(id, "text", made.draft)
+		end
+		route.open_session(id)
+	end, function(err: any)
+		settled()
+		local why = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
+		set_in(M.chat_forks, id, { source = source, message = message, state = "failed", error = why })
+		failed_toasts[id] = ds.toast.show {
+			key = `fork-failed:{id}`,
+			title = locale.s("chat.lanes.couldnt_fork"),
+			body = why,
+			tone = "danger",
+			action = { label = locale.s("chat.lanes.retry"), run = "chat.lanes.retry_fork_chat", value = id },
+		}
+	end)
+end
+
+-- A message's "Fork from here" in the main session (owner, 2026-11-27: a
+-- fork below a message there is a session of its own; the panel's Fork
+-- chat, and Fork from here in a side chat's tab, stay side chats): a copy
+-- of `source` up to that message (a reply: through it; a prompt: before
+-- it, its words in the new chat's box), or to its last finished reply.
+function M.fork_chat(source: string?, message: string?)
+	if not source then
+		ds.toast.show { title = locale.s("chat.lanes.need_conversation"), tone = "warning" }
+		return
+	end
+	start_chat_fork(M.new_id(), source, message)
+end
+
+function M.retry_fork_chat(id: string)
+	local f = M.chat_forks:peek()[id]
+	if f and f.state == "failed" then
+		start_chat_fork(id, f.source, f.message)
+	end
+end
+
+-- (A toast's action is data, declared at each load: a Retry kept across a
+-- reload finds it here.)
+ds.toast.action("chat.lanes.retry_fork_chat", function(id: any)
+	if type(id) == "string" then
+		M.retry_fork_chat(id)
+	end
+end)
 
 -- The card, for the open session.
 function M.Card(): Node

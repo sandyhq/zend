@@ -199,6 +199,8 @@ test("the letters work from a button outside the panel, and S and K make a side 
 	expect(eventually(app, function(): boolean
 		return calls(app):find("fork:chat-1:", 1, true) ~= nil and home_kinds(app) == "side_chat,side_chat"
 	end)).to_be(true)
+	-- (The panel's fork stays a side chat, never a session of its own.)
+	expect(calls(app)).never.to_contain("standalone:")
 	back_home(app)
 	-- A text field keeps its typing.
 	app:type('role:textbox "Message"', "tfb")

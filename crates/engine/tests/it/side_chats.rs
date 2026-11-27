@@ -1249,3 +1249,175 @@ async fn a_child_session_s_fork_is_a_side_chat_and_gets_its_history() {
     core.shutdown().await;
     assert!(request.prompt.contains("PINEAPPLE"), "a side-chat fork must deliver its copied history");
 }
+
+/// A source for the standalone forks below: chat `main` in project `p`
+/// (folder /tmp, branch `topic`), a finished exchange, a prompt after it,
+/// and its reply still being written.
+async fn standalone_source(
+    dir: &std::path::Path,
+    requests: &Arc<Mutex<Vec<RunRequest>>>,
+) -> (EngineCore, zend_rpc::RpcClient) {
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock, None).unwrap();
+    core.workspace.create_space("p", &core.device_id, "/tmp", None, false).unwrap();
+    core.workspace
+        .create_chat("main", Some("p"), Some(&core.device_id), None, Some("/tmp".into()))
+        .unwrap();
+    core.workspace.set_chat_branch("main", "topic").unwrap();
+    core.workspace.rename_chat("main", "Main conversation").unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    for entry in [
+        message("u1", MessageRole::User, "Remember PINEAPPLE", MessageStatus::Complete),
+        message("a1", MessageRole::Assistant, "I remember PINEAPPLE", MessageStatus::Complete),
+        message("u2", MessageRole::User, "Now forget it", MessageStatus::Complete),
+        message("a2", MessageRole::Assistant, "still streaming", MessageStatus::Streaming),
+    ] {
+        source.doc().push_message(&entry).unwrap();
+    }
+    let client = zend_rpc::memory_client(core.rpc_service());
+    (core, client)
+}
+
+/// A fork from the main session's transcript (`standalone`) is a session of
+/// its own: no parent and no kind (a parent passed along is ignored), top
+/// level, where its source is (project, folder, branch); forked at a prompt,
+/// its words come back for the new chat's box.
+#[tokio::test]
+async fn a_standalone_fork_is_a_session_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (core, client) = standalone_source(dir.path(), &requests).await;
+    let reply: serde_json::Value = client
+        .call_as(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "fork", "sourceChatId": "main", "parentChatId": "main", "messageId": "u2", "standalone": true }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply["draft"], "Now forget it");
+    let fork: zend_proto::Chat = serde_json::from_value(reply).unwrap();
+    assert_eq!(fork.parent_chat_id, None, "a session of its own has no parent");
+    assert_eq!(fork.child_kind, None);
+    assert!(fork.is_top_level());
+    assert_eq!(fork.space_id.as_deref(), Some("p"));
+    assert_eq!(fork.cwd.as_deref(), Some("/tmp"));
+    assert_eq!(fork.branch.as_deref(), Some("topic"));
+    assert_eq!(fork.harness_session_id, None);
+    let row = core.workspace.chat("fork").unwrap().expect("its row is published");
+    assert_eq!(row.parent_chat_id, None);
+    assert_eq!(row.child_kind, None);
+    // The copy and its seam, as a side chat's.
+    let entries = core.doc_host.open("fork").unwrap().doc().read_entries().unwrap();
+    let ids: Vec<_> = entries.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, ["u1", "a1", "fork:fork"]);
+    core.shutdown().await;
+}
+
+/// The trap of a fork with no parent: its first turn still gets the copied
+/// history (found by its seam, not by a parent), and only that: not the
+/// prompt it was forked before, not the seam.
+#[tokio::test]
+async fn a_standalone_fork_s_first_turn_gets_the_copied_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (core, client) = standalone_source(dir.path(), &requests).await;
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "fork", "sourceChatId": "main", "messageId": "u2", "standalone": true }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(core.workspace.chat("fork").unwrap().unwrap().parent_chat_id, None);
+    let request = side_turn(&core, &requests, "fork", "What did I ask you to remember?", "f1").await;
+    core.shutdown().await;
+    assert_eq!(request.resume, None, "a fresh provider session, never the source's");
+    assert!(request.prompt.contains("PINEAPPLE"), "the copied history: {:?}", request.prompt);
+    assert!(request.prompt.contains("What did I ask you to remember?"));
+    assert!(!request.prompt.contains("Now forget it"));
+    assert!(!request.prompt.contains("fork:fork"));
+}
+
+/// A standalone fork's call tried again (its reply lost) is the same fork,
+/// its draft too, nothing copied twice. The same id from another source,
+/// or as a side chat (and a side chat's id as a standalone fork), stays
+/// refused, and so does a chat of its own that is no fork.
+#[tokio::test]
+async fn a_standalone_fork_retried_is_the_same_fork() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (core, client) = standalone_source(dir.path(), &requests).await;
+    let params = serde_json::json!({ "chatId": "fork", "sourceChatId": "main", "messageId": "u2", "standalone": true });
+    client.call(methods::FORK_SIDE_CHAT, params.clone()).await.unwrap();
+    let again: serde_json::Value = client
+        .call_as(methods::FORK_SIDE_CHAT, params)
+        .await
+        .expect("a retry is the same fork, not \"Chat id already exists\"");
+    assert_eq!(again["id"], "fork");
+    assert_eq!(again["parentChatId"], serde_json::Value::Null);
+    assert_eq!(again["draft"], "Now forget it");
+    assert_eq!(core.doc_host.open("fork").unwrap().doc().read_entries().unwrap().len(), 3);
+    // Another source under the same id.
+    core.workspace.create_chat("other", Some("p"), Some(&core.device_id), None, Some("/tmp".into())).unwrap();
+    core.doc_host
+        .open("other")
+        .unwrap()
+        .doc()
+        .push_message(&message("o1", MessageRole::Assistant, "other", MessageStatus::Complete))
+        .unwrap();
+    let other = client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "fork", "sourceChatId": "other", "standalone": true }))
+        .await;
+    assert!(other.as_ref().is_err_and(|e| e.to_string().contains("Chat id already exists")), "{other:?}");
+    // A side chat under the standalone fork's id, and the reverse.
+    let side = client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "fork", "sourceChatId": "main" }))
+        .await;
+    assert!(side.as_ref().is_err_and(|e| e.to_string().contains("Chat id already exists")), "{side:?}");
+    client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "side", "sourceChatId": "main" }))
+        .await
+        .unwrap();
+    let standalone = client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "side", "sourceChatId": "main", "standalone": true }))
+        .await;
+    assert!(standalone.as_ref().is_err_and(|e| e.to_string().contains("Chat id already exists")), "{standalone:?}");
+    // A chat of its own that is no fork is never taken for one.
+    let own = client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "other", "sourceChatId": "main", "standalone": true }))
+        .await;
+    assert!(own.as_ref().is_err_and(|e| e.to_string().contains("Chat id already exists")), "{own:?}");
+    core.shutdown().await;
+}
+
+/// Archiving or deleting the source leaves its standalone fork as it is (a
+/// side chat goes with its parent).
+#[tokio::test]
+async fn a_standalone_fork_outlives_its_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (core, client) = standalone_source(dir.path(), &requests).await;
+    client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "fork", "sourceChatId": "main", "standalone": true }))
+        .await
+        .unwrap();
+    client
+        .call(methods::FORK_SIDE_CHAT, serde_json::json!({ "chatId": "side", "sourceChatId": "main" }))
+        .await
+        .unwrap();
+    client
+        .call(methods::MUTATE, serde_json::json!({ "op": "setChatArchived", "chatId": "main", "archived": true }))
+        .await
+        .unwrap();
+    assert!(!core.workspace.chat("fork").unwrap().unwrap().archived);
+    client
+        .call(methods::MUTATE, serde_json::json!({ "op": "deleteChat", "chatId": "main" }))
+        .await
+        .unwrap();
+    let kept = core.workspace.chat("fork").unwrap().expect("the fork outlives its source");
+    assert!(!kept.archived);
+    assert_eq!(core.doc_host.open("fork").unwrap().doc().read_entries().unwrap().len(), 3);
+    assert!(core.workspace.chat("side").unwrap().is_none(), "a side chat goes with its parent");
+    core.shutdown().await;
+}

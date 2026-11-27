@@ -32,6 +32,20 @@ end
 
 -- Its tab ------------------------------------------------------------------
 
+test("Fork from here in a side chat's tab makes a side chat beside it, not a session of its own", function()
+	local app = open()
+	app:hover('.side-chat-tab >> ~"This is side-a"')
+	app:frames(30)
+	app:click('.side-chat-tab >> role:button "Fork from here"')
+	app:frames(30)
+	local id = calls(app):match("fork:side%-a:([%w%-]+):side%-a%-m")
+	expect(id).never.to_be_nil()
+	-- Under the side chat's parent, the main chat; no page opened.
+	expect(calls(app)).to_contain("under:chat-1")
+	expect(calls(app)).never.to_contain("standalone:")
+	expect(calls(app)).to_contain(`watch:{id}`)
+end)
+
 test("a side chat's tab shows its project's tile, not the side chat's glyph", function()
 	local app = open()
 	-- (Its project's, "atlas": its first letter, on its hue.)

@@ -42,8 +42,10 @@
 //!                                  a side chat of that chat, where it is;
 //!                                  `cloud`: on a Cloud machine of its own,
 //!                                  `{ id, cwd }`, or why not in words)
-//!   sessions.fork({ source, parent?, id?, message? })  a side chat starting
-//!                                  as a copy of `source` (`ForkSideChat`): its
+//!   sessions.fork({ source, parent?, id?, message?, standalone? })  a side
+//!                                  chat starting as a copy of `source`
+//!                                  (`ForkSideChat`), or with `standalone` a
+//!                                  session of its own (no parent): its
 //!                                  id, or the engine's words for why not;
 //!                                  with `message`, the copy ends there (a
 //!                                  reply: through it; a prompt: before it)
@@ -1640,7 +1642,8 @@ impl Sessions {
         // tried again is the same fork.)
         let id = field("id").filter(|id| plain_id(id)).unwrap_or_else(new_id);
         let message = field("message");
-        let mut params = fork_params(&self.chats.borrow(), &id, &source, field("parent").as_deref());
+        let standalone = args.field("standalone").is_some_and(Value::truthy);
+        let mut params = fork_params(&self.chats.borrow(), &id, &source, field("parent").as_deref(), standalone);
         if let Some(message) = &message {
             params["messageId"] = Json::from(message.as_str());
         }
@@ -1882,10 +1885,15 @@ fn where_parent_is(chats: &Json, parent: &str) -> Option<Json> {
 }
 
 /// `ForkSideChat`'s params: the copy `id` of `source`, under `parent` (the
-/// source by default), made on the source's device.
-fn fork_params(chats: &Json, id: &str, source: &str, parent: Option<&str>) -> Json {
+/// source by default), made on the source's device; `standalone`, a
+/// session of its own instead, under no parent.
+fn fork_params(chats: &Json, id: &str, source: &str, parent: Option<&str>, standalone: bool) -> Json {
     let device = chats.as_array().into_iter().flatten().find(|c| c["id"].as_str() == Some(source)).and_then(|c| c["deviceId"].as_str());
-    let mut params = json!({ "chatId": id, "sourceChatId": source, "parentChatId": parent.unwrap_or(source) });
+    let mut params = if standalone {
+        json!({ "chatId": id, "sourceChatId": source, "standalone": true })
+    } else {
+        json!({ "chatId": id, "sourceChatId": source, "parentChatId": parent.unwrap_or(source) })
+    };
     if let Some(device) = device {
         params["targetDeviceId"] = Json::from(device);
     }
@@ -2977,6 +2985,17 @@ mod tests {
         assert_eq!(chat(&v, "p").field("running_subagents").and_then(|n| n.as_f64()), Some(0.));
     }
 
+    /// A fork from the main session's transcript (`standalone`): a session
+    /// of its own, so no parent goes with it, made on the source's device.
+    #[test]
+    fn a_standalone_fork_names_no_parent() {
+        let chats = serde_json::json!([{ "id": "p", "deviceId": "mac" }]);
+        assert_eq!(
+            super::fork_params(&chats, "new", "p", Some("top"), true),
+            serde_json::json!({ "chatId": "new", "sourceChatId": "p", "standalone": true, "targetDeviceId": "mac" })
+        );
+    }
+
     #[test]
     fn a_side_chat_is_made_where_its_parent_is_and_a_fork_on_its_device() {
         let chats = serde_json::json!([
@@ -2988,11 +3007,11 @@ mod tests {
         );
         assert!(super::where_parent_is(&chats, "nope").is_none());
         assert_eq!(
-            super::fork_params(&chats, "new", "p", None),
+            super::fork_params(&chats, "new", "p", None, false),
             serde_json::json!({ "chatId": "new", "sourceChatId": "p", "parentChatId": "p", "targetDeviceId": "mac" })
         );
         // A side chat's own fork hangs beside it, under its parent.
-        assert_eq!(super::fork_params(&chats, "new", "p", Some("top"))["parentChatId"], "top");
+        assert_eq!(super::fork_params(&chats, "new", "p", Some("top"), false)["parentChatId"], "top");
         // An edit's rewind goes to the chat's own device.
         assert_eq!(
             super::rewind_params(&chats, "p", "m1"),
