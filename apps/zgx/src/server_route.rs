@@ -43,10 +43,16 @@ pub(crate) fn check(devices: &Json, here: Option<&str>, device: &str, area: &str
 }
 
 /// The engine's own refusal (`peer_refused: <server>: <server> doesn't grant
-/// <area>, …`) as [`refusal`]; `None` for any other error.
+/// <area>, …`) as [`refusal`], and the server's gate refusing a chat in a
+/// project (`… may not run sessions in project <id>`) as the refusal of
+/// that project's run (`sessions.run:<id>`); `None` for any other error.
 pub(crate) fn from_engine(error: &str, here_name: &str) -> Option<String> {
     let said = error.split_once("peer_refused:")?.1.trim();
     let (server, rest) = said.split_once(": ")?;
+    if let Some((_, project)) = rest.split_once("may not run sessions in project ") {
+        let project = project.trim();
+        return (!project.is_empty() && !project.contains(' ')).then(|| refusal(&format!("sessions.run:{project}"), server, here_name));
+    }
     let area = rest.strip_prefix(server)?.strip_prefix(" doesn't grant ")?;
     let area = area.split([',', '(']).next()?.trim();
     (!area.is_empty() && !area.contains(' ')).then(|| refusal(area, server, here_name))
@@ -144,6 +150,15 @@ mod tests {
         assert_eq!(from_engine(silent, "Laptop"), Some("not_granted|files|Old|Laptop".to_string()));
         assert_eq!(from_engine("peer_refused: AI: AI is unreachable: closed", "Laptop"), None);
         assert_eq!(from_engine("offline", "Laptop"), None);
+    }
+
+    /// A chat a server won't run in a project (its gate: "your server may
+    /// not run sessions in project <id>") reads as the grant to give, that
+    /// project's run (step 6g).
+    #[test]
+    fn a_refused_run_reads_as_the_projects_grant() {
+        let said = "peer_refused: AI: createChat: your server may not run sessions in project 51faf7a2-aa";
+        assert_eq!(from_engine(said, "Laptop"), Some("not_granted|sessions.run:51faf7a2-aa|AI|Laptop".to_string()));
     }
 
     /// A call that has only outcome words keeps a grant's refusal whole.

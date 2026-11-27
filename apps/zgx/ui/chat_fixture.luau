@@ -1198,6 +1198,35 @@ local held_create: { ok: (any) -> (), bad: (any) -> (), value: any }? = nil
 ui.command { id = "slow_cloud_create", title = "Cloud takes a while to make a new chat", run = function()
 	SLOW_CLOUD_CREATE:set(true)
 end }
+-- The Build box a paired server (src/sessions.rs: `paired`, its grants'
+-- areas as `peer_areas`): one granting `full`, one granting only reading
+-- sessions; and one refusing the next chat made there, as the host says a
+-- server's refusal for grants (src/server_route.rs `refusal`).
+local function box_paired(areas: { string })
+	local now = table.clone(sessions.now:peek())
+	local devices = {}
+	for _, d in now.devices do
+		local copy = table.clone(d)
+		if copy.id == "box" then
+			copy.paired = true
+			copy.peer_areas = areas
+		end
+		table.insert(devices, copy)
+	end
+	now.devices = devices
+	sessions.now:set(now)
+end
+local BOX_REFUSES_RUNS = ui.state("fixture_box_refuses_runs", false)
+ui.command { id = "box_paired_full", title = "The Build box, a paired server granting full", run = function()
+	box_paired({ "full" })
+end }
+ui.command { id = "box_paired_reads", title = "The Build box, a paired server granting reading sessions", run = function()
+	box_paired({ "sessions.read" })
+end }
+ui.command { id = "box_refuses_runs", title = "The Build box refuses running chats in Borealis", run = function()
+	box_paired({ "sessions.read" })
+	BOX_REFUSES_RUNS:set(true)
+end }
 ui.command { id = "cloud_creates_fail", title = "Cloud refuses the next new chat", run = function()
 	CLOUD_CREATE_FAILS:set(true)
 end }
@@ -1241,6 +1270,12 @@ sessions_stub.create = function(req: any)
 	local id = req.id or `new{made_chats}`
 	note(`create:{req.project or "none"}:{req.config and req.config.model or ""}`)
 	note(`made:{req.project or "-"}|{req.device or "-"}|{req.branch or "-"}|{req.cwd or "-"}{if req.cloud then "|cloud" else ""}`)
+	if BOX_REFUSES_RUNS:peek() and req.project == "borealis" then
+		BOX_REFUSES_RUNS:set(false)
+		return { after = function(_self: any, _ok: any, bad: (any) -> ())
+			bad({ message = "not_granted|sessions.run:borealis|Build box|MacBook Pro" })
+		end }
+	end
 	META[id] = { title = "New chat", project = req.project, model = req.config and req.config.model }
 	-- (On Cloud, its machine's device, as the engine's list will say.)
 	if req.cloud then

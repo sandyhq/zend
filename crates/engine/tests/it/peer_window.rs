@@ -1200,3 +1200,77 @@ async fn a_server_project_under_a_local_id_is_refused_before_it_is_sent() {
     assert!(t.server.workspace.space("local-collision").unwrap().is_none());
     assert!(t.server_heard_of("local-collision").is_empty());
 }
+
+
+/// Step 6g: from a server holding `full`, a chat is made there as the
+/// window asks (its branch and folder kept, the device the server's), and
+/// its first run's new worktree crosses as a directive alone, none of this
+/// device's paths in it: the server makes it of its own project folder.
+/// Without `full` the folder stays here, and no worktree crosses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn under_full_a_chat_is_made_and_run_there_as_the_window_asks() {
+    let t = pair(&["full"]).await;
+    let p = t.root.join("server-data-projects").join("p");
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "o@example.com"], &["config", "user.name", "Owner"]] {
+        assert!(std::process::Command::new("git").arg("-C").arg(&p).args(args).status().unwrap().success());
+    }
+    std::fs::write(p.join("readme.md"), "p\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "base"]] {
+        assert!(std::process::Command::new("git").arg("-C").arg(&p).args(args).status().unwrap().success());
+    }
+    let sub = p.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    devices
+        .until("the server's areas", |rows| {
+            rows.iter().any(|d| d["id"] == "device-server" && d["peerAreas"].as_array().is_some_and(|a| a.contains(&json!("full"))))
+        })
+        .await;
+    let sub_text = sub.to_string_lossy().into_owned();
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "ref-chat", "spaceId": "p", "deviceId": "device-server", "branch": "main", "cwd": sub_text }))
+        .await
+        .expect("made there, in the ref's folder");
+    let row = t.server.workspace.chat("ref-chat").unwrap().expect("made on the server");
+    assert_eq!((row.branch.as_deref(), row.cwd.as_deref()), (Some("main"), Some(sub_text.as_str())));
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "wt-chat", "spaceId": "p", "deviceId": "device-server", "branch": "main" }))
+        .await
+        .expect("made there");
+    let mut params = run("wt-chat");
+    params["command"]["request"]["cwd"] = json!("/home/laptop/private");
+    params["command"]["request"]["worktree"] = json!({ "repoPath": "/home/laptop/private", "base": "main", "spaceId": "p" });
+    t.window.call(methods::QUEUE_COMMAND, params).await.expect("its run queued there");
+    let sent: Vec<String> = t.heard.lock().unwrap().iter().filter(|(m, _)| m == methods::QUEUE_COMMAND).map(|(_, p)| p.to_string()).collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("worktree") && !sent[0].contains("/home/laptop"), "{}", sent[0]);
+    let p_text = p.to_string_lossy().into_owned();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let moved = loop {
+        let row = t.server.workspace.chat("wt-chat").unwrap().unwrap();
+        if row.cwd.as_deref().is_some_and(|cwd| !cwd.is_empty() && cwd != p_text) {
+            break row;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no worktree made there: {row:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(Path::new(moved.cwd.as_deref().unwrap()).join("readme.md").exists(), "{moved:?}");
+    assert!(moved.branch.as_deref().is_some_and(|b| b.starts_with("zend/")), "{moved:?}");
+    drop(t);
+
+    // Without `full`: no folder of this side's, no worktree crosses.
+    let t = pair(&["sessions.read", "sessions.run.unconfined:p"]).await;
+    let mut devices = Watched::open(&t.window, methods::WATCH_DEVICES, json!({}), "id").await;
+    devices.until("the server's areas", |rows| rows.iter().any(|d| d["id"] == "device-server" && d.get("peerAreas").is_some())).await;
+    t.window
+        .call(methods::MUTATE, json!({ "op": "createChat", "chatId": "plain", "spaceId": "p", "deviceId": "device-server", "cwd": "/somewhere" }))
+        .await
+        .expect("made at its project's folder");
+    assert_eq!(t.server.workspace.chat("plain").unwrap().unwrap().cwd.as_deref().filter(|c| *c == "/somewhere"), None);
+    let mut params = run("plain");
+    params["command"]["request"]["worktree"] = json!({ "repoPath": "/x", "base": "main", "spaceId": "p" });
+    t.window.call(methods::QUEUE_COMMAND, params).await.expect("queued");
+    let sent: Vec<String> = t.heard.lock().unwrap().iter().filter(|(m, _)| m == methods::QUEUE_COMMAND).map(|(_, p)| p.to_string()).collect();
+    assert!(sent.iter().all(|s| !s.contains("worktree")), "{sent:?}");
+}
+

@@ -1582,7 +1582,7 @@ impl Sessions {
                 None => return Err("offline".into()),
             }
         }
-        engine::get().call("Mutate", params.clone()).await.map_err(|error| peer_words(&error).unwrap_or_else(|| fail(&error).into()))?;
+        engine::get().call("Mutate", params.clone()).await.map_err(|error| create_failure(&error))?;
         // Known to the chat's sender at once (a side chat's first message
         // follows straight away, before the engine's list has it).
         crate::chat::made(&params);
@@ -1828,6 +1828,18 @@ pub(crate) fn cloud_words(error: &str) -> String {
         && words.chars().next().is_some_and(char::is_uppercase)
         && !words.contains('{');
     if readable { words.to_string() } else { "Cloud couldn't start this chat. Try again.".into() }
+}
+
+/// Why a new chat wasn't made, for the composer: a paired server's refusal
+/// to run it in its project as the grant to give (`not_granted|sessions.run:<project>|…`,
+/// src/server_route.rs, said by `paths.run_not_granted_words`), any other
+/// refusal of a server's in its words, else an outcome word.
+fn create_failure(error: &str) -> String {
+    let said = crate::server_route::said(error.to_string());
+    if said.starts_with(crate::server_route::NOT_GRANTED) && said.contains("|sessions.run") {
+        return said;
+    }
+    peer_words(error).unwrap_or_else(|| fail(error).into())
 }
 
 /// Why a paired server refused a chat, in its words (the engine marks them
@@ -2358,6 +2370,16 @@ mod tests {
         assert_eq!(super::peer_words(error).as_deref(), Some("Ai-server: project p: may not run sessions in project p"));
         assert_eq!(super::peer_words("failed: no such chat"), None);
         assert_eq!(super::peer_words("peer_refused: {\"x\":1}").as_deref(), Some("The paired server refused this chat."));
+    }
+
+    /// A new chat a server won't run in its project fails as the grant to
+    /// give, for the composer to say with the command (step 6g); any other
+    /// refusal keeps its words.
+    #[test]
+    fn a_refused_new_chat_names_the_projects_grant() {
+        let error = "failed: peer_refused: AI: createChat: your server may not run sessions in project 51fa";
+        assert_eq!(super::create_failure(error), "not_granted|sessions.run:51fa|AI|this device");
+        assert_eq!(super::create_failure("peer_refused: AI: AI is unreachable: closed"), "AI: AI is unreachable: closed");
     }
 
     /// "Delete session?" counts what the engine's `deleteChat` takes: its

@@ -50,8 +50,9 @@ pub async fn run(command: PeerCommand, ipc_port: u16, data_dir: &std::path::Path
             let wide: Vec<String> = parsed.iter().filter(|g| g.is_machine_wide()).map(ToString::to_string).collect();
             if !wide.is_empty() {
                 eprintln!(
-                    "Warning: {} gives that server the run of this machine as you: any file, a shell, agents started with your logins. Unpair it (zend peer unpair) if its key is ever lost.",
-                    wide.join(", ")
+                    "Warning: {} gives that server the run of this machine as you: any file, a shell, agents started with your logins{}. Unpair it (zend peer unpair) if its key is ever lost.",
+                    wide.join(", "),
+                    if parsed.contains(&zend_rpc::Grant::Full) { ", every chat here and every project, unconfined" } else { "" }
                 );
             }
             let reply = call(methods::SET_PEER_GRANTS, json!({ "peer": peer, "grants": grants })).await?;

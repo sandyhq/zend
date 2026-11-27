@@ -3085,6 +3085,7 @@
       "starting_cloud": "正在启动 Cloud 设备…",
       "starting": "正在开始对话…",
       "didnt_start": "对话未能开始",
+      "not_granted": "{server} 不允许此设备在 {project} 中运行对话。请在 {server} 上运行：{command}",
       "attach_files": "附加文件",
       "edit_locked": "该消息正在其他设备上编辑",
       "edit_unavailable": "暂时无法编辑该消息",

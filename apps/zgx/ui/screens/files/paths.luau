@@ -57,6 +57,24 @@ function M.not_granted_words(err: unknown): { title: string, body: string }?
 	return { title = ui.t("files.not_granted.title", p):get(), body = ui.t("files.not_granted.body", p):get() }
 end
 
+-- A new chat a paired server won't run in its project (src/sessions.rs
+-- `create`: the refusal for that project's run, `sessions.run:<project>`,
+-- or `sessions.run` held back here before asking): the server doesn't let
+-- this device run chats in the project, and the command to run on the
+-- server. `project` is the project's id, `name` its name. Nil for any
+-- other error.
+function M.run_not_granted_words(err: unknown, project: string?, name: string?): string?
+	local g = M.not_granted(err)
+	if not g or (g.area ~= "sessions.run" and string.sub(g.area, 1, 13) ~= "sessions.run:") then
+		return nil
+	end
+	local area = if g.area == "sessions.run" and project then `sessions.run:{project}` else g.area
+	local id = string.match(area, "^sessions%.run:(.+)$") or project or ""
+	-- (The command is an argument, not words to translate.)
+	local p = { server = g.server, project = name or id, command = `zend peer grant {g.device} {area}` }
+	return ui.t("chat.composer.not_granted", p):get()
+end
+
 -- A path's last part (a file's name).
 function M.base_name(path: string): string
 	return string.match(path, "[^/]+$") or path

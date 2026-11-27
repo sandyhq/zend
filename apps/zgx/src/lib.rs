@@ -142,6 +142,8 @@ mod drop_tests;
 #[cfg(test)]
 mod peer_area_tests;
 #[cfg(test)]
+mod chat_where_peer_tests;
+#[cfg(test)]
 mod picker_settle_tests;
 #[cfg(test)]
 mod peer_projects_tests;

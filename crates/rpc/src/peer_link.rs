@@ -190,9 +190,11 @@ pub enum Grant {
     /// `terminal`: terminals, project actions, background tasks. Full
     /// access to the machine.
     Terminal,
-    /// `full`: every area above and `sessions.read`, and what no area
-    /// holds ([`crate::peer_scope::Scope::Full`]); never
-    /// [`crate::peer_scope::Scope::Never`], never a project's run or share.
+    /// `full`: what the person can do here (plan step 6g): every area
+    /// above, `sessions.read`, the run (unconfined) and share of every
+    /// project, one made after the grant too, and what no area holds
+    /// ([`crate::peer_scope::Scope::Full`]); never
+    /// [`crate::peer_scope::Scope::Never`].
     Full,
 }
 
@@ -316,7 +318,7 @@ impl Grants {
 
     /// Whether these grants open calls in `scope`. A project's run or share
     /// is the engine's to check by project ([`Grants::runs_in`],
-    /// [`Grants::shares`]); `full` gives neither.
+    /// [`Grants::shares`]); `full` gives both in every project.
     pub fn covers(&self, scope: Scope) -> bool {
         let area = |grant: Grant| self.contains(&grant) || self.contains(&Grant::Full);
         match scope {
@@ -340,9 +342,10 @@ impl Grants {
     }
 
     /// Whether it may run chats in `project`: `Some(true)` unconfined,
-    /// `Some(false)` confined to its folder, `None` not at all.
+    /// `Some(false)` confined to its folder, `None` not at all. `full`
+    /// runs every project unconfined.
     pub fn runs_in(&self, project: &str) -> Option<bool> {
-        if self.contains(&Grant::SessionsRunUnconfined(project.to_string())) {
+        if self.contains(&Grant::Full) || self.contains(&Grant::SessionsRunUnconfined(project.to_string())) {
             Some(true)
         } else if self.contains(&Grant::SessionsRun(project.to_string())) {
             Some(false)
@@ -351,18 +354,18 @@ impl Grants {
         }
     }
 
-    /// Whether it may run chats in any project.
+    /// Whether it may run chats in any project (`full`: in every one).
     pub fn runs_anywhere(&self) -> bool {
-        self.0.iter().any(|g| matches!(g, Grant::SessionsRun(_) | Grant::SessionsRunUnconfined(_)))
+        self.0.iter().any(|g| matches!(g, Grant::SessionsRun(_) | Grant::SessionsRunUnconfined(_) | Grant::Full))
     }
 
-    /// `projects.share:<project>`.
+    /// `projects.share:<project>`, or `full`.
     pub fn shares(&self, project: &str) -> bool {
-        self.contains(&Grant::ProjectsShare(project.to_string()))
+        self.contains(&Grant::Full) || self.contains(&Grant::ProjectsShare(project.to_string()))
     }
 
     fn shares_any(&self) -> bool {
-        self.0.iter().any(|g| matches!(g, Grant::ProjectsShare(_)))
+        self.0.iter().any(|g| matches!(g, Grant::ProjectsShare(_) | Grant::Full))
     }
 }
 

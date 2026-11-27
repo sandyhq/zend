@@ -2010,3 +2010,130 @@ async fn a_servers_ids_are_this_devices_by_any_key() {
         .expect("a chat hosted here pinned");
     assert_eq!(a.core.workspace.chat("owner-chat").unwrap().unwrap().device_id, a.core.device_id);
 }
+
+
+/// Step 6g: `full` runs chats unconfined in every project of this device,
+/// one made after the grant too, and reaches every chat hosted here, the
+/// owner's own among them: its messages, a run, a Stop, its config, a
+/// rename, mark seen, archive and delete. Another device's chat stays out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_runs_every_project_and_reaches_every_chat_here() {
+    let a = paired(&["full"]).await;
+    let later = a.root.join("later");
+    std::fs::create_dir_all(&later).unwrap();
+    a.core.workspace.create_space("later", &a.core.device_id, &later.to_string_lossy(), None, false).unwrap();
+    for (chat, project) in [("full-p", "p"), ("full-later", "later")] {
+        let created = a.b.call(methods::MUTATE, create(chat, project)).await.unwrap_or_else(|e| panic!("create in {project}: {e}"));
+        assert!(created["sandbox"].is_null(), "{project}: {created}");
+        assert_eq!(a.core.sessions.chat_sandbox(chat), None, "{project}: unconfined");
+    }
+    // The project list a server sees names every project, each unconfined.
+    let info = a.b.call(methods::ENGINE_INFO, json!({})).await.expect("info");
+    for project in ["p", "q", "later"] {
+        let row = info["peer"]["projects"].as_array().into_iter().flatten().find(|r| r["id"] == project);
+        assert_eq!(row.map(|r| r["run"].clone()), Some(json!("unconfined")), "{project}: {info}");
+    }
+    for scope in ["sessions.run", "projects.share"] {
+        assert!(info["peer"]["areas"].as_array().unwrap().contains(&json!(scope)), "{scope}: {info}");
+    }
+    // The owner's own chats: in a project, and in none.
+    a.core.workspace.create_chat("owner-chat", Some("q"), Some(&a.core.device_id), None, None).unwrap();
+    a.core.workspace.create_chat("owner-loose", None, Some(&a.core.device_id), None, None).unwrap();
+    a.core.workspace.create_chat("far-chat", None, Some("device-elsewhere"), None, None).unwrap();
+    a.b.subscribe_checked(methods::WATCH_DOC_MESSAGES, json!({ "chatId": "owner-chat" })).await.expect("the owner's chat read");
+    a.b.call(methods::QUEUE_COMMAND, run("owner-chat", "/")).await.expect("the owner's chat runs");
+    a.b.call(methods::QUEUE_COMMAND, json!({ "chatId": "owner-chat", "command": { "kind": "interrupt" } })).await.expect("and stops");
+    for (what, params) in [
+        ("config", json!({ "op": "setChatConfig", "chatId": "owner-chat", "config": { "harness": "mock", "sandbox": "danger-full-access", "access": "auto-accept-edits" } })),
+        ("rename", json!({ "op": "renameChat", "chatId": "owner-chat", "title": "Renamed by B" })),
+        ("seen", json!({ "op": "markChatSeen", "chatId": "owner-chat" })),
+        ("archive", json!({ "op": "setChatArchived", "chatId": "owner-loose", "archived": true })),
+        ("delete", json!({ "op": "deleteChat", "chatId": "owner-loose" })),
+    ] {
+        a.b.call(methods::MUTATE, params).await.unwrap_or_else(|e| panic!("{what}: {e}"));
+    }
+    let owner = a.core.workspace.chat("owner-chat").unwrap().unwrap();
+    assert_eq!(owner.title.as_deref(), Some("Renamed by B"));
+    assert_eq!(owner.config.map(|c| c.access), Some(zend_proto::AccessMode::AutoAcceptEdits), "unconfined: its config as sent");
+    assert!(a.core.workspace.chat("owner-loose").unwrap().is_none(), "deleted");
+    // Not another device's chat.
+    let far = a.b.call(methods::QUEUE_COMMAND, run("far-chat", "/")).await;
+    assert!(far.as_ref().is_err_and(|e| e.to_string().contains("not one your server may reach")), "{far:?}");
+    let far = a.b.call(methods::MUTATE, json!({ "op": "renameChat", "chatId": "far-chat", "title": "x" })).await;
+    assert!(far.is_err(), "{far:?}");
+}
+
+/// Step 6g: with `full` a server makes a chat as the window here does: on
+/// a branch, in a folder of the project (a ref's worktree), as a child of a
+/// chat hosted here, with no project; and a run's new worktree is made on
+/// this device, off the ref asked for. Another device, Cloud, a folder in
+/// Zend's own data and another device's parent stay refused. Without
+/// `full` (`sessions.run.unconfined`) none of those is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_creates_a_chat_as_the_window_here_does() {
+    let mut a = paired(&["full"]).await;
+    let p = a.root.join("p");
+    git_project(&p);
+    let sub = p.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    a.core.workspace.create_chat("owner-parent", Some("p"), Some(&a.core.device_id), None, None).unwrap();
+    a.core.workspace.create_chat("far-parent", None, Some("device-elsewhere"), None, None).unwrap();
+    let made = a
+        .b
+        .call(methods::MUTATE, json!({
+            "op": "createChat", "chatId": "full-child", "spaceId": "p", "branch": "main",
+            "cwd": sub.to_string_lossy(), "parentChatId": "owner-parent", "childKind": "side",
+        }))
+        .await
+        .expect("a child on a branch, in a folder");
+    assert_eq!(made["deviceId"], json!("device-a"), "{made}");
+    let row = a.core.workspace.chat("full-child").unwrap().unwrap();
+    assert_eq!((row.branch.as_deref(), row.cwd.as_deref(), row.parent_chat_id.as_deref()), (Some("main"), Some(&*sub.to_string_lossy()), Some("owner-parent")));
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "full-loose", "deviceId": "device-a" })).await.expect("no project, on this device");
+    assert!(a.core.workspace.chat("full-loose").unwrap().is_some_and(|c| c.space_id.is_none() && c.device_id == "device-a"));
+    for (what, params) in [
+        ("another device", json!({ "op": "createChat", "chatId": "x1", "spaceId": "p", "deviceId": "device-elsewhere" })),
+        ("cloud", json!({ "op": "createChat", "chatId": "x2", "spaceId": "p", "cloud": true })),
+        ("Zend's data", json!({ "op": "createChat", "chatId": "x3", "spaceId": "p", "cwd": a.data.to_string_lossy() })),
+        ("another device's parent", json!({ "op": "createChat", "chatId": "x4", "spaceId": "p", "parentChatId": "far-parent" })),
+    ] {
+        let reply = a.b.call(methods::MUTATE, params).await;
+        assert!(reply.is_err(), "{what}: {reply:?}");
+    }
+    for id in ["x1", "x2", "x3", "x4"] {
+        assert!(a.core.workspace.chat(id).unwrap().is_none(), "{id} made");
+    }
+    // A new worktree, made here at the first run, off the ref asked for
+    // (the window's repoPath is its own idea of the folder: this side's
+    // project folder is what counts).
+    a.b.call(methods::MUTATE, json!({ "op": "createChat", "chatId": "full-wt", "spaceId": "p", "branch": "main" })).await.expect("create");
+    let mut queued = run("full-wt", ".");
+    queued["command"]["request"]["worktree"] = json!({ "repoPath": ".", "base": "main", "spaceId": "p" });
+    a.b.call(methods::QUEUE_COMMAND, queued).await.expect("a run in a new worktree");
+    let p_text = p.to_string_lossy().into_owned();
+    let mut moved = None;
+    for _ in 0..500 {
+        let row = a.core.workspace.chat("full-wt").unwrap().unwrap();
+        if row.cwd.as_deref().is_some_and(|cwd| cwd != p_text && !cwd.is_empty()) {
+            moved = Some(row);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let row = moved.expect("the chat moved into a new worktree");
+    let cwd = PathBuf::from(row.cwd.clone().unwrap());
+    assert!(cwd.join(".git").exists() && cwd.join("readme.md").exists(), "a worktree of p: {cwd:?}");
+    assert!(row.branch.as_deref().is_some_and(|b| b.starts_with("zend/")), "{:?}", row.branch);
+    // Without `full`: as before.
+    regrant(&mut a, &["sessions.run.unconfined:p"]).await;
+    for (what, params) in [
+        ("a branch", json!({ "op": "createChat", "chatId": "y1", "spaceId": "p", "branch": "main" })),
+        ("a folder", json!({ "op": "createChat", "chatId": "y2", "spaceId": "p", "cwd": sub.to_string_lossy() })),
+        ("a parent", json!({ "op": "createChat", "chatId": "y3", "spaceId": "p", "parentChatId": "owner-parent" })),
+        ("no project", json!({ "op": "createChat", "chatId": "y4" })),
+    ] {
+        let reply = a.b.call(methods::MUTATE, params).await;
+        assert!(reply.is_err(), "without full, {what}: {reply:?}");
+    }
+}
+

@@ -283,7 +283,8 @@ impl EngineRpc {
             .map_err(|e| RpcError::Failed(e.to_string()))?
             .filter(|chat| chat.device_id == self.doc_host.device_id())
             .ok_or_else(not_yours)?;
-        if reading && grants.reads() {
+        // `full`: every chat hosted here, the owner's own among them (6g).
+        if (reading && grants.reads()) || grants.covers(zend_rpc::Scope::Full) {
             return Ok(chat);
         }
         let runs = chat.space_id.as_deref().and_then(|space| grants.runs_in(space));
@@ -315,7 +316,8 @@ impl EngineRpc {
         match p {
             MutateParams::SetChatConfig { config, .. } => {
                 // Confined: marked so, or no longer granted unconfined.
-                let unconfined = chat.space_id.as_deref().and_then(|space| grants.runs_in(space)) == Some(true);
+                let unconfined = grants.covers(zend_rpc::Scope::Full)
+                    || chat.space_id.as_deref().and_then(|space| grants.runs_in(space)) == Some(true);
                 if self.sessions.chat_sandbox(&chat.id).is_some() || !unconfined {
                     let config = self.peer_confined_config(config, op).await?;
                     params["config"] = serde_json::to_value(config).map_err(|e| RpcError::Failed(e.to_string()))?;
@@ -356,13 +358,31 @@ impl EngineRpc {
             )));
         }
         let command = match p.command {
-            SessionCommandPayload::Run { request, message_id } => {
+            SessionCommandPayload::Run { request: sent, message_id } => {
                 // The chat's own: its folder, harness and model as its row
                 // says, the sender's words only.
-                let request = self
+                let mut request = self
                     .doc_host
-                    .request_from_chat_row(&chat.id, &request.prompt)
+                    .request_from_chat_row(&chat.id, &sent.prompt)
                     .ok_or_else(|| refused(format!("chat {}: no row to run", chat.id)))?;
+                // `full`: a new worktree as the window here asks one (6g),
+                // made at drain time on this device, of the chat's project
+                // folder here (not the sender's idea of it), off its ref.
+                if let Some(spec) = sent.worktree
+                    && grants.covers(zend_rpc::Scope::Full)
+                    && PEER_AGENT_CHAT.try_with(|_| ()).is_err()
+                {
+                    let space = chat
+                        .space_id
+                        .as_deref()
+                        .map(|space| self.workspace.space(space))
+                        .transpose()
+                        .map_err(|e| RpcError::Failed(e.to_string()))?
+                        .flatten()
+                        .filter(|space| space.device_id == self.doc_host.device_id())
+                        .ok_or_else(|| refused(format!("chat {}: a new worktree needs a project of this device", chat.id)))?;
+                    request.worktree = Some(zend_proto::WorktreeSpec { repo_path: space.path.clone(), base: spec.base, space_id: Some(space.id) });
+                }
                 SessionCommandPayload::Run { request, message_id }
             }
             other => other,
@@ -396,13 +416,29 @@ impl EngineRpc {
             cwd,
             parent_chat_id,
             child_kind,
-            notify_parent: _,
+            notify_parent,
             cloud,
         } = p
         else {
             return Err(refused(MUTATE_REFUSED));
         };
         let own_device = self.doc_host.device_id().to_string();
+        // `full` (6g): made as the window here makes one, on this device.
+        // (An agent in a server's chat never holds it: `sessions_only`.)
+        if grants.covers(zend_rpc::Scope::Full) && PEER_AGENT_CHAT.try_with(|_| ()).is_err() {
+            return self.peer_create_chat_full(peer, MutateParams::CreateChat {
+                chat_id,
+                space_id,
+                device_id,
+                config,
+                branch,
+                cwd,
+                parent_chat_id,
+                child_kind,
+                notify_parent,
+                cloud,
+            });
+        }
         let Some(space_id) = space_id else {
             return Err(refused("createChat: a server creates chats in a project (spaceId)"));
         };
@@ -543,6 +579,68 @@ impl EngineRpc {
         }))
     }
 
+    /// `createChat` under `full`: what the window here may ask, in a
+    /// project of this device or none, on a branch, in a folder (a ref's
+    /// worktree; never one in Zend's own data), as a child of a chat hosted
+    /// here; unconfined. Never on another device or Cloud. Kept as the
+    /// server's, so its agent calls with the session grants only.
+    fn peer_create_chat_full(&self, peer: &str, p: MutateParams) -> Result<RpcReply, RpcError> {
+        let MutateParams::CreateChat { chat_id, space_id, device_id, config, branch, cwd, parent_chat_id, child_kind, notify_parent, cloud } = p else {
+            return Err(refused(MUTATE_REFUSED));
+        };
+        let own_device = self.doc_host.device_id().to_string();
+        if cloud {
+            return Err(refused("createChat: a server's chat is made on this device, not on Cloud"));
+        }
+        if let Some(device) = device_id.as_deref().filter(|d| *d != own_device) {
+            return Err(refused(format!("createChat: device {device} isn't this device")));
+        }
+        if let Some(space_id) = &space_id
+            && !self.workspace.space(space_id).map_err(|e| RpcError::Failed(e.to_string()))?.is_some_and(|space| space.device_id == own_device)
+        {
+            return Err(refused(format!("createChat: no project {space_id} on this device")));
+        }
+        if let Some(parent) = &parent_chat_id
+            && !self.workspace.chat(parent).map_err(|e| RpcError::Failed(e.to_string()))?.is_some_and(|chat| chat.device_id == own_device)
+        {
+            return Err(refused(format!("createChat: chat {parent} isn't one of this device's")));
+        }
+        if child_kind.is_some() && parent_chat_id.is_none() {
+            return Err(refused("createChat: childKind needs a parentChatId"));
+        }
+        if let Some(cwd) = cwd.as_deref()
+            && crate::phone_reads::DataFence::for_caller(self.repos.data_dir()).is_some_and(|fence| fence.refuses(std::path::Path::new(cwd)))
+        {
+            return Err(refused(format!("createChat: {}", crate::phone_reads::DATA_FENCED)));
+        }
+        if !valid_chat_id(&chat_id) {
+            return Err(refused("createChat: chatId is letters, digits, - and _"));
+        }
+        if self.workspace.chat(&chat_id).map_err(|e| RpcError::Failed(e.to_string()))?.is_some() {
+            return Err(refused(format!("createChat: chat {chat_id} exists")));
+        }
+        let chats = self.sessions.peer_chats();
+        chats.note(&chat_id, peer).map_err(|e| RpcError::Failed(format!("createChat: {e}")))?;
+        let created = self.mutate(MutateParams::CreateChat {
+            chat_id: chat_id.clone(),
+            device_id: space_id.is_none().then(|| own_device.clone()),
+            space_id: space_id.clone(),
+            config,
+            branch: branch.filter(|b| !b.is_empty()),
+            cwd,
+            parent_chat_id,
+            child_kind,
+            notify_parent,
+            cloud: false,
+        });
+        if let Err(error) = created {
+            chats.forget(&chat_id);
+            return Err(error);
+        }
+        tracing::info!(chat = %chat_id, space = ?space_id, "peer link: a paired server holding full created a chat");
+        RpcReply::value(&json!({ "ok": true, "chatId": chat_id, "deviceId": own_device, "sandbox": Value::Null }))
+    }
+
     /// A confined chat's config: this side's sandbox, access and plan mode;
     /// the server's harness and model, with model options its model lists.
     async fn peer_confined_config(&self, mut config: ChatConfig, op: &str) -> Result<ChatConfig, RpcError> {
@@ -585,6 +683,7 @@ impl EngineRpc {
     /// it may run in shows in its window before it holds a chat.
     fn peer_engine_info(&self, grants: &Grants) -> Result<RpcReply, RpcError> {
         let own = self.doc_host.device_id();
+        let spaces = self.workspace.read_spaces().unwrap_or_default();
         let mut named: Vec<&str> = grants
             .iter()
             .filter_map(|g| match g {
@@ -594,9 +693,12 @@ impl EngineRpc {
                 _ => None,
             })
             .collect();
+        // `full`: every project here, each run unconfined (6g).
+        if grants.covers(zend_rpc::Scope::Full) {
+            named.extend(spaces.iter().filter(|s| s.device_id == own).map(|s| s.id.as_str()));
+        }
         named.sort_unstable();
         named.dedup();
-        let spaces = self.workspace.read_spaces().unwrap_or_default();
         let projects: Vec<Value> = named
             .into_iter()
             .filter_map(|id| spaces.iter().find(|s| s.id == id && s.device_id == own))

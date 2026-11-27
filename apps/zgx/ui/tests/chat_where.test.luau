@@ -253,3 +253,43 @@ test("the device comes first: on top of the panel, and first on the chip", funct
 	app:wait('#composer-place-device >> ~"Build"', { timeout_ms = 2000 })
 	expect(string.find(app:tree("#composer-place-device[1]"), "Build", 1, true) ~= nil).to_be(true)
 end)
+
+-- A paired server granting `full` is worked on as this computer is: a new
+-- worktree off the chosen ref, made there (step 6g). Without it a run there
+-- carries no worktree and goes in the project's folder.
+test("on a server granting full, a send in a new worktree goes off the chosen ref there", function()
+	local app = mount("chat_fixture.luau")
+	app:command("box_paired_full")
+	home(app)
+	pick_in(app, "Device", "Build box")
+	pick_in(app, "Checkout", "Worktree An isolated")
+	send(app, "Cut the release")
+	local calls = app:state("calls")
+	expect(calls).to_contain("made:borealis|-|trunk|-")
+	expect(calls).to_contain("run:/srv/borealis|worktree|trunk")
+end)
+
+test("on a server granting less than full, a worktree picked runs in the project's folder", function()
+	local app = mount("chat_fixture.luau")
+	app:command("box_paired_reads")
+	home(app)
+	pick_in(app, "Device", "Build box")
+	pick_in(app, "Checkout", "Worktree An isolated")
+	send(app, "Cut the release")
+	local calls = app:state("calls")
+	expect(calls).to_contain("run:/srv/borealis|local|trunk")
+end)
+
+-- A server that doesn't let this device run chats in the project: the
+-- composer says so in words, with the command to run there, not "The chat
+-- didn't start".
+test("a chat a server refuses to run says why and the command, not that it didn't start", function()
+	local app = mount("chat_fixture.luau")
+	app:command("box_refuses_runs")
+	home(app)
+	pick_in(app, "Device", "Build box")
+	send(app, "Sync it")
+	expect(app:has('~"Build box doesn\'t let this device run chats in Borealis"')).to_be(true)
+	expect(app:has('~"zend peer grant MacBook Pro sessions.run:borealis"')).to_be(true)
+	expect(app:has('~"The chat didn\'t start"')).to_be(false)
+end)

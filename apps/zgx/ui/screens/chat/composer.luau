@@ -207,6 +207,16 @@ local PinnedVisual = ui.component(function(props: { block: any, max_h: () -> num
 	}
 end)
 
+-- A project's name, by its id (the words of a server's refusal name it).
+local function project_name(id: string?): string?
+	for _, p in sessions.projects:peek() do
+		if p.id == id then
+			return p.name
+		end
+	end
+	return nil
+end
+
 local function Composer(): Node
 	-- The session shown, or nil on a new chat.
 	local session_id = ui.computed(function(): string?
@@ -1193,8 +1203,12 @@ local function Composer(): Node
 				store.send(req):after(function() end, function(_e: any) end)
 			end, function(e: any)
 				-- (A Cloud chat's or a paired server's reason is said in words;
-				-- an outcome word isn't.)
-				local why = if type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
+				-- an outcome word isn't. A server that doesn't let this device
+				-- run chats in the project: that, and the command to run there.)
+				local refused = require("@app/screens/files/paths").run_not_granted_words(e, plan.project, project_name(plan.project))
+				local why = if refused
+					then refused
+					elseif type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
 					then e.message
 					else nil
 				failed(why)

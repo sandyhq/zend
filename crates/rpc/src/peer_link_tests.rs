@@ -219,16 +219,49 @@ fn each_area_grant_opens_its_area_and_only_with_it() {
         assert!(peer_server_allowed(method, op, &full).is_ok(), "{method} {op:?}");
         assert!(peer_server_allowed(method, op, &others("")).is_err(), "{method} {op:?}");
     }
-    // `full` reads sessions but runs and shares no project of its own.
+    // `full` reads sessions, and runs and shares every project (step 6g).
     assert!(peer_server_allowed(methods::WATCH_CHATS, None, &full).is_ok());
-    assert!(full.reads() && !full.runs_anywhere() && !full.shares("p"));
-    assert!(peer_server_allowed(methods::QUEUE_COMMAND, None, &full).is_err());
-    assert!(peer_server_allowed(methods::PEER_READ_PROJECT_FILE, None, &full).is_err());
+    assert!(full.reads() && full.runs_anywhere() && full.shares("p"));
+    assert!(peer_server_allowed(methods::QUEUE_COMMAND, None, &full).is_ok());
+    assert!(peer_server_allowed(methods::PEER_READ_PROJECT_FILE, None, &full).is_ok());
     // An area grant alone still says who this device is.
     assert!(peer_server_allowed(methods::ENGINE_INFO, None, &grants(&["updates"])).is_ok());
     // An agent in a server's chat holds only the grants before step 6.
     assert_eq!(grants(&["full", "files", "sessions.run:p"]).sessions_only(), grants(&["sessions.run:p"]));
     assert!(!grants(&["full"]).sessions_only().reads());
+}
+
+/// `full` is everything the person can do here (plan step 6g): it runs
+/// chats unconfined in every project, one made after the grant too, and
+/// shares every project; an agent in such a chat holds none of it, and the
+/// grants without `full` run and share what they name only, as before.
+#[test]
+fn full_runs_and_shares_every_project() {
+    let full = grants(&["full"]);
+    assert_eq!((full.runs_in("p"), full.runs_in("made-after-the-grant")), (Some(true), Some(true)));
+    assert!(full.runs_anywhere() && full.shares("p") && full.shares("made-after-the-grant"));
+    for scope in [Scope::SessionsRun, Scope::Sessions, Scope::SessionsRead, Scope::ProjectsShare] {
+        assert!(full.covers(scope), "full: {scope:?}");
+    }
+    for (method, op) in [
+        (methods::QUEUE_COMMAND, None),
+        (methods::MUTATE, Some("createChat")),
+        (methods::WATCH_DOC_MESSAGES, None),
+        (methods::PEER_READ_PROJECT_FILE, None),
+        (methods::PEER_LIST_PROJECT_FILES, None),
+    ] {
+        assert!(peer_server_allowed(method, op, &full).is_ok(), "full: {method} {op:?}");
+    }
+    // Every area but `full`: no project's run or share.
+    let areas = grants(&["projects.manage", "files", "settings", "logins", "updates", "terminal", "workers.manage"]);
+    assert_eq!(areas.runs_in("p"), None);
+    assert!(!areas.runs_anywhere() && !areas.shares("p") && !areas.covers(Scope::SessionsRun) && !areas.covers(Scope::ProjectsShare));
+    // The session grants as before.
+    let some = grants(&["sessions.run:p", "sessions.run.unconfined:q", "projects.share:s"]);
+    assert_eq!((some.runs_in("p"), some.runs_in("q"), some.runs_in("s")), (Some(false), Some(true), None));
+    // An agent in a chat `full` made: no run, share or read of its own.
+    let agent = full.sessions_only();
+    assert!(agent.runs_in("p").is_none() && !agent.shares("p") && !agent.reads() && !agent.covers(Scope::SessionsRun));
 }
 
 /// The binding `never` list (plan step 6), and every other `Never` row:

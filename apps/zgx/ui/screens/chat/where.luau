@@ -36,6 +36,7 @@
 -- back what the composer lists and how to send.
 
 local sessions = require("@account/sessions")
+local projects_grants = require("@account/projects")
 local cloud = require("@account/cloud")
 local route = require("@app/screens/shell/route")
 local cloud_projects = require("@app/screens/shell/cloud_projects")
@@ -594,9 +595,11 @@ function M.bind(c: Choices)
 		-- (Only a repository can make a worktree: in a plain folder the host
 		-- would refuse the run, so the pick waits for the next repository.)
 		-- (On a paired server a run carries no folder or worktree of its own, so
-		-- it runs in the project's folder there: no worktree is planned.)
+		-- it runs in the project's folder there: no worktree is planned. One
+		-- granting `full` is worked on as this computer is: its worktree is
+		-- made there, off the ref, step 6g.)
 		local pd = device_row(p.device)
-		local on_server = pd ~= nil and pd.paired == true
+		local on_server = pd ~= nil and pd.paired == true and not projects_grants.grants_of(pd, "full")
 		if c.checkout:peek() == "worktree" and p.git and not on_server then
 			return { project = p.id, device = p.device, branch = name, cwd = p.path, worktree = true }
 		end

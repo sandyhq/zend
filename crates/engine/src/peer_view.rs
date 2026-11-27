@@ -881,7 +881,8 @@ impl PeerView {
 
     /// `params` as they're sent to the server `key`: a `createChat` is
     /// made at its project's folder there, with none of this side's
-    /// folder, device or (an empty) branch; a worker's is in its one
+    /// folder, device or (an empty) branch (a server granting `full`
+    /// takes the folder, a ref's worktree there, and the branch); a worker's is in its one
     /// project, whatever named it, and is sent its id and config alone.
     /// What's checked for this device's own ids is this, not what the
     /// window gave.
@@ -890,9 +891,12 @@ impl PeerView {
             return params;
         }
         let worker_project = self.seen.borrow().get(key).and_then(|s| s.worker_project.clone());
+        let full = worker_project.is_none() && self.grants_full(key);
         let chat = params["chatId"].clone();
         if let Some(map) = params.as_object_mut() {
-            map.remove("cwd");
+            if !full {
+                map.remove("cwd");
+            }
             map.remove("deviceId");
             if map.get("branch").and_then(Value::as_str).is_none_or(str::is_empty) {
                 map.remove("branch");
@@ -908,6 +912,11 @@ impl PeerView {
             }
         }
         params
+    }
+
+    /// Whether server `key` said it grants `full` here (step 6g).
+    fn grants_full(&self, key: &str) -> bool {
+        self.seen.borrow().get(key).and_then(|s| s.areas.as_ref()).is_some_and(|areas| areas.contains(&zend_rpc::Scope::Full))
     }
 
     async fn forward(&self, key: &str, method: &str, mut params: Value) -> Result<RpcReply, RpcError> {
@@ -942,7 +951,7 @@ impl PeerView {
             map.remove("targetDeviceId");
         }
         if method == methods::QUEUE_COMMAND {
-            only_what_a_server_runs(&mut params);
+            only_what_a_server_runs(&mut params, worker_project.is_none() && self.grants_full(key));
             if worker_project.is_some() {
                 self.worker_turn(key, &chat, &params).await?;
             }
@@ -1302,8 +1311,11 @@ fn plain_id(id: &str) -> bool {
 /// what the server runs it with (the words, the agent and model picked),
 /// none of this device's folder, files, worktree, MCP servers or a resume;
 /// no files queued with it. (The server builds the run from its own row
-/// and the words alone; this keeps the rest from crossing at all.)
-fn only_what_a_server_runs(params: &mut Value) {
+/// and the words alone; this keeps the rest from crossing at all.) To a
+/// server granting `full`, a new worktree crosses as a directive: its ref
+/// and project, no folder of this device's (the server makes it of its own
+/// project folder, step 6g).
+fn only_what_a_server_runs(params: &mut Value, full: bool) {
     let Some(map) = params.as_object_mut() else { return };
     map.remove("transfers");
     let Some(command) = map.get_mut("command").and_then(Value::as_object_mut) else { return };
@@ -1311,8 +1323,15 @@ fn only_what_a_server_runs(params: &mut Value) {
         return;
     }
     let Some(request) = command.get_mut("request").and_then(Value::as_object_mut) else { return };
+    let worktree = request.get("worktree").filter(|_| full).and_then(|spec| {
+        let base = spec.get("base").and_then(Value::as_str)?;
+        Some(json!({ "repoPath": ".", "base": base, "spaceId": spec.get("spaceId").cloned().unwrap_or(Value::Null) }))
+    });
     let keep = ["prompt", "harness", "model", "reasoning", "modelOptions", "sandbox", "access", "plan"];
     request.retain(|key, _| keep.contains(&key.as_str()));
+    if let Some(worktree) = worktree {
+        request.insert("worktree".into(), worktree);
+    }
     for (key, value) in [("cwd", json!(".")), ("resume", Value::Null), ("model", Value::Null), ("reasoning", Value::Null)] {
         request.entry(key).or_insert(value);
     }

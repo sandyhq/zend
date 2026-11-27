@@ -3085,6 +3085,7 @@
       "starting_cloud": "Starting a Cloud machine…",
       "starting": "Starting the chat…",
       "didnt_start": "The chat didn't start",
+      "not_granted": "{server} doesn't let this device run chats in {project}. On {server}, run: {command}",
       "attach_files": "Attach files",
       "edit_locked": "That message is being edited on another device",
       "edit_unavailable": "That message can't be edited now",

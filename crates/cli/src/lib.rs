@@ -157,8 +157,10 @@ pub enum PeerCommand {
     /// branches, worktrees, browsing folders), files (any file here),
     /// settings (plugins, templates, themes, settings), logins (agent
     /// accounts, harnesses), updates, terminal (terminals, project actions),
-    /// full (all areas and the rest; never pairing, grants, the account,
-    /// Cloud, billing, vault, GitHub, the phone link or stopping Zend).
+    /// full (what you can do in your own window here: all areas, every chat
+    /// hosted here, and every project run unconfined and shared, those added
+    /// later too; never pairing, grants, the account, Cloud, billing, vault,
+    /// GitHub, the phone link or stopping Zend).
     /// files, terminal and full are full access to this machine.
     /// sessions.run.unconfined is full trust: an agent it
     /// runs works as you on this server and can read Zend's IPC token.
