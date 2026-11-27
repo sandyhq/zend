@@ -396,12 +396,21 @@ end
 -- message?, state = "forking" | "failed", error? }. No tab: a toast says
 -- so meanwhile.
 M.chat_forks = ui.state("chat_lanes_chat_forks", {} :: { [string]: any })
--- (Each one's "Forking…" toast, put away as it settles.)
+-- (Each one's toast, keyed by its id: toasts in the same words are one
+-- otherwise, and two forks would share a "Forking…", or a Retry. Its
+-- "Forking…" is put away as it settles.)
 local forking_toasts: { [string]: number } = {}
+local failed_toasts: { [string]: number } = {}
 
 local function start_chat_fork(id: string, source: string, message: string?)
 	set_in(M.chat_forks, id, { source = source, message = message, state = "forking" })
-	forking_toasts[id] = ds.toast.show { title = locale.s("chat.lanes.forking"), tone = "info", duration = 0 }
+	-- (Its earlier failure, if still up, goes.)
+	local failed = failed_toasts[id]
+	failed_toasts[id] = nil
+	if failed then
+		ds.toast.dismiss(failed)
+	end
+	forking_toasts[id] = ds.toast.show { key = `fork:{id}`, title = locale.s("chat.lanes.forking"), tone = "info", duration = 0 }
 	local function settled()
 		local toast = forking_toasts[id]
 		forking_toasts[id] = nil
@@ -422,7 +431,8 @@ local function start_chat_fork(id: string, source: string, message: string?)
 		settled()
 		local why = if type(err) == "table" and err.message then tostring(err.message) else tostring(err)
 		set_in(M.chat_forks, id, { source = source, message = message, state = "failed", error = why })
-		ds.toast.show {
+		failed_toasts[id] = ds.toast.show {
+			key = `fork-failed:{id}`,
 			title = locale.s("chat.lanes.couldnt_fork"),
 			body = why,
 			tone = "danger",

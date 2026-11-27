@@ -110,6 +110,64 @@ test("message actions: a fork the engine refuses says why in a toast, and Retry 
 	expect(app:state("shell_route_path")).to_be(`/session/{id}`)
 end)
 
+-- Each fork in flight has its own toasts (review round 1, P2): toasts with
+-- the same words are one by default, so two forks shared one.
+local function forks_made(app: any): { string }
+	local ids = {}
+	for id in calls(app):gmatch("standalone:([%w%-]+)") do
+		if not table.find(ids, id) then
+			table.insert(ids, id)
+		end
+	end
+	return ids
+end
+
+local function times_forked(app: any, id: string): number
+	local n = 0
+	for _ in calls(app):gmatch(`standalone:{id:gsub("%-", "%%-")}`) do
+		n += 1
+	end
+	return n
+end
+
+local function fork_twice(app: any)
+	open_s2(app)
+	app:command("fork_hold")
+	app:hover('~"What shall we work on"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	app:hover('~"Hello there"')
+	settle(app)
+	app:click('role:button "Fork from here"')
+	settle(app)
+	expect(#forks_made(app)).to_be(2)
+end
+
+test("message actions: two forks in flight each say Forking…, and one finishing leaves the other's", function()
+	local app = mount("chat_fixture.luau")
+	fork_twice(app)
+	expect(app:count('~"Forking…"')).to_be(2)
+	app:command("fork_settle_one")
+	settle(app)
+	expect(app:count('~"Forking…"')).to_be(1)
+end)
+
+test("message actions: two forks refused in the same words each get a toast whose Retry is that fork again", function()
+	local app = mount("chat_fixture.luau")
+	fork_twice(app)
+	local ids = forks_made(app)
+	app:command("fork_fail_held")
+	settle(app)
+	expect(app:count('~"Couldn\'t fork this chat"')).to_be(2)
+	app:click('role:button "Retry"[1]')
+	settle(app)
+	app:click('role:button "Retry"')
+	settle(app)
+	expect(times_forked(app, ids[1])).to_be(2)
+	expect(times_forked(app, ids[2])).to_be(2)
+end)
+
 test("message editor: Edit opens the prompt in place; Save & send asks once, then rewinds and sends", function()
 	local app = mount("chat_fixture.luau")
 	open_s2(app)

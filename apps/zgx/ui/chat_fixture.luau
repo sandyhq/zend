@@ -399,13 +399,45 @@ ui.command {
 -- message and all after it out of the transcript. A standalone fork (a
 -- session of its own) is noted `standalone:<id>` and made here as the
 -- engine makes it: the copy up to there, untitled, in the source's project.
--- `fork_fails`: the engine refuses the next fork.
+-- `fork_fails`: the engine refuses the next fork. `fork_hold`: forks wait,
+-- each until `fork_settle_one` (the oldest made) or `fork_fail_held` (all
+-- refused, in the same words).
 local FORK_FAILS = ui.state("fixture_fork_fails", false)
 ui.command {
 	id = "fork_fails",
 	title = "The next fork is refused",
 	run = function()
 		FORK_FAILS:set(true)
+	end,
+}
+local FORK_HOLD = ui.state("fixture_fork_hold", false)
+local held_forks: { { ok: () -> (), fail: () -> () } } = {}
+ui.command {
+	id = "fork_hold",
+	title = "Forks wait",
+	run = function()
+		FORK_HOLD:set(true)
+	end,
+}
+ui.command {
+	id = "fork_settle_one",
+	title = "The oldest waiting fork is made",
+	run = function()
+		local f = table.remove(held_forks, 1)
+		if f then
+			f.ok()
+		end
+	end,
+}
+ui.command {
+	id = "fork_fail_held",
+	title = "Every waiting fork is refused",
+	run = function()
+		local all = held_forks
+		held_forks = {}
+		for _, f in all do
+			f.fail()
+		end
 	end,
 }
 do
@@ -420,6 +452,20 @@ do
 			return {
 				after = function(_self: any, _ok: any, err: (any) -> ())
 					err({ message = "Source chat no longer exists" })
+				end,
+			}
+		end
+		if FORK_HOLD:peek() then
+			return {
+				after = function(_self: any, ok: (any) -> (), err: (any) -> ())
+					table.insert(held_forks, {
+						ok = function()
+							ok(id)
+						end,
+						fail = function()
+							err({ message = "Source chat no longer exists" })
+						end,
+					})
 				end,
 			}
 		end
