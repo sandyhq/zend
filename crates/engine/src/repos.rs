@@ -445,12 +445,23 @@ impl Repos {
             cmd.as_std_mut().creation_flags(0x08000000);
             cmd.args(["-c", "core.longpaths=true"]);
         }
+        // No prompt of any kind: not git's on a terminal, no askpass
+        // program (an empty GIT_ASKPASS outranks core.askPass and
+        // SSH_ASKPASS), no credential manager's window. Stored
+        // credentials (a helper's store, an agent's keys) still work.
         cmd.current_dir(repo_path)
-            .args(["fetch", "--all", "--quiet"])
+            .args(["-c", "credential.interactive=false", "fetch", "--all", "--quiet"])
             .args(prune.then_some("--prune"))
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ASKPASS", "")
+            .env("SSH_ASKPASS", "")
+            .env("SSH_ASKPASS_REQUIRE", "never")
+            .env("GCM_INTERACTIVE", "never")
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
+        if let Some(ssh) = self.batch_ssh_command(repo_path).await {
+            cmd.env("GIT_SSH_COMMAND", ssh);
+        }
         let output = match tokio::time::timeout(FETCH_TIMEOUT, cmd.output()).await {
             Ok(output) => output.map_err(|e| EngineError::Other(format!("git fetch failed to start: {e}")))?,
             Err(_) => {
@@ -470,6 +481,24 @@ impl Repos {
             }));
         }
         Ok(())
+    }
+
+    /// The ssh command git would run for `repo_path`'s remotes, in batch
+    /// mode: no passphrase or host key question (a key in the agent or
+    /// unlocked still works). Git's own order: `GIT_SSH_COMMAND`, then
+    /// `core.sshCommand`, else plain `ssh`. `None` for a `GIT_SSH`
+    /// program, whose options can't be told (plink takes others).
+    async fn batch_ssh_command(&self, repo_path: &Path) -> Option<String> {
+        let set = |c: &String| !c.trim().is_empty();
+        let base = match std::env::var("GIT_SSH_COMMAND").ok().filter(set) {
+            Some(command) => command,
+            None => match self.git(&["config", "core.sshCommand"], Some(repo_path)).await.ok().filter(set) {
+                Some(command) => command,
+                None if std::env::var_os("GIT_SSH").is_some_and(|s| !s.is_empty()) => return None,
+                None => "ssh".to_string(),
+            },
+        };
+        Some(format!("{} -o BatchMode=yes", base.trim()))
     }
 
     /// The absolute Git `HEAD` file for event-driven external branch reconciliation.
@@ -1971,6 +2000,21 @@ impl Repos {
             let _ = self.git(&["branch", "-D", &branch], Some(repo_path)).await;
         }
         Ok(())
+    }
+
+    /// Take away a worktree just made, and the new branch it was made on,
+    /// when what was to follow failed (a chat's move into it): forced, as
+    /// nothing in it is anyone's yet.
+    pub async fn remove_made_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+    ) -> Result<(), EngineError> {
+        self.git(&["worktree", "remove", "--force", &worktree_path.to_string_lossy()], Some(repo_path))
+            .await?;
+        let _ = self.git(&["worktree", "prune"], Some(repo_path)).await;
+        self.git(&["branch", "-D", branch], Some(repo_path)).await.map(drop)
     }
 
     // ── ListFolders ─────────────────────────────────────────────────────────

@@ -298,6 +298,13 @@ struct Inner {
     /// ([`SessionsEngine::hold_checkout`]), by their root: a run starting
     /// in one waits for it, any chat's, a new one's too.
     held_checkouts: Mutex<Vec<(PathBuf, CheckoutGate)>>,
+    /// A test's fault: the chats whose next [`SessionsEngine::forget_folder`]
+    /// fails ([`SessionsEngine::fail_next_forget_folder`]).
+    failing_forgets: Mutex<std::collections::HashSet<String>>,
+    /// Chats moved alone into a worktree of their own
+    /// ([`SessionsEngine::chat_moved`]): the checkout's root they left and
+    /// the worktree's, until a run comes with another folder.
+    moved_chats: Mutex<HashMap<String, (PathBuf, PathBuf)>>,
     /// Per chat: how many Stops the user has sent, counted before each one
     /// looks for the run to stop. A retry re-dispatching a failed start
     /// compares it with the count its run started under: a Stop that landed
@@ -525,6 +532,8 @@ impl SessionsEngine {
                 cancelled_sends: Mutex::new(HashMap::new()),
                 handover_hold: Mutex::new(None),
                 held_checkouts: Mutex::new(Vec::new()),
+                failing_forgets: Mutex::new(std::collections::HashSet::new()),
+                moved_chats: Mutex::new(HashMap::new()),
                 user_stops: Mutex::new(HashMap::new()),
                 ipc_port: std::sync::atomic::AtomicU16::new(0),
                 ipc_ready: tokio::sync::Notify::new(),
@@ -1301,6 +1310,11 @@ impl SessionsEngine {
                 request.cwd = cwd;
             }
         };
+        // The chat moved alone into a worktree while this run was on its
+        // way with the old folder: it starts in the new one.
+        if let Some(cwd) = self.inner.moved_cwd(chat_id, &request.cwd) {
+            request.cwd = cwd;
+        }
         self.dispatch_ungated(
             chat_id,
             harness_id,
@@ -2665,6 +2679,9 @@ impl SessionsEngine {
     /// runtime ended, its provider session given up, its history replayed
     /// in the next run.
     pub async fn forget_folder(&self, chat_id: &str) -> Result<(), EngineError> {
+        if lock(&self.inner.failing_forgets).remove(chat_id) {
+            return Err(EngineError::Other("The chat's session couldn't be let go (a test's fault)".into()));
+        }
         self.terminate(chat_id).await?;
         if let Ok(handle) = self.doc_handle(chat_id) {
             handle.doc().mark_history_moved()?;
@@ -2679,6 +2696,27 @@ impl SessionsEngine {
             ws.set_chat_harness_session(chat_id, "", &cwd, harness);
         }
         Ok(())
+    }
+
+    /// The chat moved alone from the checkout at `from` into the worktree
+    /// at `to` (MoveChatToWorktree): a run of its on its way with a folder
+    /// in the old checkout (sent before the window heard) starts at the same
+    /// place in the new one. Only this chat; the others stay. Kept until a
+    /// run of its names another folder, or its folder is set anew.
+    pub fn chat_moved(&self, chat_id: &str, from: &Path, to: &Path) {
+        lock(&self.inner.moved_chats).insert(chat_id.to_string(), (from.to_path_buf(), to.to_path_buf()));
+    }
+
+    /// The chat's folder set anew: a move no longer retargets its runs.
+    pub fn forget_move(&self, chat_id: &str) {
+        lock(&self.inner.moved_chats).remove(chat_id);
+    }
+
+    /// Test seam: the chat's next [`Self::forget_folder`] fails, as a
+    /// fault between a new worktree made for it and its folder stored.
+    #[doc(hidden)]
+    pub fn fail_next_forget_folder(&self, chat_id: &str) {
+        lock(&self.inner.failing_forgets).insert(chat_id.to_string());
     }
 
     /// Whether the chat has a run on this device (one `inject_event` can reach).
@@ -4196,6 +4234,23 @@ impl Inner {
                 .or_else(|| real.as_deref().and_then(below))
                 .map(|rest| (rest, gate.clone()))
         })
+    }
+
+    /// Where a run of a chat moved into a worktree ([`SessionsEngine::chat_moved`])
+    /// starts, when it comes with a folder in the checkout it left. A run
+    /// with another folder ends the retargeting.
+    fn moved_cwd(&self, chat_id: &str, cwd: &str) -> Option<String> {
+        let mut moved = lock(&self.moved_chats);
+        let (from, to) = moved.get(chat_id)?.clone();
+        let folder = crate::repos::expand_home(cwd).ok().map(PathBuf::from);
+        let real = folder.as_deref().and_then(|f| std::fs::canonicalize(f).ok());
+        let below = |f: &Path| f.strip_prefix(&from).ok().map(Path::to_path_buf);
+        let Some(rest) = folder.as_deref().and_then(below).or_else(|| real.as_deref().and_then(below)) else {
+            moved.remove(chat_id);
+            return None;
+        };
+        let at = to.join(rest);
+        Some(if at.is_dir() { at } else { to }.to_string_lossy().into_owned())
     }
 
     fn chat_gate(&self, chat_id: &str) -> Arc<tokio::sync::RwLock<()>> {

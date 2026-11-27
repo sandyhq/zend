@@ -17,8 +17,8 @@ use zend_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessage
 use zend_engine::{EngineCore, HarnessRegistry};
 use zend_harness::{Harness, HarnessError, RunControls};
 use zend_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SteeringMode, WorktreeSpec,
+    AgentEvent, DoneStatus, HarnessId, Model, ProjectActionDraft, ProjectActionIcon, ReasoningLevel,
+    RunRequest, SandboxLevel, SteeringMode, WorktreeSpec,
 };
 use zend_rpc::methods;
 
@@ -875,7 +875,7 @@ async fn r4_moving_a_session_to_a_new_worktree_takes_only_it_and_keeps_its_histo
     assert_eq!(PathBuf::from(a.cwd.unwrap()), y);
     assert_eq!(a.branch.as_deref(), Some("y"));
     let b = f.row("chat-b");
-    assert!(b.cwd.is_none_or(|c| PathBuf::from(c) == f.repo), "chat-b stays");
+    assert!(b.cwd.is_none_or(|c| Path::new(&c) == f.repo), "chat-b stays");
     assert_ne!(b.branch.as_deref(), Some("y"));
 
     // Its next turn: in the new folder, a fresh session, the history given.
@@ -896,7 +896,7 @@ async fn r4_moving_a_session_to_a_new_worktree_takes_only_it_and_keeps_its_histo
     assert!(error.contains("already works in a worktree"), "{error}");
     let error = move_to("chat-b", "y", None).await.unwrap_err();
     assert!(error.contains("already exists"), "{error}");
-    assert!(f.row("chat-b").cwd.is_none_or(|c| PathBuf::from(c) == f.repo));
+    assert!(f.row("chat-b").cwd.is_none_or(|c| Path::new(&c) == f.repo));
     // Its branch apart from its name.
     let moved = move_to("chat-b", "wt-b", Some("topic/b")).await.expect("named apart");
     assert_eq!(PathBuf::from(moved["path"].as_str().unwrap()), f.worktrees.join("wt-b"));
@@ -904,3 +904,150 @@ async fn r4_moving_a_session_to_a_new_worktree_takes_only_it_and_keeps_its_histo
     assert_eq!(f.row("chat-b").branch.as_deref(), Some("topic/b"));
 }
 
+/// R4, a send racing the move (review round 1, P1): a message sent with the
+/// old folder while the move is under way waits for it and runs in the new
+/// worktree, with the history; another chat's send to the old folder stays
+/// there (only the moved chat is retargeted).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_a_send_racing_the_move_runs_in_the_new_worktree() {
+    let f = fixture().await;
+    f.chat("chat-a", None).await;
+    f.chat("chat-b", None).await;
+    let cwd = f.repo.to_string_lossy().into_owned();
+    f.run("chat-a", "m-1", "first words", &cwd, None);
+    wait_for(|| f.replies("chat-a") == 1, "the first turn").await;
+
+    // `git worktree add` waits in the checkout's post-checkout hook.
+    let reached = f.root.join("hook-reached");
+    let go = f.root.join("hook-go");
+    let hook = f.repo.join(".git/hooks/post-checkout");
+    script(
+        &hook,
+        &format!("touch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.02; done", reached.display(), go.display()),
+    );
+    let moving = f.call(methods::MOVE_CHAT_TO_WORKTREE, serde_json::json!({ "chatId": "chat-a", "name": "race" }));
+    let racing = async {
+        wait_for(|| reached.exists(), "the move inside git worktree add").await;
+        // Sent before the window heard of the move: the old folder.
+        f.run("chat-a", "m-2", "second words", &cwd, None);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&go, "").unwrap();
+    };
+    let (moved, ()) = tokio::join!(moving, racing);
+    moved.expect("MoveChatToWorktree");
+    std::fs::remove_file(&hook).unwrap();
+    wait_for(|| f.replies("chat-a") == 2, "the raced turn").await;
+    let raced = f.seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(PathBuf::from(&raced.cwd), f.worktrees.join("race"), "the raced send runs in the new worktree");
+    assert!(raced.prompt.contains("first words"), "history replayed: {}", raced.prompt);
+    assert_eq!(PathBuf::from(f.row("chat-a").cwd.unwrap()), f.worktrees.join("race"));
+
+    f.run("chat-b", "m-b", "b words", &cwd, None);
+    wait_for(|| f.replies("chat-b") == 1, "chat-b's turn").await;
+    let b = f.seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(PathBuf::from(&b.cwd), f.repo, "chat-b stays in the project folder");
+}
+
+/// R4, a move that fails after its worktree is made (review round 1, P2):
+/// the worktree and branch it made are taken away, the chat stays where it
+/// was, and the same name works when tried again.
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_a_move_that_fails_after_its_worktree_is_made_leaves_nothing() {
+    let f = fixture().await;
+    f.chat("chat-a", None).await;
+    let undone = f.worktrees.join("undone");
+    let move_to = || f.call(methods::MOVE_CHAT_TO_WORKTREE, serde_json::json!({ "chatId": "chat-a", "name": "undone" }));
+    f.core.sessions.fail_next_forget_folder("chat-a");
+    let error = move_to().await.unwrap_err();
+    assert!(error.contains("couldn't be let go"), "{error}");
+    assert!(!undone.exists(), "the worktree made is taken away");
+    assert_eq!(git_out(&f.repo, &["branch", "--list", "undone"]), "", "and its branch");
+    assert!(!git_out(&f.repo, &["worktree", "list"]).contains("undone"));
+    assert!(f.row("chat-a").cwd.is_none_or(|c| Path::new(&c) == f.repo), "the chat stays");
+    move_to().await.expect("the same name, again");
+    assert!(undone.is_dir());
+    assert_eq!(PathBuf::from(f.row("chat-a").cwd.unwrap()), undone);
+}
+
+/// R4: a moved chat's new worktree runs the project's setup action, as a
+/// new chat's worktree does (owner, review round 1).
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_a_moved_session_s_worktree_runs_the_project_s_setup_action() {
+    let f = fixture().await;
+    f.chat("chat-a", None).await;
+    f.call(
+        methods::UPSERT_PROJECT_ACTION,
+        serde_json::json!({
+            "spaceId": SPACE,
+            "action": ProjectActionDraft {
+                name: "Setup".into(),
+                command: "printf '%s' \"$ZEND_WORKTREE_PATH\" > setup-marker".into(),
+                icon: ProjectActionIcon::Configure,
+                run_on_worktree_create: true,
+            }
+        }),
+    )
+    .await
+    .expect("setup action");
+    let moved = f
+        .call(methods::MOVE_CHAT_TO_WORKTREE, serde_json::json!({ "chatId": "chat-a", "name": "set-up" }))
+        .await
+        .expect("MoveChatToWorktree");
+    let at = f.worktrees.join("set-up");
+    wait_for(|| at.join("setup-marker").is_file(), "the setup action in the new worktree").await;
+    assert_eq!(PathBuf::from(std::fs::read_to_string(at.join("setup-marker")).unwrap()), at);
+    assert!(moved["setupAction"].is_object(), "{moved}");
+    assert!(moved["setupError"].is_null(), "{moved}");
+    // (Its terminal lives on with the engine: shut down, as worktree_on_run.)
+    f.core.shutdown().await;
+}
+
+/// R3, Fetch never asks (review round 1, P2): no askpass program for a
+/// remote that wants a password, ssh in batch mode (no passphrase or host
+/// key question); the fetch fails and says so instead.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn r3_fetch_never_asks_for_a_password_nor_lets_ssh_ask() {
+    let f = fixture().await;
+    // An HTTP remote that wants a password: 401 to everything.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 8192];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"zend\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    let asked = f.root.join("askpass-asked");
+    let askpass = f.root.join("askpass.sh");
+    script(&askpass, &format!("echo asked >> '{}'\necho secret", asked.display()));
+    git(&f.repo, &["config", "core.askPass", &askpass.to_string_lossy()]);
+    git(&f.repo, &["remote", "add", "web", &format!("http://127.0.0.1:{port}/repo.git")]);
+    let fetch = || f.call(methods::FETCH_ALL, serde_json::json!({ "repoPath": f.repo, "prune": true }));
+    let error = fetch().await.unwrap_err();
+    assert!(!asked.exists(), "askpass was asked; the fetch said: {error}");
+    git(&f.repo, &["remote", "remove", "web"]);
+
+    let ssh_args = f.root.join("ssh-args");
+    let ssh = f.root.join("ssh.sh");
+    script(&ssh, &format!("echo \"$@\" >> '{}'\nexit 255", ssh_args.display()));
+    git(&f.repo, &["config", "core.sshCommand", &ssh.to_string_lossy()]);
+    git(&f.repo, &["remote", "add", "far", "ssh://git@example.invalid/repo.git"]);
+    fetch().await.unwrap_err();
+    let args = std::fs::read_to_string(&ssh_args).expect("the remote's ssh command ran");
+    assert!(args.contains("BatchMode=yes"), "ssh may ask: {args}");
+}
+
+/// An executable shell script at `path`.
+#[cfg(unix)]
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}

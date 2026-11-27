@@ -1594,6 +1594,64 @@ impl EngineRpc {
         Ok(space)
     }
 
+    /// A new worktree's setup: the project's setup action, run in it (a
+    /// terminal), for a new chat's worktree and a chat moved to one. A
+    /// paired server's runs only with `terminal` (or `full`); otherwise the
+    /// worktree stands and its setup is left unrun, said in the error.
+    fn launch_worktree_setup(
+        &self,
+        setup_space: Option<(Space, std::path::PathBuf)>,
+        worktree_path: &str,
+    ) -> (Option<zend_proto::ProjectActionRun>, Option<String>) {
+        let setup_space = match (setup_space, zend_rpc::caller()) {
+            (Some(_), zend_rpc::Caller::PeerServer { peer, grants }) if !grants.covers(zend_rpc::Scope::Terminal) => {
+                tracing::info!(peer = %peer.get(..12).unwrap_or(&peer), worktree = %worktree_path, "peer link: a paired server's worktree made without its setup action (no terminal grant)");
+                return (None, Some(PEER_SETUP_NOT_RUN.into()));
+            }
+            (setup_space, _) => setup_space,
+        };
+        let Some((space, project_root)) = setup_space else {
+            return (None, None);
+        };
+        match self
+            .project_actions
+            .setup_action(&space.id, std::path::Path::new(&space.path))
+        {
+            Ok(Some(action)) => {
+                let worktree_root = std::fs::canonicalize(worktree_path)
+                    .unwrap_or_else(|_| worktree_path.into());
+                match crate::project_actions::launch_project_setup_action(
+                    &self.terminals,
+                    &action,
+                    &project_root,
+                    &worktree_root,
+                    80,
+                    24,
+                ) {
+                    Ok(run) => (Some(run), None),
+                    Err(err) => {
+                        tracing::warn!(
+                            space_id = %space.id,
+                            worktree = %worktree_path,
+                            error = %err,
+                            "failed to start project setup Action"
+                        );
+                        (None, Some(err.to_string()))
+                    }
+                }
+            }
+            Ok(None) => (None, None),
+            Err(err) => {
+                tracing::warn!(
+                    space_id = %space.id,
+                    error = %err,
+                    "failed to resolve project setup Action"
+                );
+                (None, Some(err.to_string()))
+            }
+        }
+    }
+
     /// Resolve a mention-search root from synced workspace rows. A client may
     /// name an existing linked worktree for a new chat, but it is verified
     /// against the space repository before any filesystem walk begins.
@@ -2574,6 +2632,9 @@ impl EngineRpc {
                 .map(drop),
             MutateParams::SetChatCwd { chat_id, cwd } => {
                 self.voice.retire_chat(&chat_id);
+                // Its folder chosen anew: a move to a worktree no longer
+                // retargets its runs.
+                self.sessions.forget_move(&chat_id);
                 self.workspace
                     .set_chat_cwd(&chat_id, &cwd)
                     .map_err(failed)
@@ -5926,11 +5987,20 @@ impl RpcService for EngineRpc {
             }
             methods::MOVE_CHAT_TO_WORKTREE => {
                 let p: MoveChatToWorktreeParams = parse_params(params)?;
-                let chat = self
-                    .workspace
-                    .chat(&p.chat_id)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?
-                    .ok_or_else(|| RpcError::BadParams("chat not found".into()))?;
+                let read_chat = || {
+                    self.workspace
+                        .chat(&p.chat_id)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?
+                        .ok_or_else(|| RpcError::BadParams("chat not found".into()))
+                };
+                let chat = read_chat()?;
+                // Alone with the chat (refused while a turn runs) from
+                // before the worktree is made until it works there: no run
+                // starts meanwhile, and one on its way with the old folder
+                // waits and is sent to the new one (`chat_moved`). The chat
+                // read again under the hold: its folder as it is now.
+                let alone = self.sessions.hold_chat(&chat.id).await.map_err(|error| chat_failed(&chat, error))?;
+                let chat = read_chat()?;
                 if chat.device_id != self.doc_host.device_id() {
                     return Err(RpcError::Failed("That chat works on another device".into()));
                 }
@@ -5958,19 +6028,21 @@ impl RpcService for EngineRpc {
                     .ok()
                     .filter(|b| !b.is_empty() && b != "HEAD")
                     .unwrap_or_else(|| "HEAD".into());
-                // Alone with the chat (refused while a turn runs) from before
-                // the worktree is made until it works there: no run starts in
-                // the old folder meanwhile.
-                let alone = self.sessions.hold_chat(&chat.id).await.map_err(|error| chat_failed(&chat, error))?;
+                // The project's setup action runs in the new worktree when
+                // the checkout is the project's folder.
+                let setup_space = chat
+                    .space_id
+                    .as_deref()
+                    .and_then(|space| self.local_project_action_space(space).ok())
+                    .and_then(|space| {
+                        let space_root = std::fs::canonicalize(&space.path).ok()?;
+                        (space_root == std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone())).then_some((space, space_root))
+                    });
                 let worktree = self
                     .repos
                     .create_worktree_named(&root, &base, Some(&p.name), p.branch.as_deref())
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                self.sessions
-                    .forget_folder(&chat.id)
-                    .await
-                    .map_err(|error| chat_failed(&chat, error))?;
                 // The same place below the new root as below the old one.
                 let moved = std::path::PathBuf::from(&worktree.path);
                 let folder = crate::repos::chat_cwd_folder(&cwd, &self.repos.scratch_root())
@@ -5980,18 +6052,46 @@ impl RpcService for EngineRpc {
                     .and_then(|folder| folder.strip_prefix(&root).ok().map(|rest| moved.join(rest)))
                     .filter(|at| at.is_dir())
                     .unwrap_or_else(|| moved.clone());
-                self.voice.retire_chat(&chat.id);
-                self.workspace
-                    .set_chat_cwd(&chat.id, &at.to_string_lossy())
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let stored = async {
+                    self.sessions
+                        .forget_folder(&chat.id)
+                        .await
+                        .map_err(|error| chat_failed(&chat, error))?;
+                    self.voice.retire_chat(&chat.id);
+                    self.workspace
+                        .set_chat_cwd(&chat.id, &at.to_string_lossy())
+                        .map_err(|e| RpcError::Failed(e.to_string()))
+                }
+                .await;
+                if let Err(error) = stored {
+                    // The chat stays where it was; the worktree and branch
+                    // made for it go, so the same name works again.
+                    if let Err(cleanup) = self.repos.remove_made_worktree(&root, &moved, &worktree.branch).await {
+                        tracing::warn!(chat = %chat.id, worktree = %moved.display(), error = %cleanup, "moveChatToWorktree: the worktree made isn't taken away");
+                        return Err(RpcError::Failed(format!(
+                            "{error}; the worktree made for it stays at {} ({cleanup})",
+                            moved.display()
+                        )));
+                    }
+                    return Err(error);
+                }
                 if let Err(error) = self.workspace.set_chat_branch(&chat.id, &worktree.branch) {
                     tracing::warn!(chat = %chat.id, %error, "moveChatToWorktree: chat branch not set");
                 }
+                self.sessions.chat_moved(&chat.id, &root, &moved);
                 drop(alone);
+                let (setup_action, setup_error) = self.launch_worktree_setup(setup_space, &worktree.path);
+                if let Some(run) = &setup_action
+                    && let Err(error) = self.terminals.associate_chat(&run.terminal.id, &chat.id)
+                {
+                    tracing::warn!(chat = %chat.id, %error, "moveChatToWorktree: setup terminal not tied to the chat");
+                }
                 RpcReply::value(&serde_json::json!({
                     "path": worktree.path,
                     "branch": worktree.branch,
                     "chats": [chat.id],
+                    "setupAction": setup_action,
+                    "setupError": setup_error,
                 }))
             }
             methods::RENAME_BRANCH => {
@@ -6282,62 +6382,12 @@ impl RpcService for EngineRpc {
                     )
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let mut outcome = CreateWorktreeOutcome {
+                let (setup_action, setup_error) = self.launch_worktree_setup(setup_space, &worktree.path);
+                RpcReply::value(&CreateWorktreeOutcome {
                     worktree,
-                    setup_action: None,
-                    setup_error: None,
-                };
-                // A project's setup action is a command: a paired server's
-                // worktree runs it only with `terminal` (or `full`);
-                // otherwise the worktree is made and its setup left unrun.
-                let setup_space = match (setup_space, zend_rpc::caller()) {
-                    (Some(_), zend_rpc::Caller::PeerServer { peer, grants }) if !grants.covers(zend_rpc::Scope::Terminal) => {
-                        tracing::info!(peer = %peer.get(..12).unwrap_or(&peer), worktree = %outcome.worktree.path, "peer link: a paired server's worktree made without its setup action (no terminal grant)");
-                        outcome.setup_error = Some(PEER_SETUP_NOT_RUN.into());
-                        None
-                    }
-                    (setup_space, _) => setup_space,
-                };
-                if let Some((space, project_root)) = setup_space {
-                    match self
-                        .project_actions
-                        .setup_action(&space.id, std::path::Path::new(&space.path))
-                    {
-                        Ok(Some(action)) => {
-                            let worktree_root = std::fs::canonicalize(&outcome.worktree.path)
-                                .unwrap_or_else(|_| outcome.worktree.path.clone().into());
-                            match crate::project_actions::launch_project_setup_action(
-                                &self.terminals,
-                                &action,
-                                &project_root,
-                                &worktree_root,
-                                80,
-                                24,
-                            ) {
-                                Ok(run) => outcome.setup_action = Some(run),
-                                Err(err) => {
-                                    tracing::warn!(
-                                        space_id = %space.id,
-                                        worktree = %outcome.worktree.path,
-                                        error = %err,
-                                        "failed to start project setup Action"
-                                    );
-                                    outcome.setup_error = Some(err.to_string());
-                                }
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(err) => {
-                            tracing::warn!(
-                                space_id = %space.id,
-                                error = %err,
-                                "failed to resolve project setup Action"
-                            );
-                            outcome.setup_error = Some(err.to_string());
-                        }
-                    }
-                }
-                RpcReply::value(&outcome)
+                    setup_action,
+                    setup_error,
+                })
             }
             methods::DELETE_WORKTREE => {
                 let p: DeleteWorktreeParams = parse_params(params)?;
