@@ -2655,6 +2655,16 @@ impl SessionsEngine {
         chat_id: &str,
     ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, EngineError> {
         let alone = self.hold_chat(chat_id).await?;
+        self.forget_folder(chat_id).await?;
+        Ok(alone)
+    }
+
+    /// The tail of [`Self::leave_folder`], for a caller already alone with
+    /// the chat ([`Self::hold_chat`]) that moves it to another folder only
+    /// once that folder is made (a chat moved to a new worktree): its idle
+    /// runtime ended, its provider session given up, its history replayed
+    /// in the next run.
+    pub async fn forget_folder(&self, chat_id: &str) -> Result<(), EngineError> {
         self.terminate(chat_id).await?;
         if let Ok(handle) = self.doc_handle(chat_id) {
             handle.doc().mark_history_moved()?;
@@ -2668,7 +2678,7 @@ impl SessionsEngine {
         if let Some(ws) = self.inner.workspace() {
             ws.set_chat_harness_session(chat_id, "", &cwd, harness);
         }
-        Ok(alone)
+        Ok(())
     }
 
     /// Whether the chat has a run on this device (one `inject_event` can reach).

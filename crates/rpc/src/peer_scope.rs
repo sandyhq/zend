@@ -184,6 +184,7 @@ pub fn peer_scope(method: &str, op: Option<&str>) -> Option<Scope> {
         | m::CREATE_BRANCH
         | m::RENAME_BRANCH
         | m::RENAME_WORKTREE
+        | m::MOVE_CHAT_TO_WORKTREE
         | m::LIST_FOLDERS
         | m::GET_WORKTREE_SETTINGS
         | m::SET_WORKTREE_SETTINGS

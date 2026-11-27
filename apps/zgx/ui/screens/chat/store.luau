@@ -205,7 +205,9 @@ end
 
 -- A project's branch, as git where it lives has it: whether it's the
 -- folder's current one, and the worktree it's checked out in.
-export type Ref = { name: string, current: boolean, worktree: string? }
+-- `remote`: the remote it's only on (no local branch yet); switching to it
+-- makes one tracking it.
+export type Ref = { name: string, current: boolean, worktree: string?, remote: string? }
 
 -- A project's branches (the folder at `path`, on `device` when that isn't
 -- this one): a promise of its refs, the current first.
@@ -232,6 +234,17 @@ end
 -- Another branch checked out at `path` (never forced).
 function M.switch_ref(path: string, ref: string, device: string?): any
 	return ui.call("chat.switch_ref", { path = path, ref = ref, device = device })
+end
+--- Every remote of the checkout at `path` fetched (branches deleted there
+--- pruned here); nothing merged.
+function M.fetch(path: string, device: string?): any
+	return ui.call("chat.fetch", { path = path, device = device })
+end
+--- Only the chat `chat` moved to a new worktree `name` of its checkout, off
+--- the branch it's on, on a new branch `branch` (else `name`); its history
+--- goes with it.
+function M.move_to_worktree(chat: string, name: string, branch: string?, device: string?): any
+	return ui.call("chat.move_to_worktree", { chat = chat, name = name, branch = branch, device = device })
 end
 
 -- The chat's visuals that ask the person something, as its host knows them

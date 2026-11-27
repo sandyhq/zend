@@ -1075,6 +1075,17 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
         crate::plugins::preview::refuse("chat.switch_ref")?;
         checkout_call("SwitchRef", args).await
     });
+    // Round 2: `{ path, device? }` every remote fetched, branches deleted
+    // there pruned here; `{ chat, name, branch?, device? }` the chat (only
+    // it) moved to a new worktree of its checkout, off the branch it's on.
+    host.async_action("chat.fetch", move |args| async move {
+        crate::plugins::preview::refuse("chat.fetch")?;
+        checkout_call("FetchAll", args).await
+    });
+    host.async_action("chat.move_to_worktree", move |args| async move {
+        crate::plugins::preview::refuse("chat.move_to_worktree")?;
+        checkout_call("MoveChatToWorktree", args).await
+    });
     // The chat's open visuals as its host knows them (ds/visual_pin): found
     // before its history is all here. `{ chat, device? }`.
     host.async_action("chat.open_visuals", move |args| async move { Ok::<Value, String>(open_visuals(args).await) });
@@ -1141,8 +1152,10 @@ async fn refs(args: Value) -> Result<Value, Outcome> {
 /// (`projects.manage`, src/server_route.rs).
 async fn checkout_call(method: &str, args: Value) -> Result<Value, String> {
     let field = |key: &str| args.field(key).map(text).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let path = field("path").ok_or("missing")?;
+    let path = if method == "MoveChatToWorktree" { field("chat") } else { field("path") }.ok_or("missing")?;
     let mut params = match method {
+        "FetchAll" => json!({ "repoPath": path, "prune": true }),
+        "MoveChatToWorktree" => json!({ "chatId": path, "name": field("name").ok_or("missing")?, "branch": field("branch") }),
         "CreateBranch" => json!({ "repoPath": path, "name": field("name").ok_or("missing")?, "base": field("base").unwrap_or_default() }),
         "RenameBranch" => json!({ "cwd": path, "name": field("name").ok_or("missing")? }),
         "RenameWorktree" => json!({ "worktreePath": path, "name": field("name").ok_or("missing")?, "branch": field("branch") }),
@@ -1214,6 +1227,9 @@ fn refs_value(found: &Json) -> Value {
                 ];
                 if let Some(path) = r["worktreePath"].as_str() {
                     fields.push(("worktree", Value::from(path)));
+                }
+                if let Some(remote) = r["remote"].as_str() {
+                    fields.push(("remote", Value::from(remote)));
                 }
                 Value::record(fields)
             })

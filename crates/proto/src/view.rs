@@ -1237,6 +1237,7 @@ mod checkout_tests {
             name: name.into(),
             current: false,
             worktree_path: None,
+            remote: None,
         }
     }
 
@@ -1245,6 +1246,7 @@ mod checkout_tests {
             name: name.into(),
             current: false,
             worktree_path: Some(path.into()),
+            remote: None,
         }
     }
 

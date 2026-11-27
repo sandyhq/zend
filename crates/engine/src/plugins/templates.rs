@@ -277,6 +277,25 @@ fn out_of_date(template: &Path, hashes: &BTreeMap<String, String>) -> Vec<String
         .collect()
 }
 
+/// The template's own copies of Zend's files that differ from Zend's now
+/// and have no base recorded (a template made by hand, or before Zend kept
+/// `.base.json`): whether Zend changed them since can't be told, so they
+/// are named rather than counted current (plans/branch-naming R6).
+fn unknown_base(template: &Path, zend: &Path, mine: &[String]) -> Vec<String> {
+    let base: BTreeMap<String, String> = read_json(&template.join(BASE));
+    mine.iter()
+        .filter(|rel| !base.contains_key(rel.as_str()))
+        .filter(|rel| {
+            let theirs = zend.join(rel);
+            is_regular_file(&theirs)
+                && inside(template, rel).is_some_and(|own| {
+                    is_regular_file(&own) && std::fs::read(&own).ok() != std::fs::read(&theirs).ok()
+                })
+        })
+        .cloned()
+        .collect()
+}
+
 pub(super) fn is_regular_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
 }
@@ -537,7 +556,7 @@ pub fn use_template(dir: &Path, id: &str, by: Option<&Value>) -> Result<Value, S
 }
 
 /// `TemplateStatus`: `{id, active, root_error?, file_errors, out_of_date,
-/// files, inherits}`.
+/// unknown_base, files, inherits}`.
 pub fn status(dir: &Path, id: &str) -> Result<Value, String> {
     let zend = zend_dir(dir)?;
     let folder = if id == ZEND {
@@ -548,8 +567,8 @@ pub fn status(dir: &Path, id: &str) -> Result<Value, String> {
     };
     let health = health(dir, id);
     let theirs = zend_files(&zend);
-    let (files, inherits, stale) = if id == ZEND {
-        (theirs.len(), 0, Vec::new())
+    let (files, inherits, stale, unknown) = if id == ZEND {
+        (theirs.len(), 0, Vec::new(), Vec::new())
     } else {
         let mine = own_files(&folder);
         let inherits = theirs
@@ -557,13 +576,15 @@ pub fn status(dir: &Path, id: &str) -> Result<Value, String> {
             .filter(|rel| mine.binary_search(rel).is_err())
             .count();
         let hashes: BTreeMap<String, String> = read_json(&zend.join(HASHES));
-        (mine.len(), inherits, out_of_date(&folder, &hashes))
+        let unknown = unknown_base(&folder, &zend, &mine);
+        (mine.len(), inherits, out_of_date(&folder, &hashes), unknown)
     };
     let mut out = json!({
         "id": id,
         "active": active(dir) == id,
         "file_errors": health.files,
         "out_of_date": stale,
+        "unknown_base": unknown,
         "files": files,
         "inherits": inherits,
     });
@@ -860,6 +881,39 @@ mod tests {
         // An absent or empty .active is Zend.
         std::fs::write(bare.join(ACTIVE), "  \n").unwrap();
         assert_eq!(active(&bare), "zend");
+    }
+
+    /// A template with no base recorded for a file (made by hand, or before
+    /// Zend kept `.base.json`): its own copy of a file of Zend's that differs
+    /// from Zend's now can't be told current, so `template_status` names it
+    /// (`unknown_base`) rather than nothing (plans/branch-naming R6).
+    #[test]
+    fn plugins_templates_status_names_copies_with_no_base() {
+        let d = with_zend("nobase");
+        create(&d, "intent", "Intent", None, Path::new("docs/templates.md")).unwrap();
+        let t = d.join("intent");
+        std::fs::remove_file(t.join(BASE)).unwrap();
+        write(&t.join("screens/shell/sidebar.luau"), "-- my sidebar");
+        write(&t.join("screens/mine.luau"), "-- mine, Zend has none");
+        let s = status(&d, "intent").unwrap();
+        assert_eq!(s["out_of_date"], json!([]));
+        assert_eq!(s["unknown_base"], json!(["screens/shell/sidebar.luau"]));
+
+        // A base for some files: only those without one are unknown.
+        write(&t.join(BASE), r#"{"ds/tokens.luau":"t1","app.luau":"a1"}"#);
+        zend_hashes(
+            &d,
+            r#"{"app.luau":"a1",".luaurc":"r1","screens/shell/sidebar.luau":"s1","screens/chat/init.luau":"c1","ds/tokens.luau":"t2"}"#,
+        );
+        let s = status(&d, "intent").unwrap();
+        assert_eq!(s["out_of_date"], json!(["ds/tokens.luau"]));
+        assert_eq!(s["unknown_base"], json!(["screens/shell/sidebar.luau"]));
+
+        // One made by Zend has a base for each: nothing unknown.
+        create(&d, "made", "Made", None, Path::new("docs/templates.md")).unwrap();
+        write(&d.join("made").join("screens/shell/sidebar.luau"), "-- changed");
+        assert_eq!(status(&d, "made").unwrap()["unknown_base"], json!([]));
+        assert_eq!(status(&d, "zend").unwrap()["unknown_base"], json!([]));
     }
 
     #[test]

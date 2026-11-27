@@ -329,7 +329,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TEMPLATE_STATUS,
-            description: "How a template is doing: whether it's in use, the error that broke it (root_error), the files with errors (each falls back to Zend's own, with the error), the files out of date (Zend's own has changed since they were copied), how many files it has, and how many it inherits from Zend.",
+            description: "How a template is doing: whether it's in use, the error that broke it (root_error), the files with errors (each falls back to Zend's own, with the error), the files out of date (Zend's own has changed since they were copied), its own copies of Zend's files with no base recorded (unknown_base: they differ from Zend's now, and whether Zend changed them since can't be told), how many files it has, and how many it inherits from Zend.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1028,7 +1028,7 @@ mod tests {
                 },
                 methods::TEMPLATE_STATUS => RpcReply::Value(json!({
                     "id": params["id"], "active": false, "file_errors": { "ds/tokens.luau": "boom" },
-                    "out_of_date": [], "files": 40, "inherits": 2,
+                    "out_of_date": [], "unknown_base": [], "files": 40, "inherits": 2,
                 })),
                 methods::DELETE_TEMPLATE => {
                     RpcReply::Value(json!({ "deleted": params["id"], "active": "zend" }))

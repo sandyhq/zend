@@ -8545,6 +8545,7 @@ mod tests {
             name: name.into(),
             current,
             worktree_path: worktree.map(str::to_string),
+            remote: None,
         }
     }
 

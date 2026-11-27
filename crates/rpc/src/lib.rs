@@ -271,6 +271,12 @@ pub mod methods {
     /// (`{worktreePath, name, branch?}`); the chats in it follow. Refused
     /// while a turn runs in one of them.
     pub const RENAME_WORKTREE: &str = "RenameWorktree";
+    /// Move one chat from a local checkout into a new worktree of its own
+    /// (`{chatId, name, branch?}`): a worktree named `name` off the
+    /// checkout's branch, on a new branch (`branch`, else `name`); only
+    /// that chat moves, its next turn given its history. Refused while a
+    /// turn runs in it.
+    pub const MOVE_CHAT_TO_WORKTREE: &str = "MoveChatToWorktree";
     pub const LIST_FOLDERS: &str = "ListFolders";
     pub const GET_WORKTREE_SETTINGS: &str = "GetWorktreeSettings";
     pub const SET_WORKTREE_SETTINGS: &str = "SetWorktreeSettings";

@@ -550,7 +550,7 @@ async fn fetch_all_updates_only_remote_tracking_refs() {
     let remote_before = git_stdout(&repo_dir, &["rev-parse", "origin/main"]).await;
 
     test_repos(&tmp.path().join("data"))
-        .fetch_all(&repo_dir)
+        .fetch_all(&repo_dir, false)
         .await
         .expect("fetch all");
 

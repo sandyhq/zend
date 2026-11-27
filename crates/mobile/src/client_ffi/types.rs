@@ -1022,6 +1022,8 @@ impl From<RepoRef> for zc::rpc::RepoRef {
             name: r.name,
             current: r.current,
             worktree_path: r.worktree_path,
+            // The phone lists local branches only (no remote-only ones yet).
+            remote: None,
         }
     }
 }

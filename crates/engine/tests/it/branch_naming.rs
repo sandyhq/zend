@@ -621,3 +621,286 @@ async fn a_turn_sent_while_its_worktree_moves_runs_in_the_new_folder() {
     assert_eq!(PathBuf::from(&f.seen.lock().unwrap()[0].cwd), new);
     assert_eq!(PathBuf::from(f.row("chat-new").cwd.unwrap()), new);
 }
+
+
+// ── Round 2 (plan "Runde 2"): an open session's chip menu ─────────────────
+
+impl Fixture {
+    /// A bare repository `name` beside the repo, added to it as remote
+    /// `name`, with main pushed.
+    fn remote(&self, name: &str) -> PathBuf {
+        let bare = self.root.join(format!("{name}.git"));
+        std::fs::create_dir_all(&bare).unwrap();
+        git(&bare, &["init", "--bare", "-b", "main"]);
+        git(&self.repo, &["remote", "add", name, &bare.to_string_lossy()]);
+        git(&self.repo, &["push", "-q", name, "main"]);
+        bare
+    }
+
+    /// A branch `branch` only on `remote` (pushed, its local one gone):
+    /// with `edit`, a commit changing a.txt to it.
+    fn remote_only(&self, remote: &str, branch: &str, edit: Option<&str>) {
+        git(&self.repo, &["switch", "-q", "-c", branch]);
+        if let Some(text) = edit {
+            std::fs::write(self.repo.join("a.txt"), text).unwrap();
+            git(&self.repo, &["commit", "-q", "-am", branch]);
+        }
+        git(&self.repo, &["push", "-q", remote, branch]);
+        git(&self.repo, &["switch", "-q", "main"]);
+        git(&self.repo, &["branch", "-q", "-D", branch]);
+    }
+
+    async fn refs(&self) -> Vec<serde_json::Value> {
+        let refs = self
+            .client
+            .call(methods::LIST_REFS, serde_json::json!({ "repoPath": self.repo }))
+            .await
+            .expect("ListRefs");
+        refs.as_array().unwrap().clone()
+    }
+
+    async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.client.call(method, params).await.map_err(|e| e.to_string())
+    }
+}
+
+fn named<'a>(refs: &'a [serde_json::Value], name: &str) -> Option<&'a serde_json::Value> {
+    refs.iter().find(|r| r["name"] == name)
+}
+
+/// R1-1, with R1-4's engine side: an open session's "New branch…" makes the
+/// branch off its current one and checks it out in its folder, every chat
+/// there following; never while a turn runs in one of them (nor a switch).
+#[tokio::test(flavor = "multi_thread")]
+async fn r1_a_new_branch_from_an_open_session_moves_its_folder_never_mid_turn() {
+    let f = fixture().await;
+    git(&f.repo, &["branch", "other"]);
+    f.chat("chat-a", None).await;
+    f.chat("chat-b", None).await;
+    let cwd = f.repo.to_string_lossy().into_owned();
+    f.run("chat-a", "m-1", "first words", &cwd, None);
+    wait_for(|| f.replies("chat-a") == 1, "chat-a's turn").await;
+
+    // A turn running in chat-b: refused, nothing made or switched.
+    f.run("chat-b", "m-hold", "hold on", &cwd, None);
+    wait_for(|| f.core.sessions.turn_in_flight("chat-b"), "a running turn").await;
+    let error = f
+        .call(methods::CREATE_BRANCH, serde_json::json!({ "repoPath": f.repo, "name": "topic", "base": "" }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("A turn is running in Chat chat-b"), "{error}");
+    let error = f
+        .call(methods::SWITCH_REF, serde_json::json!({ "repoPath": f.repo, "refName": "other" }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("A turn is running in Chat chat-b"), "{error}");
+    assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), "main");
+    assert!(!git_out(&f.repo, &["branch", "--list"]).contains("topic"));
+    f.release.notify_one();
+    wait_for(
+        || !f.core.sessions.turn_in_flight("chat-b") && !f.core.sessions.turn_starting("chat-b") && f.replies("chat-b") == 1,
+        "the turn's end",
+    )
+    .await;
+
+    let made = f
+        .call(methods::CREATE_BRANCH, serde_json::json!({ "repoPath": f.repo, "name": "topic", "base": "" }))
+        .await
+        .expect("CreateBranch");
+    assert_eq!(made["branch"], "topic");
+    assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), "topic");
+    assert_eq!(git_out(&f.repo, &["rev-parse", "topic"]), git_out(&f.repo, &["rev-parse", "main"]));
+    assert_eq!(f.row("chat-a").branch.as_deref(), Some("topic"));
+    assert_eq!(f.row("chat-b").branch.as_deref(), Some("topic"));
+}
+
+/// R1-2: a new branch's name taken, not git's, or in the way of another
+/// (topic vs topic/sub) is said, and nothing is made.
+#[tokio::test(flavor = "multi_thread")]
+async fn r1_a_new_branch_named_wrong_is_said_and_nothing_made() {
+    let f = fixture().await;
+    git(&f.repo, &["branch", "topic"]);
+    git(&f.repo, &["branch", "deep/inner"]);
+    f.chat("chat-a", None).await;
+    let before = git_out(&f.repo, &["branch", "--list"]);
+    for (name, said) in [
+        ("main", "Branch main already exists".to_string()),
+        ("topic/sub", "Branch topic is in the way of topic/sub".to_string()),
+        ("deep", "Branch deep/inner is in the way of deep".to_string()),
+        ("bad..name", "isn't a name git takes".to_string()),
+        ("a b", "isn't a name git takes".to_string()),
+        ("-x", "isn't a name git takes".to_string()),
+    ] {
+        let error = f
+            .call(methods::CREATE_BRANCH, serde_json::json!({ "repoPath": f.repo, "name": name, "base": "" }))
+            .await
+            .unwrap_err();
+        assert!(error.contains(&said), "{name}: {error}");
+    }
+    assert_eq!(git_out(&f.repo, &["branch", "--list"]), before);
+    assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), "main");
+    assert_ne!(f.row("chat-a").branch.as_deref(), Some("topic/sub"));
+}
+
+/// R1-3: a worktree session's new branch is made in its folder alone; the
+/// project's folder and its chats stay on their branch.
+#[tokio::test(flavor = "multi_thread")]
+async fn r1_a_new_branch_in_a_worktree_session_stays_in_its_folder() {
+    let f = fixture().await;
+    let made = f.create_worktree(serde_json::json!({ "name": "wt-a" })).await.unwrap();
+    let wt = PathBuf::from(made["path"].as_str().unwrap());
+    f.chat("chat-wt", Some(&wt)).await;
+    f.core.workspace.set_chat_branch("chat-wt", "wt-a").unwrap();
+    f.chat("chat-main", None).await;
+    f.core.workspace.set_chat_branch("chat-main", "main").unwrap();
+    let made = f
+        .call(methods::CREATE_BRANCH, serde_json::json!({ "repoPath": wt, "name": "wt-topic", "base": "" }))
+        .await
+        .expect("CreateBranch");
+    assert_eq!(made["branch"], "wt-topic");
+    assert_eq!(git_out(&wt, &["branch", "--show-current"]), "wt-topic");
+    assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), "main");
+    assert_eq!(f.row("chat-wt").branch.as_deref(), Some("wt-topic"));
+    assert_eq!(f.row("chat-main").branch.as_deref(), Some("main"));
+}
+
+/// R2-1, R2-2: a branch only on a remote is listed, marked with its remote;
+/// switched to, it becomes a local branch tracking it (origin's or another
+/// remote's); changes in the way stop it in git's words, nothing made.
+#[tokio::test(flavor = "multi_thread")]
+async fn r2_a_remote_only_branch_is_listed_and_switched_to_as_a_tracking_branch() {
+    let f = fixture().await;
+    f.remote("origin");
+    f.remote_only("origin", "feature", None);
+    f.remote_only("origin", "clash", Some("changed on clash\n"));
+    f.remote("upstream");
+    f.remote_only("upstream", "theirs", None);
+    f.chat("chat-a", None).await;
+
+    let refs = f.refs().await;
+    assert_eq!(named(&refs, "feature").expect("feature listed")["remote"], "origin", "{refs:?}");
+    assert_eq!(named(&refs, "theirs").expect("theirs listed")["remote"], "upstream", "{refs:?}");
+    assert!(named(&refs, "main").unwrap().get("remote").is_none(), "a local branch isn't remote: {refs:?}");
+
+    // Changes in the way: git's words, no branch made, still on main.
+    std::fs::write(f.repo.join("a.txt"), "uncommitted\n").unwrap();
+    let error = f
+        .call(methods::SWITCH_REF, serde_json::json!({ "repoPath": f.repo, "refName": "clash" }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("would be overwritten"), "git's words: {error}");
+    assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), "main");
+    assert!(!git_out(&f.repo, &["branch", "--list"]).contains("clash"));
+    assert_eq!(std::fs::read_to_string(f.repo.join("a.txt")).unwrap(), "uncommitted\n");
+    git(&f.repo, &["checkout", "--", "a.txt"]);
+
+    for (branch, remote) in [("feature", "origin"), ("theirs", "upstream")] {
+        let switched = f
+            .call(methods::SWITCH_REF, serde_json::json!({ "repoPath": f.repo, "refName": branch }))
+            .await
+            .expect("SwitchRef");
+        assert_eq!(switched["branch"], branch);
+        assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), branch);
+        assert_eq!(
+            git_out(&f.repo, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]),
+            format!("{remote}/{branch}")
+        );
+        assert_eq!(f.row("chat-a").branch.as_deref(), Some(branch));
+    }
+    let refs = f.refs().await;
+    assert!(named(&refs, "feature").unwrap().get("remote").is_none(), "local now: {refs:?}");
+}
+
+/// R3-1: Fetch brings a branch pushed elsewhere into the list, and drops one
+/// deleted on the remote (pruned), without a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn r3_fetch_brings_new_remote_branches_and_drops_deleted_ones() {
+    let f = fixture().await;
+    let bare = f.remote("origin");
+    f.remote_only("origin", "gone", None);
+    let other = f.root.join("other");
+    let out = Command::new("git").args(["clone", "-q", &bare.to_string_lossy(), &other.to_string_lossy()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    git(&other, &["push", "-q", "origin", "HEAD:refs/heads/fresh"]);
+    git(&other, &["push", "-q", "origin", "--delete", "gone"]);
+
+    let refs = f.refs().await;
+    assert!(named(&refs, "fresh").is_none() && named(&refs, "gone").is_some(), "{refs:?}");
+    f.call(methods::FETCH_ALL, serde_json::json!({ "repoPath": f.repo, "prune": true })).await.expect("FetchAll");
+    let refs = f.refs().await;
+    assert_eq!(named(&refs, "fresh").expect("fetched")["remote"], "origin", "{refs:?}");
+    assert!(named(&refs, "gone").is_none(), "pruned: {refs:?}");
+}
+
+/// R4-1: "Move to a new worktree…": a local checkout's session moves alone
+/// into a new worktree on a new branch off its current one; the others stay;
+/// its next turn runs there, fresh, with its history. Never mid-turn, never
+/// from a worktree, a name taken said.
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_moving_a_session_to_a_new_worktree_takes_only_it_and_keeps_its_history() {
+    let f = fixture().await;
+    git(&f.repo, &["switch", "-q", "-c", "work"]);
+    f.chat("chat-a", None).await;
+    f.chat("chat-b", None).await;
+    let cwd = f.repo.to_string_lossy().into_owned();
+    f.run("chat-a", "m-1", "first words", &cwd, None);
+    wait_for(|| f.replies("chat-a") == 1, "the first turn").await;
+
+    let move_to = |chat: &str, name: &str, branch: Option<&str>| {
+        f.call(methods::MOVE_CHAT_TO_WORKTREE, serde_json::json!({ "chatId": chat, "name": name, "branch": branch }))
+    };
+    let y = f.worktrees.join("y");
+
+    // Mid-turn: refused, nothing made.
+    f.run("chat-a", "m-hold", "hold on", &cwd, None);
+    wait_for(|| f.core.sessions.turn_in_flight("chat-a"), "a running turn").await;
+    let error = move_to("chat-a", "y", None).await.unwrap_err();
+    assert!(error.contains("A turn is running"), "{error}");
+    assert!(!y.exists());
+    f.release.notify_one();
+    wait_for(
+        || !f.core.sessions.turn_in_flight("chat-a") && !f.core.sessions.turn_starting("chat-a") && f.replies("chat-a") == 2,
+        "the turn's end",
+    )
+    .await;
+
+    let moved = move_to("chat-a", "y", None).await.expect("MoveChatToWorktree");
+    assert_eq!(PathBuf::from(moved["path"].as_str().unwrap()), y);
+    assert_eq!(moved["branch"], "y");
+    assert_eq!(moved["chats"], serde_json::json!(["chat-a"]));
+    assert_eq!(git_out(&y, &["branch", "--show-current"]), "y");
+    assert_eq!(git_out(&y, &["rev-parse", "HEAD"]), git_out(&f.repo, &["rev-parse", "work"]));
+    assert_eq!(git_out(&f.repo, &["branch", "--show-current"]), "work", "the project's folder stays");
+    let a = f.row("chat-a");
+    assert_eq!(PathBuf::from(a.cwd.unwrap()), y);
+    assert_eq!(a.branch.as_deref(), Some("y"));
+    let b = f.row("chat-b");
+    assert!(b.cwd.is_none_or(|c| PathBuf::from(c) == f.repo), "chat-b stays");
+    assert_ne!(b.branch.as_deref(), Some("y"));
+
+    // Its next turn: in the new folder, a fresh session, the history given.
+    let before = f.seen.lock().unwrap().len();
+    // (The history replayed says "hold on": the recorder waits on it, so
+    // its release is given ahead.)
+    f.release.notify_one();
+    f.run("chat-a", "m-2", "second words", &y.to_string_lossy(), None);
+    wait_for(|| f.replies("chat-a") == 3, "the next turn").await;
+    let next = f.seen.lock().unwrap()[before].clone();
+    assert_eq!(PathBuf::from(&next.cwd), y);
+    assert_eq!(next.resume, None, "a session kept by the old folder isn't resumed");
+    assert!(next.prompt.contains("first words"), "history replayed: {}", next.prompt);
+    assert!(next.prompt.contains("second words"));
+
+    // From a worktree: refused. A name taken: said, chat-b stays.
+    let error = move_to("chat-a", "z", None).await.unwrap_err();
+    assert!(error.contains("already works in a worktree"), "{error}");
+    let error = move_to("chat-b", "y", None).await.unwrap_err();
+    assert!(error.contains("already exists"), "{error}");
+    assert!(f.row("chat-b").cwd.is_none_or(|c| PathBuf::from(c) == f.repo));
+    // Its branch apart from its name.
+    let moved = move_to("chat-b", "wt-b", Some("topic/b")).await.expect("named apart");
+    assert_eq!(PathBuf::from(moved["path"].as_str().unwrap()), f.worktrees.join("wt-b"));
+    assert_eq!(moved["branch"], "topic/b");
+    assert_eq!(f.row("chat-b").branch.as_deref(), Some("topic/b"));
+}
+

@@ -1127,6 +1127,7 @@ impl DemoHost {
             name: name.into(),
             current,
             worktree_path: worktree.map(str::to_owned),
+            remote: None,
         };
         if path.contains("zend") {
             vec![

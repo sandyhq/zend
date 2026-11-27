@@ -3236,7 +3236,20 @@
       "no_other_branch": "这里没有可检出的其他分支",
       "new_branch_action": "新建分支…",
       "worktree_action": "命名工作树…",
-      "new_branch_pending": "新建 {name}"
+      "new_branch_pending": "新建 {name}",
+      "create": "创建",
+      "open_new_branch_body": "基于 {base} 创建，并在此检出。",
+      "remote_heading": "在 {remote} 上",
+      "search_branches": "搜索分支",
+      "no_match": "没有匹配的分支",
+      "pick_branch": "选择要在此检出的分支。",
+      "fetch": "获取",
+      "fetch_title": "获取",
+      "fetch_again": "再次获取",
+      "move_worktree": "移到新的工作树…",
+      "move_worktree_title": "移到新的工作树",
+      "move_worktree_body": "只有这个会话会移动，连同它的历史，移到基于 {base} 的新工作树。其他会话留在这里。",
+      "move": "移动"
     }
   },
   "panel": {

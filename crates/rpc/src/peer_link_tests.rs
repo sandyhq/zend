@@ -192,6 +192,8 @@ fn each_area_grant_opens_its_area_and_only_with_it() {
         ("projects.manage", methods::CREATE_BRANCH, None),
         ("projects.manage", methods::RENAME_BRANCH, None),
         ("projects.manage", methods::RENAME_WORKTREE, None),
+        ("projects.manage", methods::MOVE_CHAT_TO_WORKTREE, None),
+        ("projects.manage", methods::FETCH_ALL, None),
         ("files", methods::READ_WORKSPACE_FILE, None),
         ("files", methods::WRITE_WORKSPACE_FILE, None),
         ("files", methods::DISCARD_WORKING_TREE, None),

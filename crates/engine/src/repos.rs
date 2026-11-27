@@ -34,6 +34,9 @@ const PATH_EXISTS_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hard wall-clock ceiling for a folder listing (the walk runs in a disposable
 /// blocking task; on expiry the caller unblocks and the task is abandoned).
 const FOLDER_LIST_TIMEOUT: Duration = Duration::from_secs(6);
+/// How long a fetch may take (`fetch_all`): a first fetch of a large
+/// repository takes minutes; a remote that never answers is given up on.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Cap on returned folder entries (bounds response size).
 const FOLDER_LIST_MAX_ENTRIES: usize = 500;
 /// Cap on returned drives (a machine with more mounts than this is a server
@@ -428,12 +431,45 @@ impl Repos {
         }
     }
 
-    /// Fetch every configured remote without pruning or integrating anything
-    /// into the active branch. This intentionally updates refs only.
-    pub async fn fetch_all(&self, repo_path: &Path) -> Result<(), EngineError> {
-        self.git(&["fetch", "--all", "--quiet"], Some(repo_path))
-            .await
-            .map(drop)
+    /// Fetch every configured remote without integrating anything into the
+    /// active branch: refs only. With `prune`, remote branches deleted
+    /// there go here too (the branch chip's Fetch). Never asks for a
+    /// password (a remote that wants one fails), and gives up after
+    /// [`FETCH_TIMEOUT`] (a remote that never answers).
+    pub async fn fetch_all(&self, repo_path: &Path, prune: bool) -> Result<(), EngineError> {
+        crate::confined::refuse_git(repo_path)?;
+        let mut cmd = tokio::process::Command::new("git");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.as_std_mut().creation_flags(0x08000000);
+            cmd.args(["-c", "core.longpaths=true"]);
+        }
+        cmd.current_dir(repo_path)
+            .args(["fetch", "--all", "--quiet"])
+            .args(prune.then_some("--prune"))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let output = match tokio::time::timeout(FETCH_TIMEOUT, cmd.output()).await {
+            Ok(output) => output.map_err(|e| EngineError::Other(format!("git fetch failed to start: {e}")))?,
+            Err(_) => {
+                return Err(EngineError::Other(format!(
+                    "git fetch gave no answer in {} minutes: a remote doesn't answer",
+                    FETCH_TIMEOUT.as_secs() / 60
+                )));
+            }
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let message = stderr.trim();
+            return Err(EngineError::Other(if message.is_empty() {
+                format!("git fetch failed ({})", output.status)
+            } else {
+                format!("git: {message}")
+            }));
+        }
+        Ok(())
     }
 
     /// The absolute Git `HEAD` file for event-driven external branch reconciliation.
@@ -840,14 +876,44 @@ impl Repos {
                 }
             }
         }
+        // A branch only on a remote (no local one): which remote, origin's
+        // first (`switch_ref` makes a local branch tracking it).
+        let remote_only = self.remote_only_branches(repo_path).await;
         Ok(names
             .into_iter()
             .map(|name| RepoRef {
                 current: current.as_deref() == Some(name.as_str()),
                 worktree_path: worktrees.get(&name).cloned(),
+                remote: remote_only.get(&name).cloned(),
                 name,
             })
             .collect())
+    }
+
+    /// The branches only on a remote, each with the remote it is on
+    /// (`origin` when more than one has it): `{name: remote}`.
+    async fn remote_only_branches(&self, repo_path: &Path) -> std::collections::HashMap<String, String> {
+        let mut found = std::collections::HashMap::new();
+        let Ok(out) = self
+            .git(&["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"], Some(repo_path))
+            .await
+        else {
+            return found;
+        };
+        let local: HashSet<&str> = out.lines().filter_map(|l| l.trim().strip_prefix("refs/heads/")).collect();
+        for line in out.lines().map(str::trim) {
+            let Some((remote, name)) = line.strip_prefix("refs/remotes/").and_then(|r| r.split_once('/')) else {
+                continue;
+            };
+            if name == "HEAD" || local.contains(name) {
+                continue;
+            }
+            let entry = found.entry(name.to_string()).or_insert_with(|| remote.to_string());
+            if remote == "origin" {
+                *entry = remote.to_string();
+            }
+        }
+        found
     }
 
     /// Public commit history in topological order. Only user-facing branches,
@@ -1400,20 +1466,13 @@ impl Repos {
         if local {
             self.git(&["checkout", ref_name], Some(cwd)).await?;
         } else {
-            let remote = format!("origin/{ref_name}");
-            let has_remote = self
-                .git(
-                    &[
-                        "show-ref",
-                        "--verify",
-                        "--quiet",
-                        &format!("refs/remotes/{remote}"),
-                    ],
-                    Some(cwd),
-                )
+            // On a remote only: origin's, else the remote that has it.
+            let remote = self
+                .remote_only_branches(cwd)
                 .await
-                .is_ok();
-            if has_remote {
+                .remove(ref_name)
+                .map(|remote| format!("{remote}/{ref_name}"));
+            if let Some(remote) = remote {
                 self.git(&["checkout", "--track", &remote], Some(cwd))
                     .await?;
             } else {

@@ -88,6 +88,7 @@ Zend's built-in themes used to be templates (`theme-<key>`, colour-only). They a
    - `root_error`: what broke `app.luau`, if anything;
    - `file_errors`: each file that fell back, with its error;
    - `out_of_date`: the files whose Zend original changed;
+   - `unknown_base`: your copies of Zend's files that differ from Zend's now and have no base recorded (a template made by hand, or before Zend kept `.base.json`): whether Zend changed them since can't be told, so compare them with `.zend/`'s;
    - how many files it has, and how many it inherits.
 5. **Fix and save again.** A fallen-back file is retried as you save it.
 

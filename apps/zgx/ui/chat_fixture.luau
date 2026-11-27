@@ -587,6 +587,43 @@ stub.switch_ref = function(path: string, ref: string, device: string?)
 	note(`switch:{path}|{ref}|{device or "here"}`)
 	return git_answer(ref)
 end
+-- Round 2 (plans/branch-naming): `fetch:path|device` (origin has a branch
+-- `fresh` after it), `move:chat|name|branch|device`. `remote_branch`: a
+-- branch only on origin; `many_branches`: twelve to choose from.
+stub.fetch = function(path: string, device: string?)
+	note(`fetch:{path}|{device or "here"}`)
+	if GIT_REFUSES:peek() then
+		return git_answer("")
+	end
+	local list = table.clone(REFS[path] or {})
+	table.insert(list, { name = "fresh", current = false, remote = "origin" })
+	REFS[path] = list
+	return settled({ chats = {} })
+end
+stub.move_to_worktree = function(chat: string, name: string, branch: string?, device: string?)
+	note(`move:{chat}|{name}|{branch or "-"}|{device or "here"}`)
+	return git_answer(branch or name)
+end
+ui.command {
+	id = "remote_branch",
+	title = "Atlas has a branch only on origin",
+	run = function()
+		local list = table.clone(REFS["/tmp/atlas"])
+		table.insert(list, { name = "theirs", current = false, remote = "origin" })
+		REFS["/tmp/atlas"] = list
+	end,
+}
+ui.command {
+	id = "many_branches",
+	title = "Atlas has twelve branches to switch to",
+	run = function()
+		local list = { { name = "main", current = true } }
+		for i = 1, 12 do
+			table.insert(list, { name = string.format("b-%02d", i), current = false })
+		end
+		REFS["/tmp/atlas"] = list
+	end,
+}
 -- The open session in Atlas's own folder, on main, with the other chat
 -- working there too (its title named by the warning).
 ui.command {

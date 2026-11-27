@@ -1982,6 +1982,57 @@ async fn a_server_names_branches_here_but_never_in_zends_data() {
     assert!(!git(&inside, &["branch", "--list"]).contains("planted"));
 }
 
+/// A server with `projects.manage` fetches a project's remotes here and
+/// moves a chat of it into a worktree of its own (plans/branch-naming round
+/// 2, R-peer), and never does either in a repository kept in Zend's data.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_fetches_and_moves_chats_here_but_never_in_zends_data() {
+    let a = paired(&["projects.manage"]).await;
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let repo = a.root.join("p");
+    let inside = a.data.join("inside");
+    for dir in [repo.clone(), inside.clone()] {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), "x\n").unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["add", "."]);
+        git(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first"]);
+    }
+    let local = zend_rpc::memory_client(a.core.rpc_service());
+    for (chat, cwd) in [("in-p", &repo), ("in-data", &inside)] {
+        local
+            .call(methods::MUTATE, json!({ "op": "createChat", "chatId": chat, "deviceId": a.core.device_id, "spaceId": "p" }))
+            .await
+            .expect("createChat");
+        a.core.workspace.set_chat_cwd(chat, &cwd.to_string_lossy()).unwrap();
+    }
+    a.b.call(methods::FETCH_ALL, json!({ "repoPath": repo, "prune": true })).await.expect("a fetch in its project");
+    let moved = a
+        .b
+        .call(methods::MOVE_CHAT_TO_WORKTREE, json!({ "chatId": "in-p", "name": "peer-moved" }))
+        .await
+        .expect("a chat of its project moved");
+    assert_eq!(moved["branch"], "peer-moved");
+    assert_eq!(git(&repo, &["branch", "--show-current"]), "main");
+
+    let fenced = |reply: &Result<Value, RpcError>| reply.as_ref().is_err_and(|e| e.to_string().contains("Zend's own data"));
+    let calls = [
+        (methods::FETCH_ALL, json!({ "repoPath": inside, "prune": true })),
+        (methods::MOVE_CHAT_TO_WORKTREE, json!({ "chatId": "in-data", "name": "planted" })),
+    ];
+    for (method, params) in calls {
+        let reply = a.b.call(method, params.clone()).await;
+        assert!(fenced(&reply), "{method} {params}: {reply:?}");
+    }
+    assert!(!git(&inside, &["branch", "--list"]).contains("planted"));
+    assert_eq!(git(&inside, &["worktree", "list"]).lines().count(), 1);
+    assert_eq!(PathBuf::from(a.core.workspace.chat("in-data").unwrap().unwrap().cwd.unwrap()), inside);
+}
+
 /// Zend's own data (the peers and their grants, keys) is never a
 /// server's by path, with `files` or `full`: not read, not written, not
 /// listed, not searched, even through a project that holds it. Other

@@ -3236,7 +3236,20 @@
       "no_other_branch": "No other branch to check out here",
       "new_branch_action": "New branch…",
       "worktree_action": "Name the worktree…",
-      "new_branch_pending": "New {name}"
+      "new_branch_pending": "New {name}",
+      "create": "Create",
+      "open_new_branch_body": "Made off {base} and checked out here.",
+      "remote_heading": "On {remote}",
+      "search_branches": "Search branches",
+      "no_match": "No branch matches",
+      "pick_branch": "Choose the branch to check out here.",
+      "fetch": "Fetch",
+      "fetch_title": "Fetch",
+      "fetch_again": "Fetch again",
+      "move_worktree": "Move to a new worktree…",
+      "move_worktree_title": "Move to a new worktree",
+      "move_worktree_body": "Only this chat moves, its history with it, to a new worktree off {base}. The other chats stay here.",
+      "move": "Move"
     }
   },
   "panel": {

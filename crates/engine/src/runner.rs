@@ -1729,6 +1729,7 @@ mod tests {
             methods::CREATE_BRANCH,
             methods::RENAME_BRANCH,
             methods::RENAME_WORKTREE,
+            methods::MOVE_CHAT_TO_WORKTREE,
             methods::UPLOAD_CHUNK,
         ] {
             assert!(!passive(method), "{method} is someone doing something");
