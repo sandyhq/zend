@@ -111,6 +111,10 @@ export type Request = {
 	fresh: boolean?,
 	cwd: string?,
 	worktree: boolean?,
+	-- That worktree's own name (its folder and branch) and its branch apart
+	-- (plans/branch-naming); nil, as Zend names it.
+	worktree_name: string?,
+	worktree_branch: string?,
 	-- Its id (store.new_id), when the page shows it before it's sent.
 	message_id: string?,
 }
@@ -207,6 +211,27 @@ export type Ref = { name: string, current: boolean, worktree: string? }
 -- this one): a promise of its refs, the current first.
 function M.refs(path: string, device: string?): any
 	return ui.call("chat.refs", { path = path, device = device })
+end
+
+-- A checkout's branch and a worktree's name, changed where they are
+-- (plans/branch-naming; src/chat.rs `checkout_call`): each a promise of
+-- `{ branch, path?, chats }`, or git's words why not. A new branch made off
+-- `base` and checked out in the folder at `path`.
+function M.create_branch(path: string, name: string, base: string?, device: string?): any
+	return ui.call("chat.create_branch", { path = path, name = name, base = base, device = device })
+end
+-- The branch checked out at `path` renamed (every chat there follows).
+function M.rename_branch(path: string, name: string, device: string?): any
+	return ui.call("chat.rename_branch", { path = path, name = name, device = device })
+end
+-- The worktree at `path` moved to `name`, its branch renamed to `branch`
+-- (else to `name`); its chats follow.
+function M.rename_worktree(path: string, name: string, branch: string?, device: string?): any
+	return ui.call("chat.rename_worktree", { path = path, name = name, branch = branch, device = device })
+end
+-- Another branch checked out at `path` (never forced).
+function M.switch_ref(path: string, ref: string, device: string?): any
+	return ui.call("chat.switch_ref", { path = path, ref = ref, device = device })
 end
 
 -- The chat's visuals that ask the person something, as its host knows them

@@ -1726,6 +1726,9 @@ mod tests {
             methods::WRITE_WORKSPACE_FILE,
             methods::RUN_PROJECT_ACTION,
             methods::SWITCH_REF,
+            methods::CREATE_BRANCH,
+            methods::RENAME_BRANCH,
+            methods::RENAME_WORKTREE,
             methods::UPLOAD_CHUNK,
         ] {
             assert!(!passive(method), "{method} is someone doing something");

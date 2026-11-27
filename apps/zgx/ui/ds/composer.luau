@@ -60,6 +60,7 @@ local TextMetrics = require("@self/composer_metrics")
 local Layout = require("@self/composer_layout")
 local ComposerMotion = require("@self/composer_motion")
 local EditorMenu = require("@self/editor_menu")
+local ContextMenu = require("@self/context_menu")
 
 type ViewGeometry = {
 	height: number, header_height: number, tray_inset: number,
@@ -182,6 +183,15 @@ export type Props = {
 	-- chip says so and opens nothing, as a chat can't move. Nil (a new
 	-- chat): the picker.
 	branch_fixed: (() -> Fixed?)?,
+	-- The branch chip's own actions under its list (naming a new branch or a
+	-- worktree), and the name it says in place of the branch chosen while
+	-- one is named, to be made as the chat is sent.
+	branch_actions: { Dropdown.Action }?,
+	branch_pending: (() -> string?)?,
+	-- An existing chat's fixed chip opens this menu (ds/context_menu's
+	-- entries: renaming its branch or worktree, switching its branch); nil,
+	-- it opens nothing.
+	fixed_menu: (() -> { any }?)?,
 	on_send: ((text: string) -> ())?,
 	on_stop: (() -> ())?,
 	-- A bare Escape no one else took (no mention list, question or
@@ -2092,7 +2102,12 @@ return ui.component(function(props: Props): Node
 			-- The branch's name as its row has it, else as it is (its list
 			-- still coming), else "No ref".
 			local branch_state = props.branch :: State<string?>
+			local pending = props.branch_pending
 			local function branch_name(): string
+				local named = if pending then pending() else nil
+				if named then
+					return named
+				end
 				local v = branch_state:get()
 				for _, item in list_of(props.branches) :: { Dropdown.Item } do
 					if item.value == v then
@@ -2139,6 +2154,7 @@ return ui.component(function(props: Props): Node
 				list_when = in_project,
 				width = 280,
 				head = head_node(),
+				actions = props.branch_actions,
 				-- The chip: [tile] project › [glyph] branch, washed under the
 				-- pointer and while its panel is open, as a chip is.
 				trigger = function(menu: Dropdown.Menu): Node
@@ -2173,8 +2189,9 @@ return ui.component(function(props: Props): Node
 			}
 			-- An existing chat's: where it works, said, opening nothing.
 			local fixed = props.branch_fixed
-			local static: Node? = if fixed
-				then ui.row {
+			-- (Its props: made a row below, pressable when it has a menu.)
+			local static: any = if fixed
+				then {
 					h = CHIP_H,
 					px = "$zend.space.tight",
 					gap = "$zend.space.tight",
@@ -2215,6 +2232,31 @@ return ui.component(function(props: Props): Node
 					}),
 				}
 				else nil
+			-- Its menu, where it has one: the chip, pressed, opens it.
+			local fixed_menu = props.fixed_menu
+			if static and fixed_menu then
+				local menu_open = ui.use_state(false)
+				local s = static :: any
+				s.rounded = CHIP_RADIUS
+				s.bg = function(): string
+					return if menu_open:get() then "$hover" else "#00000000"
+				end
+				s.hover = { bg = "$hover", color = "$text.secondary" }
+				s.on_click = function()
+					menu_open:set(not menu_open:peek())
+				end
+				static = ContextMenu {
+					open = menu_open,
+					min_w = 0,
+					items = function(): { any }?
+						local entries = fixed_menu()
+						return if entries and #entries > 0 then entries else nil
+					end,
+					ui.row(s),
+				}
+			elseif static then
+				static = ui.row(static :: any)
+			end
 			table.insert(
 				left,
 				ui.row {

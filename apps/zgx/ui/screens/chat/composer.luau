@@ -34,6 +34,7 @@ local CloudTray = require("@app/screens/chat/cloud_tray")
 local Held = require("@app/screens/chat/held")
 local CloudMachine = require("@app/screens/chat/cloud_machine")
 local Where = require("@app/screens/chat/where")
+local naming = require("@app/screens/chat/naming")
 local DropOverlay = require("@ds/drop_overlay")
 local Asks = require("@app/screens/chat/asks")
 local VisualAnswer = require("@ds/visual_answer")
@@ -563,7 +564,16 @@ local function Composer(): Node
 		checkout = checkout,
 		branch = branch,
 		active = new_chat,
+		names = function()
+			return naming.names:peek()
+		end,
 	}
+	-- (A name given is for the project and checkout it was given in.)
+	ui.effect(function()
+		project:get()
+		checkout:get()
+		naming.clear()
+	end)
 	-- (A new chat's project, for what follows the route: its panel.)
 	ui.effect(function()
 		if new_chat() then
@@ -1145,6 +1155,7 @@ local function Composer(): Node
 			return
 		end
 		own_notice:set { key = "chat.composer.starting", spinner = true }
+		local function make()
 		-- Made where the project is (or on the device chosen), then its first
 		-- message run there, as the shipping app starts one (the send sets
 		-- its config: the model, effort, access and plan chosen here): in
@@ -1188,6 +1199,9 @@ local function Composer(): Node
 				T.sent_here(req.message_id :: string)
 				req.cwd = plan.cwd
 				req.worktree = plan.worktree
+				req.worktree_name = plan.worktree_name
+				req.worktree_branch = plan.worktree_branch
+				naming.clear()
 				-- Opened first, then sent: the host shows a prompt at once
 				-- only for the chat it has open, so the new page has your
 				-- message from its first frame, sending, rather than nothing
@@ -1213,13 +1227,48 @@ local function Composer(): Node
 					else nil
 				failed(why)
 			end)
+		end
+		-- A new branch named (a local checkout): made off the ref and checked
+		-- out first; refused, git's words stay over the draft.
+		if plan.new_branch and plan.cwd then
+			local here = sessions.now:peek().here
+			store
+				.create_branch(plan.cwd, plan.new_branch, plan.base, if plan.device ~= here then plan.device else nil)
+				:after(function()
+					naming.clear()
+					make()
+				end, function(e: any)
+					failed(if type(e) == "table" and type(e.message) == "string" then e.message else tostring(e))
+				end)
+			return
+		end
+		make()
 	end
 
 	-- Where the open chat works, live: git's current branch in its own
 	-- folder (an agent may have made or switched one since it began; the
 	-- branch named on the chat is only where it started), and whether that
 	-- folder is a worktree of its project's. Asked again as each turn ends.
-	local live_branch = ui.state("chat_live_branch", { key = "", name = nil :: string? })
+	local live_branch = ui.state("chat_live_branch", { key = "", name = nil :: string?, refs = {} :: { store.Ref } })
+	-- (Renamed or switched here: the chip says the new branch at once, and
+	-- its refs are read again.)
+	ui.effect(function()
+		local c = naming.changed:get()
+		local s = open()
+		if c and s and c.chat == s.id and c.branch ~= "" and s.cwd then
+			local key = `{s.id}|changed|{c.n}`
+			live_branch:set { key = key, name = c.branch, refs = live_branch:peek().refs }
+			local here = sessions.now:peek().here
+			local ok, answer = pcall(store.refs, s.cwd, if s.device ~= here then s.device else nil)
+			if ok and answer ~= nil then
+				answer:after(function(list: any)
+					if live_branch:peek().key == key then
+						live_branch:set { key = key, name = c.branch, refs = list or {} }
+					end
+				end, function() end)
+			end
+		end
+	end)
 	ui.effect(function()
 		local s = open()
 		if not s or not s.cwd then
@@ -1231,7 +1280,7 @@ local function Composer(): Node
 		end
 		local cwd, id = s.cwd, s.id
 		local known = if live_branch:peek().key:sub(1, #id + 1) == `{id}|` then live_branch:peek().name else nil
-		live_branch:set { key = key, name = known or (s :: any).branch }
+		live_branch:set { key = key, name = known or (s :: any).branch, refs = live_branch:peek().refs }
 		local here = sessions.now:peek().here
 		local ok, answer = pcall(store.refs, cwd, if s.device ~= here then s.device else nil)
 		if not ok or answer == nil then
@@ -1241,11 +1290,13 @@ local function Composer(): Node
 			if live_branch:peek().key ~= key then
 				return
 			end
+			local name = live_branch:peek().name
 			for _, ref in list or {} do
 				if ref.current then
-					live_branch:set { key = key, name = ref.name }
+					name = ref.name
 				end
 			end
+			live_branch:set { key = key, name = name, refs = list or {} }
 		end, function() end)
 	end)
 	-- (The catalog's device, a new chat's project's host included.)
@@ -1406,6 +1457,64 @@ local function Composer(): Node
 			branches = where.branches,
 			branches_empty = where.branches_empty,
 			branch_fixed = branch_fixed,
+			-- Naming a new chat's branch or worktree (screens/chat/naming).
+			branch_actions = {
+				{
+					label = function(): string
+						return ui.t("chat.naming.new_branch_action"):get()
+					end,
+					icon = "git-branch",
+					on_click = function()
+						naming.ask({ kind = "new_branch" })
+					end,
+					shown = function(): boolean
+						-- (Followed: the plan reads its choices as they stand.)
+						project:get()
+						device:get()
+						local local_checkout = checkout:get() == "local"
+						local p = where.plan()
+						return p.project ~= nil and not p.cloud and not p.worktree and local_checkout
+					end,
+				},
+				{
+					label = function(): string
+						return ui.t("chat.naming.worktree_action"):get()
+					end,
+					icon = "worktree",
+					on_click = function()
+						naming.ask({ kind = "worktree" })
+					end,
+					shown = function(): boolean
+						project:get()
+						device:get()
+						checkout:get()
+						return where.plan().worktree
+					end,
+				},
+			},
+			branch_pending = function(): string?
+				if not new_chat() then
+					return nil
+				end
+				local n = naming.names:get()
+				if checkout:get() == "local" and n.new_branch ~= "" then
+					return ui.t("chat.naming.new_branch_pending", { name = n.new_branch }):get()
+				elseif checkout:get() == "worktree" and n.worktree_name ~= "" then
+					return if n.worktree_branch ~= "" then n.worktree_branch else n.worktree_name
+				end
+				return nil
+			end,
+			-- An open chat's chip: renaming its branch or worktree, switching
+			-- its branch (none while a turn runs in its folder).
+			fixed_menu = function(): { any }?
+				local s = open()
+				local f = branch_fixed()
+				if not s or not f or not s.cwd then
+					return nil
+				end
+				local lb = live_branch:peek()
+				return naming.menu({ id = s.id, cwd = s.cwd, device = s.device, running = s.running, here = sessions.now:peek().here }, f.worktree, f.name, lb.refs or {})
+			end,
 			cargo = shared.cargo,
 			on_remove_cargo = shared.remove_cargo,
 			on_attach = if not platform.has("file_picker") then nil else function()
@@ -1898,6 +2007,8 @@ local function Composer(): Node
 		DropOverlay { shown = shared.carrying, id = "chat-drop" },
 		-- (A sidebar session carried: dropped, a mention; production's words.)
 		DropOverlay { shown = shared.carrying_session, id = "chat-drop-mention", label = ui.t("chat.composer.drop_to_mention") :: any },
+		-- Naming and renaming where a chat works (screens/chat/naming).
+		naming.Dialog(),
 	}
 end
 

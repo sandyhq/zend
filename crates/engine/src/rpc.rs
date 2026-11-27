@@ -2814,7 +2814,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         // The updater's own limit, plus headroom for queueing behind another
         // update, verification, and the relayed response itself.
         methods::APPLY_HARNESS_UPDATE => crate::harness_updates::APPLY_REPLY_DEADLINE,
-        methods::CREATE_WORKTREE => Duration::from_secs(120),
+        // (A worktree moved waits for each of its chats' agents to stop.)
+        methods::CREATE_WORKTREE | methods::RENAME_WORKTREE => Duration::from_secs(120),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
         _ => Duration::from_secs(30),

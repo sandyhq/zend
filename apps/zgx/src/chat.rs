@@ -1052,6 +1052,29 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
     // `ensure_refs`): `{ path, device? }`, the device only when it isn't this
     // one (the engine forwards it there).
     host.async_action("chat.refs", move |args| async move { refs(args).await.map_err(String::from) });
+    // A checkout's branch and a worktree's name, made and changed where they
+    // are (plans/branch-naming): `{ path, name, base?, device? }` a new branch
+    // checked out in a local checkout; `{ path, name, device? }` its branch
+    // renamed; `{ path, name, branch?, device? }` a worktree moved to a new
+    // name; `{ path, ref, device? }` another branch checked out. Each gives
+    // `{ branch, path?, chats }`, or git's own words why not.
+    // (Each refused by name in a preview: plugins/preview.rs checks for it.)
+    host.async_action("chat.create_branch", move |args| async move {
+        crate::plugins::preview::refuse("chat.create_branch")?;
+        checkout_call("CreateBranch", args).await
+    });
+    host.async_action("chat.rename_branch", move |args| async move {
+        crate::plugins::preview::refuse("chat.rename_branch")?;
+        checkout_call("RenameBranch", args).await
+    });
+    host.async_action("chat.rename_worktree", move |args| async move {
+        crate::plugins::preview::refuse("chat.rename_worktree")?;
+        checkout_call("RenameWorktree", args).await
+    });
+    host.async_action("chat.switch_ref", move |args| async move {
+        crate::plugins::preview::refuse("chat.switch_ref")?;
+        checkout_call("SwitchRef", args).await
+    });
     // The chat's open visuals as its host knows them (ds/visual_pin): found
     // before its history is all here. `{ chat, device? }`.
     host.async_action("chat.open_visuals", move |args| async move { Ok::<Value, String>(open_visuals(args).await) });
@@ -1111,6 +1134,32 @@ async fn refs(args: Value) -> Result<Value, Outcome> {
     }
     let found = engine::get().call("ListRefs", params).await.map_err(|e| engine::outcome(&e))?;
     Ok(refs_value(&found))
+}
+
+/// One of a checkout's git changes (`chat.create_branch` and its kin) on
+/// the checkout's device, by that device's grants when it's a paired server
+/// (`projects.manage`, src/server_route.rs).
+async fn checkout_call(method: &str, args: Value) -> Result<Value, String> {
+    let field = |key: &str| args.field(key).map(text).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let path = field("path").ok_or("missing")?;
+    let mut params = match method {
+        "CreateBranch" => json!({ "repoPath": path, "name": field("name").ok_or("missing")?, "base": field("base").unwrap_or_default() }),
+        "RenameBranch" => json!({ "cwd": path, "name": field("name").ok_or("missing")? }),
+        "RenameWorktree" => json!({ "worktreePath": path, "name": field("name").ok_or("missing")?, "branch": field("branch") }),
+        _ => json!({ "repoPath": path, "refName": field("ref").ok_or("missing")? }),
+    };
+    let area = crate::server_route::area_of(method).unwrap_or("projects.manage");
+    if let Some(device) = crate::server_route::route(field("device"), area).await? {
+        params["targetDeviceId"] = Json::from(device);
+    }
+    let answer = engine::get().call(method, params).await.map_err(crate::server_route::said)?;
+    let mut fields = vec![("branch", Value::from(answer["branch"].as_str().unwrap_or_default()))];
+    if let Some(path) = answer["path"].as_str() {
+        fields.push(("path", Value::from(path)));
+    }
+    let chats: Vec<Value> = answer["chats"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(Value::from)).collect();
+    fields.push(("chats", Value::List(chats.into())));
+    Ok(Value::record(fields))
 }
 
 /// `ListOpenVisuals` as ds/transcript's visual blocks (newest first); none
@@ -2811,10 +2860,13 @@ impl View {
             request["attachments"] = json!(paths);
         }
         if fresh && req.field("worktree").is_some_and(Value::truthy) {
+            // (Named by the person: its folder and branch, plans/branch-naming.)
             request["worktree"] = json!({
                 "repoPath": cwd,
                 "base": field("branch").unwrap_or_else(|| "HEAD".into()),
                 "spaceId": field("project"),
+                "name": field("worktree_name"),
+                "branch": field("worktree_branch"),
             });
         }
         let run = json!({ "kind": "run", "messageId": message_id, "request": request });

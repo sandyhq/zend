@@ -71,6 +71,9 @@ export type Choices = {
 	-- Whether its device and project are remembered for the next new chat
 	-- (the chat page's are; a side chat's, made where its parent is, aren't).
 	remember: boolean?,
+	-- What the person named (screens/chat/naming): a new branch in a local
+	-- checkout, a worktree's name and branch. Nil: none named.
+	names: (() -> { new_branch: string, worktree_name: string, worktree_branch: string })?,
 }
 
 -- What a send does: where the chat is made (createChat), and where and how
@@ -87,6 +90,13 @@ export type Plan = {
 	worktree: boolean,
 	-- On a Cloud machine of its own, cloning the project's repository.
 	cloud: boolean?,
+	-- A new branch made off `base` and checked out in `cwd` before the chat
+	-- is made (a local checkout; `branch` is then this one).
+	new_branch: string?,
+	base: string?,
+	-- A new worktree's own name (its folder and branch) and its branch apart.
+	worktree_name: string?,
+	worktree_branch: string?,
 }
 
 -- How long ago, in words ("2 min ago").
@@ -600,17 +610,37 @@ function M.bind(c: Choices)
 		-- made there, off the ref, step 6g.)
 		local pd = device_row(p.device)
 		local on_server = pd ~= nil and pd.paired == true and not projects_grants.grants_of(pd, "full")
+		local named = if c.names then c.names() else nil
+		local function given(s: string?): string?
+			local t = string.match(s or "", "^%s*(.-)%s*$") or ""
+			return if t ~= "" then t else nil
+		end
 		if c.checkout:peek() == "worktree" and p.git and not on_server then
-			return { project = p.id, device = p.device, branch = name, cwd = p.path, worktree = true }
+			local wt_name = given(named and named.worktree_name)
+			return {
+				project = p.id,
+				device = p.device,
+				branch = name,
+				cwd = p.path,
+				worktree = true,
+				worktree_name = wt_name,
+				worktree_branch = if wt_name then given(named and named.worktree_branch) else nil,
+			}
 		end
 		-- A local checkout: the folder as it is; a ref checked out in a
-		-- worktree of its own runs there.
+		-- worktree of its own runs there. A new branch named: made off the
+		-- ref, checked out there, and the chat's.
+		local new_branch = if p.git then given(named and named.new_branch) else nil
+		local cwd = p.path
 		for _, ref in refs:peek().list do
 			if ref.name == name and ref.worktree and not on_server then
-				return { project = p.id, device = p.device, branch = name, cwd = ref.worktree, worktree = false }
+				cwd = ref.worktree
 			end
 		end
-		return { project = p.id, device = p.device, branch = name, cwd = p.path, worktree = false }
+		if new_branch then
+			return { project = p.id, device = p.device, branch = new_branch, cwd = cwd, worktree = false, new_branch = new_branch, base = name }
+		end
+		return { project = p.id, device = p.device, branch = name, cwd = cwd, worktree = false }
 	end
 
 	return {

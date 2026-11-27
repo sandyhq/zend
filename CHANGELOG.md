@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-27
+
+### Added
+- Naming branches and worktrees (plan `plans/branch-naming`): a new chat in a local checkout can start on a new branch (Branch → New branch…, `git switch -c` off the ref chosen, the other chats in that folder named); a new worktree takes the name you give it as its folder and branch (the branch can differ, no `zend/` prefix), or a generated one as before; an open chat's branch chip renames its branch, renames its worktree (folder moved, its chats follow, their history replayed into a fresh session), or switches the local checkout's branch (git's reason shown when uncommitted changes stop it, nothing forced). Every rename warns which chats work there and is refused while a turn runs in that folder; a name git refuses, or a branch or folder already there, is said, never overwritten. Works on a paired server under `projects.manage`, never in Zend's own folders. Engine: `CreateBranch`, `RenameBranch`, `RenameWorktree`, `WorktreeSpec.name`/`branch` (`crates/engine/src/repos.rs`, `crates/engine/src/rpc.rs`, `crates/rpc/src/peer_scope.rs`, `apps/zgx/ui/screens/chat/naming.luau`).
+
 ## 2026-11-26
 
 ### Added

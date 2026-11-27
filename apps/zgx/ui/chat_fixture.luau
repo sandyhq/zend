@@ -363,6 +363,9 @@ stub.send = function(req: any)
 	end
 	if req.fresh then
 		note(`run:{req.cwd or "-"}|{if req.worktree then "worktree" else "local"}|{req.branch or "-"}`)
+		if req.worktree_name then
+			note(`wtname:{req.worktree_name}|{req.worktree_branch or "-"}`)
+		end
 	end
 	if req.fresh then
 		-- (On Cloud, on its way to a machine still to come: sending, as the
@@ -542,6 +545,66 @@ ui.command {
 		local s = store.session:peek()
 		if s and s.id then
 			publish(s.id, { cwd = "/tmp/atlas-wt/pr", branch = "main" })
+		end
+	end,
+}
+-- A checkout's branch and a worktree's name changed where they are
+-- (screens/chat/naming), noted: `newbranch:path|name|base|device`,
+-- `renamebranch:path|name|device`, `renameworktree:path|name|branch|device`,
+-- `switch:path|ref|device`. `git_refuses`: the next is refused in git's words.
+local GIT_REFUSES = ui.state("fixture_git_refuses", false)
+ui.command {
+	id = "git_refuses",
+	title = "Git refuses the next branch change",
+	run = function()
+		GIT_REFUSES:set(true)
+	end,
+}
+local function git_answer(branch: string): any
+	if GIT_REFUSES:peek() then
+		GIT_REFUSES:set(false)
+		return {
+			after = function(_self: any, _ok: any, err: (any) -> ())
+				err({ message = "a branch named 'taken' already exists" })
+			end,
+		}
+	end
+	return settled({ branch = branch, chats = {} })
+end
+stub.create_branch = function(path: string, name: string, base: string?, device: string?)
+	note(`newbranch:{path}|{name}|{base or "-"}|{device or "here"}`)
+	return git_answer(name)
+end
+stub.rename_branch = function(path: string, name: string, device: string?)
+	note(`renamebranch:{path}|{name}|{device or "here"}`)
+	return git_answer(name)
+end
+stub.rename_worktree = function(path: string, name: string, branch: string?, device: string?)
+	note(`renameworktree:{path}|{name}|{branch or "-"}|{device or "here"}`)
+	return git_answer(branch or name)
+end
+stub.switch_ref = function(path: string, ref: string, device: string?)
+	note(`switch:{path}|{ref}|{device or "here"}`)
+	return git_answer(ref)
+end
+-- The open session in Atlas's own folder, on main, with the other chat
+-- working there too (its title named by the warning).
+ui.command {
+	id = "session_in_checkout",
+	title = "The open session works in the project's folder, another chat with it",
+	run = function()
+		local s = store.session:peek()
+		if s and s.id then
+			publish(s.id, { cwd = "/tmp/atlas", branch = "main" })
+			local now = table.clone(sessions.now:peek())
+			local chats = {}
+			for _, c in now.chats do
+				local copy = table.clone(c)
+				copy.cwd = "/tmp/atlas"
+				table.insert(chats, copy)
+			end
+			now.chats = chats
+			sessions.now:set(now)
 		end
 	end,
 }

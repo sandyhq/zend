@@ -78,6 +78,11 @@ pub const BLOCKED: &[&str] = &[
     "chat.remove_held",
     // (Only one that says what an agent may do unasked: `chat.configure`.)
     "chat.configure",
+    // (A checkout's branch and a worktree's folder: plans/branch-naming.)
+    "chat.create_branch",
+    "chat.rename_branch",
+    "chat.rename_worktree",
+    "chat.switch_ref",
     "agents.install",
     "agents.set_key",
     "agents.sign_in",
@@ -544,7 +549,7 @@ mod tests {
         set(None);
         assert!(refuse("terminal.start").is_ok(), "nothing in preview: all allowed");
         set(Some(Preview { id: "agent".into(), name: "Agent's".into() }));
-        for action in ["terminal.start", "terminal.write", "account.sign_out", "account.delete", "plugins.install", "templates.use", "files.write", "chat.send", "chat.respond", "chat.retry", "chat.queue_edit", "chat.queue_finish", "chat.configure", "files.open_external"] {
+        for action in ["terminal.start", "terminal.write", "account.sign_out", "account.delete", "plugins.install", "templates.use", "files.write", "chat.send", "chat.respond", "chat.retry", "chat.queue_edit", "chat.queue_finish", "chat.configure", "files.open_external", "chat.create_branch", "chat.rename_branch", "chat.rename_worktree", "chat.switch_ref"] {
             assert!(refuse(action).is_err(), "{action}");
         }
         for action in ["files.read", "files.list", "chat.open", "appearance", "templates.review", "sessions.seen"] {

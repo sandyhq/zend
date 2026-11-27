@@ -47,6 +47,13 @@ Hover a message to see its actions beside Copy.
 - **Edit** (your own prompts): the prompt opens as an editor in place. Change the words, take off a file or picture with its ×, then Save & send (⌘Enter), or Cancel (Escape). If anything is below it, Zend asks once: everything below goes, for good. Files the agent changed on disk stay as they are; undo those yourself or ask the agent. The agent then works from a fresh session that gets the conversation up to your edited prompt. While the agent is still replying you can't send an edit: stop it or wait. An edit that can't go (a turn started meanwhile, Zend refused it) stays open in its editor with the reason; if the prompt is already removed and only the send fails, the words go into the message box after whatever you had there.
 - **Fork from here** (any prompt or reply): opens a side chat. From a reply it holds the conversation up to and including that reply; from a prompt, everything before it, with the prompt's words in the side chat's message box to change and send. The chat you forked from stays as it is.
 
+## Naming branches and worktrees
+The composer's Branch chip names where a chat works.
+
+- **New chat, local checkout:** Branch → New branch…, type the name. The first send makes it off the ref you picked (`git switch -c`) in the project folder, then starts the chat there. The dialog names the chats already working in that folder: their checkout switches too. A name git refuses or a branch that exists is said there; nothing is sent.
+- **New chat, worktree:** pick Checkout → Worktree, then Branch → Name the worktree…. The name is the folder and the branch; give the branch apart if it should differ. Leave it empty for a generated name.
+- **Open chat:** click its branch chip. Rename branch… renames the branch checked out there; Rename worktree… moves the worktree's folder and renames its branch, and the agent goes on with its history in a fresh session; Switch branch (local checkout) checks out another branch, stopping with git's reason when uncommitted changes are in the way. All chats in that folder follow, and the dialog lists them. Not while a turn runs in that folder: stop it or wait.
+
 ## Auto access
 
 The access picker has four modes: Supervised, Auto-accept edits, Auto and Full access. Auto hands the approval to the agent's own reviewer: it lets safe actions through and asks you about risky ones. Only Claude Code and Codex have such a reviewer, so only they offer Auto.

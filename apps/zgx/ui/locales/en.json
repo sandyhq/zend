@@ -3210,6 +3210,33 @@
     "message_actions": {
       "edit_running": "Wait for the reply to finish, or stop it, before editing.",
       "couldnt_edit": "Couldn't edit the message."
+    },
+    "naming": {
+      "others": "{count, plural, one {Also works here: {names}.} other {# chats also work here: {names}{more, plural, =0 {} one { and # more} other { and # more}}.}} They move with it.",
+      "busy": "A turn is running in \"{title}\": stop it first.",
+      "busy_here": "A turn is running: stop it first.",
+      "name_needed": "Give it a name.",
+      "new_branch_title": "New branch",
+      "worktree_title": "Name the worktree",
+      "rename_branch_title": "Rename branch",
+      "rename_worktree_title": "Rename worktree",
+      "switch_title": "Switch branch",
+      "use": "Use",
+      "switch": "Switch",
+      "switch_body": "Check out {ref} here in place of {current}. Uncommitted changes that would be lost stop it; nothing is forced.",
+      "worktree_body": "The name is the worktree's folder and its branch. Leave the branch empty to use the name.",
+      "branch": "Branch",
+      "name": "Name",
+      "new_branch_placeholder": "fix-login",
+      "name_placeholder": "fix-login",
+      "branch_follows": "Same as the name",
+      "rename_branch": "Rename branch…",
+      "rename_worktree": "Rename worktree…",
+      "switch_branch": "Switch branch",
+      "no_other_branch": "No other branch to check out here",
+      "new_branch_action": "New branch…",
+      "worktree_action": "Name the worktree…",
+      "new_branch_pending": "New {name}"
     }
   },
   "panel": {

@@ -3210,6 +3210,33 @@
     "message_actions": {
       "edit_running": "请等回复完成或先停止它，再编辑。",
       "couldnt_edit": "无法编辑这条消息。"
+    },
+    "naming": {
+      "others": "{count, plural, other {另有 # 个会话也在这里工作：{names}{more, plural, =0 {} other { 等另外 # 个}}。}}它们会一起变更。",
+      "busy": "“{title}”中有一轮正在运行：请先停止它。",
+      "busy_here": "有一轮正在运行：请先停止它。",
+      "name_needed": "请输入名称。",
+      "new_branch_title": "新建分支",
+      "worktree_title": "命名工作树",
+      "rename_branch_title": "重命名分支",
+      "rename_worktree_title": "重命名工作树",
+      "switch_title": "切换分支",
+      "use": "使用",
+      "switch": "切换",
+      "switch_body": "在此检出 {ref}，替换 {current}。会丢失的未提交更改会阻止切换；不会强制执行。",
+      "worktree_body": "名称即工作树的文件夹名和分支名。分支留空则使用该名称。",
+      "branch": "分支",
+      "name": "名称",
+      "new_branch_placeholder": "例如 fix-login",
+      "name_placeholder": "例如 fix-login",
+      "branch_follows": "与名称相同",
+      "rename_branch": "重命名分支…",
+      "rename_worktree": "重命名工作树…",
+      "switch_branch": "切换分支",
+      "no_other_branch": "这里没有可检出的其他分支",
+      "new_branch_action": "新建分支…",
+      "worktree_action": "命名工作树…",
+      "new_branch_pending": "新建 {name}"
     }
   },
   "panel": {
