@@ -948,6 +948,24 @@ impl SessionDoc {
         Ok(removed)
     }
 
+    /// Whether the chat's folder moved (its worktree renamed): provider
+    /// sessions are kept by folder, so the next fresh one is owed the
+    /// history, as a rewound chat's is.
+    pub fn history_moved(&self) -> bool {
+        matches!(
+            self.doc.get_map("meta").get("historyMoved"),
+            Some(loro::ValueOrContainer::Value(LoroValue::Bool(true)))
+        )
+    }
+
+    pub fn mark_history_moved(&self) -> Result<(), DocError> {
+        if !self.history_moved() {
+            self.doc.get_map("meta").insert("historyMoved", true)?;
+            self.commit();
+        }
+        Ok(())
+    }
+
     pub fn mark_provider_switched(&self) -> Result<(), DocError> {
         if !self.provider_switched() {
             self.doc.get_map("meta").insert("providerSwitched", true)?;

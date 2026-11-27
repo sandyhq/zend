@@ -903,6 +903,13 @@ pub struct WorktreeSpec {
     /// wire compatibility with clients that only request worktree creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
+    /// The person's name for the worktree: its folder (slashes made
+    /// dashes) and, unless `branch` names another, its branch, with no
+    /// `zend/` prefix. None: a made-up name on a `zend/<name>` branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// The session-scoped singleton id for the live plan/todo chip. ACP plan
@@ -1597,12 +1604,16 @@ mod tests {
                 repo_path: "/repos/comet".into(),
                 base: "main".into(),
                 space_id: Some("space-1".into()),
+                name: Some("fix-login".into()),
+                branch: Some("feat/login".into()),
             }),
             ..req
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["worktree"]["repoPath"], "/repos/comet");
         assert_eq!(json["worktree"]["spaceId"], "space-1");
+        assert_eq!(json["worktree"]["name"], "fix-login");
+        assert_eq!(json["worktree"]["branch"], "feat/login");
         let round: RunRequest = serde_json::from_value(json).unwrap();
         assert_eq!(round.worktree, req.worktree);
     }

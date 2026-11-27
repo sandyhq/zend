@@ -2573,6 +2573,46 @@ impl SessionsEngine {
         Ok(removed)
     }
 
+    /// Whether a turn runs (or is on its way) in this chat: what a rename of
+    /// its branch or folder waits for.
+    pub fn turn_busy(&self, chat_id: &str) -> bool {
+        self.turn_in_flight(chat_id) || self.turn_starting(chat_id) || self.revival_pending(chat_id)
+    }
+
+    /// The chat's folder is about to move (its worktree renamed): alone with
+    /// it, refused while a turn runs, its idle runtime (whose process works
+    /// in the old folder) ended, and its provider session given up, since
+    /// providers keep sessions by folder. The next run starts fresh in the
+    /// new folder with the chat's history ([`zend_doc::SessionDoc::history_moved`]).
+    /// Holds the chat's gate until the returned guard drops, so no run
+    /// starts while the folder moves.
+    pub async fn leave_folder(
+        &self,
+        chat_id: &str,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, EngineError> {
+        let gate = self.inner.chat_gate(chat_id);
+        let alone = tokio::time::timeout(std::time::Duration::from_secs(10), gate.write_owned())
+            .await
+            .map_err(|_| EngineError::Other("A message is on its way to this chat; try again".into()))?;
+        if self.turn_busy(chat_id) {
+            return Err(EngineError::Other("A turn is running in this chat".into()));
+        }
+        self.terminate(chat_id).await?;
+        if let Ok(handle) = self.doc_handle(chat_id) {
+            handle.doc().mark_history_moved()?;
+        }
+        let owner = self.inner.owned_session(chat_id);
+        let (cwd, harness) = owner.map(|known| (known.cwd, known.harness)).unwrap_or_default();
+        lock(&self.inner.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef { session_id: String::new(), cwd: cwd.clone(), harness },
+        );
+        if let Some(ws) = self.inner.workspace() {
+            ws.set_chat_harness_session(chat_id, "", &cwd, harness);
+        }
+        Ok(alone)
+    }
+
     /// Whether the chat has a run on this device (one `inject_event` can reach).
     pub fn has_run(&self, chat_id: &str) -> bool {
         lock(&self.inner.runs).contains_key(chat_id)
@@ -4345,8 +4385,9 @@ impl Inner {
                     && chat.child_kind != Some(zend_proto::ChildKind::Session)
             });
         let switched = doc.provider_switched();
-        // A rewound chat (an edited prompt) owes a fresh session what's kept.
-        let rewound = doc.history_rewound();
+        // A rewound chat (an edited prompt) owes a fresh session what's kept;
+        // so does one whose folder moved (its worktree renamed).
+        let rewound = doc.history_rewound() || doc.history_moved();
         if native_command(prompt, harness_id) || !(side_chat || switched || rewound) {
             return None;
         }

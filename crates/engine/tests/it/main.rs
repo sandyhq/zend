@@ -62,6 +62,7 @@ mod acp_registry_rpc;
 mod adapter_chaos_live;
 mod auth;
 mod big_remote_chats;
+mod branch_naming;
 mod born_chat2_race;
 mod child_events;
 mod cloud_attachments;

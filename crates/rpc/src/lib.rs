@@ -261,6 +261,16 @@ pub mod methods {
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";
+    /// A new branch off a ref, checked out in a checkout: `git switch -c`
+    /// (`{repoPath, name, base}`).
+    pub const CREATE_BRANCH: &str = "CreateBranch";
+    /// Rename the branch checked out in a checkout (`{cwd, name}`); the
+    /// chats there follow. Refused while a turn runs in one of them.
+    pub const RENAME_BRANCH: &str = "RenameBranch";
+    /// Move a worktree to a new name and rename its branch
+    /// (`{worktreePath, name, branch?}`); the chats in it follow. Refused
+    /// while a turn runs in one of them.
+    pub const RENAME_WORKTREE: &str = "RenameWorktree";
     pub const LIST_FOLDERS: &str = "ListFolders";
     pub const GET_WORKTREE_SETTINGS: &str = "GetWorktreeSettings";
     pub const SET_WORKTREE_SETTINGS: &str = "SetWorktreeSettings";

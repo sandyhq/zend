@@ -126,6 +126,8 @@ fn run_payload(message_id: &str, repo_path: &str, space_id: Option<&str>) -> Ses
                 repo_path: repo_path.into(),
                 base: "main".into(),
                 space_id: space_id.map(str::to_string),
+                name: None,
+                branch: None,
             }),
             env: Default::default(),
             extra_mcp: Vec::new(),

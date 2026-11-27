@@ -7590,7 +7590,12 @@ impl DocHost {
             .get()
             .ok_or_else(|| EngineError::Other("repos engine not wired".into()))?;
         let worktree = repos
-            .create_worktree(std::path::Path::new(&spec.repo_path), &spec.base)
+            .create_worktree_named(
+                std::path::Path::new(&spec.repo_path),
+                &spec.base,
+                spec.name.as_deref(),
+                spec.branch.as_deref(),
+            )
             .await?;
         tracing::info!(
             chat = %chat_id,

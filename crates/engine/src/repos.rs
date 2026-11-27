@@ -1435,6 +1435,32 @@ impl Repos {
         repo_path: &Path,
         branch: &str,
     ) -> Result<Worktree, EngineError> {
+        self.create_worktree_named(repo_path, branch, None, None).await
+    }
+
+    /// [`Self::create_worktree`] with the person's own names: `name` is the
+    /// folder (and the branch, unless `branch_name` names another), with no
+    /// `zend/` prefix. A folder or branch that is already there is said,
+    /// never reused or overwritten. Without a name, one is made up as before.
+    pub async fn create_worktree_named(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        name: Option<&str>,
+        branch_name: Option<&str>,
+    ) -> Result<Worktree, EngineError> {
+        let given = name.map(str::trim).filter(|n| !n.is_empty());
+        let branch_name = branch_name.map(str::trim).filter(|n| !n.is_empty()).or(given);
+        // (A name with slashes, `feat/login`: the branch as it is, the folder
+        // `feat-login`.)
+        let folder = given.map(worktree_folder);
+        if let Some(folder) = &folder {
+            check_worktree_name(folder)?;
+        }
+        if let Some(chosen) = branch_name {
+            self.check_new_branch(repo_path, chosen).await?;
+        }
+        let name = folder.as_deref();
         let repo_name = repo_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1463,8 +1489,20 @@ impl Repos {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let mut name = None;
+        if let Some(chosen) = name
+            && base.join(chosen).exists()
+        {
+            return Err(EngineError::Other(format!(
+                "A worktree named {chosen} already exists at {}",
+                base.join(chosen).display()
+            )));
+        }
+        let own_name = name.is_some();
+        let mut name = name.map(str::to_string);
         for attempt in 0..50u64 {
+            if name.is_some() {
+                break;
+            }
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.subsec_nanos() as u64)
@@ -1487,7 +1525,13 @@ impl Repos {
         #[cfg(windows)]
         validate_windows_worktree_path(&path.to_string_lossy())?;
         std::fs::create_dir_all(&base)?;
-        let branch_name = format!("zend/{name}");
+        // (A name of the person's own is the branch's too, as it is; a made-up
+        // one's branch is `zend/<name>`, which the title may rename later.)
+        let branch_name = match branch_name {
+            Some(own) => own.to_string(),
+            None if own_name => name.clone(),
+            None => format!("zend/{name}"),
+        };
         #[cfg(windows)]
         self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
             .await?;
@@ -1621,6 +1665,102 @@ impl Repos {
         )
         .await
         .is_ok()
+    }
+
+    /// A branch the person names: one git takes (`check-ref-format
+    /// --branch`) and that isn't there yet.
+    async fn check_new_branch(&self, repo_path: &Path, name: &str) -> Result<(), EngineError> {
+        check_branch_name(name)?;
+        if self
+            .git(&["check-ref-format", "--branch", name], Some(repo_path))
+            .await
+            .is_err()
+        {
+            return Err(EngineError::Other(format!("{name} isn't a name git takes for a branch")));
+        }
+        if self.branch_exists(repo_path, name).await {
+            return Err(EngineError::Other(format!("Branch {name} already exists")));
+        }
+        Ok(())
+    }
+
+    /// `git switch -c <name> <base>` in `cwd`: a new branch off `base`,
+    /// checked out there (a local checkout's, for every chat in it). Git's
+    /// own reason when it won't (changes in the way). Returns the branch.
+    pub async fn create_branch(&self, cwd: &Path, name: &str, base: &str) -> Result<String, EngineError> {
+        let name = name.trim();
+        self.check_new_branch(cwd, name).await?;
+        let base = if base.trim().is_empty() { "HEAD" } else { base.trim() };
+        self.git(&["switch", "-c", name, base], Some(cwd)).await?;
+        self.current_branch(cwd).await
+    }
+
+    /// Rename the branch checked out in `cwd` to `name` (`git branch -m`).
+    /// Returns the branch it was, and the one it is now.
+    pub async fn rename_current_branch(&self, cwd: &Path, name: &str) -> Result<(String, String), EngineError> {
+        let name = name.trim();
+        let current = self.current_branch(cwd).await?;
+        if current.is_empty() {
+            return Err(EngineError::Other("No branch is checked out here (a detached HEAD)".into()));
+        }
+        if current == name {
+            return Ok((current.clone(), current));
+        }
+        self.check_new_branch(cwd, name).await?;
+        self.git(&["branch", "-m", "--", &current, name], Some(cwd)).await?;
+        Ok((current, self.current_branch(cwd).await?))
+    }
+
+    /// Move the linked worktree at `worktree` to a sibling folder `name`
+    /// (`git worktree move`, from its main repository) and rename its branch
+    /// to `branch` (default: `name`). Checked before anything moves: the
+    /// folder and branch free, the names git's. Returns the new folder and
+    /// branch.
+    pub async fn rename_worktree(
+        &self,
+        worktree: &Path,
+        name: &str,
+        branch: Option<&str>,
+    ) -> Result<(PathBuf, String), EngineError> {
+        let given = name.trim();
+        let folder = worktree_folder(given);
+        check_worktree_name(&folder)?;
+        let main = crate::workspace_host::linked_worktree_root(worktree)
+            .map(PathBuf::from)
+            .ok_or_else(|| EngineError::Other(format!("{} isn't a worktree", worktree.display())))?;
+        let parent = worktree
+            .parent()
+            .ok_or_else(|| EngineError::Other("A worktree needs a parent folder".into()))?;
+        let target = parent.join(&folder);
+        let current = self.current_branch(worktree).await?;
+        let branch = branch.map(str::trim).filter(|b| !b.is_empty()).unwrap_or(given);
+        let name = folder.as_str();
+        let moves = target != worktree;
+        if moves && target.exists() {
+            return Err(EngineError::Other(format!(
+                "A worktree named {name} already exists at {}",
+                target.display()
+            )));
+        }
+        let renames = branch != current;
+        if renames {
+            self.check_new_branch(worktree, branch).await?;
+        }
+        if moves {
+            self.git(
+                &["worktree", "move", &worktree.to_string_lossy(), &target.to_string_lossy()],
+                Some(&main),
+            )
+            .await?;
+        }
+        if renames {
+            if current.is_empty() {
+                self.git(&["switch", "-c", branch], Some(&target)).await?;
+            } else {
+                self.git(&["branch", "-m", "--", &current, branch], Some(&target)).await?;
+            }
+        }
+        Ok((target.clone(), self.current_branch(&target).await?))
     }
 
     /// Rename a zend-created worktree branch after its chat's generated title
@@ -2645,6 +2785,41 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// A worktree's folder name the person gives: one folder, nothing hidden
+/// or option-like, nothing a path or a terminal reads otherwise.
+pub(crate) fn check_worktree_name(name: &str) -> Result<(), EngineError> {
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.starts_with('.')
+        || name.starts_with('-')
+        || name.len() > 100
+        || name.chars().any(|c| {
+            c.is_control() || c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '~' | '^' | '[')
+        })
+        || name.ends_with(".lock")
+        || name.contains("..");
+    if bad {
+        return Err(EngineError::Other(format!(
+            "{name:?} can't name a worktree: use letters, digits, - and _, no spaces or slashes"
+        )));
+    }
+    Ok(())
+}
+
+/// The folder a worktree named `name` gets: its slashes made dashes.
+pub(crate) fn worktree_folder(name: &str) -> String {
+    name.trim().replace('/', "-")
+}
+
+/// What a branch name can't be before git is asked (git asks the rest).
+pub(crate) fn check_branch_name(name: &str) -> Result<(), EngineError> {
+    if name.is_empty() || name.starts_with('-') || name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(EngineError::Other(format!("{name:?} isn't a name git takes for a branch")));
+    }
+    Ok(())
 }
 
 /// Win32 process working directories remain limited to MAX_PATH even when

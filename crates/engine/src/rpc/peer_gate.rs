@@ -411,7 +411,7 @@ impl EngineRpc {
                     if self.peer_fences_cwd(&space.path) {
                         return Err(refused(format!("chat {}: {}", chat.id, crate::phone_reads::DATA_FENCED)));
                     }
-                    request.worktree = Some(zend_proto::WorktreeSpec { repo_path: space.path.clone(), base: spec.base, space_id: Some(space.id) });
+                    request.worktree = Some(zend_proto::WorktreeSpec { repo_path: space.path.clone(), base: spec.base, space_id: Some(space.id), name: spec.name, branch: spec.branch });
                 }
                 SessionCommandPayload::Run { request, message_id }
             }

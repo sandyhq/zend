@@ -9807,6 +9807,8 @@ impl Composer {
                                     repo_path: repo_path.clone(),
                                     base,
                                     space_id: space_id.clone(),
+                                    name: None,
+                                    branch: None,
                                 });
                             }
                         }

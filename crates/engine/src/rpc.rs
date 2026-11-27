@@ -322,6 +322,49 @@ struct SwitchRefParams {
     ref_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateBranchParams {
+    /// The checkout the new branch is checked out in (a project's folder).
+    #[serde(alias = "cwd")]
+    repo_path: String,
+    name: String,
+    /// The ref it starts from (HEAD when empty).
+    #[serde(default)]
+    base: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameBranchParams {
+    /// A folder of the checkout whose current branch is renamed.
+    #[serde(alias = "repoPath")]
+    cwd: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameWorktreeParams {
+    #[serde(alias = "path")]
+    worktree_path: String,
+    /// Its new folder name (slashes become dashes) and, unless `branch`
+    /// names another, its branch.
+    name: String,
+    #[serde(default)]
+    branch: Option<String>,
+}
+
+/// Whether `folder` is in the checkout rooted at `root` and not in another
+/// one nested inside it (a worktree kept in the repository's folder).
+fn in_own_checkout(folder: &std::path::Path, root: &std::path::Path) -> bool {
+    folder.starts_with(root)
+        && !folder
+            .ancestors()
+            .take_while(|dir| *dir != root)
+            .any(|dir| dir.join(".git").exists())
+}
+
 /// Why a paired server's new worktree has no setup run.
 const PEER_SETUP_NOT_RUN: &str = "The project's setup action didn't run: your server isn't granted terminal here";
 
@@ -333,6 +376,11 @@ struct CreateWorktreeParams {
     branch: String,
     #[serde(default)]
     space_id: Option<String>,
+    /// The person's name for it (folder, and branch unless `branchName`).
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    branch_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1562,6 +1610,73 @@ impl EngineRpc {
             .await
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         scope.checkout(&identity.root).map_err(RpcError::Failed)
+    }
+
+    /// The top folder of the checkout `path` is in (canonical).
+    async fn checkout_root(&self, path: &str) -> Result<std::path::PathBuf, RpcError> {
+        let folder = crate::repos::chat_cwd_folder(path, &self.repos.scratch_root()).map_err(RpcError::Failed)?;
+        Box::pin(self.repos.checkout_identity(&folder))
+            .await
+            .map(|identity| identity.root)
+            .map_err(|error| RpcError::Failed(error.to_string()))
+    }
+
+    /// This device's chats that work in the checkout rooted at `root`
+    /// (their folder, or their project's, inside it), archived ones too.
+    fn chats_in_checkout(&self, root: &std::path::Path) -> Vec<zend_proto::Chat> {
+        let device = self.doc_host.device_id().to_string();
+        let scratch = self.repos.scratch_root();
+        self.workspace
+            .read_chats()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|chat| chat.device_id == device)
+            .filter(|chat| {
+                let cwd = chat.cwd.clone().or_else(|| {
+                    let space = chat.space_id.as_deref()?;
+                    self.workspace.space(space).ok().flatten().map(|space| space.path)
+                });
+                cwd.and_then(|cwd| crate::repos::chat_cwd_folder(&cwd, &scratch).ok())
+                    .and_then(|folder| std::fs::canonicalize(folder).ok())
+                    .is_some_and(|folder| in_own_checkout(&folder, root))
+            })
+            .collect()
+    }
+
+    /// Refused while a turn runs (or is on its way) in one of `chats`,
+    /// naming it.
+    fn refuse_while_busy(&self, chats: &[zend_proto::Chat]) -> Result<(), RpcError> {
+        let busy: Vec<String> = chats
+            .iter()
+            .filter(|chat| self.sessions.turn_busy(&chat.id))
+            .map(|chat| chat.title.clone().unwrap_or_else(|| chat.id.clone()))
+            .collect();
+        if busy.is_empty() {
+            return Ok(());
+        }
+        Err(RpcError::Failed(format!(
+            "A turn is running in {}: wait for it to end, or stop it",
+            busy.join(", ")
+        )))
+    }
+
+    /// Every chat in `cwd`'s checkout now says `branch` (its HEAD changed
+    /// for all of them). Returns their ids.
+    async fn follow_branch(&self, cwd: &str, branch: &str) -> Vec<String> {
+        let Ok(root) = self.checkout_root(cwd).await else {
+            return Vec::new();
+        };
+        let mut ids = Vec::new();
+        for chat in self.chats_in_checkout(&root) {
+            if chat.branch.as_deref() != Some(branch)
+                && let Err(error) = self.workspace.set_chat_branch(&chat.id, branch)
+            {
+                tracing::warn!(chat = %chat.id, %error, "chat branch not followed");
+                continue;
+            }
+            ids.push(chat.id);
+        }
+        ids
     }
 
     /// Catalogs also serve projectless sessions, which have no workspace space.
@@ -2843,6 +2958,9 @@ fn forwardable(method: &str) -> bool {
             | methods::RESOLVE_GIT_AVATARS
             | methods::FETCH_ALL
             | methods::SWITCH_REF
+            | methods::CREATE_BRANCH
+            | methods::RENAME_BRANCH
+            | methods::RENAME_WORKTREE
             | methods::LIST_FOLDERS
             | methods::GET_WORKTREE_SETTINGS
             | methods::SET_WORKTREE_SETTINGS
@@ -5683,12 +5801,99 @@ impl RpcService for EngineRpc {
             }
             methods::SWITCH_REF => {
                 let p: SwitchRefParams = parse_params(params)?;
+                self.scoped_git_path(&p.repo_path).await?;
                 let branch = self
                     .repos
                     .switch_ref(std::path::Path::new(&p.repo_path), &p.ref_name)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "branch": branch }))
+                let chats = self.follow_branch(&p.repo_path, &branch).await;
+                RpcReply::value(&serde_json::json!({ "branch": branch, "chats": chats }))
+            }
+            methods::CREATE_BRANCH => {
+                let p: CreateBranchParams = parse_params(params)?;
+                self.scoped_git_path(&p.repo_path).await?;
+                let branch = self
+                    .repos
+                    .create_branch(std::path::Path::new(&p.repo_path), &p.name, &p.base)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let chats = self.follow_branch(&p.repo_path, &branch).await;
+                RpcReply::value(&serde_json::json!({ "branch": branch, "chats": chats }))
+            }
+            methods::RENAME_BRANCH => {
+                let p: RenameBranchParams = parse_params(params)?;
+                self.scoped_git_path(&p.cwd).await?;
+                let root = self.checkout_root(&p.cwd).await?;
+                let here = self.chats_in_checkout(&root);
+                self.refuse_while_busy(&here)?;
+                let (_, branch) = self
+                    .repos
+                    .rename_current_branch(&root, &p.name)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let chats = self.follow_branch(&p.cwd, &branch).await;
+                RpcReply::value(&serde_json::json!({ "branch": branch, "chats": chats }))
+            }
+            methods::RENAME_WORKTREE => {
+                let p: RenameWorktreeParams = parse_params(params)?;
+                self.scoped_git_path(&p.worktree_path).await?;
+                let root = self.checkout_root(&p.worktree_path).await?;
+                if crate::workspace_host::linked_worktree_root(&root).is_none() {
+                    return Err(RpcError::Failed(format!("{} isn't a worktree", root.display())));
+                }
+                // The new folder is fenced as the old one is (a paired server
+                // can't move a worktree into Zend's data).
+                let folder = crate::repos::worktree_folder(&p.name);
+                if let Some(parent) = root.parent() {
+                    self.workspace_files.data_fence(&parent.join(&folder), true)?;
+                }
+                let here = self.chats_in_checkout(&root);
+                self.refuse_while_busy(&here)?;
+                // Each chat alone while its folder moves: no run starts in
+                // the old folder, none was running.
+                let mut held = Vec::new();
+                for chat in &here {
+                    match self.sessions.leave_folder(&chat.id).await {
+                        Ok(guard) => held.push(guard),
+                        Err(error) => {
+                            return Err(RpcError::Failed(format!(
+                                "{}: {error}",
+                                chat.title.clone().unwrap_or_else(|| chat.id.clone())
+                            )));
+                        }
+                    }
+                }
+                let (moved, branch) = self
+                    .repos
+                    .rename_worktree(&root, &p.name, p.branch.as_deref())
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let mut chats = Vec::new();
+                for chat in &here {
+                    let cwd = chat
+                        .cwd
+                        .as_deref()
+                        .and_then(|cwd| crate::repos::chat_cwd_folder(cwd, &self.repos.scratch_root()).ok())
+                        .and_then(|cwd| std::fs::canonicalize(&cwd).ok().or(Some(cwd)))
+                        .and_then(|cwd| cwd.strip_prefix(&root).ok().map(|rest| moved.join(rest)))
+                        .unwrap_or_else(|| moved.clone());
+                    self.voice.retire_chat(&chat.id);
+                    let cwd = cwd.to_string_lossy().into_owned();
+                    if let Err(error) = self.workspace.set_chat_cwd(&chat.id, &cwd) {
+                        tracing::warn!(chat = %chat.id, %error, "renameWorktree: chat cwd not moved");
+                    }
+                    if let Err(error) = self.workspace.set_chat_branch(&chat.id, &branch) {
+                        tracing::warn!(chat = %chat.id, %error, "renameWorktree: chat branch not set");
+                    }
+                    chats.push(chat.id.clone());
+                }
+                drop(held);
+                RpcReply::value(&serde_json::json!({
+                    "path": moved.to_string_lossy(),
+                    "branch": branch,
+                    "chats": chats,
+                }))
             }
             methods::GET_WORKTREE_SETTINGS => RpcReply::value(&self.repos.worktree_settings()),
             methods::SET_WORKTREE_SETTINGS => {
@@ -5902,7 +6107,12 @@ impl RpcService for EngineRpc {
                 };
                 let worktree = self
                     .repos
-                    .create_worktree(std::path::Path::new(&p.repo_path), &p.branch)
+                    .create_worktree_named(
+                        std::path::Path::new(&p.repo_path),
+                        &p.branch,
+                        p.name.as_deref(),
+                        p.branch_name.as_deref(),
+                    )
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let mut outcome = CreateWorktreeOutcome {

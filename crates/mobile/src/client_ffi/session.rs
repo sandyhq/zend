@@ -58,6 +58,8 @@ impl From<SendRequest> for zc::SendRequest {
                 repo_path: w.repo_path,
                 base: w.base,
                 space_id: w.space_id,
+                name: None,
+                branch: None,
             }),
             busy: match r.busy {
                 BusyPolicy::Queue => zc::BusyPolicy::Queue,
