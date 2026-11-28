@@ -1428,12 +1428,14 @@ pub enum AgentEvent {
     /// Where a turn left the harness's own session (Pi: the session file and
     /// its last entry), sent just before that turn's `Done`. The engine keeps
     /// it beside the transcript so a later fork can start on a copy of the
-    /// session cut at that turn ([`RunRequest::fork_from`]).
+    /// session cut at that turn ([`RunRequest::fork_from`]). `leaf` is
+    /// `None` when the turn took input the session doesn't hold (a command
+    /// the harness answered, a prompt it refused): no fork starts there.
     #[serde(rename_all = "camelCase")]
     NativeTurn {
         session_id: String,
         session_file: String,
-        leaf: String,
+        leaf: Option<String>,
     },
     /// A fork's native copy ([`RunRequest::fork_from`]) couldn't be made: the
     /// run goes on in a fresh session with the copied history as its prompt.

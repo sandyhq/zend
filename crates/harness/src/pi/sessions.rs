@@ -164,6 +164,16 @@ impl Store {
         }
     }
     pub fn resolve(&self, id: &str, cwd: &Path) -> Result<PathBuf, HarnessError> {
+        self.lookup(id, Some(cwd))
+    }
+    /// A session this host's Pi keeps for itself, by id: the index's record,
+    /// else Pi's own folders (and the one its global settings name), never
+    /// one a project's settings name. A fork's source: the only session file
+    /// a fork, sandboxed or not, may be copied from.
+    pub(super) fn locate(&self, id: &str) -> Result<PathBuf, HarnessError> {
+        self.lookup(id, None)
+    }
+    fn lookup(&self, id: &str, cwd: Option<&Path>) -> Result<PathBuf, HarnessError> {
         let mut candidates = vec![];
         if let Some(file) = json_file(&self.key(id))["sessionFile"].as_str() {
             candidates.push(PathBuf::from(file));
@@ -176,15 +186,18 @@ impl Store {
             candidates.push(PathBuf::from(file));
         }
         let mut roots = vec![self.agent.join("sessions")];
-        for settings in [
-            self.agent.join("settings.json"),
-            cwd.join(".pi/settings.json"),
-        ] {
+        let mut settings = vec![self.agent.join("settings.json")];
+        settings.extend(cwd.map(|cwd| cwd.join(".pi/settings.json")));
+        for settings in settings {
             if let Some(root) = json_file(&settings)["sessionDir"].as_str() {
                 let path = if let Some(rest) = root.strip_prefix("~/") {
                     crate::executable::home_or_current_dir().join(rest)
-                } else {
+                } else if let Some(cwd) = cwd {
                     cwd.join(root)
+                } else if Path::new(root).is_absolute() {
+                    PathBuf::from(root)
+                } else {
+                    continue;
                 };
                 roots.push(path);
             }

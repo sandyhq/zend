@@ -5622,10 +5622,19 @@ async fn drive_run(
     // on a copy of that session (`native_fork`): its prompt is the person's
     // own, and the history prompt is the driver's fallback. Either way the
     // fork's session has the history (`carried_history`).
+    // The fork's mark serves its first launch only, whichever harness takes
+    // it: taken with the first history it is owed.
+    let native_fork = match history_prompt.is_some() {
+        true => doc.take_native_fork().unwrap_or_else(|err| {
+            tracing::warn!(%chat_id, error = %err, "native fork mark take failed");
+            None
+        }),
+        false => None,
+    };
     if let Some(history) = &history_prompt
         && harness_id == HarnessId::Pi
         && request.resume.is_none()
-        && let Some(native) = doc.native_fork()
+        && let Some(native) = native_fork
     {
         let notes = request.prompt.strip_prefix(history.as_str()).unwrap_or_default();
         request.fork_from = Some(zend_proto::NativeFork {
@@ -6940,12 +6949,16 @@ async fn drive_run(
             leaf,
         } = &event
         {
+            // A turn whose input the session doesn't hold leaves no mark:
+            // a fork through it gets the history.
+            let users = std::mem::take(&mut turn_users);
+            let Some(leaf) = leaf else { continue };
             let mark = zend_doc::NativeTurnMark {
                 harness: harness_id.as_str().to_owned(),
                 session_id: session_id.clone(),
                 session_file: session_file.clone(),
                 leaf: leaf.clone(),
-                user_ids: std::mem::take(&mut turn_users),
+                user_ids: users,
             };
             if let Err(err) = doc_ref.push_native_turn(&mark) {
                 tracing::warn!(%chat_id, error = %err, "native turn mark write failed");

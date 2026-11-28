@@ -3,8 +3,14 @@
 
 Keeps a Pi-shaped session file: a header, then one entry per line (each
 prompt writes its user message, a tool result and the reply). `--fork`,
-RPC `fork` and `get_entries` follow Pi 1.5.2. A file `fail-fork` in the
-working folder makes RPC `fork` fail."""
+RPC `fork` and `get_entries` follow Pi 1.5.2, and so does reading a session
+file: one whose last line has no newline gets one (session-manager.js:367).
+Files in the working folder change it: `fail-fork` makes RPC `fork` fail,
+`die-after-fork` makes `--fork` exit once it wrote its copy,
+`report-file` makes a `--fork` Pi name the file it holds as its session,
+`fail-open` makes Pi exit on a `--session` file that names a parent, and
+`open-other` makes it answer for another session there. Its session
+stats (`/session`) are `reply:/session`, and kept nowhere."""
 import json
 import os
 from pathlib import Path
@@ -21,7 +27,11 @@ def arg(flag):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
 
 def read(path):
-    lines = [json.loads(l) for l in Path(path).read_text().splitlines() if l.strip()]
+    raw = Path(path).read_bytes()
+    lines = [json.loads(l) for l in raw.decode().splitlines() if l.strip()]
+    if raw and not raw.endswith(b'\n') and lines and lines[0].get('type') == 'session':
+        with open(path, 'ab') as f:
+            f.write(b'\n')
     return lines[0], lines[1:]
 
 def create(parent, entries):
@@ -41,10 +51,16 @@ if resumed:
     path = Path(arg('--session'))
     header, entries = read(path)
     session = header['id']
+    if header.get('parentSession') and Path('fail-open').exists():
+        sys.exit(1)
+    if header.get('parentSession') and Path('open-other').exists():
+        session = str(uuid.uuid4())
 elif '--fork' in sys.argv:
     source = Path(arg('--fork')).resolve()
     _, entries = read(source)
     session, path = create(source, entries)
+    if Path('die-after-fork').exists():
+        os._exit(3)
 elif '--no-session' in sys.argv:
     session, path = str(uuid.uuid4()), Path.cwd() / 'unsaved.jsonl'
 else:
@@ -81,17 +97,27 @@ for line in sys.stdin:
     success = True
     error = 'session must be resumed'
     if kind == 'get_state':
-        data = {'sessionId': session, 'sessionFile': str(path), 'isStreaming': False, 'isCompacting': False, 'model': {'id': 'mock'}}
+        named = Path('report-file').read_text().strip() if '--fork' in sys.argv and Path('report-file').exists() else str(path)
+        data = {'sessionId': session, 'sessionFile': named, 'isStreaming': False, 'isCompacting': False, 'model': {'id': 'mock'}}
+    if kind == 'get_session_stats':
+        data = 'reply:/session'
     if kind == 'get_commands':
         data = {'commands': []}
     if kind == 'get_entries':
         data = {'entries': entries, 'leafId': entries[-1]['id'] if entries else None}
     if kind == 'fork':
-        at = next((i for i, e in enumerate(entries) if e['id'] == req.get('entryId')), None)
-        if Path('fail-fork').exists() or at is None or entries[at]['message']['role'] != 'user':
+        # Pi's createBranchedSession: the path from the root to the
+        # entry's parent, other branches left out.
+        by_id = {e['id']: e for e in entries}
+        target = by_id.get(req.get('entryId'))
+        if Path('fail-fork').exists() or target is None or target.get('message', {}).get('role') != 'user':
             success, error = False, 'Invalid entry ID for forking'
         else:
-            entries = entries[:at]
+            branch, at = [], target.get('parentId')
+            while at:
+                branch.append(by_id[at])
+                at = by_id[at].get('parentId')
+            entries = branch[::-1]
             session, path = create(path, entries)
             data = {'text': 'forked', 'cancelled': False}
     if kind == 'prompt' and req['message'] == 'require-resume' and not resumed:

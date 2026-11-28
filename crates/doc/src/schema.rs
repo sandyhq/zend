@@ -972,6 +972,10 @@ impl SessionDoc {
         if self.fork_history_session().is_some() {
             meta.insert("forkHistorySession", "")?;
         }
+        // A fork's native copy holds what may have gone.
+        if meta.get("nativeFork").is_some() {
+            meta.delete("nativeFork")?;
+        }
         self.commit();
         Ok(removed)
     }
@@ -991,6 +995,8 @@ impl SessionDoc {
             self.doc.get_map("meta").insert("historyMoved", true)?;
             self.commit();
         }
+        // Moved history isn't the copy's.
+        self.take_native_fork()?;
         Ok(())
     }
 
@@ -999,6 +1005,8 @@ impl SessionDoc {
             self.doc.get_map("meta").insert("providerSwitched", true)?;
             self.commit();
         }
+        // Another provider's turns aren't in the copy.
+        self.take_native_fork()?;
         Ok(())
     }
 
@@ -1068,6 +1076,17 @@ impl SessionDoc {
             Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => serde_json::from_str(&s).ok(),
             _ => None,
         }
+    }
+
+    /// The fork's mark, taken: it serves the fork's first launch only (any
+    /// later fresh session holds turns of the fork's own the copy lacks).
+    pub fn take_native_fork(&self) -> Result<Option<NativeForkMark>, DocError> {
+        let mark = self.native_fork();
+        if self.doc.get_map("meta").get("nativeFork").is_some() {
+            self.doc.get_map("meta").delete("nativeFork")?;
+            self.commit();
+        }
+        Ok(mark)
     }
 
     pub fn set_native_fork(&self, mark: &NativeForkMark) -> Result<(), DocError> {
@@ -3359,7 +3378,13 @@ mod tests {
         assert_eq!(marks.len(), NATIVE_TURNS_KEPT);
         assert_eq!(marks[0].leaf, "leaf2", "the oldest go first");
         assert_eq!(marks.last().unwrap().user_ids, ["u257"]);
-        assert_eq!(reloaded.native_fork(), Some(fork));
+        assert_eq!(reloaded.native_fork(), Some(fork.clone()));
+        // Its first launch takes it; later ones, and a moved history, find none.
+        assert_eq!(reloaded.take_native_fork().unwrap(), Some(fork.clone()));
+        assert_eq!(reloaded.take_native_fork().unwrap(), None);
+        reloaded.set_native_fork(&fork).unwrap();
+        reloaded.mark_history_moved().unwrap();
+        assert_eq!(reloaded.native_fork(), None);
     }
 
     #[test]

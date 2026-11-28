@@ -56,21 +56,41 @@ fn request(cwd: &Path, prompt: &str, fork_from: Option<NativeFork>) -> RunReques
     }
 }
 
-/// The source: three turns (prompt, tool result, reply), ids u1 t1 a1 …
-fn source(dir: &Path) -> std::path::PathBuf {
-    let file = dir.join("source.jsonl");
-    let mut lines = vec![json!({"type":"session","version":3,"id":"source-session","cwd":dir})];
-    let mut parent = Value::Null;
-    for n in 1..=3 {
-        for (kind, role) in [("u", "user"), ("t", "toolResult"), ("a", "assistant")] {
-            let id = format!("{kind}{n}");
-            lines.push(json!({"type":"message","id":id,"parentId":parent,
-                "message":{"role":role,"content":[{"type":"text","text":format!("{role} {n}")}]}}));
-            parent = Value::from(id);
-        }
+/// Turn `n`'s three entries (prompt, tool result, reply), ids u<n> t<n> a<n>
+/// (with `suffix`), the first a child of `parent`.
+fn turn(n: u32, suffix: &str, parent: Value) -> Vec<Value> {
+    let mut parent = parent;
+    let mut lines = vec![];
+    for (kind, role) in [("u", "user"), ("t", "toolResult"), ("a", "assistant")] {
+        let id = format!("{kind}{n}{suffix}");
+        lines.push(json!({"type":"message","id":id,"parentId":parent,
+            "message":{"role":role,"content":[{"type":"text","text":format!("{role} {n}{suffix}")}]}}));
+        parent = Value::from(id);
     }
-    std::fs::write(&file, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
-    file
+    lines
+}
+
+/// Where the host's Pi keeps the source's session: a folder of its own
+/// under the agent folder's `sessions`, which the host's store searches.
+fn sessions_dir(dir: &Path) -> std::path::PathBuf {
+    dir.join("agent/sessions/--work--")
+}
+
+/// Session `source-session` with `entries`, at `file`, every line ended.
+fn write_session(file: &Path, dir: &Path, entries: Vec<Value>) -> std::path::PathBuf {
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut lines = vec![json!({"type":"session","version":3,"id":"source-session","cwd":dir})];
+    lines.extend(entries);
+    std::fs::write(file, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+    file.to_path_buf()
+}
+
+/// The source: three turns, kept where the host's Pi keeps its sessions.
+fn source(dir: &Path) -> std::path::PathBuf {
+    let mut entries = turn(1, "", Value::Null);
+    entries.extend(turn(2, "", "a1".into()));
+    entries.extend(turn(3, "", "a2".into()));
+    write_session(&sessions_dir(dir).join("source.jsonl"), dir, entries)
 }
 
 fn read(file: &Path) -> (Value, Vec<Value>) {
@@ -94,6 +114,43 @@ async fn run(dir: &Path, prompt: &str, fork: Option<NativeFork>) -> Vec<AgentEve
     tokio::time::timeout(Duration::from_secs(20), stream.map(Result::unwrap).collect())
         .await
         .unwrap()
+}
+
+/// As [`run`], keeping a failed run's events up to its error.
+async fn run_to_end(dir: &Path, prompt: &str, fork: Option<NativeFork>) -> Vec<Result<AgentEvent, String>> {
+    match harness(dir).run(request(dir, prompt, fork), controls()).await {
+        Ok(stream) => tokio::time::timeout(
+            Duration::from_secs(20),
+            stream.map(|e| e.map_err(|e| e.to_string())).collect(),
+        )
+        .await
+        .unwrap(),
+        Err(error) => vec![Err(error.to_string())],
+    }
+}
+
+fn sorted<const N: usize>(files: [std::path::PathBuf; N]) -> Vec<std::path::PathBuf> {
+    let mut files = files.to_vec();
+    files.sort();
+    files
+}
+
+/// Every session file under `dir`, at any depth.
+fn all_sessions(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = vec![];
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(at) = dirs.pop() {
+        for entry in std::fs::read_dir(&at).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "jsonl") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 fn native(file: &Path, leaf: &str) -> NativeFork {
@@ -126,16 +183,6 @@ fn turn_file(events: &[AgentEvent]) -> std::path::PathBuf {
         .unwrap_or_else(|| panic!("no NativeTurn: {events:?}"))
 }
 
-fn sessions_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<_> = std::fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".jsonl"))
-        .collect();
-    names.sort();
-    names
-}
-
 #[tokio::test]
 async fn a_fork_at_a_middle_turn_starts_on_a_cut_copy_naming_the_source() {
     let dir = tempfile::tempdir().unwrap();
@@ -164,14 +211,11 @@ async fn a_fork_at_a_middle_turn_starts_on_a_cut_copy_naming_the_source() {
         })
         .collect();
     assert_eq!(started, [header["id"].as_str().unwrap()]);
-    assert_eq!(
-        sessions_in(dir.path()),
-        {
-            let mut v = vec!["source.jsonl".to_string(), file.file_name().unwrap().to_string_lossy().into_owned()];
-            v.sort();
-            v
-        }
-    );
+    // Beside the source, and nothing else left anywhere.
+    assert_eq!(file.parent(), src.parent());
+    let mut kept = vec![src.clone(), file.clone()];
+    kept.sort();
+    assert_eq!(all_sessions(dir.path()), kept);
 }
 
 #[tokio::test]
@@ -194,43 +238,118 @@ async fn a_fork_at_the_last_turn_copies_the_whole_session() {
     let (header, entries) = read(&file);
     assert_eq!(header["parentSession"], src.display().to_string());
     assert_eq!(entries.len(), 12, "{:?}", texts(&entries));
-    assert_eq!(sessions_in(dir.path()).len(), 2);
+    assert_eq!(all_sessions(dir.path()).len(), 2);
 }
 
 #[tokio::test]
 async fn every_failure_runs_fresh_with_the_history_and_leaves_nothing_behind() {
-    // K5: an unknown leaf, a missing file, a fork Pi refuses, a file that
-    // isn't the source's session (another session's, or no session at all).
-    for case in ["leaf", "file", "refused", "other", "not-a-session"] {
+    // K5: an unknown leaf, a missing file, a fork Pi refuses, a session
+    // the host doesn't have.
+    for case in ["leaf", "file", "refused", "other"] {
         let dir = tempfile::tempdir().unwrap();
         let src = source(dir.path());
-        let before = std::fs::read(&src).unwrap();
         let fork = match case {
             "leaf" => native(&src, "nowhere"),
-            "file" => native(&dir.path().join("gone.jsonl"), "a2"),
-            "other" => NativeFork { session_id: "another-session".into(), ..native(&src, "a2") },
-            "not-a-session" => {
-                let key = dir.path().join("id_ed25519");
-                std::fs::write(&key, "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
-                native(&key, "a2")
+            "file" => {
+                std::fs::remove_file(&src).unwrap();
+                write_session(&dir.path().join("elsewhere/source.jsonl"), dir.path(), vec![]);
+                native(&src, "a2")
             }
+            "other" => NativeFork { session_id: "another-session".into(), ..native(&src, "a2") },
             _ => {
                 std::fs::write(dir.path().join("fail-fork"), "").unwrap();
                 native(&src, "a2")
             }
         };
+        let before = std::fs::read(&src).ok();
         let events = run(dir.path(), "hi", Some(fork)).await;
-        assert!(
-            events.iter().any(|e| matches!(e, AgentEvent::NativeForkFallback { .. })),
-            "{case}: {events:?}"
-        );
-        assert_eq!(reply(&events), "reply:HISTORY\n\nhi", "{case}");
-        let (header, entries) = read(&turn_file(&events));
-        assert!(header.get("parentSession").is_none(), "{case}: a fresh session");
-        assert_eq!(texts(&entries)[0], "HISTORY\n\nhi");
-        assert_eq!(std::fs::read(&src).unwrap(), before, "{case}");
-        // The source and the fresh session only: no copy left over.
-        assert_eq!(sessions_in(dir.path()).len(), 2, "{case}: {:?}", sessions_in(dir.path()));
+        let fresh = runs_fresh(&events, case);
+        assert_eq!(std::fs::read(&src).ok(), before, "{case}");
+        // The source (or what stands in for it) and the fresh session only:
+        // no copy left over.
+        let left = all_sessions(dir.path());
+        assert_eq!(left.len(), 2, "{case}: {left:?}");
+        assert!(left.contains(&fresh), "{case}: {left:?}");
+    }
+}
+
+/// The run fell back: fresh, with the history as its prompt. Its session file.
+fn runs_fresh(events: &[AgentEvent], case: &str) -> std::path::PathBuf {
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::NativeForkFallback { .. })),
+        "{case}: {events:?}"
+    );
+    assert_eq!(reply(events), "reply:HISTORY\n\nhi", "{case}");
+    let file = turn_file(events);
+    let (header, entries) = read(&file);
+    assert!(header.get("parentSession").is_none(), "{case}: a fresh session");
+    assert_eq!(texts(&entries)[0], "HISTORY\n\nhi", "{case}");
+    file
+}
+
+/// Review finding 1: the doc names the source, but only a session the
+/// host's own store has may be copied; one anywhere else, even with the
+/// right header, is never read.
+#[tokio::test]
+async fn a_source_the_hosts_store_does_not_have_is_never_copied() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut entries = turn(1, "", Value::Null);
+    entries.extend(turn(2, "", "a1".into()));
+    let planted = write_session(&dir.path().join("elsewhere/planted.jsonl"), dir.path(), entries);
+    let events = run(dir.path(), "hi", Some(native(&planted, "a1"))).await;
+    let fresh = runs_fresh(&events, "planted");
+    assert!(!std::fs::read_to_string(&fresh).unwrap().contains("assistant 1"));
+    assert_eq!(all_sessions(dir.path()), sorted([planted, fresh]));
+}
+
+/// Review finding 2: the turn's leaf has no children, but another branch
+/// ends later in the file. `pi --fork` copies both and reopens at that
+/// branch's end, so the copy isn't the fork: fresh with the history.
+#[tokio::test]
+async fn a_source_with_another_branch_after_the_leaf_runs_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut entries = turn(1, "", Value::Null);
+    entries.extend(turn(2, "", "a1".into()));
+    entries.extend(turn(2, "b", "a1".into()));
+    let src = write_session(&sessions_dir(dir.path()).join("source.jsonl"), dir.path(), entries);
+    let events = run(dir.path(), "hi", Some(native(&src, "a2"))).await;
+    let fresh = runs_fresh(&events, "branched");
+    assert_eq!(all_sessions(dir.path()), sorted([fresh, src]));
+}
+
+/// Review finding 3: Pi may repair a session file it only reads (a last
+/// line without its newline, session-manager.js:367). It never gets the
+/// source: the source stays byte for byte as it was.
+#[tokio::test]
+async fn pi_never_gets_the_source_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = source(dir.path());
+    let text = std::fs::read_to_string(&src).unwrap();
+    std::fs::write(&src, text.trim_end()).unwrap();
+    let before = std::fs::read(&src).unwrap();
+    let events = run(dir.path(), "hi", Some(native(&src, "a2"))).await;
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::NativeForkFallback { .. })), "{events:?}");
+    assert_eq!(reply(&events), "reply:hi");
+    assert_eq!(std::fs::read(&src).unwrap(), before);
+}
+
+/// Review finding 6: the helper Pi exits after writing its copy; the Pi
+/// that is to run the fork fails to open it, or opens another session.
+/// Each runs fresh with the history, and no copy is left anywhere.
+#[tokio::test]
+async fn a_pi_that_fails_with_the_copy_runs_fresh_and_leaves_nothing() {
+    for marker in ["die-after-fork", "fail-open", "open-other"] {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(dir.path());
+        std::fs::write(dir.path().join(marker), "").unwrap();
+        let results = run_to_end(dir.path(), "hi", Some(native(&src, "a2"))).await;
+        let errors: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+        assert!(errors.is_empty(), "{marker}: {errors:?}");
+        let events: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+        let fresh = runs_fresh(&events, marker);
+        let mut kept = vec![src.clone(), fresh];
+        kept.sort();
+        assert_eq!(all_sessions(dir.path()), kept, "{marker}");
     }
 }
 
@@ -247,7 +366,7 @@ async fn every_turn_reports_where_it_left_the_session() {
         .unwrap();
     let (header, entries) = read(&turn_file(&events));
     assert_eq!(header["id"], session_id.as_str());
-    assert_eq!(entries.last().unwrap()["id"], leaf.as_str());
+    assert_eq!(entries.last().unwrap()["id"], leaf.unwrap().as_str());
     // Just before the turn's Done.
     let at = events.iter().position(|e| matches!(e, AgentEvent::NativeTurn { .. })).unwrap();
     assert!(matches!(events[at + 1], AgentEvent::Done { .. }), "{events:?}");

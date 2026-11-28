@@ -78,46 +78,103 @@ pub(super) fn last_entry(path: &Path) -> Option<String> {
     }
 }
 
-/// The session id a session file's header names.
-pub(super) fn header_id(path: &Path) -> Option<String> {
-    use std::io::BufRead;
-    let mut line = String::new();
-    std::io::BufReader::new(std::fs::File::open(path).ok()?)
-        .take(64 * 1024)
-        .read_line(&mut line)
-        .ok()?;
-    let header: Value = serde_json::from_str(&line).ok()?;
-    (header["type"] == "session").then(|| header["id"].as_str().map(str::to_owned))?
-}
-
-/// Name `source` as the session `file` came from (its header's
-/// `parentSession`): the copy was cut from an intermediate one. Written
-/// whole and renamed over, before any Pi has it open.
-pub(super) fn set_parent(file: &Path, source: &Path) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(file)?;
-    let (head, rest) = text.split_once('\n').unwrap_or((&text, ""));
-    let mut header: Value = serde_json::from_str(head)?;
-    if header["type"] != "session" {
-        return Err(std::io::Error::other("the session file has no header"));
+/// A fork's own folder while it is made: new (never one that was there),
+/// private, inside the folder the fork is kept in. Pi gets a snapshot of the
+/// source in it and writes its copies there; dropping it removes everything
+/// in it, whatever Pi left half done.
+pub(super) struct Staging(PathBuf);
+impl Staging {
+    pub(super) fn new(parent: &Path) -> std::io::Result<Self> {
+        let path = parent.join(format!(".zend-fork-{}", uuid::Uuid::new_v4()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&path)?;
+        Ok(Self(path))
     }
-    header["parentSession"] = Value::from(source.display().to_string());
-    let temp = file.with_extension("jsonl.tmp");
-    std::fs::write(&temp, format!("{header}\n{rest}"))?;
-    std::fs::rename(&temp, file).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })
+    pub(super) fn path(&self) -> &Path {
+        &self.0
+    }
+    /// Whether `file` names a file right in this folder.
+    pub(super) fn holds(&self, file: &Path) -> bool {
+        file.parent() == Some(self.0.as_path())
+            && file.file_name().is_some_and(|name| name != "." && name != "..")
+    }
 }
-
-/// Removes the files it holds when dropped: the source's copy a sandboxed
-/// fork reads, the intermediate fork.
-#[derive(Default)]
-pub(super) struct Scratch(pub Vec<PathBuf>);
-impl Drop for Scratch {
+impl Drop for Staging {
     fn drop(&mut self) {
-        for file in &self.0 {
-            let _ = std::fs::remove_file(file);
-        }
+        let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A regular file's bytes, through one handle, never through a symlink
+/// (nor blocking on a pipe).
+pub(super) fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// A session file's header and entries, in file order.
+pub(super) fn parse(bytes: &[u8]) -> Result<(Value, Vec<Value>), String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "the session file isn't text".to_string())?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header: Value = lines
+        .next()
+        .and_then(|l| serde_json::from_str(l).ok())
+        .filter(|h: &Value| h["type"] == "session")
+        .ok_or("the file isn't a Pi session")?;
+    let entries = lines
+        .map(serde_json::from_str)
+        .collect::<Result<Vec<Value>, _>>()
+        .map_err(|e| format!("the session file has a broken line: {e}"))?;
+    Ok((header, entries))
+}
+
+/// Whether `entries` are what a fork through `leaf` holds: one line from
+/// the first entry to `leaf`, each the child of the one before, then only
+/// entries beside the conversation. Pi resumes a session at its last entry,
+/// and builds its context from that entry's line: another branch anywhere
+/// (`pi --fork` copies all of them) is not the fork.
+pub(super) fn one_line_to(entries: &[Value], leaf: &str) -> Result<(), String> {
+    let mut parent = Value::Null;
+    let mut past_leaf = false;
+    for entry in entries {
+        if entry["parentId"] != parent {
+            return Err("the copy holds another branch of the session".into());
+        }
+        if past_leaf && !BESIDE.contains(&entry["type"].as_str().unwrap_or_default()) {
+            return Err(format!("the copy goes on after {leaf}"));
+        }
+        past_leaf |= entry["id"] == leaf;
+        parent = entry["id"].clone();
+    }
+    if !past_leaf {
+        return Err(format!("the copy has no entry {leaf}"));
+    }
+    Ok(())
+}
+
+/// The session file `bytes` as kept: its header names `source` as the
+/// session it came from (`parentSession`), every line ended.
+pub(super) fn with_parent(header: &Value, bytes: &[u8], source: &Path) -> Result<Vec<u8>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "the copy isn't text".to_string())?;
+    let rest = text.split_once('\n').map_or("", |(_, rest)| rest);
+    let mut header = header.clone();
+    header["parentSession"] = Value::from(source.display().to_string());
+    let mut out = format!("{header}\n{rest}");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out.into_bytes())
 }
 
 #[cfg(test)]
@@ -166,28 +223,46 @@ mod tests {
     }
 
     #[test]
-    fn the_header_names_the_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("s.jsonl");
-        std::fs::write(&file, "{\"type\":\"session\",\"id\":\"s1\"}\n{\"id\":\"e\"}\n").unwrap();
-        assert_eq!(header_id(&file).as_deref(), Some("s1"));
-        std::fs::write(&file, "-----BEGIN KEY-----\n").unwrap();
-        assert_eq!(header_id(&file), None);
-        std::fs::write(&file, "{\"type\":\"message\",\"id\":\"s1\"}\n").unwrap();
-        assert_eq!(header_id(&file), None);
+    fn only_one_line_to_the_leaf_is_the_fork() {
+        let line = vec![
+            msg("u1", None, "user"),
+            msg("a1", Some("u1"), "assistant"),
+            json!({"type":"model_change","id":"m","parentId":"a1"}),
+        ];
+        assert_eq!(one_line_to(&line, "a1"), Ok(()));
+        assert!(one_line_to(&line, "u1").is_err(), "goes on after the leaf");
+        assert!(one_line_to(&line, "gone").is_err());
+        let mut branched = line.clone();
+        branched.push(msg("u2b", Some("a1"), "user"));
+        assert!(one_line_to(&branched, "a1").is_err(), "a later branch");
+        assert!(one_line_to(&branched, "u2b").is_err(), "an earlier branch");
     }
 
     #[test]
-    fn the_parent_is_set_in_the_header_and_the_rest_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("b.jsonl");
-        std::fs::write(&file, "{\"type\":\"session\",\"id\":\"b\",\"parentSession\":\"/a\"}\n{\"id\":\"e\"}\n").unwrap();
-        set_parent(&file, Path::new("/src.jsonl")).unwrap();
-        let text = std::fs::read_to_string(&file).unwrap();
+    fn the_kept_copy_names_its_source_and_keeps_the_rest() {
+        let bytes = b"{\"type\":\"session\",\"id\":\"b\",\"parentSession\":\"/a\"}\n{\"id\":\"e\"}";
+        let (header, entries) = parse(bytes).unwrap();
+        assert_eq!(entries.len(), 1);
+        let text = String::from_utf8(with_parent(&header, bytes, Path::new("/src.jsonl")).unwrap()).unwrap();
         let mut lines = text.lines();
         let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-        assert_eq!(header["parentSession"], "/src.jsonl");
-        assert_eq!(header["id"], "b");
+        assert_eq!((header["parentSession"].as_str(), header["id"].as_str()), (Some("/src.jsonl"), Some("b")));
         assert_eq!(lines.next(), Some("{\"id\":\"e\"}"));
+        assert!(text.ends_with('\n'));
+        assert!(parse(b"-----BEGIN KEY-----\n").is_err());
+        assert!(parse(b"{\"type\":\"message\",\"id\":\"s1\"}\n").is_err());
+    }
+
+    #[test]
+    fn the_staging_folder_goes_with_all_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = Staging::new(dir.path()).unwrap();
+        let path = staging.path().to_path_buf();
+        std::fs::write(path.join("half.jsonl"), "x").unwrap();
+        assert!(staging.holds(&path.join("half.jsonl")));
+        assert!(!staging.holds(&dir.path().join("half.jsonl")));
+        assert!(!staging.holds(&path.join("sub/half.jsonl")));
+        drop(staging);
+        assert!(!path.exists());
     }
 }

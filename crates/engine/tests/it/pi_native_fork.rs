@@ -79,7 +79,7 @@ impl World {
                 let after = entries.iter().position(|e| e.id == id).map_or(entries.len(), |at| at + 1);
                 let found = entries[after..].iter().find_map(|e| {
                     e.parts.iter().find_map(|p| match p {
-                        MessagePart::Text { text, .. } if text.starts_with("reply:") => Some(text.clone()),
+                        MessagePart::Text { text, .. } if text.contains("reply:") => Some(text.clone()),
                         _ => None,
                     })
                 });
@@ -261,5 +261,52 @@ async fn a_rewound_source_and_an_old_chat_fork_with_the_history() {
     w.fork("of-old", "old", "o2", false).await;
     let reply = w.turn("of-old", "x1", "what now").await;
     assert!(reply.contains("KIWI") && reply.ends_with("what now"), "{reply}");
+    w.core.shutdown().await;
+}
+
+/// Review finding 5: a turn Pi answered without keeping it (its command
+/// `/session`) leaves its session where the turn before left it, so no mark
+/// may claim the command: a fork at it gets the history.
+#[tokio::test]
+async fn a_turn_pi_did_not_keep_gives_a_fork_at_it_the_history() {
+    let w = World::new();
+    w.chat("src");
+    assert_eq!(w.turn("src", "u1", "say PINEAPPLE").await, "reply:say PINEAPPLE");
+    assert!(w.turn("src", "u2", "/session").await.contains("reply:/session"));
+    assert_eq!(w.turn("src", "u3", "say CHERRY").await, "reply:say CHERRY");
+    w.fork("at-command", "src", &w.end_of("src", "u2"), false).await;
+    let reply = w.turn("at-command", "c1", "what now").await;
+    assert!(
+        reply.contains("PINEAPPLE") && reply.contains("/session") && !reply.contains("CHERRY") && reply.ends_with("what now"),
+        "{reply}"
+    );
+    w.core.shutdown().await;
+}
+
+/// Review finding 4: the fork's mark serves its first launch only. Rewound
+/// past what it copied, the fork's next fresh session gets the history it
+/// kept, not the old copy with the removed turns.
+#[tokio::test]
+async fn a_rewound_fork_gets_its_kept_history_not_the_old_copy() {
+    let w = World::new();
+    w.source().await;
+    w.fork("k1", "src", &w.end_of("src", "u2"), false).await;
+    assert_eq!(w.turn("k1", "f1", "what now").await, "reply:what now");
+    let entries = w.core.doc_host.open("k1").unwrap().doc().read_entries().unwrap();
+    let banana = entries
+        .iter()
+        .find(|e| {
+            e.role == MessageRole::User
+                && e.parts.iter().any(|p| matches!(p, MessagePart::Text { text, .. } if text == "say BANANA"))
+        })
+        .unwrap()
+        .id
+        .clone();
+    w.core.sessions.rewind("k1", &banana).await.unwrap();
+    let reply = w.turn("k1", "f2", "what then").await;
+    assert!(
+        reply.contains("PINEAPPLE") && !reply.contains("BANANA") && reply.ends_with("what then"),
+        "{reply}"
+    );
     w.core.shutdown().await;
 }

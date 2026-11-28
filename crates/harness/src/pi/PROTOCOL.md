@@ -49,8 +49,16 @@ recreating the same UUID; an unrestorable session starts a new one with a
 visible "without the previous context" notice, like the other harnesses.
 
 Native fork (pi-native-fork, verified against 1.5.2 dist): a fork's first turn
-(`RunRequest::fork_from`: source file, `leaf`, fallback prompt) runs a short
-Pi `--mode rpc --fork <source> [--session-dir <dir>]` before the main one.
+(`RunRequest::fork_from`: source session id, `leaf`, fallback prompt) runs a
+short Pi `--mode rpc --fork <snapshot> --session-dir <staging>` before the main
+one. The source is the session this host's Pi keeps under that id (the index,
+Pi's own folders, its global `sessionDir`; never a project's settings, never
+the path the doc names), read once through one handle (no symlink) into
+`<staging>/source.jsonl`: Pi never opens the source (it appends a missing last
+newline to a file it only reads, session-manager.js:367-368). `<staging>` is
+a new private folder `.zend-fork-<uuid>` inside the folder the fork is kept
+in (a sandboxed chat's `state/sessions`, else the source's own folder), and
+goes whole at the end, whatever Pi left there.
 `--fork` writes the copy at once, into `--session-dir` when given (main.js
 600-603, 342-347; SessionManager.forkFrom session-manager.js:1397-1431), with
 `parentSession` = the source. `get_state` names the copy, `get_entries` lists it
@@ -61,11 +69,18 @@ session; the first user message is cut with RPC `fork {entryId}` (rpc-mode.js
 503-509, position "before": the new file holds what came before that entry,
 agent-session-runtime.js:174-235); anything else refuses. RPC `fork` needs no
 prompt first. Its file names the intermediate copy as `parentSession`
-(session-manager.js:1260): the driver deletes the copy and rewrites the
-header to the source before the main Pi opens the file with `--session`. The fork
-runs before `set_model` (configure appends `model_change`). A sandboxed fork
-reads a copy of the source in its own state folder; a result outside it is
-refused. Any failure kills the short Pi, removes what it made, emits
-`NativeForkFallback` at the start of the turn and runs a fresh session with the
-fallback prompt. At every turn's end the driver emits `NativeTurn` (session id,
-file, the id of the file's last line: Pi appends every entry) before `Done`.
+(session-manager.js:1260). Pi must name files right in `<staging>`. The
+driver reads the result (one handle), keeps it only as one line of entries
+from the first to `leaf` (then only entries beside the conversation): `pi
+--fork` copies every branch and reopens at the file's last entry, so a source
+with another branch is refused. The header is rewritten to name the source
+and the file is linked, never over another, into the fork's folder before
+the main Pi opens it with `--session`; its first `get_state` must name that
+file and session, else it is stopped and the file removed. The fork runs
+before `set_model` (configure appends `model_change`). Any failure emits
+`NativeForkFallback` at the start of the turn and runs a fresh session with
+the fallback prompt. At every turn's end the driver emits `NativeTurn`
+(session id, file, the id of the file's last line: Pi appends every entry)
+before `Done`; `leaf` is none when the turn took a Pi command (`/session`,
+answered by RPC, kept nowhere) or a prompt Pi refused, and the engine marks
+no fork point there.
