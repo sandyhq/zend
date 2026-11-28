@@ -134,6 +134,7 @@ impl Suite {
             resume: None,
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         }
     }
 
@@ -1205,6 +1206,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         resume: None,
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

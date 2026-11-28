@@ -181,6 +181,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             },
             Some("side-user".into()),
         )
@@ -569,6 +570,7 @@ async fn side_turn(
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             },
             Some(message_id.into()),
         )
@@ -835,6 +837,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let settle = |count: usize| {
         let seen = seen.clone();
@@ -1025,6 +1028,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     core.sessions
         .dispatch(
@@ -1151,6 +1155,7 @@ async fn a_side_chat_keeps_its_subagent_tools_when_native_subagents_are_off() {
                     env: Default::default(),
                     extra_mcp: Vec::new(),
                     instructions: Vec::new(),
+                    fork_from: None,
                 },
                 Some(format!("{chat}-u1")),
             )

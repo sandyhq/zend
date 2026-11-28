@@ -44,6 +44,7 @@ fn run_request(prompt: &str) -> RunRequest {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 
@@ -2652,6 +2653,7 @@ async fn real_claude_sees_uploaded_image_inline() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     core.doc_host
         .queue_command(

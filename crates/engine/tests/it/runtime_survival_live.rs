@@ -116,6 +116,7 @@ fn run(
         resume: None,
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

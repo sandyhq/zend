@@ -163,6 +163,7 @@ fn request(cwd: &Path) -> RunRequest {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

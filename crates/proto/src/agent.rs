@@ -697,6 +697,29 @@ pub struct RunRequest {
     /// sender can never inject environment into a host's agents.
     #[serde(skip)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Start on a native copy of another provider session instead of a fresh
+    /// one (Pi: `--fork` + RPC `fork`, see [`NativeFork`]). Stamped by the
+    /// HOST engine for a fork's first turn; `serde(skip)` like [`Self::env`]:
+    /// it names a file on the host, which no sender may choose.
+    #[serde(skip)]
+    pub fork_from: Option<NativeFork>,
+}
+
+/// A fork's first turn on a copy of its source's own provider session
+/// ([`RunRequest::fork_from`]): the copy holds the source session up to
+/// `leaf`, the entry its turn that the fork copies through ended on. A
+/// driver that can't make the copy runs a fresh session with
+/// `fallback_prompt` (the prompt with the copied history in front) instead
+/// and says so ([`AgentEvent::NativeForkFallback`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeFork {
+    /// The source's session id: the file's header must name it.
+    pub session_id: String,
+    /// The source's session file on this host.
+    pub session_file: String,
+    /// The source session's entry the copy ends on.
+    pub leaf: String,
+    pub fallback_prompt: String,
 }
 
 /// Hand-written so a `{:?}` can never print a credential: `env` shows its
@@ -722,6 +745,7 @@ impl std::fmt::Debug for RunRequest {
             env,
             extra_mcp,
             instructions,
+            fork_from,
         } = self;
         f.debug_struct("RunRequest")
             .field("prompt", prompt)
@@ -740,6 +764,7 @@ impl std::fmt::Debug for RunRequest {
             .field("mcp", mcp)
             .field("extra_mcp", extra_mcp)
             .field("instructions", instructions)
+            .field("fork_from", fork_from)
             .field("env", &env.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -1399,6 +1424,23 @@ pub enum AgentEvent {
     Steered {
         assistant_message_id: Option<String>,
         next_assistant_message_id: Option<String>,
+    },
+    /// Where a turn left the harness's own session (Pi: the session file and
+    /// its last entry), sent just before that turn's `Done`. The engine keeps
+    /// it beside the transcript so a later fork can start on a copy of the
+    /// session cut at that turn ([`RunRequest::fork_from`]).
+    #[serde(rename_all = "camelCase")]
+    NativeTurn {
+        session_id: String,
+        session_file: String,
+        leaf: String,
+    },
+    /// A fork's native copy ([`RunRequest::fork_from`]) couldn't be made: the
+    /// run goes on in a fresh session with the copied history as its prompt.
+    /// For the log, never the transcript.
+    #[serde(rename_all = "camelCase")]
+    NativeForkFallback {
+        reason: String,
     },
     #[serde(rename_all = "camelCase")]
     Done {

@@ -115,6 +115,7 @@ fn request(mode: &str, work: &Path) -> RunRequest {
         .into(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

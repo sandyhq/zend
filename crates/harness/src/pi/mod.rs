@@ -1,5 +1,6 @@
 //! Native Pi JSONL RPC driver. See PROTOCOL.md for the legacy ACK barrier.
 mod catalog;
+mod fork;
 mod instructions;
 mod mcp;
 mod normalize;
@@ -138,6 +139,88 @@ impl PiHarness {
         });
         rx.await
             .map_err(|_| HarnessError::Protocol("Pi discovery task failed".into()))?
+    }
+    /// Make a fork's own session from its source's ([`zend_proto::NativeFork`]):
+    /// a short Pi copies the source with `--fork` (a sandboxed fork reads a
+    /// copy of it in its own state folder), and, when the source went on past
+    /// the fork's turn, cuts the copy with RPC `fork` before the next prompt.
+    /// The new file's header names the source. Returns that file; the source
+    /// is only read. Any failure leaves nothing behind.
+    async fn native_fork(
+        &self,
+        request: &RunRequest,
+        native: &zend_proto::NativeFork,
+        store: &sessions::Store,
+        sandbox: Option<&crate::sandbox::Sandbox>,
+    ) -> Result<PathBuf, String> {
+        let source = PathBuf::from(&native.session_file);
+        if !source.is_file() {
+            return Err(format!("the source session {} is gone", source.display()));
+        }
+        // The file is the source's session, whatever path the doc named.
+        if fork::header_id(&source).as_deref() != Some(native.session_id.as_str()) {
+            return Err(format!("{} isn't session {}", source.display(), native.session_id));
+        }
+        let mut scratch = fork::Scratch::default();
+        let mut args = vec!["--fork".to_string()];
+        match store.session_dir() {
+            Some(dir) => {
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let copy = dir.join(format!("fork-source-{}.jsonl", uuid::Uuid::new_v4()));
+                std::fs::copy(&source, &copy).map_err(|e| format!("copying the source: {e}"))?;
+                scratch.0.push(copy.clone());
+                args.push(copy.display().to_string());
+                args.extend(["--session-dir".into(), dir.display().to_string()]);
+            }
+            None => args.push(source.display().to_string()),
+        }
+        let mut process = self
+            .spawn(Path::new(&request.cwd), &args, None, &[], None, &request.env, sandbox)
+            .map_err(|e| e.to_string())?;
+        let made = tokio::time::timeout(Duration::from_secs(60), async {
+            let mut backlog = vec![];
+            let state = process.query(json!({"type":"get_state"}), &mut backlog).await?;
+            let copied = state["sessionFile"].as_str().map(PathBuf::from).ok_or_else(|| {
+                HarnessError::Protocol("Pi named no file for the copy".into())
+            })?;
+            scratch.0.push(copied.clone());
+            let listed = process.query(json!({"type":"get_entries"}), &mut backlog).await?;
+            let entries = listed["entries"].as_array().cloned().unwrap_or_default();
+            match fork::cut(&entries, &native.leaf).map_err(HarnessError::Protocol)? {
+                fork::Cut::End => Ok(copied),
+                fork::Cut::Before(entry) => {
+                    let forked = process
+                        .query(json!({"type":"fork","entryId":entry}), &mut backlog)
+                        .await?;
+                    if forked["cancelled"] == true {
+                        return Err(HarnessError::Protocol("an extension cancelled the fork".into()));
+                    }
+                    let state = process.query(json!({"type":"get_state"}), &mut backlog).await?;
+                    let cut = state["sessionFile"].as_str().map(PathBuf::from).ok_or_else(|| {
+                        HarnessError::Protocol("Pi named no file for the fork".into())
+                    })?;
+                    if cut == copied {
+                        return Err(HarnessError::Protocol("Pi kept the uncut copy".into()));
+                    }
+                    scratch.0.push(cut.clone());
+                    Ok(cut)
+                }
+            }
+        })
+        .await;
+        process.shutdown(self.kill_grace).await;
+        let file = match made {
+            Ok(Ok(file)) => file,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(_) => return Err("Pi did not make the fork within 60s".into()),
+        };
+        if !store.admits(&file) {
+            return Err(format!("Pi kept the fork at {}, outside the sandbox's state folder", file.display()));
+        }
+        fork::set_parent(&file, &source).map_err(|e| format!("naming the source: {e}"))?;
+        // Kept: the fork itself. Everything else in the scratch goes.
+        scratch.0.retain(|f| f != &file);
+        Ok(file)
     }
     fn spawn(
         &self,
@@ -449,6 +532,21 @@ impl Harness for PiHarness {
         if lost_context.is_some() {
             request.resume = None;
         }
+        // A fork's first turn: on a copy of its source's session, cut where
+        // the fork copies through; failing that, fresh with the history.
+        let mut fork_fallback = None;
+        if let Some(native) = request.fork_from.take()
+            && request.resume.is_none()
+        {
+            match self.native_fork(&request, &native, &store, sandbox.as_ref()).await {
+                Ok(file) => args = vec!["--session".into(), file.display().to_string()],
+                Err(reason) => {
+                    tracing::warn!(source = %native.session_file, %reason, "Pi native fork failed; sending the copied history instead");
+                    request.prompt = native.fallback_prompt;
+                    fork_fallback = Some(reason);
+                }
+            }
+        }
         if let Some(dir) = store.session_dir()
             && !args.iter().any(|a| a == "--session" || a == "--session-dir")
         {
@@ -489,6 +587,8 @@ impl Harness for PiHarness {
                 session: String::new(),
                 assistant: uuid::Uuid::new_v4().to_string(),
                 lost_context,
+                fork_fallback,
+                session_file: None,
                 recheck_state: false,
                 state_deadline: None,
                 idle_queue_timeout,
@@ -575,6 +675,10 @@ struct Runner {
     session: String,
     assistant: String,
     lost_context: Option<String>,
+    /// Why a fork's native copy couldn't be made (`NativeForkFallback`).
+    fork_fallback: Option<String>,
+    /// The session's file, as Pi last named it.
+    session_file: Option<PathBuf>,
     /// The last state barrier found Pi busy (streaming, compacting, queued
     /// input) with no settle event guaranteed to follow: re-check at the end
     /// of compaction or of an automatic retry.
@@ -614,6 +718,18 @@ impl Runner {
         self.idle_queue_deadline = None;
         self.idle_poll = None;
         self.process.dialogs.cancel(&self.process.transport.client);
+        // Where this turn left the session, for a later fork of it.
+        if let Some(file) = &self.session_file
+            && !self.session.is_empty()
+            && let Some(leaf) = fork::last_entry(file)
+        {
+            self.emit(AgentEvent::NativeTurn {
+                session_id: self.session.clone(),
+                session_file: file.display().to_string(),
+                leaf,
+            })
+            .await?;
+        }
         self.emit(AgentEvent::Done {
             status: if self.interrupted {
                 zend_proto::DoneStatus::Interrupted
@@ -797,6 +913,7 @@ impl Runner {
         }
         if let Some(file) = state["sessionFile"].as_str() {
             self.store.remember(&self.session, Path::new(file))?;
+            self.session_file = Some(PathBuf::from(file));
         }
         self.auto_compaction = state["autoCompactionEnabled"].as_bool().unwrap_or(true);
         self.norm.window = state["model"]["contextWindow"].as_u64();
@@ -804,6 +921,9 @@ impl Runner {
             .await?;
         if let Some(message) = self.lost_context.take() {
             self.emit(AgentEvent::Error { message }).await?;
+        }
+        if let Some(reason) = self.fork_fallback.take() {
+            self.emit(AgentEvent::NativeForkFallback { reason }).await?;
         }
         for frame in backlog {
             self.frame(frame).await?;
@@ -1004,6 +1124,7 @@ impl Runner {
         let file = data["sessionFile"].as_str().map(Path::new);
         if let Some(file) = file {
             self.store.remember(&self.session, file)?;
+            self.session_file = Some(file.to_path_buf());
         }
         if changed {
             self.started(data["model"]["id"].as_str().unwrap_or("default").into())
@@ -1408,6 +1529,69 @@ fn open_beneath(root: &Path, path: &Path) -> std::io::Result<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::{load_images, load_images_capped};
+
+    /// K6: a sandboxed fork's session is made in its own state folder (the
+    /// store admits it), from a copy that doesn't outlive the fork.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sandboxed_forks_session_is_made_in_its_own_state_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (work, state) = (dir.path().join("work"), dir.path().join("state"));
+        std::fs::create_dir_all(&work).unwrap();
+        // The source lives outside the fork's state folder (its own chat's).
+        let source = dir.path().join("source.jsonl");
+        std::fs::write(
+            &source,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"src\",\"cwd\":\"/\"}\n",
+                "{\"type\":\"message\",\"id\":\"u1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"message\",\"id\":\"a1\",\"parentId\":\"u1\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n",
+                "{\"type\":\"message\",\"id\":\"u2\",\"parentId\":\"a1\",\"message\":{\"role\":\"user\",\"content\":[]}}\n",
+            ),
+        )
+        .unwrap();
+        let before = std::fs::read(&source).unwrap();
+        let pi = super::PiHarness::new()
+            .with_executable(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-pi-rpc.py"))
+            .with_agent_dir(dir.path().join("agent"));
+        let store = super::sessions::Store::new(Some(dir.path().join("index")), None).confined(&state);
+        let request = zend_proto::RunRequest {
+            prompt: "hi".into(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: Default::default(),
+            cwd: work.display().to_string(),
+            sandbox: zend_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: true,
+            access: Default::default(),
+            plan: false,
+            resume: None,
+            attachments: vec![],
+            worktree: None,
+            mcp: None,
+            env: Default::default(),
+            extra_mcp: Vec::new(),
+            instructions: Vec::new(),
+            fork_from: None,
+        };
+        let native = zend_proto::NativeFork {
+            session_id: "src".into(),
+            session_file: source.display().to_string(),
+            leaf: "a1".into(),
+            fallback_prompt: String::new(),
+        };
+        let file = pi.native_fork(&request, &native, &store, None).await.unwrap();
+        assert!(file.starts_with(state.join("sessions")), "{}", file.display());
+        assert!(store.admits(&file));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains(&format!("\"parentSession\":\"{}\"", source.display())), "{text}");
+        assert!(text.contains("\"a1\"") && !text.contains("\"u2\""), "{text}");
+        // Only the fork is left in the state folder; the source untouched.
+        let left: Vec<_> = std::fs::read_dir(state.join("sessions")).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(left, [file]);
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

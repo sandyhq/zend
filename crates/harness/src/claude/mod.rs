@@ -2677,6 +2677,7 @@ mod tests {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         };
         let mut cmd = ClaudeHarness::build_command(std::path::Path::new("claude"), &request, false);
         let value = cmd
@@ -2708,6 +2709,7 @@ mod tests {
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             };
             let cmd = ClaudeHarness::build_command(std::path::Path::new("claude"), &request, false);
             let args: Vec<String> = cmd
@@ -2764,6 +2766,7 @@ mod access_tests {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         }
     }
 
@@ -3158,6 +3161,7 @@ mod mcp_injection_tests {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         }
     }
 

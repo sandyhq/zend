@@ -1070,6 +1070,7 @@ async fn a_message_that_waited_days_for_its_machine_goes_once_when_woken() {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         },
         message_id: message.into(),
     };

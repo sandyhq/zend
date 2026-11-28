@@ -71,6 +71,7 @@ async fn quiet_acp_prompt_stays_working_until_response() {
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             },
         },
     );

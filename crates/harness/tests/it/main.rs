@@ -23,6 +23,7 @@ mod managed_install_failure;
 mod muse;
 mod muse_account_live;
 mod opencode;
+mod pi_fork;
 mod pi_live;
 mod pi_rpc;
 mod real_acp_lifecycle;

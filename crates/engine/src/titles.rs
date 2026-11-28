@@ -218,6 +218,7 @@ impl TitleGenerator {
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             };
             // A Cloud device's credential broker supplies the CLI's login;
             // without one there is no title to generate.
@@ -453,6 +454,7 @@ mod tests {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         };
         let result = collect_text(&harness, request, None).await;
         assert!(

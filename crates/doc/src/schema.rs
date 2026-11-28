@@ -445,6 +445,34 @@ pub struct ProviderSessionMark {
     pub seen: Option<String>,
 }
 
+/// Where one turn left the chat's own provider session ([`SessionDoc::native_turns`]):
+/// the session, its file, the entry it ended on, and the transcript's user
+/// entries that turn took (its prompt and the steers it consumed).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTurnMark {
+    pub harness: String,
+    pub session_id: String,
+    pub session_file: String,
+    pub leaf: String,
+    #[serde(default)]
+    pub user_ids: Vec<String>,
+}
+
+/// A fork's own provider session to start from ([`SessionDoc::native_fork`]):
+/// a copy of the source's session cut at `leaf`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeForkMark {
+    pub session_id: String,
+    pub session_file: String,
+    pub leaf: String,
+}
+
+/// How many [`NativeTurnMark`]s a chat keeps: a fork from an older turn
+/// falls back to the copied history as a prompt.
+pub const NATIVE_TURNS_KEPT: usize = 256;
+
 /// A list's items as last read, by their containers
 /// ([`SessionDoc::read_entries_cached`]): `None` for one that didn't parse.
 pub struct ListCache<T> {
@@ -1005,6 +1033,47 @@ impl SessionDoc {
         self.doc
             .get_map("meta")
             .insert("providerSessions", serde_json::to_string(&marks)?)?;
+        self.commit();
+        Ok(())
+    }
+
+    /// Where each recent turn left the chat's provider session, oldest first,
+    /// the newest [`NATIVE_TURNS_KEPT`]. One atomic value, like
+    /// [`Self::provider_sessions`].
+    pub fn native_turns(&self) -> Vec<NativeTurnMark> {
+        let Some(loro::ValueOrContainer::Value(LoroValue::String(value))) =
+            self.doc.get_map("meta").get("nativeTurns")
+        else {
+            return Vec::new();
+        };
+        serde_json::from_str(&value).unwrap_or_default()
+    }
+
+    pub fn push_native_turn(&self, mark: &NativeTurnMark) -> Result<(), DocError> {
+        let mut marks = self.native_turns();
+        marks.push(mark.clone());
+        let excess = marks.len().saturating_sub(NATIVE_TURNS_KEPT);
+        marks.drain(..excess);
+        self.doc
+            .get_map("meta")
+            .insert("nativeTurns", serde_json::to_string(&marks)?.as_str())?;
+        self.commit();
+        Ok(())
+    }
+
+    /// The source session this fork's first turn starts on a copy of, when
+    /// the fork could be made natively (decided as it was forked).
+    pub fn native_fork(&self) -> Option<NativeForkMark> {
+        match self.doc.get_map("meta").get("nativeFork") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => serde_json::from_str(&s).ok(),
+            _ => None,
+        }
+    }
+
+    pub fn set_native_fork(&self, mark: &NativeForkMark) -> Result<(), DocError> {
+        self.doc
+            .get_map("meta")
+            .insert("nativeFork", serde_json::to_string(mark)?.as_str())?;
         self.commit();
         Ok(())
     }
@@ -3266,6 +3335,31 @@ mod tests {
             }]
         );
         assert_eq!(doc.chat_id().as_deref(), Some("chat-1"));
+    }
+
+    #[test]
+    fn native_turn_marks_keep_the_newest_and_survive_a_reload() {
+        let doc = SessionDoc::init("chat-1").unwrap();
+        assert!(doc.native_turns().is_empty() && doc.native_fork().is_none());
+        for n in 0..NATIVE_TURNS_KEPT + 2 {
+            doc.push_native_turn(&NativeTurnMark {
+                harness: "pi".into(),
+                session_id: "s".into(),
+                session_file: "/f.jsonl".into(),
+                leaf: format!("leaf{n}"),
+                user_ids: vec![format!("u{n}")],
+            })
+            .unwrap();
+        }
+        let fork = NativeForkMark { session_id: "s".into(), session_file: "/f.jsonl".into(), leaf: "leaf9".into() };
+        doc.set_native_fork(&fork).unwrap();
+        let reloaded = SessionDoc::from_doc(LoroDoc::new());
+        reloaded.import(&doc.export_snapshot().unwrap()).unwrap();
+        let marks = reloaded.native_turns();
+        assert_eq!(marks.len(), NATIVE_TURNS_KEPT);
+        assert_eq!(marks[0].leaf, "leaf2", "the oldest go first");
+        assert_eq!(marks.last().unwrap().user_ids, ["u257"]);
+        assert_eq!(reloaded.native_fork(), Some(fork));
     }
 
     #[test]

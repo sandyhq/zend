@@ -264,6 +264,7 @@ async fn turn(core: &EngineCore, cwd: &std::path::Path, live: bool, second: bool
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             },
             Some(if second { "second-user" } else { "first-user" }.into()),
         )

@@ -47,3 +47,25 @@ recreation using --session-id in the same cwd. Any submitted input revokes that
 proof before the write to stdin. Missing history/custom entries never authorize
 recreating the same UUID; an unrestorable session starts a new one with a
 visible "without the previous context" notice, like the other harnesses.
+
+Native fork (pi-native-fork, verified against 1.5.2 dist): a fork's first turn
+(`RunRequest::fork_from`: source file, `leaf`, fallback prompt) runs a short
+Pi `--mode rpc --fork <source> [--session-dir <dir>]` before the main one.
+`--fork` writes the copy at once, into `--session-dir` when given (main.js
+600-603, 342-347; SessionManager.forkFrom session-manager.js:1397-1431), with
+`parentSession` = the source. `get_state` names the copy, `get_entries` lists it
+(`{entries, leafId}`, rpc-mode.js:525-535). From `leaf` the driver walks the
+only line of children past entries beside the conversation (model_change,
+thinking_level_change, custom, label, session_info): no child copies the whole
+session; the first user message is cut with RPC `fork {entryId}` (rpc-mode.js
+503-509, position "before": the new file holds what came before that entry,
+agent-session-runtime.js:174-235); anything else refuses. RPC `fork` needs no
+prompt first. Its file names the intermediate copy as `parentSession`
+(session-manager.js:1260): the driver deletes the copy and rewrites the
+header to the source before the main Pi opens the file with `--session`. The fork
+runs before `set_model` (configure appends `model_change`). A sandboxed fork
+reads a copy of the source in its own state folder; a result outside it is
+refused. Any failure kills the short Pi, removes what it made, emits
+`NativeForkFallback` at the start of the turn and runs a fresh session with the
+fallback prompt. At every turn's end the driver emits `NativeTurn` (session id,
+file, the id of the file's last line: Pi appends every entry) before `Done`.

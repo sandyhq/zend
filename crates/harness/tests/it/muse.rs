@@ -64,6 +64,7 @@ fn request(dir: &Path, scenario: &str, prompt: &str) -> RunRequest {
         .collect(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

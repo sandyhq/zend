@@ -197,6 +197,7 @@ impl Rig {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         };
         let command = SessionCommandPayload::Run { request, message_id: format!("m-{chat}") };
         self.client

@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     println!("Running real Devin ACP with {model}");
     let mut stream = harness.run(request, controls).await?;

@@ -2,6 +2,11 @@
 
 Changes of this fork (sandyhq/zend), newest first. Upstream changes are in the git history.
 
+## 2026-11-28
+
+### Added
+- Native Pi fork (plan `plans/pi-native-fork`): a fork of a Pi chat (side chat or session of its own) starts on a copy of the source's own Pi session cut at the fork point (`pi --fork`, then RPC `fork {entryId}` before the next prompt; header `parentSession` = the source's file), its first prompt without a history block; any doubt or failure takes the history prompt as before. Every Pi turn reports where it left its session (`AgentEvent::NativeTurn`, doc meta `nativeTurns`); `ForkSideChat` records the copy point (`nativeFork`), the first turn carries it (`RunRequest::fork_from`), a failed copy says so (`AgentEvent::NativeForkFallback`) and runs fresh with the history (`crates/engine/src/native_fork.rs`, `crates/engine/src/rpc.rs`, `crates/engine/src/sessions.rs`, `crates/harness/src/pi/fork.rs`, `crates/harness/src/pi/mod.rs`, `crates/doc/src/schema.rs`, `crates/proto/src/agent.rs`).
+
 ## 2026-11-27
 
 ### Added

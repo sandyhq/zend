@@ -89,6 +89,7 @@ mod message_queue;
 mod peer_grants;
 mod peer_window;
 mod phone_reads;
+mod pi_native_fork;
 mod plugin_services;
 mod previews;
 mod project_action_commands;

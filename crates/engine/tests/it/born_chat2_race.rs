@@ -169,6 +169,7 @@ async fn transcript_survives_open_racing_create_chat() {
                         env: Default::default(),
                         extra_mcp: Vec::new(),
                         instructions: Vec::new(),
+                        fork_from: None,
                     },
                     message_id: "msg-race-1".into(),
                 },

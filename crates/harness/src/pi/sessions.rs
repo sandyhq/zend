@@ -53,7 +53,7 @@ impl Store {
     }
     /// Whether `file` may be a session of this store: anywhere unconfined,
     /// else inside the state folder (no `..`).
-    fn admits(&self, file: &Path) -> bool {
+    pub(super) fn admits(&self, file: &Path) -> bool {
         self.confine.as_ref().is_none_or(|state| {
             file.starts_with(state)
                 && !file

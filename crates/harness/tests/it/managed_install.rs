@@ -55,6 +55,7 @@ async fn managed_install_reaches_session_started() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
 
     let mut stream = tokio::time::timeout(

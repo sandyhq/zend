@@ -37,6 +37,7 @@ async fn live_run(cancel: bool) {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let mut stream = zend_harness::PiHarness::new()
         .run(request, controls)

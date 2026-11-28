@@ -153,6 +153,7 @@ async fn steer_now_interrupts_a_streaming_answer() {
                     env: Default::default(),
                     extra_mcp: Vec::new(),
                     instructions: Vec::new(),
+                    fork_from: None,
                 },
             },
         )
