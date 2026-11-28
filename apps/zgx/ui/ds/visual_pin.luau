@@ -66,22 +66,47 @@ end
 -- The newest visual in `messages` that is open, as the host says
 -- (`revs`: shared `visuals`, `{ [id] = { open, sent } }`), whose part
 -- doesn't say it was sent, and whose place is out of view (`away`).
+--
+-- Only a visual the host says is open can be picked, and those are few:
+-- with none, the transcript isn't read at all, and the walk back through
+-- it stops once it has met every one. A long chat's every block, walked
+-- each time a place scrolls or a visual changes, ran out of a script
+-- call's time budget (50 ms) and took the composer with it.
 function M.pick(messages: { any }, revs: { [string]: any }, away: { [string]: boolean }?, listed: { any }?): any
+	local open: { [string]: boolean } = {}
+	local left = 0
+	for id, r in revs do
+		if type(r) == "table" and r.open == true and (away == nil or away[id] ~= false) then
+			open[id] = true
+			left += 1
+		end
+	end
+	if left == 0 then
+		return nil
+	end
+	local met: { [string]: boolean } = {}
 	for i = #messages, 1, -1 do
 		local found = {}
 		visuals_in(messages[i].blocks, found)
 		for j = #found, 1, -1 do
 			local b = found[j]
-			local r = revs[b.id]
-			if b.sent ~= true and b.dismissed ~= true and r and r.open == true and (away == nil or away[b.id] ~= false) then
-				return b
+			if open[b.id] then
+				if b.sent ~= true and b.dismissed ~= true then
+					return b
+				end
+				if not met[b.id] then
+					met[b.id] = true
+					left -= 1
+				end
 			end
+		end
+		if left == 0 then
+			break
 		end
 	end
 	-- Not in the messages (their history isn't all here): the host's list.
 	for _, b in listed or {} do
-		local r = revs[b.id]
-		if b.sent ~= true and b.dismissed ~= true and r and r.open == true and (away == nil or away[b.id] ~= false) then
+		if open[b.id] and b.sent ~= true and b.dismissed ~= true then
 			return b
 		end
 	end
