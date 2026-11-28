@@ -54,6 +54,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 
@@ -1375,6 +1376,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let assemble_real = || {
         EngineCore::assemble(

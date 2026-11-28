@@ -134,6 +134,7 @@ fn request(prompt: &str, cwd: &str) -> RunRequest {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

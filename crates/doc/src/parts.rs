@@ -775,7 +775,10 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         | AgentEvent::AvailableCommands { .. }
         | AgentEvent::UserMessage { .. }
         // (A tool's picture stays on its host; its row asks for it.)
-        | AgentEvent::ToolImage { .. } => {}
+        | AgentEvent::ToolImage { .. }
+        // Where a turn left the provider's session: kept beside the transcript.
+        | AgentEvent::NativeTurn { .. }
+        | AgentEvent::NativeForkFallback { .. } => {}
     }
 }
 

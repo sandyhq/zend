@@ -4450,6 +4450,18 @@ impl RpcService for EngineRpc {
                         })
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                 }
+                // The fork's first turn starts on a copy of the source's own
+                // provider session when that copy holds exactly what was
+                // copied here; else it gets the copied history as its prompt.
+                match crate::native_fork::mark(&source, source_doc.doc(), &entries, copied) {
+                    Ok(mark) => target
+                        .doc()
+                        .set_native_fork(&mark)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?,
+                    Err(reason) => {
+                        tracing::info!(chat = %chat.id, source = %source.id, reason, "fork starts with the copied history")
+                    }
+                }
                 // A copy of a paired server's chat stays that server's, under
                 // the same grant check, and confined to the same folder, before
                 // its row is published: it never runs as the owner's own.

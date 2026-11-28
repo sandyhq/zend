@@ -1006,6 +1006,7 @@ async fn target_device_id_routes_over_the_relay() {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         },
         message_id: "m-a-1".into(),
     })
@@ -2107,6 +2108,7 @@ async fn a_run_from_another_device_names_the_hosts_copy_of_its_upload() {
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             },
             message_id: "m-foreign-1".into(),
         },

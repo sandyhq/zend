@@ -261,6 +261,7 @@ async fn rows_dark_command_delivers_over_the_peer_relay_exactly_once() {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         },
         message_id: "msg-relay-1".into(),
     })

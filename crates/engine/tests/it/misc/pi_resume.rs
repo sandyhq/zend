@@ -39,6 +39,7 @@ async fn pi_idle_crash_next_dispatch_loads_stored_session() {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         };
         core.sessions
             .dispatch(chat, HarnessId::Pi, req, None)
@@ -96,6 +97,7 @@ async fn timed_out_native_question_resolves_and_finishes_without_user_input() {
                 env: Default::default(),
                 extra_mcp: Vec::new(),
                 instructions: Vec::new(),
+                fork_from: None,
             },
             None,
         )

@@ -178,6 +178,7 @@ async fn run_in_worker(
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let message_id = uuid::Uuid::new_v4().to_string();
     zend.queue_command(&chat_id, &zend_doc::SessionCommandPayload::Run { request, message_id })

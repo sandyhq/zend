@@ -75,6 +75,7 @@ pub mod heap;
 pub mod managed;
 mod hosted_models;
 pub mod live_visuals;
+mod native_fork;
 mod model_catalogs;
 mod plugin_agents;
 pub mod peer_chats;

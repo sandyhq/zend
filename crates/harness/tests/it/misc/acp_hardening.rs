@@ -51,6 +51,7 @@ fn request(mode: &str) -> RunRequest {
             .collect(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

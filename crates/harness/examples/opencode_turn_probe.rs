@@ -59,6 +59,7 @@ async fn main() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let mut harness = OpencodeHarness::new();
     if let Some(exe) = exe {

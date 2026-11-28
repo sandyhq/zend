@@ -117,6 +117,7 @@ fn run_payload(message_id: &str) -> SessionCommandPayload {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         },
         message_id: message_id.into(),
     }

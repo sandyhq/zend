@@ -164,6 +164,7 @@ async fn steering_never_aborts_a_running_tool() {
                     env: Default::default(),
                     extra_mcp: Vec::new(),
                     instructions: Vec::new(),
+                    fork_from: None,
                 },
             },
         )

@@ -198,6 +198,7 @@ fn request(prompt: &str) -> RunRequest {
         resume: None,
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 

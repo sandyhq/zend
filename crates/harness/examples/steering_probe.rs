@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let controls = RunControls {
         realtime: None,

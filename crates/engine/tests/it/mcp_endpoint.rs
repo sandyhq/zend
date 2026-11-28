@@ -139,6 +139,7 @@ async fn a_harness_run_reaches_the_zend_tools_over_the_engine_s_endpoint() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     client
         .call(

@@ -3072,6 +3072,7 @@ impl SessionsEngine {
                     env: Default::default(),
                     extra_mcp: Vec::new(),
                     instructions: Vec::new(),
+                    fork_from: None,
                 })
             })?;
         request.prompt = prompt.to_owned();
@@ -5590,6 +5591,7 @@ async fn drive_run(
         None => ProviderSession::Fresh,
         resumed => ProviderSession::Continued(resumed),
     };
+    let bare_prompt = request.prompt.clone();
     if !resume_state.idle
         && let Some(prompt) = inner.fork_history_prompt(
             &chat_id,
@@ -5606,6 +5608,7 @@ async fn drive_run(
             .fork_history_sent
             .store(true, std::sync::atomic::Ordering::Release);
     }
+    let history_prompt = carried_history.then(|| request.prompt.clone());
     // Visuals the person closed without answers ride the prompt as a line
     // each, told once (the transcript keeps the user's own message).
     if !resume_state.idle
@@ -5615,6 +5618,40 @@ async fn drive_run(
         noted.told(inner.visuals.get());
         request.prompt = noted.prompt;
     }
+    // A fork whose source's session holds exactly the copied history starts
+    // on a copy of that session (`native_fork`): its prompt is the person's
+    // own, and the history prompt is the driver's fallback. Either way the
+    // fork's session has the history (`carried_history`).
+    // The fork's mark serves its first launch only, whichever harness takes
+    // it: taken with the first history it is owed.
+    let native_fork = match history_prompt.is_some() {
+        true => doc.take_native_fork().unwrap_or_else(|err| {
+            tracing::warn!(%chat_id, error = %err, "native fork mark take failed");
+            None
+        }),
+        false => None,
+    };
+    if let Some(history) = &history_prompt
+        && harness_id == HarnessId::Pi
+        && request.resume.is_none()
+        && let Some(native) = native_fork
+    {
+        let notes = request.prompt.strip_prefix(history.as_str()).unwrap_or_default();
+        request.fork_from = Some(zend_proto::NativeFork {
+            session_id: native.session_id,
+            session_file: native.session_file,
+            leaf: native.leaf,
+            fallback_prompt: request.prompt.clone(),
+        });
+        request.prompt = format!("{bare_prompt}{notes}");
+    }
+    // The transcript's user entries the turn running now took (its prompt,
+    // the steers it consumed), for the mark its end leaves (`NativeTurn`).
+    let mut turn_users: Vec<String> = if resume_state.idle {
+        Vec::new()
+    } else {
+        vec![resume_state.user_message_id.clone()]
+    };
     // Startup can stop before the SDK saves user text, with no new session
     // ID or receipt. Bridge that unacknowledged tail from our transcript;
     // a fresh session needs all prior user text, not just the latest tail.
@@ -5760,6 +5797,11 @@ async fn drive_run(
                 if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
                     wire_request.prompt =
                         zend_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
+                    // The fork's fallback is what its prompt would have been.
+                    if let Some(native) = &mut wire_request.fork_from {
+                        native.fallback_prompt =
+                            zend_proto::invocation::harness_prompt(&native.fallback_prompt, harness_id);
+                    }
                 }
                 // Everything the agent starts inherits its chat, which is how
                 // preview discovery tells its dev servers from the user's own.
@@ -6899,6 +6941,34 @@ async fn drive_run(
             }
             continue;
         }
+        // Where the turn left the provider's own session: kept beside the
+        // transcript for a later fork (`native_fork::mark`), never folded.
+        if let AgentEvent::NativeTurn {
+            session_id,
+            session_file,
+            leaf,
+        } = &event
+        {
+            // A turn whose input the session doesn't hold leaves no mark:
+            // a fork through it gets the history.
+            let users = std::mem::take(&mut turn_users);
+            let Some(leaf) = leaf else { continue };
+            let mark = zend_doc::NativeTurnMark {
+                harness: harness_id.as_str().to_owned(),
+                session_id: session_id.clone(),
+                session_file: session_file.clone(),
+                leaf: leaf.clone(),
+                user_ids: users,
+            };
+            if let Err(err) = doc_ref.push_native_turn(&mark) {
+                tracing::warn!(%chat_id, error = %err, "native turn mark write failed");
+            }
+            continue;
+        }
+        if let AgentEvent::NativeForkFallback { reason } = &event {
+            tracing::warn!(%chat_id, %reason, "native fork failed; the fork got the copied history as its prompt");
+            continue;
+        }
         // Capacity/occupancy can settle after Done; updating it must not reopen a turn.
         if let AgentEvent::ContextUsage { tokens, window } = &event {
             if let Err(err) = doc_ref.update_context_usage(*tokens, *window) {
@@ -7212,6 +7282,9 @@ async fn drive_run(
                 .get(&chat_id)
                 .filter(|h| h.run_id == run_id)
                 .and_then(|h| lock(&h.routed_steers).pop_front());
+            if let Some(steer) = &confirmed {
+                turn_users.push(steer.message_id.clone());
+            }
             // Consumed: a steer carrying the fork history delivered it to
             // this runtime's provider session.
             if confirmed.is_some_and(|steer| steer.fork_history)
@@ -7970,6 +8043,7 @@ mod tests {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         }
     }
 

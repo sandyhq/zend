@@ -202,6 +202,7 @@ fn ask(model: &str, cwd: &str) -> RunRequest {
         mcp: None,
         extra_mcp: vec![],
         instructions: Vec::new(),
+        fork_from: None,
         env: Default::default(),
     }
 }

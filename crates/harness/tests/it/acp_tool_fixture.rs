@@ -94,6 +94,7 @@ fn request(prompt: &str, cwd: &Path, env: &[(&str, &str)]) -> RunRequest {
         mcp: None,
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
         env: env
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))

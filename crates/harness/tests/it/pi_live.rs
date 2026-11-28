@@ -102,6 +102,7 @@ async fn real_pi_mock_lifecycle() {
             env: Default::default(),
             extra_mcp: Vec::new(),
             instructions: Vec::new(),
+            fork_from: None,
         };
         let previous_session = session.clone();
         let mut stream = harness.run(request, controls).await.unwrap();
@@ -209,6 +210,7 @@ async fn real_pi_mock_lifecycle() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let events: Vec<_> = tokio::time::timeout(
         Duration::from_secs(20),
@@ -267,6 +269,7 @@ fn zebra_request(cwd: &std::path::Path, prompt: &str, text: Option<&str>) -> Run
                 }]
             })
             .unwrap_or_default(),
+        fork_from: None,
     }
 }
 
@@ -478,6 +481,7 @@ async fn real_pi_steering_bursts_share_the_next_model_call() {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     };
     let mut stream = harness.run(request, controls).await.unwrap();
     let calls = cwd.join("probe-model-calls.jsonl");

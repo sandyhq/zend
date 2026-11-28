@@ -164,6 +164,7 @@ fn request(prompt: &str) -> RunRequest {
         env: Default::default(),
         extra_mcp: Vec::new(),
         instructions: Vec::new(),
+        fork_from: None,
     }
 }
 fn rich_text(label: &str) -> (String, String) {
